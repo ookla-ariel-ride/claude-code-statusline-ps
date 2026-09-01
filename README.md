@@ -6,9 +6,11 @@ A single-file PowerShell status line for [Claude Code](https://code.claude.com) 
 [![PowerShell 7+](https://img.shields.io/badge/PowerShell-7%2B-5391FE.svg?logo=powershell&logoColor=white)](https://github.com/PowerShell/PowerShell)
 [![Windows](https://img.shields.io/badge/platform-Windows-0078D4.svg?logo=windows&logoColor=white)](#requirements)
 
-```
-󰚩 Fable 5.1  󰍛 32% ███░░░░░░░ 64k/200k  󰅕 $1.07   +156 −23   5h 24% (1h12m) 7d 41%   󰧐   my-project   main
-```
+![Status line rendered in Windows Terminal with JetBrainsMono Nerd Font](docs/statusline.png)
+
+Left to right: model, context meter, cost, lines changed, rate limits, mode badges, folder, branch.
+Each segment starts with a Nerd Font icon, which GitHub cannot show in text, so the rest of this
+file names the icons instead.
 
 ## About
 
@@ -81,18 +83,19 @@ This removes the `statusLine` entry and deletes `~/.claude/statusline.ps1`. Font
 
 ## What each segment shows
 
-| Segment | Data | Rendering |
-|---|---|---|
-| 󰚩 model | `model.display_name` | Bold cyan |
-| 󰍛 context | `context_window.*` | Percent, ten-block bar, used/total tokens. Green below 60%, yellow below 85%, red above |
-| 󰅕 cost | `cost.total_cost_usd` | Dimmed, two decimals |
-|  lines | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
-|  limits | `rate_limits.five_hour`, `seven_day` | `5h 24% (1h12m) 7d 41%`. Coloured by the worse of the two using the context thresholds. The countdown is omitted once the reset time has passed |
-|  󰧐 󰓅  badges | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
-|  folder | `workspace.current_dir` | Blue, leaf directory name |
-|  /  branch | `git.branch`, `git.status` |  on `main`/`master`,  elsewhere. Yellow with a  when the tree has uncommitted changes, magenta when clean |
+| Segment | Icon | Data | Rendering |
+|---|---|---|---|
+| model | robot (`nf-md-robot`) | `model.display_name` | Bold cyan |
+| context | memory chip (`nf-md-memory`) | `context_window.*` | Percent, ten-block bar, used/total tokens. Green below 60%, yellow below 85%, red above |
+| cost | banknote (`nf-md-cash`) | `cost.total_cost_usd` | Dimmed, two decimals |
+| lines | code brackets (`nf-fa-code`) | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
+| limits | tachometer (`nf-fa-tachometer`) | `rate_limits.five_hour`, `seven_day` | `5h 24% (1h12m) 7d 41%`. Coloured by the worse of the two using the context thresholds. The countdown is omitted once the reset time has passed |
+| badges | bolt, brain, speedometer, vim logo | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
+| folder | open folder (`nf-fa-folder_open`) | `workspace.current_dir` | Blue, leaf directory name |
+| branch | house on `main`/`master`, powerline branch elsewhere, pencil when dirty | `git.branch`, `git.status` | Magenta when clean. Yellow with the pencil when the tree has uncommitted changes |
 
-A dim powerline divider separates the segments. Field names follow the
+A dim powerline chevron separates the segments. Icon names are from the
+[Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet). Field names follow the
 [Claude Code status line reference](https://code.claude.com/docs/en/statusline).
 
 ## Test without Claude Code
@@ -149,7 +152,8 @@ Get-ChildItem *.ps1 | ForEach-Object { Invoke-ScriptAnalyzer -Path $_.FullName -
 ```
 
 The analyzer settings exclude only the Write-Host rule, which a status line cannot avoid. If you add
-a segment, add a sample payload to `samples/` so `test.ps1` exercises it.
+a segment, add a sample payload to `samples/` so `test.ps1` exercises it, and regenerate the
+screenshot at the top of this file with `pwsh docs/render-screenshot.ps1`.
 
 Commits are scanned for secrets with [gitleaks](https://github.com/gitleaks/gitleaks), both in CI
 and through a pre-commit hook. To enable the hook in your clone:

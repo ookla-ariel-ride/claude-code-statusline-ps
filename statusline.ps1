@@ -6,6 +6,8 @@
 # Glyphs are emitted from code points so the file's own encoding never matters.
 $ErrorActionPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+# PowerShell strips ANSI colour when stdout is redirected unless told otherwise; the host always redirects it.
+$PSStyle.OutputRendering = 'Ansi'
 
 function G([int] $cp) { [char]::ConvertFromUtf32($cp) }
 $e = [char]27
