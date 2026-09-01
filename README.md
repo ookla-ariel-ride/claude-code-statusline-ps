@@ -85,16 +85,18 @@ This removes the `statusLine` entry and deletes `~/.claude/statusline.ps1`. Font
 
 | Segment | Icon | Data | Rendering |
 |---|---|---|---|
-| model | robot (`nf-md-robot`) | `model.display_name` | Bold cyan |
-| context | memory chip (`nf-md-memory`) | `context_window.*` | Percent, ten-block bar, used/total tokens. Green below 60%, yellow below 85%, red above |
-| cost | banknote (`nf-md-cash`) | `cost.total_cost_usd` | Dimmed, two decimals |
-| lines | code brackets (`nf-fa-code`) | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
-| limits | tachometer (`nf-fa-tachometer`) | `rate_limits.five_hour`, `seven_day` | `5h 24% (1h12m) 7d 41%`. Coloured by the worse of the two using the context thresholds. The countdown is omitted once the reset time has passed |
-| badges | bolt, brain, speedometer, vim logo | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
-| folder | open folder (`nf-fa-folder_open`) | `workspace.current_dir` | Blue, leaf directory name |
-| branch | house on `main`/`master`, powerline branch elsewhere, pencil when dirty | `git.branch`, `git.status` | Magenta when clean. Yellow with the pencil when the tree has uncommitted changes |
+| model | <img src="docs/icons/robot.svg" height="18" alt="robot"> `nf-md-robot` | `model.display_name` | Bold cyan |
+| context | <img src="docs/icons/memory.svg" height="18" alt="memory"> `nf-md-memory` | `context_window.*` | Percent, ten-block bar, used/total tokens. Green below 60%, yellow below 85%, red above |
+| cost | <img src="docs/icons/cash.svg" height="18" alt="cash"> `nf-md-cash` | `cost.total_cost_usd` | Dimmed, two decimals |
+| lines | <img src="docs/icons/code.svg" height="18" alt="code"> `nf-fa-code` | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
+| limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day` | `5h 24% (1h12m) 7d 41%`. Coloured by the worse of the two using the context thresholds. The countdown is omitted once the reset time has passed |
+| badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
+| folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.current_dir` | Blue, leaf directory name |
+| branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git.branch`, `git.status` | Magenta when clean. Yellow with the pencil when the tree has uncommitted changes |
 
-A dim powerline chevron separates the segments. Icon names are from the
+A dim <img src="docs/icons/chevron.svg" height="14" alt="chevron"> separates the segments. The icon
+images are SVG outlines extracted from JetBrainsMono Nerd Font by `docs/render-icons.ps1`, because
+GitHub cannot render the font itself. Icon names are from the
 [Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet). Field names follow the
 [Claude Code status line reference](https://code.claude.com/docs/en/statusline).
 
