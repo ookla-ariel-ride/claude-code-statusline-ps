@@ -1,0 +1,20 @@
+{
+  "model": { "display_name": "Fable 5.1" },
+  "context_window": {
+    "total_input_tokens": 60000,
+    "total_output_tokens": 4000,
+    "context_window_size": 200000,
+    "used_percentage": 32
+  },
+  "cost": { "total_cost_usd": 1.07, "total_lines_added": 156, "total_lines_removed": 23 },
+  "rate_limits": {
+    "five_hour": { "used_percentage": 23.5, "resets_at": 4102444800 },
+    "seven_day": { "used_percentage": 88.2, "resets_at": 4102444800 }
+  },
+  "fast_mode": true,
+  "effort": { "level": "xhigh" },
+  "thinking": { "enabled": true },
+  "vim": { "mode": "NORMAL" },
+  "workspace": { "current_dir": "C:\\Users\\jim\\src\\my-project" },
+  "git": { "branch": "main", "status": "clean" }
+}

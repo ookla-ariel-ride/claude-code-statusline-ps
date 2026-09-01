@@ -1,0 +1,13 @@
+{
+  "model": { "display_name": "Opus 5" },
+  "context_window": { "used_percentage": 5 },
+  "cost": { "total_cost_usd": 0.02, "total_lines_added": 0, "total_lines_removed": 4 },
+  "rate_limits": {
+    "five_hour": { "used_percentage": 61, "resets_at": 1700000000 },
+    "seven_day": { "used_percentage": 12, "resets_at": 1700000000 }
+  },
+  "fast_mode": false,
+  "effort": { "level": "high" },
+  "thinking": { "enabled": false },
+  "workspace": { "current_dir": "C:\\repo" }
+}

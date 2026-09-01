@@ -17,7 +17,7 @@ foreach ($sample in Get-ChildItem (Join-Path $PSScriptRoot 'samples') -Filter *.
     $sw.Stop()
     if ([string]::IsNullOrWhiteSpace($out)) { $failed++; Write-Host "FAIL $($sample.Name): empty output" -ForegroundColor Red; continue }
     $shown = if ($Raw) { $out -replace [char]27, '<ESC>' } else { $out }
-    Write-Host ("{0,-28} {1,5:N0} ms  " -f $sample.Name, $sw.ElapsedMilliseconds) -NoNewline
+    Write-Host ("{0,-40} {1,5:N0} ms  " -f $sample.Name, $sw.ElapsedMilliseconds) -NoNewline
     Write-Host $shown
 }
 
