@@ -1,4 +1,30 @@
+# Backups written by install.ps1 and by hand
 *.bak
+*.bak-*
+*.orig
+
+# Logs and scratch output
 *.log
+*.tmp
+TestResults/
+
+# Windows and OneDrive
 Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+~$*
+*.lnk
+
+# macOS, in case someone clones there
 .DS_Store
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local secrets and gitleaks reports (nothing here should ever be committed)
+.env
+.env.*
+gitleaks-report.*

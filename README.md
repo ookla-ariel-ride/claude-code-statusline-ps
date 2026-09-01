@@ -12,22 +12,22 @@ A single-file PowerShell status line for [Claude Code](https://code.claude.com) 
 
 ## About
 
-Claude Code lets you replace its status bar with any command that reads a JSON payload on stdin and
-prints a line. Almost every published status line is a bash script. This one is PowerShell 7, needs
-nothing but a Nerd Font, and installs into your user settings with one command. It shows the things
-you cannot otherwise see at a glance: how full the context window is, what the session has cost, how
-close you are to a rate limit, and which modes are switched on.
+Claude Code can hand its status bar to any command that reads a JSON payload on stdin and prints a
+line. The examples in its docs are bash scripts. This one is PowerShell 7. It needs a Nerd Font and
+nothing else, and it installs into your user settings with one command. It shows the numbers you
+would otherwise have to go looking for: how full the context window is, what the session has cost,
+how close you are to a rate limit, and which modes are on.
 
 ## Features
 
-- **Context meter** with a ten-block bar, percent, and used/total tokens. Green, yellow, then red.
-- **Rate limits** for the 5-hour and 7-day windows, with a countdown to the next 5-hour reset.
-- **Session cost** and **lines added/removed**.
-- **Mode badges** for fast mode, extended thinking, effort level, and vim mode. Hidden when nothing is on.
-- **Folder and git branch**, with a home glyph on `main` and a pencil when the tree is dirty.
-- **Graceful degradation.** Any segment whose data is missing is dropped. Malformed input still prints the model glyph.
-- **Encoding-proof glyphs.** Icons come from Unicode code points, not pasted characters, so the file's own encoding can never corrupt them.
-- **No dependencies.** PowerShell 7 and a Nerd Font. Nothing to `Install-Module`.
+- Context meter with a ten-block bar, percent, and used/total tokens. Green, then yellow, then red.
+- Rate limits for the 5-hour and 7-day windows, with a countdown to the next 5-hour reset.
+- Session cost and lines added or removed.
+- Badges for fast mode, extended thinking, effort level, and vim mode. They disappear when nothing is on.
+- Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty.
+- If a field is missing from the payload, the script drops that segment. If the payload will not parse, it still prints the model glyph.
+- Icons come from Unicode code points rather than pasted characters, so the file's own encoding cannot corrupt them.
+- No modules to install. PowerShell 7 and a Nerd Font are the whole dependency list.
 
 ## Requirements
 
@@ -49,8 +49,8 @@ Restart Claude Code, or wait for its next status refresh.
 ### What the installer does
 
 - Copies `statusline.ps1` to `~/.claude/statusline.ps1`.
-- Adds a `statusLine` entry to your **user-level** `~/.claude/settings.json`. Every other key is preserved and a `.bak` copy is written first.
-- With `-InstallFont`, installs **JetBrainsMono Nerd Font** through winget. Expect one elevation prompt.
+- Adds a `statusLine` entry to your user-level `~/.claude/settings.json`. It keeps every other key and writes a `.bak` copy first.
+- With `-InstallFont`, installs JetBrainsMono Nerd Font through winget. Expect one elevation prompt.
 - With `-ConfigureWindowsTerminal`, sets Windows Terminal's default font to `JetBrainsMono NF` and backs up its settings.
 
 The settings entry it writes:
@@ -77,7 +77,7 @@ terminal's font to a Nerd Font yourself and skip `-ConfigureWindowsTerminal`.
 .\install.ps1 -Uninstall
 ```
 
-Removes the `statusLine` entry and deletes `~/.claude/statusline.ps1`. Fonts are left in place.
+This removes the `statusLine` entry and deletes `~/.claude/statusline.ps1`. Fonts stay installed.
 
 ## What each segment shows
 
@@ -87,12 +87,12 @@ Removes the `statusLine` entry and deletes `~/.claude/statusline.ps1`. Fonts are
 | 󰍛 context | `context_window.*` | Percent, ten-block bar, used/total tokens. Green below 60%, yellow below 85%, red above |
 | 󰅕 cost | `cost.total_cost_usd` | Dimmed, two decimals |
 |  lines | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
-|  limits | `rate_limits.five_hour`, `seven_day` | `5h 24% (1h12m) 7d 41%`. Coloured by the worse of the two using the context thresholds. Countdown omitted once the reset time has passed |
+|  limits | `rate_limits.five_hour`, `seven_day` | `5h 24% (1h12m) 7d 41%`. Coloured by the worse of the two using the context thresholds. The countdown is omitted once the reset time has passed |
 |  󰧐 󰓅  badges | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
 |  folder | `workspace.current_dir` | Blue, leaf directory name |
 |  /  branch | `git.branch`, `git.status` |  on `main`/`master`,  elsewhere. Yellow with a  when the tree has uncommitted changes, magenta when clean |
 
-Segments are separated by a dim powerline divider. Field names follow the
+A dim powerline divider separates the segments. Field names follow the
 [Claude Code status line reference](https://code.claude.com/docs/en/statusline).
 
 ## Test without Claude Code
@@ -104,9 +104,8 @@ Segments are separated by a dim powerline divider. Field names follow the
 .\test.ps1 -Raw     # show ANSI escapes as <ESC>
 ```
 
-It exits non-zero if any sample produces empty output. Each render takes roughly 250 ms, almost all
-of it `pwsh` start-up, which is fine for a status line that refreshes on events rather than
-continuously.
+It exits non-zero if any sample produces empty output. Each render takes about 250 ms, nearly all of
+it `pwsh` start-up. That is fine for a status line that refreshes on events rather than continuously.
 
 To try a payload of your own:
 
@@ -116,28 +115,28 @@ Get-Content my-payload.json -Raw | pwsh -NoProfile -File .\statusline.ps1
 
 ## Customise
 
-Everything you are likely to change sits at the top of `statusline.ps1`:
+The things you are likely to change sit at the top of `statusline.ps1`:
 
-- **Glyphs.** Each icon is a code point, for example `$iconCtx = G 0xF035B`. Look up alternatives on the [Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet).
-- **Separator.** `$sep` holds the divider between segments.
-- **Effort badge.** `$defaultEffort` is the level at which the effort badge is hidden.
-- **Colour thresholds.** The 60% and 85% cut-offs live in the context and rate-limit blocks.
+- Each icon is a code point, for example `$iconCtx = G 0xF035B`. The [Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet) lists alternatives.
+- `$sep` is the divider between segments.
+- `$defaultEffort` is the level at which the effort badge is hidden.
+- The 60% and 85% colour cut-offs live in the context and rate-limit blocks.
 
-Segment order is the order of `$parts.Add(...)` calls. Remove a block to drop a segment.
+Segments appear in the order of the `$parts.Add(...)` calls. Delete a block to drop its segment.
 
 ## Troubleshooting
 
-**Icons show as boxes or question marks.** The terminal font is not a Nerd Font. Set it to
+Icons show as boxes or question marks: the terminal font is not a Nerd Font. Set it to
 `JetBrainsMono NF` or any other Nerd Font.
 
-**The status line is blank.** Run `.\test.ps1` to confirm the script works, then check that `pwsh` is on
+The status line is blank: run `.\test.ps1` to confirm the script works, then check that `pwsh` is on
 your `PATH` and that the `command` path in `settings.json` exists.
 
-**No branch segment.** The branch segment reads a `git` object from the payload. The documented
-payload does not include one, so this segment renders only when your Claude Code build supplies it.
-Having the script query git directly is on the roadmap.
+No branch segment: the branch segment reads a `git` object from the payload. The documented payload
+does not include one, so this segment only renders when your Claude Code build supplies it. Having
+the script query git directly is on the roadmap.
 
-**Colours look wrong.** The script assumes a dark terminal theme.
+Colours look wrong: the script assumes a dark terminal theme.
 
 ## Contributing
 
@@ -149,8 +148,16 @@ Install-Module PSScriptAnalyzer -Scope CurrentUser
 Get-ChildItem *.ps1 | ForEach-Object { Invoke-ScriptAnalyzer -Path $_.FullName -Settings .\PSScriptAnalyzerSettings.psd1 }
 ```
 
-The analyzer settings exclude only the Write-Host rule, which a status line cannot avoid. Add a
-sample payload to `samples/` for any new segment so `test.ps1` exercises it.
+The analyzer settings exclude only the Write-Host rule, which a status line cannot avoid. If you add
+a segment, add a sample payload to `samples/` so `test.ps1` exercises it.
+
+Commits are scanned for secrets with [gitleaks](https://github.com/gitleaks/gitleaks), both in CI
+and through a pre-commit hook. To enable the hook in your clone:
+
+```powershell
+winget install Gitleaks.Gitleaks
+git config core.hooksPath .githooks
+```
 
 ## Roadmap
 

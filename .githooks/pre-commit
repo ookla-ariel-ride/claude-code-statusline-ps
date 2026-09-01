@@ -1,0 +1,18 @@
+#!/bin/sh
+# Pre-commit hook: block commits that would add secrets.
+# Enable once per clone:  git config core.hooksPath .githooks
+# Requires gitleaks:      winget install Gitleaks.Gitleaks   (or brew install gitleaks)
+
+if command -v gitleaks >/dev/null 2>&1; then
+    GITLEAKS=gitleaks
+else
+    # winget installs gitleaks as a portable package that is not always on PATH.
+    GITLEAKS=$(ls "$LOCALAPPDATA"/Microsoft/WinGet/Packages/Gitleaks.Gitleaks_*/gitleaks.exe 2>/dev/null | head -n 1)
+fi
+
+if [ -z "$GITLEAKS" ] || [ ! -x "$GITLEAKS" ]; then
+    echo "pre-commit: gitleaks not found. Install it with: winget install Gitleaks.Gitleaks" >&2
+    exit 1
+fi
+
+exec "$GITLEAKS" git --pre-commit --staged --redact --verbose

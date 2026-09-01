@@ -1,0 +1,13 @@
+# Gitleaks configuration. Extends the built-in rule set; add repo-specific rules or allowlists below.
+# Docs: https://github.com/gitleaks/gitleaks#configuration
+title = "claude-code-statusline-ps"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Repo-wide allowlist"
+# Sample payloads use obviously fake session values; masked tokens in docs are fine too.
+regexes = [
+  '''gho_\*{20,}''',
+]
