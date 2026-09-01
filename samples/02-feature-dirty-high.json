@@ -1,0 +1,12 @@
+{
+  "model": { "display_name": "Fable 5.1" },
+  "context_window": {
+    "total_input_tokens": 880000,
+    "total_output_tokens": 20000,
+    "context_window_size": 1000000,
+    "used_percentage": 90
+  },
+  "cost": { "total_cost_usd": 12.5 },
+  "workspace": { "current_dir": "C:\\repo" },
+  "git": { "branch": "feature/x", "status": { "modified": 2, "untracked": 1 } }
+}

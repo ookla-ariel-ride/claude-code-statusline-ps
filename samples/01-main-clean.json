@@ -1,0 +1,13 @@
+{
+  "model": { "display_name": "Fable 5.1" },
+  "context_window": {
+    "total_input_tokens": 15500,
+    "total_output_tokens": 1200,
+    "context_window_size": 200000,
+    "used_percentage": 8,
+    "remaining_percentage": 92
+  },
+  "cost": { "total_cost_usd": 0.4312, "total_duration_ms": 120000 },
+  "workspace": { "current_dir": "C:\\Users\\jim\\src\\my-project" },
+  "git": { "branch": "main", "status": "clean" }
+}
