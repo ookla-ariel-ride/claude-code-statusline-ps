@@ -211,8 +211,11 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
             try { $p.Kill($true) } catch { $null = $_ }
             [void] $p.WaitForExit(100)
         }
-        # Bounded waits on both drains; a faulted task is observed here rather than left to the finalizer.
-        try { [void] [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask), 100) } catch { $null = $_ }
+        # Bounded waits on both drains: the full timeout after a clean exit, so a slow reader cannot cost
+        # us the branch, and a short grace after a kill, where the result is discarded anyway. A faulted
+        # task is observed here rather than left to the finalizer.
+        $drainMs = if ($exited) { $TimeoutMs } else { 100 }
+        try { [void] [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask), $drainMs) } catch { $null = $_ }
         if (-not $exited) { return $null }
         if (-not $outTask.IsCompletedSuccessfully) { return $null }
         if ($p.ExitCode -ne 0) { return $null }

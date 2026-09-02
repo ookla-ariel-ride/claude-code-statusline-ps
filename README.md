@@ -137,7 +137,7 @@ context. The model segment always stays.
 | limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day` | `5h 24% (1h12m) 7d 41%`. Coloured by the worse of the two using the context thresholds. The countdown is omitted once the reset time has passed |
 | badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
 | folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.current_dir` | Blue, leaf directory name |
-| branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git.branch`, `git.status`, else `git status` in `workspace.current_dir` | Magenta when clean. Yellow with the pencil when the tree has uncommitted or untracked changes. Shows `detached` on a detached HEAD |
+| branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git.branch`, `git.status`, or `git status` in `workspace.current_dir` when the payload has no `git` object at all (a `git` object with an empty branch shows nothing) | Magenta when clean. Yellow with the pencil when the tree has uncommitted or untracked changes. Shows `detached` on a detached HEAD |
 | separator | <img src="docs/icons/chevron.svg" height="18" alt="chevron"> in `plain`, <img src="docs/icons/arrow.svg" height="18" alt="arrow"> in `powerline` | none | Dim chevron between segments, or a solid arrow coloured to blend the neighbouring blocks |
 
 A dim <img src="docs/icons/chevron.svg" height="14" alt="chevron"> separates the segments in plain
@@ -194,7 +194,8 @@ Icons show as boxes or question marks: the terminal font is not a Nerd Font. Set
 The status line is blank: run `.\test.ps1` to confirm the script works, then check that `pwsh` is on
 your `PATH` and that the `command` path in `settings.json` exists.
 
-No branch segment: the script runs `git status` in the session's working directory. Check that
+No branch segment: the script falls back to `git status` in the session's working directory only when
+the payload has no `git` object at all, and a `git` object whose branch is empty shows nothing. Check that
 `git` is on your `PATH` and that the directory is inside a repository. If `git status` takes longer
 than 1.5 seconds the segment is skipped for that refresh.
 

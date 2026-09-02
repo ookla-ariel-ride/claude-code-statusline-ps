@@ -191,7 +191,8 @@ Confirm-Equal $shippedSegments.Count 8 'shipped config: eight segments'
 Confirm-True (@($shippedSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'shipped config: every segment on'
 $shippedFileSegments = @($shippedJson.segments.PSObject.Properties)
 Confirm-Equal $shippedFileSegments.Count 8 'shipped config: the file itself lists eight segments'
-Confirm-True (@($shippedFileSegments | Where-Object { $_.Value -ne $true }).Count -eq 0) 'shipped config: the file itself sets them all true'
+# -ne coerces its right side to the left side's type, so 'true' -ne $true is False; test the type too.
+Confirm-True (@($shippedFileSegments | Where-Object { $_.Value -isnot [bool] -or $_.Value -ne $true }).Count -eq 0) 'shipped config: the file itself sets them all to the boolean true'
 
 Write-Host '== unit: renderer' -ForegroundColor Cyan
 $arrow = [char]::ConvertFromUtf32(0xE0B0)
@@ -386,8 +387,9 @@ $gitCases.Add(@{ Name = 'not a repo'; Dir = $notRepo; NoBranch = $true })
 # Each fake writes a marker file next to itself so the test can prove it really ran. The marker path is
 # %~dp0-relative so the batch file stays pure ASCII however the temp path is spelled. The hang fake's ping
 # child must be gone afterwards, which proves Kill($true) took the tree down; its -w value tags the
-# process so concurrent runs of this test do not see each other's pings.
-$pingTag = "1000$PID"
+# process so concurrent runs of this test do not see each other's pings. The tag is arithmetic, not
+# concatenation: "1000$PID" would overflow ping's 32-bit -w once the PID reached seven digits.
+$pingTag = 1000 + $PID
 $fakeFail = Write-FakeGit 'fake-fail' "echo ran > `"%~dp0fake.ran`"`r`necho fatal: not a git repository 1>&2`r`nexit 128"
 $fakeHang = Write-FakeGit 'fake-hang' "echo ran > `"%~dp0fake.ran`"`r`nping -n 11 -w $pingTag 127.0.0.1 > nul`r`nexit 0"
 $gitCases.Add(@{ Name = 'git fails'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; Marker = (Join-Path $fakeFail 'fake.ran')
@@ -424,6 +426,26 @@ foreach ($case in $gitCases) {
 # ---- Render matrix: samples x configs x widths ----
 $sampleFiles = Get-ChildItem (Join-Path $PSScriptRoot 'samples') -Filter *.json | Sort-Object Name
 $sample06 = $sampleFiles | Where-Object { $_.Name -eq '06-limits-badges-lines.json' }
+
+# A sample without a `git` object makes the script probe workspace.current_dir with `git status`, and the
+# samples spell that path out (C:\repo, C:\Users\jim\Downloads). GIT_CEILING_DIRECTORIES only stops the
+# walk upwards, so on a machine where one of those paths is a repository the matrix would render a branch
+# the presence table says is absent. Point those payloads at an empty directory of the same name under
+# $tmp instead: the folder segment prints the same leaf, and the probe is provably not a repository. The
+# rewrite is in memory, for every config including a user-supplied -Config; the sample files never change.
+function Convert-ToHermeticPayload([string] $Path) {
+    $text = Get-Content -LiteralPath $Path -Raw
+    $json = $text | ConvertFrom-Json
+    if ($null -ne $json.git) { return $text }
+    $dir = $json.workspace.current_dir
+    if (-not $dir) { return $text }
+    $probe = Join-Path $tmp (Split-Path $dir -Leaf)
+    New-Item -ItemType Directory -Force $probe | Out-Null
+    $json.workspace.current_dir = $probe
+    return ($json | ConvertTo-Json -Depth 20 -Compress)
+}
+$samplePayloads = @{}
+foreach ($sample in $sampleFiles) { $samplePayloads[$sample.Name] = Convert-ToHermeticPayload $sample.FullName }
 $iconModel = [char]::ConvertFromUtf32(0xF06A9)
 $iconCost = [char]::ConvertFromUtf32(0xF0155)
 $iconFolder = [char]::ConvertFromUtf32(0xF07C)
@@ -522,7 +544,7 @@ foreach ($cfg in $configSet) {
         Write-Host ("== render {0}  COLUMNS={1}" -f $cfg.Name, $(if ($c -gt 0) { $c } else { 'unset' })) -ForegroundColor Cyan
         $maxLines = if ($cfg.Layout -eq 'two') { 2 } else { 1 }
         foreach ($sample in $sampleFiles) {
-            $payload = Get-Content $sample.FullName -Raw
+            $payload = $samplePayloads[$sample.Name]
             $r = Invoke-StatusLine $payload $cfg.Path $c
             $label = "$($cfg.Name) COLUMNS=$c $($sample.Name)"
             Confirm-True ($r.ExitCode -eq 0) "${label}: exit code $($r.ExitCode)"
@@ -582,7 +604,7 @@ foreach ($cfg in $configSet) {
         }
         if ($c -le 0 -and $cfg.AllOn) {
             $togglePath = Write-TempConfig "toggle-$($cfg.Name).json" ('{ "layout": "' + $cfg.Layout + '", "style": "' + $cfg.Style + '", "segments": { "cost": false, "badges": false } }')
-            $payload06 = Get-Content $sample06.FullName -Raw
+            $payload06 = $samplePayloads[$sample06.Name]
             $toggle = Invoke-StatusLine $payload06 $togglePath $c
             $toggleLabel = "$($cfg.Name) COLUMNS=$c toggle"
             Confirm-True ($toggle.ExitCode -eq 0) "${toggleLabel}: exit code $($toggle.ExitCode)"
