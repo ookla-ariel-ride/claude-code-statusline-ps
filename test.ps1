@@ -305,7 +305,7 @@ $failMarker = Join-Path $tmp 'fake-fail.ran'
 $hangMarker = Join-Path $tmp 'fake-hang.ran'
 $gitCases.Add(@{ Name = 'git fails'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; Marker = $failMarker
                  PathPrefix = (Write-FakeGit 'fake-fail' "echo ran > `"$failMarker`"`r`necho fatal: not a git repository 1>&2`r`nexit 128") })
-$gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; MinMs = 1500; MaxMs = 3000; Marker = $hangMarker; NoPing = $true
+$gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 1500; MaxMs = 3000; Marker = $hangMarker; NoPing = $true
                  PathPrefix = (Write-FakeGit 'fake-hang' "echo ran > `"$hangMarker`"`r`nping -n 11 127.0.0.1 > nul`r`nexit 0") })
 
 function Get-FakePingCount {
