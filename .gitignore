@@ -28,3 +28,6 @@ $RECYCLE.BIN/
 .env
 .env.*
 gitleaks-report.*
+
+# Subagent-driven-development scratch (ledger, briefs, review packages)
+.superpowers/
