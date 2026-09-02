@@ -245,8 +245,8 @@ The things you are likely to change sit at the top of `statusline.ps1`:
 - `Get-Palette` holds the colours for both styles.
 
 Segment order is fixed for each layout, and `statusline.json` only hides segments rather than moving them.
-To change the order, edit the lists near the bottom of `statusline.ps1`: `$segmentNames` for layout `one`, and
-`$lineSets` for the two rows of layout `two`.
+To change the order, edit `Get-SegmentRegistry` near the top of `statusline.ps1`: array order is layout `one`,
+`Row` and `RowRank` place a segment on the two rows of layout `two`, and `ShrinkRank` and `DropRank` set the fitting order.
 
 ## Troubleshooting
 
