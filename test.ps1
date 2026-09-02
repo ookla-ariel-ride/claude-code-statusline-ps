@@ -130,7 +130,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder'))
 
 # Get-BranchSegment and Get-ModelSegment close over these script-level names in statusline.ps1, so the test
 # has to supply them.
@@ -369,7 +369,7 @@ Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 65)).Role 'ok' 'contex
 Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 75)).Role 'warn' 'context 1M 75: role warn'
 Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 92)).Role 'bad' 'context 1M 92: role bad'
 Confirm-Equal (Get-ContextSegment (Get-ContextPayload 65)).Role 'warn' 'context 200k 65: role stays warn'
-Confirm-True (Get-ContextSegment (Get-WideContextPayload 65)).Text.Contains('650k/1.0M') 'context 1M 65: counts'
+Confirm-True (Get-ContextSegment (Get-WideContextPayload 65)).Text.Contains("650k/$(K 1000000)") 'context 1M 65: counts'
 
 Write-Host '== unit: threshold' -ForegroundColor Cyan
 Confirm-Equal (Get-ThresholdRole 65) 'warn' 'threshold 65: default bands warn'
@@ -378,6 +378,8 @@ Confirm-Equal (Get-ThresholdRole 70 70 90) 'warn' 'threshold 70 at 70/90: warn'
 Confirm-Equal (Get-ThresholdRole 89 70 90) 'warn' 'threshold 89 at 70/90: warn'
 Confirm-Equal (Get-ThresholdRole 92 70 90) 'bad' 'threshold 92 at 70/90: bad'
 Confirm-Equal (Get-ThresholdRole 85) 'bad' 'threshold 85: default bands bad'
+Confirm-True (Test-WideWindow 1000000) 'wide window: 1000000'
+Confirm-True (-not (Test-WideWindow 200000) -and -not (Test-WideWindow 1048576) -and -not (Test-WideWindow $null)) 'wide window: 200000, 1048576 and null are not'
 
 Write-Host '== unit: model' -ForegroundColor Cyan
 function Get-ModelPayload($Size, $Exceeds) {
@@ -1052,7 +1054,10 @@ foreach ($cfg in $configSet) {
                 } else {
                     foreach ($name in $allSegments) {
                         if ($cfg.Enabled[$name]) { continue }
-                        $seen = @($segmentGlyphs[$name] | Where-Object { $text.Contains($_) })
+                        # A glyph an enabled segment also lists (the warning triangle belongs to both
+                        # model and branch) cannot prove the off segment rendered, so it is skipped.
+                        $shared = @($allSegments | Where-Object { $_ -ne $name -and $cfg.Enabled[$_] } | ForEach-Object { $segmentGlyphs[$_] })
+                        $seen = @($segmentGlyphs[$name] | Where-Object { $_ -notin $shared -and $text.Contains($_) })
                         Confirm-True ($seen.Count -eq 0) "${label}: $name is off, none of its glyphs appear"
                     }
                     # The rows this render should print, in order. Layout one is a single row; layout two
@@ -1074,7 +1079,10 @@ foreach ($cfg in $configSet) {
                             }
                             $other = @($visible | Where-Object { $_ -notin $mine })
                             if ($other.Count -gt 0) {
-                                $strayed = @($other | Where-Object { @($segmentGlyphs[$_] | Where-Object { $rowText.Contains($_) }).Count -gt 0 })
+                                # Same one-owner rule as the absence check: a glyph a segment on this row
+                                # also lists says nothing about the segments that belong elsewhere.
+                                $mineGlyphs = @($mine | ForEach-Object { $segmentGlyphs[$_] })
+                                $strayed = @($other | Where-Object { @($segmentGlyphs[$_] | Where-Object { $_ -notin $mineGlyphs -and $rowText.Contains($_) }).Count -gt 0 })
                                 Confirm-True ($strayed.Count -eq 0) "${label}: line $($ri + 1) carries none of $($other -join '+') (strayed '$($strayed -join ',')')"
                             }
                         }

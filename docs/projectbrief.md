@@ -38,7 +38,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | `install.ps1` | Copies the script to `~/.claude/`, writes the `statusLine` entry to user settings, optionally installs JetBrainsMono Nerd Font via winget and sets it as the Windows Terminal default font. Supports `-Uninstall`. |
 | `statusline.json` | Defaults for layout, style and segment toggles. Installed beside the script. |
 | `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, and checks the git fallback in temporary repositories: clean, dirty, unborn, detached, ahead, behind, a mixed tree, a git that fails and one that hangs. `-Columns`, `-Config`, `-Raw`. |
-| `samples/*.json` | Eight payloads: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort, a 1M window past 200k tokens. |
+| `samples/*.json` | Every payload in `samples/` goes through the render matrix. One per case: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort, a 1M window with `exceeds_200k_tokens` true. |
 | `docs/render-screenshot.ps1` | Renders a payload and config through the script and captures the terminal as the README screenshot. |
 | `docs/render-icons.ps1` | Extracts the Nerd Font glyphs used by the script as SVG outlines for `docs/icons/`. |
 
@@ -46,7 +46,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 | Segment | Source field | Rendering |
 |---|---|---|
-| Model | `model.display_name`, `context_window.context_window_size`, `exceeds_200k_tokens` | Bold cyan, robot glyph. A dim `1M` after the name on a 1M window, then the warning triangle once the session has passed 200k tokens |
+| Model | `model.display_name`, `context_window.context_window_size`, `exceeds_200k_tokens` | Bold cyan, robot glyph. On a 1M window `1M` follows the name in a lighter cyan, then the warning triangle when Claude Code reports `exceeds_200k_tokens` as true |
 | Context | `context_window.used_percentage`, `total_input_tokens`, `total_output_tokens`, `context_window_size` | Percent, ten-block bar, used/total in k or M. Green below 60%, yellow below 85%, red above. A 1M window uses 70% and 90%, so red still means about 100k tokens of room |
 | Cost | `cost.total_cost_usd` | Dimmed, two decimals |
 | Lines | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
@@ -91,7 +91,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 ## Success criteria
 
-- `.\test.ps1` passes: the unit checks, all seven samples across four configs and four widths (120, 60, 20 and unset) with content checks at the unset width, and the git cases.
+- `.\test.ps1` passes: the unit checks, every payload in `samples/` across four configs and four widths (120, 60, 20 and unset) with content checks at the unset width, and the git cases.
 - `.\install.ps1` on a fresh machine produces a working status line in Claude Code after one session restart.
 - `.\install.ps1 -Uninstall` returns `settings.json` to its prior state minus the `statusLine` key.
 - `.\install.ps1` leaves an existing `~/.claude/statusline.json` untouched.
