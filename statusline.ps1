@@ -67,7 +67,7 @@ function Get-VisibleWidth([string] $Text) {
 
 # Reads statusline.json. Anything missing or invalid silently falls back to its default.
 function Read-StatusConfig([string] $Path) {
-    $cfg = @{ Layout = 'one'; Style = 'plain'; Segments = @{} }
+    $cfg = @{ Layout = 'one'; Style = 'plain'; State = $true; Segments = @{} }
     foreach ($n in @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch')) { $cfg.Segments[$n] = $true }
     try {
         if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $cfg }
@@ -75,6 +75,7 @@ function Read-StatusConfig([string] $Path) {
         if ($j -isnot [System.Management.Automation.PSCustomObject]) { return $cfg }
         if ($j.layout -is [string] -and $j.layout.ToLowerInvariant() -in @('one', 'two')) { $cfg.Layout = $j.layout.ToLowerInvariant() }
         if ($j.style -is [string] -and $j.style.ToLowerInvariant() -in @('plain', 'powerline')) { $cfg.Style = $j.style.ToLowerInvariant() }
+        if ($j.state -is [bool]) { $cfg.State = $j.state }
         $segs = $j.segments
         if ($segs -is [System.Management.Automation.PSCustomObject]) {
             foreach ($n in @($cfg.Segments.Keys)) {
@@ -266,11 +267,137 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
     }
 }
 
+# ---- Per-session state ----
+# Each render is a fresh process that sees one payload, so a small JSON file per session keeps the last
+# cost, token totals and a short cost history for the next render to compare against. Nothing on the line
+# reads it yet. Every failure here is silent: no directory, no file, no state, and the line is unchanged.
+
+# The state directory: claude-statusline-state under TEMP, or ~/.claude/statusline-state when TEMP is
+# empty. Created only when $Create is set, which the write path does. $null when it is not there and
+# cannot be made, including when a file sits at its path.
+function Get-SessionStateDir([bool] $Create) {
+    try {
+        $dir = if ($env:TEMP) { Join-Path $env:TEMP 'claude-statusline-state' } else { Join-Path $HOME '.claude' 'statusline-state' }
+        if (-not [System.IO.Directory]::Exists($dir)) {
+            if (-not $Create) { return $null }
+            [void] [System.IO.Directory]::CreateDirectory($dir)
+        }
+        return $dir
+    } catch { return $null }
+}
+
+# The file for a session: the id with anything outside [A-Za-z0-9_.-] stripped, at most 64 characters,
+# plus .json. Slashes go with the rest, so an id cannot name a path outside the directory. $null when
+# nothing is left of the id or there is no directory.
+function Get-SessionStatePath([string] $SessionId, [bool] $Create) {
+    $name = [regex]::Replace("$SessionId", '[^A-Za-z0-9_.-]', '')
+    if (-not $name) { return $null }
+    if ($name.Length -gt 64) { $name = $name.Substring(0, 64) }
+    $dir = Get-SessionStateDir $Create
+    if (-not $dir) { return $null }
+    return Join-Path $dir "$name.json"
+}
+
+# A payload or state value as a number, or $null when it is not one: missing, boolean, string, NaN or
+# infinite. With -Whole the result is floored to a long, and $null when it would not fit one.
+function Get-StateNumber($v, [switch] $Whole) {
+    if (-not ($v -is [ValueType]) -or $v -is [bool]) { return $null }
+    $n = try { [double] $v } catch { return $null }
+    if ([double]::IsNaN($n) -or [double]::IsInfinity($n)) { return $null }
+    if (-not $Whole) { return $n }
+    if ([math]::Abs($n) -gt 9e15) { return $null }
+    return [long] [math]::Floor($n)
+}
+
+# The state last written for a session, as a hashtable with the schema's keys, or $null for no file,
+# unreadable JSON, or a version other than 1. Each figure is a number or $null; history entries without
+# both a time and a cost are dropped.
+function Read-SessionState([string] $SessionId) {
+    try {
+        $path = Get-SessionStatePath $SessionId $false
+        if (-not $path -or -not [System.IO.File]::Exists($path)) { return $null }
+        $j = [System.IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop
+        if ($j -isnot [System.Management.Automation.PSCustomObject] -or (Get-StateNumber $j.v) -ne 1) { return $null }
+        $history = [System.Collections.Generic.List[hashtable]]::new()
+        foreach ($h in @($j.history)) {
+            $t = Get-StateNumber $h.t -Whole
+            $c = Get-StateNumber $h.cost_usd
+            if ($null -ne $t -and $null -ne $c) { $history.Add(@{ t = $t; cost_usd = $c }) }
+        }
+        $state = @{ v = 1; history = @($history) }
+        foreach ($key in @('updated_at', 'input_tokens', 'output_tokens')) { $state[$key] = Get-StateNumber $j.$key -Whole }
+        foreach ($key in @('cost_usd', 'used_percentage', 'five_hour_percentage')) { $state[$key] = Get-StateNumber $j.$key }
+        return $state
+    } catch { return $null }
+}
+
+# The next state for a session: the payload's figures now, and the history ring carried over from the
+# previous state with a new entry when the cost moved (a first render counts as moved). The ring keeps
+# the newest 20. Keys are in schema order so the file always reads the same way.
+function Merge-SessionState($Previous, $Payload, [long] $Now) {
+    $cost = Get-StateNumber $Payload.cost.total_cost_usd
+    $history = [System.Collections.Generic.List[hashtable]]::new()
+    $last = $null
+    if ($Previous) {
+        foreach ($h in @($Previous.history)) { if ($h) { $history.Add($h) } }
+        $last = Get-StateNumber $Previous.cost_usd
+    }
+    if ($null -ne $cost -and $cost -ne $last) { $history.Add(@{ t = $Now; cost_usd = $cost }) }
+    while ($history.Count -gt 20) { $history.RemoveAt(0) }
+    $ctx = $Payload.context_window
+    return [ordered]@{
+        v = 1
+        updated_at = $Now
+        cost_usd = $cost
+        input_tokens = Get-StateNumber $ctx.total_input_tokens -Whole
+        output_tokens = Get-StateNumber $ctx.total_output_tokens -Whole
+        used_percentage = Get-StateNumber $ctx.used_percentage
+        five_hour_percentage = Get-StateNumber $Payload.rate_limits.five_hour.used_percentage
+        history = @($history)
+    }
+}
+
+# Housekeeping, at most once per six hours per directory: a .sweep stamp marks the last pass. When it is
+# missing or older than six hours, state files not written for a day are deleted, at most 200 in one
+# pass, and the stamp is touched. The common render pays for one stat of the stamp and nothing else.
+function Invoke-SessionStateSweep([string] $Dir) {
+    try {
+        $stamp = Join-Path $Dir '.sweep'
+        $now = [DateTime]::UtcNow
+        if ([System.IO.File]::Exists($stamp) -and ($now - [System.IO.File]::GetLastWriteTimeUtc($stamp)).TotalHours -lt 6) { return }
+        $deleted = 0
+        foreach ($f in [System.IO.Directory]::EnumerateFiles($Dir, '*.json')) {
+            if ($deleted -ge 200) { break }
+            if (($now - [System.IO.File]::GetLastWriteTimeUtc($f)).TotalDays -lt 1) { continue }
+            try { [System.IO.File]::Delete($f); $deleted++ } catch { $null = $_ }
+        }
+        [System.IO.File]::WriteAllText($stamp, '')
+    } catch { $null = $_ }
+}
+
+# Writes a session's state as compact JSON, then runs the sweep. Nothing is written for an empty record
+# or an id that leaves no file name. Every failure is swallowed: the line has already been printed.
+function Write-SessionState([string] $SessionId, $State) {
+    try {
+        if (-not $State) { return }
+        $path = Get-SessionStatePath $SessionId $true
+        if (-not $path) { return }
+        $json = ConvertTo-Json -InputObject $State -Depth 4 -Compress
+        [System.IO.File]::WriteAllText($path, $json, [System.Text.UTF8Encoding]::new($false))
+        Invoke-SessionStateSweep (Split-Path $path -Parent)
+    } catch { $null = $_ }
+}
+
 $raw = [Console]::In.ReadToEnd()
 try { $d = $raw | ConvertFrom-Json } catch { Write-Host (C '36' "$iconModel claude"); exit 0 }
 
 $configPath = if ($Config) { $Config } else { Join-Path $PSScriptRoot 'statusline.json' }
 $cfg = Read-StatusConfig $configPath
+
+# The previous render's state for this session, read once before the builders run. Nothing on the line
+# uses it yet; the write at the very end keeps it current for the next render.
+$sessionId = [string] $d.session_id
+$prevState = if ($cfg.State -and $sessionId) { Read-SessionState $sessionId } else { $null }
 
 # ---- Segment builders. Each returns $null (segment omitted) or @{ Name; Text; Short; Role; Bold }. ----
 
@@ -474,3 +601,6 @@ foreach ($names in $lineSets) {
     $text = Get-FittedLine @($onLine) $cfg.Style $width
     if ($text) { Write-Host $text }
 }
+
+# State goes to disk after the last Write-Host, so its cost is never in front of the visible line.
+if ($cfg.State -and $sessionId) { Write-SessionState $sessionId (Merge-SessionState $prevState $d ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) }

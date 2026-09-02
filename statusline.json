@@ -1,6 +1,7 @@
 {
   "layout": "one",
   "style": "plain",
+  "state": true,
   "segments": {
     "model": true,
     "context": true,

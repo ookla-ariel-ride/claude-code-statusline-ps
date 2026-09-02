@@ -36,7 +36,8 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 |---|---|
 | `statusline.ps1` | Reads JSON on stdin and `statusline.json` beside it; prints one or two coloured lines fitted to `COLUMNS`. |
 | `install.ps1` | Copies the script to `~/.claude/`, writes the `statusLine` entry to user settings, optionally installs JetBrainsMono Nerd Font via winget and sets it as the Windows Terminal default font. Supports `-Uninstall`. |
-| `statusline.json` | Defaults for layout, style and segment toggles. Installed beside the script. |
+| `statusline.json` | Defaults for layout, style, the state file toggle and segment toggles. Installed beside the script. |
+| `%TEMP%\claude-statusline-state\` | One JSON file per session (`<session_id>.json`, version 1): last cost, token totals, context and 5-hour percentages, and a ring of up to twenty cost readings. Written after the line is printed, swept of day-old files at most every six hours. `~/.claude/statusline-state` when `TEMP` is empty. |
 | `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, and checks the git fallback in temporary repositories: clean, dirty, unborn, detached, ahead, behind, a mixed tree, a git that fails and one that hangs. `-Columns`, `-Config`, `-Raw`. |
 | `samples/*.json` | Seven payloads: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort. |
 | `docs/render-screenshot.ps1` | Renders a payload and config through the script and captures the terminal as the README screenshot. |
@@ -79,6 +80,12 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 - **One rule for payload numbers.** A single helper decides whether a `git.status` value is a count
   (a whole number that fits an Int32). The dirty flag and the counts both use it, so a value can
   never mark the tree dirty without showing a count, or the reverse.
+- **Per-session state on disk, never on the line's critical path.** A render cannot see the previous
+  payload, so a small JSON file per `session_id` carries the last cost and token totals forward. It is
+  read once before the builders run and written after the last `Write-Host`, so the write's cost is
+  never in front of the visible line. Every failure (no temp folder, a read-only directory, a corrupt
+  file) is silent and leaves the line unchanged. The file holds numbers and one id, nothing from the
+  prompt or the file system. Cleanup is a stamped sweep, so the common render is one read and one write.
 
 ## Constraints
 

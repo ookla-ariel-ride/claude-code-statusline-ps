@@ -130,7 +130,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep'))
 
 # Get-BranchSegment closes over these script-level names in statusline.ps1, so the test has to supply them.
 $gitTimeoutMs = 1500
@@ -206,6 +206,14 @@ Confirm-Equal $c.Layout 'one' 'config empty file: default'
 $c = Read-StatusConfig (Write-TempConfig 'array.json' '[1, 2]')
 Confirm-Equal $c.Style 'plain' 'config top-level array: default'
 
+# The state key: a boolean is taken as is, anything else (missing, string, number) leaves it on.
+Confirm-Equal (Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')).State $true 'config missing: state on'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-true.json' '{ "state": true }')).State $true 'config state true'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-false.json' '{ "state": false }')).State $false 'config state false'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-absent.json' '{ "layout": "two" }')).State $true 'config state absent: on'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-string.json' '{ "state": "false" }')).State $true 'config state string: on'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-number.json' '{ "state": 0 }')).State $true 'config state number: on'
+
 # The config that ships with the repo has to be valid JSON and to mean what the README says it means.
 $shippedConfig = Join-Path $PSScriptRoot 'statusline.json'
 $shippedJson = try { Get-Content -LiteralPath $shippedConfig -Raw | ConvertFrom-Json } catch { $null }
@@ -220,6 +228,173 @@ $shippedFileSegments = @($shippedJson.segments.PSObject.Properties)
 Confirm-Equal $shippedFileSegments.Count 8 'shipped config: the file itself lists eight segments'
 # -ne coerces its right side to the left side's type, so 'true' -ne $true is False; test the type too.
 Confirm-True (@($shippedFileSegments | Where-Object { $_.Value -isnot [bool] -or $_.Value -ne $true }).Count -eq 0) 'shipped config: the file itself sets them all to the boolean true'
+Confirm-Equal $c.State $true 'shipped config: state on'
+Confirm-True ($shippedJson.state -is [bool] -and $shippedJson.state) 'shipped config: the file itself sets state to the boolean true'
+
+Write-Host '== unit: state' -ForegroundColor Cyan
+# The state helpers derive their directory from TEMP, so point it at a folder under $tmp for these cases
+# and put it back afterwards. Nothing here touches the machine's real state directory.
+$oldTemp = $env:TEMP
+$stateTemp = Join-Path $tmp 'temp-unit'
+New-Item -ItemType Directory -Force $stateTemp | Out-Null
+$env:TEMP = $stateTemp
+try {
+$stateDir = Join-Path $stateTemp 'claude-statusline-state'
+$stateStamp = Join-Path $stateDir '.sweep'
+function Get-StatePayload([double] $Cost) {
+    return [pscustomobject]@{
+        session_id = 'abc'
+        cost = [pscustomobject]@{ total_cost_usd = $Cost }
+        context_window = [pscustomobject]@{ used_percentage = 32; total_input_tokens = 60000; total_output_tokens = 4000 }
+        rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{ used_percentage = 23.5 } }
+    }
+}
+function Get-StateFile([string] $Name) { return (Get-Content -LiteralPath (Join-Path $stateDir "$Name.json") -Raw | ConvertFrom-Json) }
+function Get-StateFileCount { return @(Get-ChildItem -LiteralPath $stateDir -Filter *.json -File -ErrorAction SilentlyContinue).Count }
+function Write-StateFileAge([string] $Path, [double] $Hours) { (Get-Item -LiteralPath $Path).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-$Hours) }
+
+Confirm-Equal (Read-SessionState 'nothing-yet') $null 'state read: missing file gives null'
+Confirm-True (-not (Test-Path -LiteralPath $stateDir)) 'state read: creates no directory'
+Confirm-Equal (Get-SessionStateDir $false) $null 'state dir: missing and not asked to create gives null'
+
+$state = Merge-SessionState $null (Get-StatePayload 1.07) 1767225600
+Confirm-Equal $state.v 1 'state merge: version 1'
+Confirm-Equal $state.updated_at 1767225600 'state merge: updated_at is the clock given'
+Confirm-Equal $state.cost_usd 1.07 'state merge: cost'
+Confirm-Equal $state.input_tokens 60000 'state merge: input tokens'
+Confirm-Equal $state.output_tokens 4000 'state merge: output tokens'
+Confirm-Equal $state.used_percentage 32 'state merge: context percentage'
+Confirm-Equal $state.five_hour_percentage 23.5 'state merge: five-hour percentage'
+Confirm-Equal @($state.history).Count 1 'state merge: first render starts the history'
+Confirm-Equal $state.history[0].cost_usd 1.07 'state merge: history entry holds the cost'
+Confirm-Equal $state.history[0].t 1767225600 'state merge: history entry holds the time'
+Confirm-Equal (@($state.Keys) -join ',') 'v,updated_at,cost_usd,input_tokens,output_tokens,used_percentage,five_hour_percentage,history' 'state merge: schema keys in schema order'
+
+Write-SessionState 'abc' $state
+Confirm-True (Test-Path -LiteralPath $stateDir -PathType Container) 'state write: missing directory is created'
+Confirm-True (Test-Path -LiteralPath (Join-Path $stateDir 'abc.json') -PathType Leaf) 'state write: file named after the session'
+Confirm-True (Test-Path -LiteralPath $stateStamp -PathType Leaf) 'state write: first write leaves the sweep stamp'
+$file = Get-StateFile 'abc'
+Confirm-Equal (@($file.PSObject.Properties.Name) -join ',') 'v,updated_at,cost_usd,input_tokens,output_tokens,used_percentage,five_hour_percentage,history' 'state file: schema keys in schema order'
+Confirm-Equal $file.v 1 'state file: v'
+Confirm-Equal $file.cost_usd 1.07 'state file: cost_usd'
+Confirm-Equal $file.input_tokens 60000 'state file: input_tokens'
+Confirm-True ((Get-Content -LiteralPath (Join-Path $stateDir 'abc.json') -Raw).Contains('"input_tokens":60000,')) 'state file: token counts are written as integers'
+Confirm-Equal $file.history.Count 1 'state file: one history entry'
+$back = Read-SessionState 'abc'
+Confirm-True ($back -is [hashtable]) 'state round trip: a hashtable'
+Confirm-Equal $back.v 1 'state round trip: v'
+Confirm-Equal $back.updated_at 1767225600 'state round trip: updated_at'
+Confirm-Equal $back.cost_usd 1.07 'state round trip: cost'
+Confirm-Equal $back.input_tokens 60000 'state round trip: input tokens'
+Confirm-Equal $back.output_tokens 4000 'state round trip: output tokens'
+Confirm-Equal $back.used_percentage 32 'state round trip: context percentage'
+Confirm-Equal $back.five_hour_percentage 23.5 'state round trip: five-hour percentage'
+Confirm-Equal @($back.history).Count 1 'state round trip: history count'
+Confirm-Equal $back.history[0].t 1767225600 'state round trip: history time'
+Confirm-Equal $back.history[0].cost_usd 1.07 'state round trip: history cost'
+
+# The history ring gains an entry only when the cost moved.
+$same = Merge-SessionState $back (Get-StatePayload 1.07) 1767225660
+Confirm-Equal @($same.history).Count 1 'state merge: unchanged cost adds no entry'
+Confirm-Equal $same.updated_at 1767225660 'state merge: unchanged cost still moves updated_at'
+$next = Merge-SessionState $back (Get-StatePayload 1.2) 1767225720
+Confirm-Equal @($next.history).Count 2 'state merge: changed cost adds an entry'
+Confirm-Equal $next.history[0].cost_usd 1.07 'state merge: old entry kept first'
+Confirm-Equal $next.history[1].cost_usd 1.2 'state merge: new entry last'
+Confirm-Equal $next.history[1].t 1767225720 'state merge: new entry carries the clock'
+$noCost = Merge-SessionState $back ([pscustomobject]@{ session_id = 'abc' }) 1767225780
+Confirm-Equal $noCost.cost_usd $null 'state merge: payload without cost gives null cost'
+Confirm-Equal $noCost.input_tokens $null 'state merge: payload without context gives null tokens'
+Confirm-Equal @($noCost.history).Count 1 'state merge: payload without cost adds no entry'
+$badCost = Merge-SessionState $null ([pscustomobject]@{ cost = [pscustomobject]@{ total_cost_usd = 'lots' } }) 1
+Confirm-Equal $badCost.cost_usd $null 'state merge: string cost is not a number'
+Confirm-Equal @($badCost.history).Count 0 'state merge: string cost starts no history'
+
+# Twenty-five renders with a rising cost through the file: the ring keeps the newest twenty.
+$ring = $null
+for ($i = 1; $i -le 25; $i++) {
+    $ring = Merge-SessionState $ring (Get-StatePayload ([math]::Round($i / 10, 2))) (1767225600 + $i)
+    Write-SessionState 'ring' $ring
+    $ring = Read-SessionState 'ring'
+}
+Confirm-Equal @($ring.history).Count 20 'state ring: stops at 20'
+Confirm-Equal $ring.history[0].cost_usd 0.6 'state ring: oldest dropped first'
+Confirm-Equal $ring.history[19].cost_usd 2.5 'state ring: newest last'
+Confirm-True ((Get-Item -LiteralPath (Join-Path $stateDir 'ring.json')).Length -lt 1200) 'state ring: a full ring stays around 1 KB'
+
+# Files that cannot be trusted read as no state.
+foreach ($case in @(
+        @{ Name = 'truncated'; Text = '{ "v": 1, "cost' }
+        @{ Name = 'empty'; Text = '' }
+        @{ Name = 'v2'; Text = '{ "v": 2, "cost_usd": 1, "history": [] }' }
+        @{ Name = 'nov'; Text = '{ "cost_usd": 1, "history": [] }' }
+        @{ Name = 'vstring'; Text = '{ "v": "1", "cost_usd": 1, "history": [] }' }
+        @{ Name = 'array'; Text = '[1, 2]' }
+        @{ Name = 'number'; Text = '5' })) {
+    [System.IO.File]::WriteAllText((Join-Path $stateDir "$($case.Name).json"), $case.Text)
+    Confirm-Equal (Read-SessionState $case.Name) $null "state read: $($case.Name) file gives null"
+}
+[System.IO.File]::WriteAllText((Join-Path $stateDir 'odd.json'), '{ "v": 1, "cost_usd": "x", "history": [ { "t": 5 }, "junk", null, { "t": 6, "cost_usd": 0.5 } ] }')
+$odd = Read-SessionState 'odd'
+Confirm-True ($odd -is [hashtable]) 'state read: odd but versioned file still reads'
+Confirm-Equal $odd.cost_usd $null 'state read: string cost reads as null'
+Confirm-Equal @($odd.history).Count 1 'state read: history entries without both numbers are dropped'
+Confirm-Equal $odd.history[0].cost_usd 0.5 'state read: the whole entry is kept'
+
+# The file name is the id with anything outside [A-Za-z0-9_.-] stripped and capped at 64 characters.
+Write-SessionState 'a b/c:d\e' $state
+Confirm-True (Test-Path -LiteralPath (Join-Path $stateDir 'abcde.json')) 'state name: punctuation stripped'
+Write-SessionState ('x' * 100) $state
+Confirm-True (Test-Path -LiteralPath (Join-Path $stateDir (('x' * 64) + '.json'))) 'state name: capped at 64 characters'
+Write-SessionState '../up' $state
+Confirm-True (Test-Path -LiteralPath (Join-Path $stateDir '..up.json')) 'state name: a dotdot id stays inside the directory'
+$countBefore = Get-StateFileCount
+Write-SessionState '' $state
+Write-SessionState '///' $state
+Write-SessionState 'abc' $null
+Confirm-Equal (Get-StateFileCount) $countBefore 'state write: empty id, id with nothing left and null state write nothing'
+Confirm-Equal (Read-SessionState '') $null 'state read: empty id gives null'
+Confirm-Equal (Get-SessionStatePath '../abc' $false) (Join-Path $stateDir '..abc.json') 'state path: slashes stripped, dots kept'
+
+# The sweep: state files not written for a day go, at most once per six hours, marked by the stamp.
+$oldFile = Join-Path $stateDir 'old.json'
+$freshFile = Join-Path $stateDir 'fresh.json'
+[System.IO.File]::WriteAllText($oldFile, '{ "v": 1 }')
+[System.IO.File]::WriteAllText($freshFile, '{ "v": 1 }')
+Write-StateFileAge $oldFile 25
+Write-StateFileAge (Join-Path $stateDir 'abc.json') 25
+Remove-Item -LiteralPath $stateStamp -Force
+Write-SessionState 'abc' $state
+Confirm-True (-not (Test-Path -LiteralPath $oldFile)) 'state sweep: day-old file deleted'
+Confirm-True (Test-Path -LiteralPath $freshFile) 'state sweep: fresh file kept'
+Confirm-True (Test-Path -LiteralPath (Join-Path $stateDir 'abc.json')) 'state sweep: the file just written is kept even if it was old'
+Confirm-True (Test-Path -LiteralPath $stateStamp) 'state sweep: stamp written'
+[System.IO.File]::WriteAllText($oldFile, '{ "v": 1 }')
+Write-StateFileAge $oldFile 25
+Write-SessionState 'abc' $state
+Confirm-True (Test-Path -LiteralPath $oldFile) 'state sweep: a fresh stamp skips the sweep'
+Write-StateFileAge $stateStamp 7
+Write-SessionState 'abc' $state
+Confirm-True (-not (Test-Path -LiteralPath $oldFile)) 'state sweep: a stamp older than six hours sweeps again'
+Confirm-True (((Get-Item -LiteralPath $stateStamp).LastWriteTimeUtc - [DateTime]::UtcNow).TotalMinutes -gt -1) 'state sweep: stamp touched'
+Invoke-SessionStateSweep (Join-Path $stateTemp 'no-such-dir')
+Confirm-True $true 'state sweep: a missing directory is silent'
+
+# Read plus write on a warm cache. The first call pays for JIT and module load, so take the best of five.
+$best = [double]::MaxValue
+for ($i = 0; $i -lt 5; $i++) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $prev = Read-SessionState 'abc'
+    Write-SessionState 'abc' (Merge-SessionState $prev (Get-StatePayload 1.07) 1767225600)
+    $sw.Stop()
+    if ($sw.Elapsed.TotalMilliseconds -lt $best) { $best = $sw.Elapsed.TotalMilliseconds }
+}
+Confirm-True ($best -lt 20) "state timing: read plus write $([math]::Round($best, 2)) ms (limit 20)"
+Write-Host ("{0,-40} {1,5:N2} ms  best of five read+write" -f 'state timing', $best)
+} finally {
+    if ($null -ne $oldTemp) { $env:TEMP = $oldTemp } else { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }
+}
 
 Write-Host '== unit: renderer' -ForegroundColor Cyan
 $arrow = [char]::ConvertFromUtf32(0xE0B0)
@@ -703,6 +878,95 @@ Write-Host ("{0,-40} {1,5:N0} ms  {2} ping(s) at {3} ms, 0 after" -f 'git hangs 
     if ($null -ne $oldGitConfigNoSystem) { $env:GIT_CONFIG_NOSYSTEM = $oldGitConfigNoSystem } else { Remove-Item Env:GIT_CONFIG_NOSYSTEM -ErrorAction SilentlyContinue }
 }
 
+Write-Host '== state' -ForegroundColor Cyan
+# Whole renders in a child pwsh, which inherits TEMP, so the state files land under $tmp. These payloads
+# carry a session_id and a git object (so no git probe); the samples in the matrix below carry neither.
+$oldTemp = $env:TEMP
+$renderTemp = Join-Path $tmp 'temp-render'
+New-Item -ItemType Directory -Force $renderTemp | Out-Null
+$env:TEMP = $renderTemp
+try {
+$renderStateDir = Join-Path $renderTemp 'claude-statusline-state'
+function Get-StatePayloadJson([double] $Cost, [string] $SessionId = 'sess-1') {
+    $p = [ordered]@{ model = @{ display_name = 'M' }; cost = @{ total_cost_usd = $Cost }; git = @{ branch = 'main'; status = 'clean' } }
+    if ($SessionId) { $p.session_id = $SessionId }
+    return ($p | ConvertTo-Json -Compress)
+}
+function Get-RenderStateFileCount { return @(Get-ChildItem -LiteralPath $renderStateDir -Filter *.json -File -ErrorAction SilentlyContinue).Count }
+function Confirm-NormalRender($Result, [string] $Cost, [string] $Label) {
+    $text = ConvertTo-PlainText ($Result.Lines -join "`n")
+    Confirm-True ($Result.ExitCode -eq 0) "${Label}: exit code $($Result.ExitCode)"
+    Confirm-True ($Result.Err.Count -eq 0) "${Label}: nothing on stderr, got '$($Result.Err -join ' | ')'"
+    Confirm-Equal $text "$iconModel M $chevron $iconCost `$$Cost $chevron $iconHome main" "${Label}: normal line"
+}
+$iconModel = [char]::ConvertFromUtf32(0xF06A9)
+$iconCost = [char]::ConvertFromUtf32(0xF0155)
+$stateOffConfig = Write-TempConfig 'state-off.json' '{ "state": false }'
+
+$r1 = Invoke-StatusLine (Get-StatePayloadJson 1.07) $null 0
+$r2 = Invoke-StatusLine (Get-StatePayloadJson 1.07) $null 0
+Confirm-NormalRender $r1 '1.07' 'state render first'
+Confirm-NormalRender $r2 '1.07' 'state render second'
+Confirm-Equal ($r2.Lines -join "`n") ($r1.Lines -join "`n") 'state render: both renders print the same bytes'
+Confirm-Equal (Get-RenderStateFileCount) 1 'state render: two renders leave one file'
+$file = Get-Content -LiteralPath (Join-Path $renderStateDir 'sess-1.json') -Raw | ConvertFrom-Json
+Confirm-Equal $file.v 1 'state render: file is version 1'
+Confirm-Equal $file.cost_usd 1.07 'state render: cost_usd matches the payload'
+Confirm-Equal $file.history.Count 1 'state render: the same cost twice is one history entry'
+Confirm-True ([math]::Abs($file.updated_at - [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) -lt 120) 'state render: updated_at is now'
+$r3 = Invoke-StatusLine (Get-StatePayloadJson 1.5) $null 0
+Confirm-NormalRender $r3 '1.50' 'state render third'
+$file = Get-Content -LiteralPath (Join-Path $renderStateDir 'sess-1.json') -Raw | ConvertFrom-Json
+Confirm-Equal $file.cost_usd 1.5 'state render: cost_usd follows the payload'
+Confirm-Equal $file.history.Count 2 'state render: a new cost adds a history entry'
+Confirm-Equal $file.history[1].cost_usd 1.5 'state render: newest history entry last'
+Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f 'state render', $r3.Ms, (ConvertTo-PlainText ($r3.Lines -join ' ')))
+
+# A truncated or empty file is read as no state, the line is normal, and the file is replaced.
+foreach ($case in @(@{ Name = 'truncated'; Text = '{ "v": 1, "cost' }, @{ Name = 'empty'; Text = '' })) {
+    [System.IO.File]::WriteAllText((Join-Path $renderStateDir 'sess-1.json'), $case.Text)
+    $r = Invoke-StatusLine (Get-StatePayloadJson 2) $null 0
+    Confirm-NormalRender $r '2.00' "state $($case.Name) file"
+    $file = try { Get-Content -LiteralPath (Join-Path $renderStateDir 'sess-1.json') -Raw | ConvertFrom-Json } catch { $null }
+    Confirm-Equal $file.cost_usd 2 "state $($case.Name) file: replaced by a good one"
+    Confirm-Equal $file.history.Count 1 "state $($case.Name) file: history starts over"
+}
+
+# "state": false and a payload without a session_id write nothing, not even the directory.
+Remove-Item -LiteralPath $renderStateDir -Recurse -Force
+$r = Invoke-StatusLine (Get-StatePayloadJson 1.07 'sess-off') $stateOffConfig 0
+Confirm-NormalRender $r '1.07' 'state off'
+Confirm-True (-not (Test-Path -LiteralPath $renderStateDir)) 'state off: no files, no directory'
+$r = Invoke-StatusLine (Get-StatePayloadJson 1.07 '') $null 0
+Confirm-NormalRender $r '1.07' 'state no session_id'
+Confirm-True (-not (Test-Path -LiteralPath $renderStateDir)) 'state no session_id: no files, no directory'
+
+# A directory that cannot be created (a file sits at its path) and one that cannot be written to.
+[System.IO.File]::WriteAllText($renderStateDir, 'in the way')
+$r = Invoke-StatusLine (Get-StatePayloadJson 1.07 'sess-blocked') $null 0
+Confirm-NormalRender $r '1.07' 'state directory blocked by a file'
+Remove-Item -LiteralPath $renderStateDir -Force
+if ($IsWindows) {
+    New-Item -ItemType Directory -Force $renderStateDir | Out-Null
+    $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $deny = [System.Security.AccessControl.FileSystemAccessRule]::new($me, 'Write', 'ContainerInherit,ObjectInherit', 'None', 'Deny')
+    $acl = Get-Acl -LiteralPath $renderStateDir
+    $acl.AddAccessRule($deny)
+    Set-Acl -LiteralPath $renderStateDir -AclObject $acl
+    try {
+        $r = Invoke-StatusLine (Get-StatePayloadJson 1.07 'sess-readonly') $null 0
+        Confirm-NormalRender $r '1.07' 'state read-only directory'
+        Confirm-Equal (Get-RenderStateFileCount) 0 'state read-only directory: nothing written'
+    } finally {
+        $acl = Get-Acl -LiteralPath $renderStateDir
+        [void] $acl.RemoveAccessRule($deny)
+        Set-Acl -LiteralPath $renderStateDir -AclObject $acl
+    }
+}
+} finally {
+    if ($null -ne $oldTemp) { $env:TEMP = $oldTemp } else { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }
+}
+
 # ---- Render matrix: samples x configs x widths ----
 $sampleFiles = Get-ChildItem (Join-Path $PSScriptRoot 'samples') -Filter *.json | Sort-Object Name
 $sample06 = $sampleFiles | Where-Object { $_.Name -eq '06-limits-badges-lines.json' }
@@ -886,6 +1150,13 @@ if ($Config) {
     }
 }
 
+# No sample carries a session_id, so no render in the matrix may write state. The child renders get a
+# TEMP of their own here, and it has to be empty when the matrix is done.
+$oldTemp = $env:TEMP
+$matrixTemp = Join-Path $tmp 'temp-matrix'
+New-Item -ItemType Directory -Force $matrixTemp | Out-Null
+$env:TEMP = $matrixTemp
+try {
 foreach ($cfg in $configSet) {
     foreach ($c in $Columns) {
         Write-Host ''
@@ -1018,6 +1289,10 @@ foreach ($cfg in $configSet) {
             Confirm-True ($toggleText.Contains($iconLines)) "${toggleLabel}: lines glyph still present"
         }
     }
+}
+Confirm-True (@(Get-ChildItem -LiteralPath $matrixTemp -Recurse -Force -File).Count -eq 0) 'render matrix: no state written for payloads without a session_id'
+} finally {
+    if ($null -ne $oldTemp) { $env:TEMP = $oldTemp } else { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }
 }
 } finally {
     if ($null -ne $oldGitCeiling) { $env:GIT_CEILING_DIRECTORIES = $oldGitCeiling } else { Remove-Item Env:GIT_CEILING_DIRECTORIES -ErrorAction SilentlyContinue }

@@ -100,6 +100,7 @@ The script reads `statusline.json` from its own folder, so after installing that
 {
   "layout": "one",
   "style": "plain",
+  "state": true,
   "segments": {
     "model": true,
     "context": true,
@@ -118,10 +119,20 @@ The script reads `statusline.json` from its own folder, so after installing that
 | `layout` | `one`, `two` | `two` puts model, folder, branch and badges on the first line and context, limits, cost and lines on the second. |
 | `style` | `plain`, `powerline` | `plain` is coloured text with a dim chevron between segments. `powerline` is coloured blocks joined by solid arrows. |
 | `segments.<name>` | `true`, `false` | `false` hides that segment. |
+| `state` | `true`, `false` | `false` stops the script writing a state file for the session. |
 
 Anything missing or invalid falls back to its default without a message, so a typo cannot blank
 the status line. Delete the file to get the defaults back. `docs/statusline-two-line.json` is the
 config behind the second screenshot.
+
+Every render is a new process that sees only the current payload. So that a later render can tell
+what changed, the script keeps one small JSON file per session in `claude-statusline-state` under
+your temp folder (`%TEMP%` on Windows, `~/.claude/statusline-state` when there is no temp folder).
+The file is named after the session id and holds numbers only: the last cost, input and output token
+totals, context and 5-hour usage percentages, and up to twenty timestamped cost readings. No prompt
+text, path or file name is written. Files not touched for a day are deleted on a later render.
+Nothing on the line uses the file yet. Set `state` to `false` and the script neither reads nor
+writes it.
 
 Claude Code tells the script the terminal width. When a line is too long the script shortens it in
 two stages:
