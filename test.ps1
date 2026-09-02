@@ -292,6 +292,40 @@ $seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\' 'C:\src\demo' 'octo' 
 Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder at root with a trailing separator: still the root'
 $seg = Get-FolderSegment (Get-FolderPayload 'c:\SRC\Demo' 'C:\src\demo' 'octo' 'demo') $cfgRepo
 Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder at root in another case: still the root'
+# The payload can spell either path with forward slashes, backslashes or a mix; the same directory is
+# the root whichever way it is written.
+$seg = Get-FolderSegment (Get-FolderPayload 'C:/src/demo' 'C:\src\demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder at root with forward slashes in current_dir: still the root'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo' 'C:/src/demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder at root with forward slashes in project_dir: still the root'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:/src\demo/' 'C:\src/demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder at root with mixed slashes on both sides: still the root'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:/src/demo/tools' 'C:/src/demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo $iconChevron tools" 'folder below root with forward slashes: chevron and leaf'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:/src/demo/' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo $iconChevron tools" 'folder below a forward-slash root with a trailing slash: chevron and leaf'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo2' 'C:/src/demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo $iconChevron demo2" 'folder beside the root: a longer name is not the root'
+# A repo field that is not a string with visible text is no repo at all: the segment falls back to the
+# leaf alone, whichever of the two fields is bad.
+$badRepoFields = @(
+    @{ Label = 'a number'; Value = 7 }
+    @{ Label = 'an array'; Value = @('octo') }
+    @{ Label = 'an object'; Value = [pscustomobject]@{ login = 'octo' } }
+    @{ Label = 'null'; Value = $null }
+    @{ Label = 'an empty string'; Value = '' }
+    @{ Label = 'a whitespace-only string'; Value = '   ' }
+)
+foreach ($bad in $badRepoFields) {
+    foreach ($field in @('owner', 'name')) {
+        $repo = [ordered]@{ owner = 'octo'; name = 'demo' }
+        $repo[$field] = $bad.Value
+        $payload = [pscustomobject]@{ workspace = [pscustomobject]@{ current_dir = 'C:\src\demo\tools'; project_dir = 'C:\src\demo'; repo = [pscustomobject]$repo } }
+        $seg = Get-FolderSegment $payload $cfgRepo
+        Confirm-Equal $seg.Text "$iconFolder tools" "folder with $($bad.Label) as repo.${field}: the leaf"
+        Confirm-Equal $seg.Short $null "folder with $($bad.Label) as repo.${field}: no short form"
+    }
+}
 $seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' '' 'octo' 'demo') $cfgRepo
 Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder with no project_dir: owner/name, no leaf'
 $seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo') $cfgRepo

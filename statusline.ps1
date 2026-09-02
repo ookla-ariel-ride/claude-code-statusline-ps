@@ -392,20 +392,25 @@ function Get-BadgesSegment($d) {
 
 # With workspace.repo in the payload and the folder config at repo, the text is owner/name, followed by a
 # chevron and the leaf of current_dir once the session has moved below project_dir (no project_dir counts
-# as the root). Short is the name alone. Without a repo, with either field empty, or in leaf mode, it is
-# the leaf of current_dir as it always was, with no Short form. No current_dir means no segment.
+# as the root). The two paths are compared with forward slashes turned into backslashes, trailing
+# separators trimmed and case ignored, since the payload can spell the same directory either way. Short
+# is the name alone. Without a repo, with either field not a string or blank, or in leaf mode, it is the
+# leaf of current_dir as it always was, with no Short form. No current_dir means no segment.
 function Get-FolderSegment($d, $cfg) {
     $dir = [string] $d.workspace.current_dir
     if (-not $dir) { return $null }
     $leaf = Split-Path $dir -Leaf
     $owner = $d.workspace.repo.owner
     $name = $d.workspace.repo.name
-    if ($cfg.Folder -eq 'leaf' -or -not $owner -or -not $name) {
+    $hasRepo = $owner -is [string] -and -not [string]::IsNullOrWhiteSpace($owner) -and $name -is [string] -and -not [string]::IsNullOrWhiteSpace($name)
+    if ($cfg.Folder -eq 'leaf' -or -not $hasRepo) {
         return @{ Name = 'folder'; Text = "$iconFolder $leaf"; Short = $null; Role = 'folder'; Bold = $false }
     }
     $root = [string] $d.workspace.project_dir
+    $here = ($dir -replace '/', '\').TrimEnd('\')
+    $there = ($root -replace '/', '\').TrimEnd('\')
     $text = "$owner/$name"
-    if ($root -and $dir.TrimEnd('\', '/') -ne $root.TrimEnd('\', '/')) { $text += " $iconChevron $leaf" }
+    if ($root -and $here -ne $there) { $text += " $iconChevron $leaf" }
     return @{ Name = 'folder'; Text = "$iconFolder $text"; Short = "$iconFolder $name"; Role = 'folder'; Bold = $false }
 }
 
