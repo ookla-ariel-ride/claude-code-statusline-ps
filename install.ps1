@@ -3,7 +3,7 @@
   Installs the PowerShell status line for Claude Code (Windows).
 
 .DESCRIPTION
-  Copies statusline.ps1 to ~/.claude/statusline.ps1 and adds a "statusLine" entry to the USER-level
+  Copies statusline.ps1 to ~/.claude/statusline.ps1, copies statusline.json there if none exists, and adds a "statusLine" entry to the USER-level
   Claude Code settings (~/.claude/settings.json), preserving every other key. Optionally installs the
   JetBrainsMono Nerd Font via winget and sets it as Windows Terminal's default font so the glyphs render.
 
@@ -14,7 +14,7 @@
   Set Windows Terminal's default font face to "JetBrainsMono NF" (a backup of settings.json is kept).
 
 .PARAMETER Uninstall
-  Remove the statusLine entry from settings.json and delete ~/.claude/statusline.ps1.
+  Remove the statusLine entry from settings.json and delete ~/.claude/statusline.ps1. ~/.claude/statusline.json is kept.
 
 .EXAMPLE
   .\install.ps1 -InstallFont -ConfigureWindowsTerminal
@@ -29,36 +29,49 @@ param(
 $ErrorActionPreference = 'Stop'
 $claudeDir = Join-Path $env:USERPROFILE '.claude'
 $target = Join-Path $claudeDir 'statusline.ps1'
+$configTarget = Join-Path $claudeDir 'statusline.json'
 $settingsPath = Join-Path $claudeDir 'settings.json'
 $fontFace = 'JetBrainsMono NF'
 
-function Read-Settings {
+function Read-UserSetting {
     if (Test-Path $settingsPath) { return (Get-Content $settingsPath -Raw | ConvertFrom-Json) }
     return [pscustomobject]@{}
 }
 
-function Write-Settings($obj) {
+function Write-UserSetting($obj) {
     Copy-Item $settingsPath "$settingsPath.bak" -Force -ErrorAction SilentlyContinue
     $obj | ConvertTo-Json -Depth 32 | Set-Content $settingsPath -Encoding UTF8
 }
 
 if ($Uninstall) {
-    $s = Read-Settings
-    if ($s.PSObject.Properties['statusLine']) { $s.PSObject.Properties.Remove('statusLine'); Write-Settings $s; Write-Host "Removed statusLine from $settingsPath" }
+    $s = Read-UserSetting
+    if ($s.PSObject.Properties['statusLine']) { $s.PSObject.Properties.Remove('statusLine'); Write-UserSetting $s; Write-Host "Removed statusLine from $settingsPath" }
     if (Test-Path $target) { Remove-Item $target -Force; Write-Host "Deleted $target" }
+    if (Test-Path $configTarget) { Write-Host "Kept $configTarget (delete it yourself if you no longer want it)" }
     return
 }
 
 New-Item -ItemType Directory -Force $claudeDir | Out-Null
 Copy-Item (Join-Path $PSScriptRoot 'statusline.ps1') $target -Force
 Write-Host "Installed $target"
+if (Test-Path $configTarget) {
+    Write-Host "Kept existing $configTarget"
+} else {
+    $configSource = Join-Path $PSScriptRoot 'statusline.json'
+    if (Test-Path $configSource) {
+        Copy-Item $configSource $configTarget
+        Write-Host "Installed $configTarget (edit it to change layout, style or segments)"
+    } else {
+        Write-Warning "statusline.json was not found beside the installer; the status line will use its built-in defaults."
+    }
+}
 
 # Forward slashes: Claude Code may run the command through Git Bash, which eats backslashes.
 $command = "pwsh -NoProfile -NoLogo -NonInteractive -File " + ($target -replace '\\', '/')
-$s = Read-Settings
+$s = Read-UserSetting
 $entry = [pscustomobject]@{ type = 'command'; command = $command; padding = 0 }
 if ($s.PSObject.Properties['statusLine']) { $s.statusLine = $entry } else { $s | Add-Member -NotePropertyName statusLine -NotePropertyValue $entry }
-Write-Settings $s
+Write-UserSetting $s
 Write-Host "Configured statusLine in $settingsPath"
 
 if ($InstallFont) {

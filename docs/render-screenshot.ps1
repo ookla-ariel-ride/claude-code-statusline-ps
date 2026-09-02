@@ -1,9 +1,12 @@
 #Requires -Version 7.0
-# Renders statusline.ps1 output for a demo payload to docs/statusline.png using the installed Nerd Font.
-# Run from anywhere:  pwsh docs/render-screenshot.ps1
+# Renders statusline.ps1 output for a demo payload to a PNG using the installed Nerd Font.
+# Run from anywhere:
+#   pwsh docs/render-screenshot.ps1                                                         # docs/statusline.png
+#   pwsh docs/render-screenshot.ps1 -Config docs/statusline-two-line.json -Out docs/statusline-two-line.png
 param(
     [string] $Repo = (Split-Path $PSScriptRoot -Parent),
-    [string] $Out = (Join-Path $PSScriptRoot 'statusline.png')
+    [string] $Out = (Join-Path $PSScriptRoot 'statusline.png'),
+    [string] $Config
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
@@ -23,31 +26,50 @@ $payload = [ordered]@{
     git            = @{ branch = 'main'; status = 'clean' }
 } | ConvertTo-Json -Depth 5
 
-$line = ($payload | pwsh -NoProfile -NoLogo -NonInteractive -File (Join-Path $Repo 'statusline.ps1')) -join ''
+$scriptArgs = @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', (Join-Path $Repo 'statusline.ps1'))
+if ($Config) { $scriptArgs += @('-Config', (Resolve-Path $Config).Path) }
+Remove-Item Env:COLUMNS -ErrorAction SilentlyContinue
+$rows = @($payload | pwsh @scriptArgs)
 
-# One Half Dark palette
-$palette = @{ 30 = '#282C34'; 31 = '#E06C75'; 32 = '#98C379'; 33 = '#E5C07B'; 34 = '#61AFEF'; 35 = '#C678DD'; 36 = '#56B6C2'; 37 = '#DCDFE4'; 90 = '#5C6370' }
+# One Half Dark palette for the 16 system colours; the 256-colour cube and greys are computed.
+$palette = @{ 30 = '#282C34'; 31 = '#E06C75'; 32 = '#98C379'; 33 = '#E5C07B'; 34 = '#61AFEF'; 35 = '#C678DD'; 36 = '#56B6C2'; 37 = '#DCDFE4'; 90 = '#5C6370'
+              91 = '#E06C75'; 92 = '#98C379'; 93 = '#E5C07B'; 94 = '#61AFEF'; 95 = '#C678DD'; 96 = '#56B6C2'; 97 = '#FFFFFF' }
 $fg = [System.Drawing.ColorTranslator]::FromHtml('#DCDFE4')
 $bg = [System.Drawing.ColorTranslator]::FromHtml('#282C34')
+function ConvertFrom-Xterm256([int] $n) {
+    if ($n -lt 8) { return [System.Drawing.ColorTranslator]::FromHtml($palette[30 + $n]) }
+    if ($n -lt 16) { return [System.Drawing.ColorTranslator]::FromHtml($palette[90 + $n - 8]) }
+    if ($n -ge 232) { $v = 8 + 10 * ($n - 232); return [System.Drawing.Color]::FromArgb($v, $v, $v) }
+    $n -= 16
+    $levels = @(0, 95, 135, 175, 215, 255)
+    return [System.Drawing.Color]::FromArgb($levels[[math]::Floor($n / 36)], $levels[[math]::Floor(($n % 36) / 6)], $levels[$n % 6])
+}
 
-# Parse SGR sequences into runs of (text, colour, bold)
-$runs = [System.Collections.Generic.List[object]]::new()
-$colour = $fg; $bold = $false
+# Parse each row's SGR sequences into runs of (text, fg, bg, bold)
 $esc = [char]27
 $pattern = "$esc\[([0-9;]*)m"
-$pos = 0
-foreach ($m in [regex]::Matches($line, $pattern)) {
-    if ($m.Index -gt $pos) { $runs.Add(@{ text = $line.Substring($pos, $m.Index - $pos); colour = $colour; bold = $bold }) }
-    foreach ($code in ($m.Groups[1].Value -split ';')) {
-        switch ([int]$code) {
-            0 { $colour = $fg; $bold = $false }
-            1 { $bold = $true }
-            default { if ($palette.ContainsKey([int]$code)) { $colour = [System.Drawing.ColorTranslator]::FromHtml($palette[[int]$code]) } }
+$rowRuns = @(foreach ($line in $rows) {
+    $runs = [System.Collections.Generic.List[object]]::new()
+    $colour = $fg; $back = $null; $bold = $false
+    $pos = 0
+    foreach ($m in [regex]::Matches($line, $pattern)) {
+        if ($m.Index -gt $pos) { $runs.Add(@{ text = $line.Substring($pos, $m.Index - $pos); colour = $colour; back = $back; bold = $bold }) }
+        $codes = @($m.Groups[1].Value -split ';' | ForEach-Object { if ($_ -eq '') { 0 } else { [int] $_ } })
+        for ($i = 0; $i -lt $codes.Count; $i++) {
+            $code = $codes[$i]
+            if ($code -eq 0) { $colour = $fg; $back = $null; $bold = $false }
+            elseif ($code -eq 1) { $bold = $true }
+            elseif ($code -eq 39) { $colour = $fg }
+            elseif ($code -eq 49) { $back = $null }
+            elseif ($code -eq 38 -and $codes[$i + 1] -eq 5) { $colour = ConvertFrom-Xterm256 $codes[$i + 2]; $i += 2 }
+            elseif ($code -eq 48 -and $codes[$i + 1] -eq 5) { $back = ConvertFrom-Xterm256 $codes[$i + 2]; $i += 2 }
+            elseif ($palette.ContainsKey($code)) { $colour = [System.Drawing.ColorTranslator]::FromHtml($palette[$code]) }
         }
+        $pos = $m.Index + $m.Length
     }
-    $pos = $m.Index + $m.Length
-}
-if ($pos -lt $line.Length) { $runs.Add(@{ text = $line.Substring($pos); colour = $colour; bold = $bold }) }
+    if ($pos -lt $line.Length) { $runs.Add(@{ text = $line.Substring($pos); colour = $colour; back = $back; bold = $bold }) }
+    , $runs
+})
 
 $scale = 2
 $fontSize = 13 * $scale
@@ -62,25 +84,39 @@ $probe = [System.Drawing.Bitmap]::new(10, 10)
 $g = [System.Drawing.Graphics]::FromImage($probe)
 $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
 $width = 0
-foreach ($r in $runs) { $f = if ($r.bold) { $boldFont } else { $regular }; $width += $g.MeasureString($r.text, $f, 10000, $fmt).Width }
+foreach ($runs in $rowRuns) {
+    $w = 0
+    foreach ($r in $runs) { $f = if ($r.bold) { $boldFont } else { $regular }; $w += $g.MeasureString($r.text, $f, 10000, $fmt).Width }
+    $width = [math]::Max($width, $w)
+}
 $lineHeight = $regular.GetHeight($g)
 $g.Dispose(); $probe.Dispose()
 
-$bmp = [System.Drawing.Bitmap]::new([int]($width + 2 * $pad), [int]($lineHeight + 2 * $pad))
+$bmp = [System.Drawing.Bitmap]::new([int] ($width + 2 * $pad), [int] ($lineHeight * $rowRuns.Count + 2 * $pad))
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
 $g.Clear($bg)
-$x = [float]$pad
-foreach ($r in $runs) {
-    $f = if ($r.bold) { $boldFont } else { $regular }
-    $brush = [System.Drawing.SolidBrush]::new($r.colour)
-    $g.DrawString($r.text, $f, $brush, $x, [float]$pad, $fmt)
-    $x += $g.MeasureString($r.text, $f, 10000, $fmt).Width
-    $brush.Dispose()
+$y = [float] $pad
+foreach ($runs in $rowRuns) {
+    $x = [float] $pad
+    foreach ($r in $runs) {
+        $f = if ($r.bold) { $boldFont } else { $regular }
+        $w = $g.MeasureString($r.text, $f, 10000, $fmt).Width
+        if ($r.back) {
+            $bb = [System.Drawing.SolidBrush]::new($r.back)
+            $g.FillRectangle($bb, $x, $y, $w, $lineHeight)
+            $bb.Dispose()
+        }
+        $brush = [System.Drawing.SolidBrush]::new($r.colour)
+        $g.DrawString($r.text, $f, $brush, $x, $y, $fmt)
+        $brush.Dispose()
+        $x += $w
+    }
+    $y += $lineHeight
 }
 $g.Dispose()
 New-Item -ItemType Directory -Force (Split-Path $Out) | Out-Null
 $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
+"wrote $Out ($($bmp.Width) x $($bmp.Height))"
 $bmp.Dispose()
-"wrote $Out ($([int]$width + 2 * $pad) x $([int]$lineHeight + 2 * $pad))"
-$line -replace $esc, '<ESC>'
+foreach ($line in $rows) { $line -replace $esc, '<ESC>' }

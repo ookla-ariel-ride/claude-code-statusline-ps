@@ -25,6 +25,7 @@ $icons = [ordered]@{
     branch      = 0xE0A0
     pencil      = 0xF040
     chevron     = 0xE0B1
+    arrow       = 0xE0B0
 }
 
 New-Item -ItemType Directory -Force $OutDir | Out-Null

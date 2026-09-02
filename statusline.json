@@ -1,0 +1,14 @@
+{
+  "layout": "one",
+  "style": "plain",
+  "segments": {
+    "model": true,
+    "context": true,
+    "cost": true,
+    "lines": true,
+    "limits": true,
+    "badges": true,
+    "folder": true,
+    "branch": true
+  }
+}

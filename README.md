@@ -12,6 +12,11 @@ Left to right: model, context meter, cost, lines changed, rate limits, mode badg
 Each segment starts with a Nerd Font icon, which GitHub cannot show in text, so the rest of this
 file names the icons instead.
 
+![Two-line powerline layout](docs/statusline-two-line.png)
+
+The same data in the two-line powerline layout. Both come from one script; a small JSON file
+picks the layout and style.
+
 ## About
 
 Claude Code can hand its status bar to any command that reads a JSON payload on stdin and prints a
@@ -26,7 +31,9 @@ how close you are to a rate limit, and which modes are on.
 - Rate limits for the 5-hour and 7-day windows, with a countdown to the next 5-hour reset.
 - Session cost and lines added or removed.
 - Badges for fast mode, extended thinking, effort level, and vim mode. They disappear when nothing is on.
-- Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty.
+- Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory.
+- One line or two, plain separators or powerline blocks, and any segment switched off, all from `statusline.json`.
+- Fits the terminal width. Long lines shorten the limits and context segments first, then drop segments from the right, so lines stop wrapping in normal use.
 - If a field is missing from the payload, the script drops that segment. If the payload will not parse, it still prints the model glyph.
 - Icons come from Unicode code points rather than pasted characters, so the file's own encoding cannot corrupt them.
 - No modules to install. PowerShell 7 and a Nerd Font are the whole dependency list.
@@ -51,6 +58,7 @@ Restart Claude Code, or wait for its next status refresh.
 ### What the installer does
 
 - Copies `statusline.ps1` to `~/.claude/statusline.ps1`.
+- Copies `statusline.json` to `~/.claude/statusline.json` unless one is already there.
 - Adds a `statusLine` entry to your user-level `~/.claude/settings.json`. It keeps every other key and writes a `.bak` copy first.
 - With `-InstallFont`, installs JetBrainsMono Nerd Font through winget. Expect one elevation prompt.
 - With `-ConfigureWindowsTerminal`, sets Windows Terminal's default font to `JetBrainsMono NF` and backs up its settings.
@@ -79,7 +87,44 @@ terminal's font to a Nerd Font yourself and skip `-ConfigureWindowsTerminal`.
 .\install.ps1 -Uninstall
 ```
 
-This removes the `statusLine` entry and deletes `~/.claude/statusline.ps1`. Fonts stay installed.
+This removes the `statusLine` entry and deletes `~/.claude/statusline.ps1`. Fonts and `~/.claude/statusline.json` stay.
+
+## Configuration
+
+The script reads `statusline.json` from its own folder, so after installing that is
+`~/.claude/statusline.json`. The installed file holds the defaults:
+
+```json
+{
+  "layout": "one",
+  "style": "plain",
+  "segments": {
+    "model": true,
+    "context": true,
+    "cost": true,
+    "lines": true,
+    "limits": true,
+    "badges": true,
+    "folder": true,
+    "branch": true
+  }
+}
+```
+
+| Key | Values | What it does |
+|---|---|---|
+| `layout` | `one`, `two` | `two` puts model, folder, branch and badges on the first line and context, limits, cost and lines on the second. |
+| `style` | `plain`, `powerline` | `plain` is coloured text with a dim chevron between segments. `powerline` is coloured blocks joined by solid arrows. |
+| `segments.<name>` | `true`, `false` | `false` hides that segment. |
+
+Anything missing or invalid falls back to its default without a message, so a typo cannot blank
+the status line. Delete the file to get the defaults back. `docs/statusline-two-line.json` is the
+config behind the second screenshot.
+
+Claude Code tells the script the terminal width. When a line is too long the script first drops
+the token counts from the context segment and the countdown and 7-day figure from the limits
+segment, then removes whole segments from the right: lines, badges, cost, limits, folder, branch,
+context. The model segment always stays.
 
 ## What each segment shows
 
@@ -92,30 +137,39 @@ This removes the `statusLine` entry and deletes `~/.claude/statusline.ps1`. Font
 | limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day` | `5h 24% (1h12m) 7d 41%`. Coloured by the worse of the two using the context thresholds. The countdown is omitted once the reset time has passed |
 | badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
 | folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.current_dir` | Blue, leaf directory name |
-| branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git.branch`, `git.status` | Magenta when clean. Yellow with the pencil when the tree has uncommitted changes |
+| branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git.branch`, `git.status`, or `git status` in `workspace.current_dir` when the payload has no `git` object at all (a `git` object with an empty branch shows nothing) | Magenta when clean. Yellow with the pencil when the tree has uncommitted or untracked changes. Shows `detached` on a detached HEAD |
+| separator | <img src="docs/icons/chevron.svg" height="18" alt="chevron"> in `plain`, <img src="docs/icons/arrow.svg" height="18" alt="arrow"> in `powerline` | none | Dim chevron between segments, or a solid arrow coloured to blend the neighbouring blocks |
 
-A dim <img src="docs/icons/chevron.svg" height="14" alt="chevron"> separates the segments. The icon
-images are SVG outlines extracted from JetBrainsMono Nerd Font by `docs/render-icons.ps1`, because
+A dim <img src="docs/icons/chevron.svg" height="14" alt="chevron"> separates the segments in plain
+style; powerline style joins the coloured blocks with a solid
+<img src="docs/icons/arrow.svg" height="14" alt="arrow">. The icon images are SVG outlines
+extracted from JetBrainsMono Nerd Font by `docs/render-icons.ps1`, because
 GitHub cannot render the font itself. Icon names are from the
 [Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet). Field names follow the
 [Claude Code status line reference](https://code.claude.com/docs/en/statusline).
 
 ## Test without Claude Code
 
-`test.ps1` feeds every payload in `samples/` to the script and prints the result with timing:
+`test.ps1` checks the script's helper functions, then renders every payload in `samples/` against
+each layout and style at several terminal widths, then runs the branch segment against temporary
+git repositories:
 
 ```powershell
-.\test.ps1          # render every sample
-.\test.ps1 -Raw     # show ANSI escapes as <ESC>
+.\test.ps1                                # full run, about half a minute
+.\test.ps1 -Columns 80                    # one width instead of 120, 60, 20 and unset
+.\test.ps1 -Config .\statusline.json      # one config instead of the four combinations
+.\test.ps1 -Raw                           # show ANSI escapes as <ESC>
 ```
 
-It exits non-zero if any sample produces empty output. Each render takes about 250 ms, nearly all of
-it `pwsh` start-up. That is fine for a status line that refreshes on events rather than continuously.
+It exits non-zero if a render is empty, prints more lines than the layout allows, or is wider than
+the terminal. Each render takes about 250 ms, nearly all of it `pwsh` start-up, plus a `git status`
+call when the payload has no `git` object.
 
 To try a payload of your own:
 
 ```powershell
 Get-Content my-payload.json -Raw | pwsh -NoProfile -File .\statusline.ps1
+Get-Content my-payload.json -Raw | pwsh -NoProfile -File .\statusline.ps1 -Config .\docs\statusline-two-line.json
 ```
 
 ## Customise
@@ -123,11 +177,14 @@ Get-Content my-payload.json -Raw | pwsh -NoProfile -File .\statusline.ps1
 The things you are likely to change sit at the top of `statusline.ps1`:
 
 - Each icon is a code point, for example `$iconCtx = G 0xF035B`. The [Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet) lists alternatives.
-- `$sep` is the divider between segments.
+- `$gitTimeoutMs` is how long the branch segment waits for `git status`.
 - `$defaultEffort` is the level at which the effort badge is hidden.
 - The 60% and 85% colour cut-offs live in the context and rate-limit blocks.
+- `Get-Palette` holds the colours for both styles.
 
-Segments appear in the order of the `$parts.Add(...)` calls. Delete a block to drop its segment.
+Segment order is fixed for each layout, and `statusline.json` only hides segments rather than moving them.
+To change the order, edit the lists near the bottom of `statusline.ps1`: `$segmentNames` for layout `one`, and
+`$lineSets` for the two rows of layout `two`.
 
 ## Troubleshooting
 
@@ -137,9 +194,14 @@ Icons show as boxes or question marks: the terminal font is not a Nerd Font. Set
 The status line is blank: run `.\test.ps1` to confirm the script works, then check that `pwsh` is on
 your `PATH` and that the `command` path in `settings.json` exists.
 
-No branch segment: the branch segment reads a `git` object from the payload. The documented payload
-does not include one, so this segment only renders when your Claude Code build supplies it. Having
-the script query git directly is on the roadmap.
+No branch segment: the script falls back to `git status` in the session's working directory only when
+the payload has no `git` object at all, and a `git` object whose branch is empty shows nothing. Check that
+`git` is on your `PATH` and that the directory is inside a repository. If `git status` takes longer
+than 1.5 seconds the segment is skipped for that refresh.
+
+The line still wraps: the script measures width with a small approximation. Wide glyphs or emoji
+in a folder or branch name can be counted short on some terminals. At very narrow widths the model
+segment prints even when it does not fit.
 
 Colours look wrong: the script assumes a dark terminal theme.
 
@@ -153,9 +215,11 @@ Install-Module PSScriptAnalyzer -Scope CurrentUser
 Get-ChildItem *.ps1 | ForEach-Object { Invoke-ScriptAnalyzer -Path $_.FullName -Settings .\PSScriptAnalyzerSettings.psd1 }
 ```
 
-The analyzer settings exclude only the Write-Host rule, which a status line cannot avoid. If you add
-a segment, add a sample payload to `samples/` so `test.ps1` exercises it, and regenerate the
-screenshot at the top of this file with `pwsh docs/render-screenshot.ps1`.
+The analyzer settings exclude the Write-Host rule, which a status line cannot avoid, and the
+positional-parameters rule, because the script and its tests call their own small helpers
+positionally. If you add a segment, add a sample payload to `samples/` so `test.ps1` exercises it,
+and regenerate the screenshot at the top of this file with `pwsh docs/render-screenshot.ps1` and
+`pwsh docs/render-screenshot.ps1 -Config docs/statusline-two-line.json -Out docs/statusline-two-line.png`.
 
 Commits are scanned for secrets with [gitleaks](https://github.com/gitleaks/gitleaks), both in CI
 and through a pre-commit hook. To enable the hook in your clone:
@@ -167,8 +231,8 @@ git config core.hooksPath .githooks
 
 ## Roadmap
 
-- [ ] Query git directly for branch and dirty state
-- [ ] Optional two-line layout
+- [x] Query git directly for branch and dirty state
+- [x] Optional two-line layout
 - [ ] Light-theme palette
 - [ ] Prompt-cache and pull-request segments
 
