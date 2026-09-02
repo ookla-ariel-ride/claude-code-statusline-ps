@@ -130,7 +130,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Test-PayloadDirty', 'Get-PayloadCount', 'Get-BranchSegment'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment'))
 
 # Get-BranchSegment closes over these script-level names in statusline.ps1, so the test has to supply them.
 $gitTimeoutMs = 1500
@@ -340,46 +340,33 @@ Confirm-Equal $r.Behind 0 'porcelain: gone gives behind 0'
 $r = Read-PorcelainStatus "## main`n"
 Confirm-Equal $r.Ahead 0 'porcelain: no bracket gives ahead 0'
 Confirm-Equal $r.Behind 0 'porcelain: no bracket gives behind 0'
-$r = Read-PorcelainStatus "## main`n M file.txt`n"
-Confirm-Equal $r.Dirty $true 'porcelain: modified is dirty'
-Confirm-Equal $r.Modified 1 'porcelain: modified counts as modified'
-Confirm-Equal $r.Staged 0 'porcelain: modified is not staged'
-$r = Read-PorcelainStatus "## main`r`n?? new.txt`r`n"
-Confirm-Equal $r.Dirty $true 'porcelain: untracked is dirty (CRLF)'
-Confirm-Equal $r.Untracked 1 'porcelain: untracked counts as untracked (CRLF)'
-Confirm-Equal $r.Staged 0 'porcelain: untracked is not staged'
-$r = Read-PorcelainStatus "## main`n M a`nA  b`n?? c`n"
-Confirm-Equal $r.Staged 1 'porcelain: mixed block staged'
-Confirm-Equal $r.Modified 1 'porcelain: mixed block modified'
-Confirm-Equal $r.Untracked 1 'porcelain: mixed block untracked'
-Confirm-Equal $r.Conflicts 0 'porcelain: mixed block no conflicts'
-Confirm-Equal $r.Dirty $true 'porcelain: mixed block dirty'
-$r = Read-PorcelainStatus "## main`nUU a`n"
-Confirm-Equal $r.Conflicts 1 'porcelain: conflict counts as conflict'
-Confirm-Equal $r.Staged 0 'porcelain: conflict is not staged'
-Confirm-Equal $r.Modified 0 'porcelain: conflict is not modified'
-Confirm-Equal $r.Dirty $true 'porcelain: conflict is dirty'
-$r = Read-PorcelainStatus "## main`nMM a`n"
-Confirm-Equal $r.Staged 1 'porcelain: staged and modified counts as staged'
-Confirm-Equal $r.Modified 1 'porcelain: staged and modified counts as modified'
-$r = Read-PorcelainStatus "## main`n D gone.txt`n"
-Confirm-Equal $r.Modified 1 'porcelain: work tree deletion counts as modified'
-Confirm-Equal $r.Staged 0 'porcelain: work tree deletion is not staged'
-Confirm-Equal $r.Dirty $true 'porcelain: work tree deletion is dirty'
-$r = Read-PorcelainStatus "## main`n T mode.txt`n"
-Confirm-Equal $r.Modified 1 'porcelain: type change counts as modified'
-Confirm-Equal $r.Dirty $true 'porcelain: type change is dirty'
-$r = Read-PorcelainStatus "## main`nD  staged-gone.txt`n"
-Confirm-Equal $r.Staged 1 'porcelain: staged deletion counts as staged'
-Confirm-Equal $r.Modified 0 'porcelain: staged deletion is not modified'
-$r = Read-PorcelainStatus "## main`n"
-Confirm-Equal $r.Staged 0 'porcelain: clean gives staged 0'
-Confirm-Equal $r.Modified 0 'porcelain: clean gives modified 0'
-Confirm-Equal $r.Untracked 0 'porcelain: clean gives untracked 0'
-Confirm-Equal $r.Conflicts 0 'porcelain: clean gives conflicts 0'
-Confirm-Equal $r.Dirty $false 'porcelain: clean is not dirty'
-$r = Read-PorcelainStatus "## main`n`n   `n"
-Confirm-Equal $r.Dirty $false 'porcelain: blank and whitespace-only lines count as nothing'
+# Every row asserts all five columns, so a count that stops feeding Dirty, or a line shape that lands in
+# the wrong bucket, cannot pass on the strength of the columns the row happened to check.
+$porcelainTable = @(
+    @{ Name = 'clean';                        Text = "## main`n";                       Staged = 0; Modified = 0; Untracked = 0; Conflicts = 0; Dirty = $false }
+    @{ Name = 'blank and whitespace lines';   Text = "## main`n`n   `n`t`t`n";          Staged = 0; Modified = 0; Untracked = 0; Conflicts = 0; Dirty = $false }
+    @{ Name = 'one-character line';           Text = "## main`nM`n";                    Staged = 0; Modified = 0; Untracked = 0; Conflicts = 0; Dirty = $false }
+    @{ Name = 'ignored entry';                Text = "## main`n!! build/`n";            Staged = 0; Modified = 0; Untracked = 0; Conflicts = 0; Dirty = $false }
+    @{ Name = 'modified';                     Text = "## main`n M file.txt`n";          Staged = 0; Modified = 1; Untracked = 0; Conflicts = 0; Dirty = $true }
+    @{ Name = 'untracked (CRLF)';             Text = "## main`r`n?? new.txt`r`n";       Staged = 0; Modified = 0; Untracked = 1; Conflicts = 0; Dirty = $true }
+    @{ Name = 'untracked directory';          Text = "## main`n?? src/`n";              Staged = 0; Modified = 0; Untracked = 1; Conflicts = 0; Dirty = $true }
+    @{ Name = 'staged add';                   Text = "## main`nA  b`n";                 Staged = 1; Modified = 0; Untracked = 0; Conflicts = 0; Dirty = $true }
+    @{ Name = 'staged rename';                Text = "## main`nR  old -> new`n";        Staged = 1; Modified = 0; Untracked = 0; Conflicts = 0; Dirty = $true }
+    @{ Name = 'staged and modified';          Text = "## main`nMM a`n";                 Staged = 1; Modified = 1; Untracked = 0; Conflicts = 0; Dirty = $true }
+    @{ Name = 'work tree deletion';           Text = "## main`n D gone.txt`n";          Staged = 0; Modified = 1; Untracked = 0; Conflicts = 0; Dirty = $true }
+    @{ Name = 'staged deletion';              Text = "## main`nD  staged-gone.txt`n";   Staged = 1; Modified = 0; Untracked = 0; Conflicts = 0; Dirty = $true }
+    @{ Name = 'type change';                  Text = "## main`n T mode.txt`n";          Staged = 0; Modified = 1; Untracked = 0; Conflicts = 0; Dirty = $true }
+    @{ Name = 'intent-to-add';                Text = "## main`n A new.txt`n";           Staged = 0; Modified = 1; Untracked = 0; Conflicts = 0; Dirty = $true }
+    @{ Name = 'conflict';                     Text = "## main`nUU a`n";                 Staged = 0; Modified = 0; Untracked = 0; Conflicts = 1; Dirty = $true }
+    @{ Name = 'all seven conflict pairs';     Text = "## main`nDD a`nAA b`nAU c`nUA d`nUD e`nDU f`nUU g`n"; Staged = 0; Modified = 0; Untracked = 0; Conflicts = 7; Dirty = $true }
+    @{ Name = 'mixed block';                  Text = "## main`n M a`nA  b`n?? c`n";     Staged = 1; Modified = 1; Untracked = 1; Conflicts = 0; Dirty = $true }
+)
+foreach ($row in $porcelainTable) {
+    $r = Read-PorcelainStatus $row.Text
+    foreach ($col in @('Staged', 'Modified', 'Untracked', 'Conflicts', 'Dirty')) {
+        Confirm-Equal $r[$col] $row[$col] "porcelain $($row.Name): $col"
+    }
+}
 $r = Read-PorcelainStatus "## feature/x...origin/feature/x`n"
 Confirm-Equal $r.Branch 'feature/x' 'porcelain: feature branch'
 $r = Read-PorcelainStatus "## No commits yet on main`n"
@@ -412,6 +399,36 @@ foreach ($status in @('clean', 'modified', $null)) {
     $shown = if ($null -eq $status) { 'null' } else { "'$status'" }
     Confirm-True (($c.Staged + $c.Modified + $c.Untracked + $c.Conflicts) -eq 0 -and $c.Staged -is [int]) "payload counts: $shown status gives four zeros"
 }
+# The counts and the dirty flag read a value by the same rule, so a value that is not a number gives no
+# count and no dirty flag, and a boolean gives the flag but never a fabricated count.
+foreach ($case in @(
+        @{ Json = '{"modified":"2"}';  Count = 0; Dirty = $false; Name = 'string count' }
+        @{ Json = '{"modified":true}'; Count = 0; Dirty = $true;  Name = 'boolean' }
+        @{ Json = '{"modified":0}';    Count = 0; Dirty = $false; Name = 'zero' }
+        @{ Json = '{"modified":-1}';   Count = 0; Dirty = $false; Name = 'negative' }
+        @{ Json = '{"modified":2.0}';  Count = 2; Dirty = $true;  Name = 'float' }
+        @{ Json = '{"modified":2}';    Count = 2; Dirty = $true;  Name = 'integer' })) {
+    $status = $case.Json | ConvertFrom-Json
+    Confirm-Equal (Get-PayloadCount $status).Modified $case.Count "payload counts: $($case.Name) count"
+    Confirm-Equal (Test-PayloadDirty $status) $case.Dirty "payload counts: $($case.Name) dirty flag"
+}
+
+Write-Host '== unit: payload status' -ForegroundColor Cyan
+$s = Read-PayloadStatus ('{"branch":"feature/x","status":{"modified":2,"untracked":1}}' | ConvertFrom-Json)
+Confirm-Equal $s.Branch 'feature/x' 'payload status: branch'
+Confirm-Equal $s.Dirty $true 'payload status: dirty'
+Confirm-Equal $s.Modified 2 'payload status: modified'
+Confirm-Equal $s.Untracked 1 'payload status: untracked'
+Confirm-Equal (($s.Ahead + $s.Behind + $s.Staged + $s.Conflicts)) 0 'payload status: ahead, behind, staged and conflicts are 0'
+# One record shape for both sources: the payload record carries exactly the keys the porcelain record does.
+$porcelainKeys = @((Read-PorcelainStatus "## main`n").Keys | Sort-Object) -join ','
+Confirm-Equal (@($s.Keys | Sort-Object) -join ',') $porcelainKeys 'payload status: same keys as the porcelain record'
+$s = Read-PayloadStatus ('{"branch":"main","status":"clean"}' | ConvertFrom-Json)
+Confirm-Equal $s.Branch 'main' 'payload status: string status branch'
+Confirm-Equal $s.Dirty $false 'payload status: string status clean'
+Confirm-Equal (@($s.Keys | Sort-Object) -join ',') $porcelainKeys 'payload status: string status has the full record'
+Confirm-Equal (Read-PayloadStatus ('{"branch":""}' | ConvertFrom-Json)) $null 'payload status: empty branch gives null'
+Confirm-Equal (Read-PayloadStatus ('{}' | ConvertFrom-Json)) $null 'payload status: no branch gives null'
 
 Write-Host '== unit: branch segment' -ForegroundColor Cyan
 $seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'main'; status = 'clean' } })
@@ -419,19 +436,30 @@ Confirm-True ($null -ne $seg -and $seg.Text.Contains('main')) "branch payload cl
 Confirm-Equal $seg.Text "$iconHome main" 'branch payload clean: home icon, no pencil'
 Confirm-Equal $seg.Role 'branch' 'branch payload clean: role'
 
-$seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = @{ modified = 2 } } })
+# Object statuses go through ConvertFrom-Json, as the samples do. A hashtable would pass the dirty check
+# on its own Count property rather than on the named keys.
+$seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = ('{"modified":2}' | ConvertFrom-Json) } })
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ~2 $iconDirty" 'branch payload dirty counts: branch icon, modified count, pencil'
 Confirm-Equal $seg.Role 'warn' 'branch payload dirty counts: role'
 Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch payload dirty counts: short drops the count and keeps the pencil'
+$seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = ('{"modified":0}' | ConvertFrom-Json) } })
+Confirm-Equal $seg.Text "$iconBranch feature/x" 'branch payload zero count: clean, no count, no pencil'
+Confirm-Equal $seg.Role 'branch' 'branch payload zero count: role'
+$seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = ('{"modified":"2"}' | ConvertFrom-Json) } }) @{ Style = 'plain' }
+Confirm-Equal $seg.Text "$iconBranch feature/x" 'branch payload string count: not a count, so clean with no pencil'
+Confirm-Equal $seg.Role 'branch' 'branch payload string count: role'
+$seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = ('{"modified":true}' | ConvertFrom-Json) } }) @{ Style = 'plain' }
+Confirm-Equal $seg.Text "$iconBranch feature/x $iconDirty" 'branch payload boolean: pencil, no fabricated count'
+Confirm-Equal $seg.Role 'warn' 'branch payload boolean: role'
 
-$seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = @{ modified = 2; untracked = 1 } } }) @{ Style = 'plain' }
+$seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = ('{"modified":2,"untracked":1}' | ConvertFrom-Json) } }) @{ Style = 'plain' }
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ~2 ?1 $iconDirty" 'branch payload modified and untracked: tilde then question mark'
 Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m~2$esc[33m $esc[90m?1$esc[33m $iconDirty" 'branch payload modified and untracked: counts dim, warn colour restored'
 Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch payload modified and untracked: short has no counts'
 $seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = 'modified' } }) @{ Style = 'plain' }
 Confirm-Equal $seg.Text "$iconBranch feature/x $iconDirty" 'branch payload string status: pencil only, no counts'
 Confirm-Equal $seg.Role 'warn' 'branch payload string status: role'
-$seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = @{ conflicts = 1 } } }) @{ Style = 'plain' }
+$seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = ('{"conflicts":1}' | ConvertFrom-Json) } }) @{ Style = 'plain' }
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ${iconConflict}1 $iconDirty" 'branch payload conflict: conflict glyph and count before the pencil'
 Confirm-Equal $seg.Text "$iconBranch feature/x $esc[31m${iconConflict}1$esc[33m $iconDirty" 'branch payload conflict: removed colour, warn colour restored'
 Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch payload conflict: short has no conflict glyph'
@@ -442,9 +470,14 @@ Confirm-True ($null -eq (Get-BranchSegment ([pscustomobject]@{ git = @{ branch =
 
 # Ahead and behind counts only ever come from the git probe, so stand in for Get-GitBranch here and put
 # the real one back afterwards. The "not a repo" checks below then double as proof the restore worked.
+# Each stand-in record carries the full key set, the shape Read-PorcelainStatus and Read-PayloadStatus
+# both return, so no case passes because a missing key happened to read as nothing.
 function Get-GitBranch([string] $Dir, [int] $TimeoutMs) { return $script:mockGitBranch }
+function Get-BranchRecord([string] $Branch, [bool] $Dirty, [int] $Ahead = 0, [int] $Behind = 0, [int] $Staged = 0, [int] $Modified = 0, [int] $Untracked = 0, [int] $Conflicts = 0) {
+    return @{ Branch = $Branch; Dirty = $Dirty; Ahead = $Ahead; Behind = $Behind; Staged = $Staged; Modified = $Modified; Untracked = $Untracked; Conflicts = $Conflicts }
+}
 $probePayload = [pscustomobject]@{ workspace = @{ current_dir = 'x' } }
-$script:mockGitBranch = @{ Branch = 'feature/x'; Dirty = $false; Ahead = 1; Behind = 2 }
+$script:mockGitBranch = Get-BranchRecord 'feature/x' $false -Ahead 1 -Behind 2
 $seg = Get-BranchSegment $probePayload
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ${iconAhead}1 ${iconBehind}2" 'branch counts: ahead then behind after the name'
 Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m${iconAhead}1$esc[35m $esc[90m${iconBehind}2$esc[35m" 'branch counts: arrows dim, branch colour restored (plain, no cfg)'
@@ -452,28 +485,28 @@ Confirm-Equal $seg.Short "$iconBranch feature/x" 'branch counts: short has no ar
 Confirm-Equal $seg.Role 'branch' 'branch counts: role'
 $seg = Get-BranchSegment $probePayload @{ Style = 'powerline' }
 Confirm-Equal $seg.Text "$iconBranch feature/x $esc[38;5;245m${iconAhead}1$esc[38;5;231m $esc[38;5;245m${iconBehind}2$esc[38;5;231m" 'branch counts: powerline arrows restore the block fg'
-$script:mockGitBranch = @{ Branch = 'topic'; Dirty = $false; Ahead = 2; Behind = 0 }
+$script:mockGitBranch = Get-BranchRecord 'topic' $false -Ahead 2
 $seg = Get-BranchSegment $probePayload @{ Style = 'plain' }
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch topic ${iconAhead}2" 'branch ahead only: no behind arrow'
-$script:mockGitBranch = @{ Branch = 'main'; Dirty = $false; Ahead = 0; Behind = 3 }
+$script:mockGitBranch = Get-BranchRecord 'main' $false -Behind 3
 $seg = Get-BranchSegment $probePayload @{ Style = 'plain' }
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconHome main ${iconBehind}3" 'branch behind only: no ahead arrow'
-$script:mockGitBranch = @{ Branch = 'main'; Dirty = $false; Ahead = 0; Behind = 0 }
+$script:mockGitBranch = Get-BranchRecord 'main' $false
 $seg = Get-BranchSegment $probePayload @{ Style = 'plain' }
 Confirm-Equal $seg.Text "$iconHome main" 'branch zero counts: exactly the old text, no escapes'
 Confirm-Equal $seg.Short "$iconHome main" 'branch zero counts: short is the same text'
-$script:mockGitBranch = @{ Branch = 'feature/x'; Dirty = $true; Ahead = 1; Behind = 1 }
+$script:mockGitBranch = Get-BranchRecord 'feature/x' $true -Ahead 1 -Behind 1
 $seg = Get-BranchSegment $probePayload @{ Style = 'plain' }
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ${iconAhead}1 ${iconBehind}1 $iconDirty" 'branch dirty with counts: pencil last'
 Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m${iconAhead}1$esc[33m $esc[90m${iconBehind}1$esc[33m $iconDirty" 'branch dirty with counts: arrows restore the warn colour'
 Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch dirty with counts: short keeps the pencil, drops the arrows'
 Confirm-Equal $seg.Role 'warn' 'branch dirty with counts: role'
-$script:mockGitBranch = @{ Branch = 'feature/x'; Dirty = $true; Ahead = 1; Behind = 2; Staged = 2; Modified = 1; Untracked = 3; Conflicts = 1 }
+$script:mockGitBranch = Get-BranchRecord 'feature/x' $true -Ahead 1 -Behind 2 -Staged 2 -Modified 1 -Untracked 3 -Conflicts 1
 $seg = Get-BranchSegment $probePayload @{ Style = 'plain' }
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ${iconAhead}1 ${iconBehind}2 +2 ~1 ?3 ${iconConflict}1 $iconDirty" 'branch everything: arrows, staged, modified, untracked, conflict, pencil'
 Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m${iconAhead}1$esc[33m $esc[90m${iconBehind}2$esc[33m $esc[90m+2$esc[33m $esc[90m~1$esc[33m $esc[90m?3$esc[33m $esc[31m${iconConflict}1$esc[33m $iconDirty" 'branch everything: counts dim, conflict red, warn colour restored after each'
 Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch everything: short is icon, name, pencil'
-$script:mockGitBranch = @{ Branch = 'main'; Dirty = $true; Ahead = 0; Behind = 0; Staged = 1; Modified = 2; Untracked = 0; Conflicts = 0 }
+$script:mockGitBranch = Get-BranchRecord 'main' $true -Staged 1 -Modified 2
 $seg = Get-BranchSegment $probePayload @{ Style = 'plain' }
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconHome main +1 ~2 $iconDirty" 'branch file counts only: no arrows, zero counts omitted'
 . (Import-ScriptFunction $script @('Get-GitBranch'))
@@ -763,6 +796,12 @@ $sampleSegments = @{
 # the check survives a culture that writes 12,50. Markers stop short of anything that moves: 06's limits
 # segment carries a countdown to a 2100 reset, so its marker ends at the percentage. Badges and branch
 # have no single glyph of their own, so their markers are the whole segment text.
+# Samples whose branch segment has a Short form that differs from its Text, with the icon that proves
+# the segment is on the line at all. Checked at every set width in the matrix.
+$sampleBranchForms = @{
+    '02-feature-dirty-high.json'            = @{ Icon = $iconBranch; Full = "$iconBranch feature/x ~2 ?1 $iconDirty"; Short = "$iconBranch feature/x $iconDirty" }
+}
+
 $sampleMarkers = @{
     '01-main-clean.json'                    = @{
         model  = "$iconModel Fable 5.1"; context = "$iconCtx 8%"; cost = "$iconCost `$$('{0:N2}' -f 0.4312)"
@@ -866,6 +905,19 @@ foreach ($cfg in $configSet) {
                 Confirm-True ($only.Err.Count -eq 0) "${label}: model-only oracle stderr empty"
                 $isModelOnly = (ConvertTo-PlainText $line) -ceq (ConvertTo-PlainText ($only.Lines -join ''))
                 Confirm-True $isModelOnly "${label}: width $w exceeds $($c - 1) and the line is not the model-only fallback"
+            }
+            if ($c -gt 0 -and $cfg.Enabled['branch'] -and $sampleBranchForms.ContainsKey($sample.Name)) {
+                # At a set width the branch is one of two whole forms or gone: the full text with its
+                # counts, the Short form without them, or dropped outright. A half-shed branch, or the
+                # full form at a width it cannot fit, is what this catches; the content checks below run
+                # only for the unset width.
+                $forms = $sampleBranchForms[$sample.Name]
+                $text = ConvertTo-PlainText ($lines -join "`n")
+                $full = $text.Contains($forms.Full)
+                $short = -not $full -and $text.Contains($forms.Short)
+                $dropped = -not $text.Contains($forms.Icon)
+                Confirm-True ($full -or $short -or $dropped) "${label}: branch is the full form, the short form, or dropped"
+                if ($c -ge 120) { Confirm-True $full "${label}: branch shows its counts at $c columns" }
             }
             if ($c -le 0) {
                 # A sample with no row in the two tables would be checked against nothing at all, so say
