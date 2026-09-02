@@ -166,14 +166,14 @@ Write-Host '== unit: registry' -ForegroundColor Cyan
 # dispatch and the row split. This pins its contents to what the script did when each list was written
 # out by hand, so a change there is a deliberate one. Array order is layout one.
 $registryTable = @(
-    @{ Name = 'model';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-    @{ Name = 'context'; Default = $true; ShrinkRank = 2;     DropRank = 7;     Row = 2; RowRank = 1 }
-    @{ Name = 'cost';    Default = $true; ShrinkRank = $null; DropRank = 3;     Row = 2; RowRank = 3 }
-    @{ Name = 'lines';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
-    @{ Name = 'limits';  Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
-    @{ Name = 'badges';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 4 }
-    @{ Name = 'folder';  Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 2 }
-    @{ Name = 'branch';  Default = $true; ShrinkRank = 3;     DropRank = 6;     Row = 1; RowRank = 3 }
+    @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
+    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 2;     DropRank = 7;     Row = 2; RowRank = 1 }
+    @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = $null; DropRank = 3;     Row = 2; RowRank = 3 }
+    @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
+    @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
+    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 4 }
+    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 2 }
+    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 3;     DropRank = 6;     Row = 1; RowRank = 3 }
 )
 $registry = @(Get-SegmentRegistry)
 Confirm-Equal $registry.Count $registryTable.Count 'registry: eight records'
@@ -181,8 +181,7 @@ for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
     $want = $registryTable[$i]
     $got = $registry[$i]
     Confirm-Equal $got.Name $want.Name "registry: record $i is $($want.Name)"
-    Confirm-True ($got.Build -is [scriptblock]) "registry: $($want.Name) has a Build scriptblock"
-    foreach ($key in @('Default', 'ShrinkRank', 'DropRank', 'Row', 'RowRank')) {
+    foreach ($key in @('Build', 'Default', 'ShrinkRank', 'DropRank', 'Row', 'RowRank')) {
         Confirm-True ($got.ContainsKey($key)) "registry: $($want.Name) has $key"
         Confirm-Equal $got[$key] $want[$key] "registry: $($want.Name) $key"
     }
@@ -206,7 +205,7 @@ function Write-TempConfig([string] $Name, [string] $Json) {
     return $p
 }
 # Every segment name in layout-one order, from the registry, so this list cannot drift from the script's.
-$allSegments = @(Get-SegmentRegistry | ForEach-Object { $_.Name })
+$allSegments = @((Get-SegmentRegistry).Name)
 
 $c = Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')
 Confirm-Equal $c.Layout 'one' 'config missing: layout'
@@ -322,10 +321,19 @@ Confirm-Equal (Get-VisibleWidth $line) 38 'fit: stage 1 shrinks branch third'
 Confirm-True ($line.Contains('BB') -and -not $line.Contains('BBBB') -and $line.Contains('LL')) 'fit: branch shortened, nothing dropped at 39'
 
 # The shrink and drop orders are parameters that default to the registry, so a caller can hand in its own.
+# Shrinking context alone takes 44 to 41; dropping badges after the default shrink of limits and context
+# takes 38 to 33 (two cells of text and a three-cell separator).
 $line = Get-FittedLine $fit 'plain' 43 -ShrinkOrder @('context')
 Confirm-True ($line.Contains('CCC') -and -not $line.Contains('CCCCCC') -and $line.Contains('IIIIII')) 'fit: custom shrink order shortens context before limits'
+Confirm-Equal (Get-VisibleWidth $line) 41 'fit: custom shrink order width'
 $line = Get-FittedLine $fit 'plain' 37 -DropOrder @('badges')
 Confirm-True ($line.Contains('LL') -and -not $line.Contains('GG')) 'fit: custom drop order drops badges, keeps lines'
+Confirm-Equal (Get-VisibleWidth $line) 33 'fit: custom drop order width'
+# The model segment stays whatever the drop order names: at width 10 nothing else is left to drop, so
+# the line is the shrunk one, still holding the model.
+$line = Get-FittedLine $fit 'plain' 10 -DropOrder @('model')
+Confirm-True ($line.Contains('M') -and $line.Contains('CCC')) 'fit: drop order naming model leaves it in place'
+Confirm-Equal (Get-VisibleWidth $line) 38 'fit: drop order naming model drops nothing'
 
 Write-Host '== unit: context' -ForegroundColor Cyan
 $iconCtx = [char]::ConvertFromUtf32(0xF035B)
@@ -900,9 +908,11 @@ $layoutRows = @{
     one = @(, $allSegments)
     two = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
 }
+# The oracle turns off every registry segment but model, so a new segment is off here without an edit.
+$modelOnlySegments = @($allSegments | Where-Object { $_ -ne 'model' } | ForEach-Object { '"' + $_ + '": false' }) -join ', '
 $modelOnlyPath = @{}
 foreach ($style in @('plain', 'powerline')) {
-    $modelOnlyPath[$style] = Write-TempConfig "model-only-$style.json" ('{ "layout": "one", "style": "' + $style + '", "segments": { "context": false, "cost": false, "lines": false, "limits": false, "badges": false, "folder": false, "branch": false } }')
+    $modelOnlyPath[$style] = Write-TempConfig "model-only-$style.json" ('{ "layout": "one", "style": "' + $style + '", "segments": { ' + $modelOnlySegments + ' } }')
 }
 # Each config carries the set of segments it leaves enabled. Every assertion below is gated on that set
 # rather than on "all segments on", so a user-supplied -Config keeps each check its own segment set still
