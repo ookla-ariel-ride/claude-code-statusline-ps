@@ -72,7 +72,7 @@ function Measure-VisibleWidth([string] $Text) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine'))
 
 Write-Host '== unit: width' -ForegroundColor Cyan
 $widthTable = @(
@@ -153,6 +153,43 @@ Confirm-Equal $pal.Roles.warn.Sgr '33' 'palette warn sgr'
 Confirm-Equal $pal.Roles.warn.Fg 16 'palette warn fg'
 Confirm-Equal $pal.Roles.branch.Bg 90 'palette branch bg'
 Confirm-Equal $pal.Inline.added.Fg 46 'palette inline added fg'
+
+Write-Host '== unit: fitting' -ForegroundColor Cyan
+function Get-FitSegmentSet {
+    return @(
+        @{ Name = 'model';   Text = 'M';      Short = $null; Role = 'model';  Bold = $true }
+        @{ Name = 'context'; Text = 'CCCCCC'; Short = 'CCC'; Role = 'ok';     Bold = $false }
+        @{ Name = 'cost';    Text = 'AA';     Short = $null; Role = 'dim';    Bold = $false }
+        @{ Name = 'lines';   Text = 'LL';     Short = $null; Role = 'dim';    Bold = $false }
+        @{ Name = 'limits';  Text = 'IIIIII'; Short = 'III'; Role = 'warn';   Bold = $false }
+        @{ Name = 'badges';  Text = 'GG';     Short = $null; Role = 'dim';    Bold = $false }
+        @{ Name = 'folder';  Text = 'FF';     Short = $null; Role = 'folder'; Bold = $false }
+        @{ Name = 'branch';  Text = 'BB';     Short = $null; Role = 'branch'; Bold = $false }
+    )
+}
+$fit = Get-FitSegmentSet
+$line = Get-FittedLine $fit 'plain' $null
+Confirm-Equal (Get-VisibleWidth $line) 44 'fit: no width means no fitting'
+Confirm-Equal (Get-VisibleWidth (Get-FittedLine $fit 'plain' 44)) 44 'fit: exact fit unchanged'
+$line = Get-FittedLine $fit 'plain' 43
+Confirm-Equal (Get-VisibleWidth $line) 41 'fit: stage 1 shrinks limits first'
+Confirm-True ($line.Contains('III') -and -not $line.Contains('IIIIII') -and $line.Contains('CCCCCC')) 'fit: only limits shortened at 43'
+Confirm-Equal $fit[4].Text 'IIIIII' 'fit: input not mutated'
+$line = Get-FittedLine $fit 'plain' 40
+Confirm-Equal (Get-VisibleWidth $line) 38 'fit: stage 1 shrinks context second'
+$line = Get-FittedLine $fit 'plain' 37
+Confirm-Equal (Get-VisibleWidth $line) 33 'fit: stage 2 drops lines first'
+Confirm-True (-not $line.Contains('LL') -and $line.Contains('GG')) 'fit: lines dropped, badges kept at 37'
+$line = Get-FittedLine $fit 'plain' 10
+Confirm-Equal (ConvertTo-PlainText $line) "M $chevron CCC" 'fit: drops down to model and short context'
+$line = Get-FittedLine $fit 'plain' 6
+Confirm-Equal (ConvertTo-PlainText $line) 'M' 'fit: context dropped last'
+$line = Get-FittedLine $fit 'plain' 0
+Confirm-Equal $line "$esc[1;36mM$esc[0m" 'fit: model alone may overflow'
+Confirm-Equal (Get-FittedLine @($fit[2]) 'plain' 1) $null 'fit: line without model drops to nothing'
+Confirm-Equal (Get-FittedLine @() 'plain' 40) $null 'fit: no segments gives null'
+$line = Get-FittedLine $fit 'powerline' 30
+Confirm-True ((Get-VisibleWidth $line) -le 30) 'fit: powerline respects width'
 
 # ---- Sample renders (replaced by the matrix in a later task) ----
 Write-Host '== samples' -ForegroundColor Cyan

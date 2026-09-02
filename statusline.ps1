@@ -141,6 +141,38 @@ function Format-Line($Segments, [string] $Style) {
     return ($parts -join $sep)
 }
 
+# Renders a line and, when a width is given, shrinks then drops segments until it fits.
+# Stage 1 swaps limits then context for their Short form. Stage 2 drops whole segments in a fixed order.
+# The model segment is never dropped and may overflow on its own. Returns $null when nothing is left.
+function Get-FittedLine($Segments, [string] $Style, $Width) {
+    $segs = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($s in $Segments) { if ($s) { $segs.Add($s.Clone()) } }
+    if ($segs.Count -eq 0) { return $null }
+    $line = Format-Line $segs $Style
+    if ($null -eq $Width) { return $line }
+    $target = [int] $Width
+    if ((Get-VisibleWidth $line) -le $target) { return $line }
+    foreach ($name in @('limits', 'context')) {
+        for ($i = 0; $i -lt $segs.Count; $i++) {
+            if ($segs[$i].Name -eq $name -and $segs[$i].Short) {
+                $segs[$i].Text = $segs[$i].Short
+                $line = Format-Line $segs $Style
+                if ((Get-VisibleWidth $line) -le $target) { return $line }
+            }
+        }
+    }
+    foreach ($name in @('lines', 'badges', 'cost', 'limits', 'folder', 'branch', 'context')) {
+        $at = -1
+        for ($i = 0; $i -lt $segs.Count; $i++) { if ($segs[$i].Name -eq $name) { $at = $i } }
+        if ($at -lt 0) { continue }
+        $segs.RemoveAt($at)
+        if ($segs.Count -eq 0) { return $null }
+        $line = Format-Line $segs $Style
+        if ((Get-VisibleWidth $line) -le $target) { return $line }
+    }
+    return $line
+}
+
 if (-not $Config) { $Config = Join-Path $PSScriptRoot 'statusline.json' }
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '', Justification = 'Used in later tasks')]
 $statusConfig = Read-StatusConfig $Config
