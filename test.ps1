@@ -130,7 +130,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder'))
 
 # Get-BranchSegment and Get-FolderSegment close over these script-level names in statusline.ps1, so the
 # test has to supply them.
@@ -270,7 +270,7 @@ Confirm-True (@($shippedFileSegments | Where-Object { $_.Value -isnot [bool] -or
 Write-Host '== unit: folder' -ForegroundColor Cyan
 # The four render paths from the issue, then both config modes. Nothing here touches the file system:
 # the builder only splits strings, so the directories need not exist.
-function Get-FolderPayload([string] $Dir, [string] $Root, [string] $Owner, [string] $Name) {
+function Get-FolderPayload([string] $Dir, [string] $Root, $Owner, $Name) {
     $ws = [ordered]@{}
     if ($Dir) { $ws.current_dir = $Dir }
     if ($Root) { $ws.project_dir = $Root }
@@ -318,9 +318,7 @@ $badRepoFields = @(
 )
 foreach ($bad in $badRepoFields) {
     foreach ($field in @('owner', 'name')) {
-        $repo = [ordered]@{ owner = 'octo'; name = 'demo' }
-        $repo[$field] = $bad.Value
-        $payload = [pscustomobject]@{ workspace = [pscustomobject]@{ current_dir = 'C:\src\demo\tools'; project_dir = 'C:\src\demo'; repo = [pscustomobject]$repo } }
+        $payload = if ($field -eq 'owner') { Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' $bad.Value 'demo' } else { Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' 'octo' $bad.Value }
         $seg = Get-FolderSegment $payload $cfgRepo
         Confirm-Equal $seg.Text "$iconFolder tools" "folder with $($bad.Label) as repo.${field}: the leaf"
         Confirm-Equal $seg.Short $null "folder with $($bad.Label) as repo.${field}: no short form"
@@ -331,11 +329,6 @@ Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder with no project_dir: own
 $seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo') $cfgRepo
 Confirm-Equal $seg.Text "$iconFolder tools" 'folder with no repo: the leaf as before'
 Confirm-Equal $seg.Short $null 'folder with no repo: no short form'
-$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' 'octo' '') $cfgRepo
-Confirm-Equal $seg.Text "$iconFolder tools" 'folder with an empty repo name: the leaf'
-Confirm-Equal $seg.Short $null 'folder with an empty repo name: no short form'
-$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' '' 'demo') $cfgRepo
-Confirm-Equal $seg.Text "$iconFolder tools" 'folder with an empty repo owner: the leaf'
 Confirm-Equal (Get-FolderSegment (Get-FolderPayload '' 'C:\src\demo' 'octo' 'demo') $cfgRepo) $null 'folder with no current_dir: null'
 Confirm-Equal (Get-FolderSegment ([pscustomobject]@{ model = @{ display_name = 'M' } }) $cfgRepo) $null 'folder with no workspace: null'
 $seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' 'octo' 'demo') $cfgLeaf
@@ -521,6 +514,14 @@ $r = Read-PorcelainStatus "## HEAD (no branch)`n"
 Confirm-Equal $r.Branch 'detached' 'porcelain: detached'
 Confirm-Equal (Read-PorcelainStatus "fatal: not a git repository`n") $null 'porcelain: no header'
 Confirm-Equal (Read-PorcelainStatus '') $null 'porcelain: empty'
+
+Write-Host '== unit: payload text' -ForegroundColor Cyan
+Confirm-Equal (Test-PayloadText 'octo') $true 'payload text: a string with content is text'
+Confirm-Equal (Test-PayloadText '   ') $false 'payload text: whitespace only is not'
+Confirm-Equal (Test-PayloadText '') $false 'payload text: empty string is not'
+Confirm-Equal (Test-PayloadText $null) $false 'payload text: null is not'
+Confirm-Equal (Test-PayloadText 7) $false 'payload text: a number is not'
+Confirm-Equal (Test-PayloadText @('octo')) $false 'payload text: an array is not'
 
 Write-Host '== unit: payload counts' -ForegroundColor Cyan
 # ConvertFrom-Json hands the sample counts over as Int64, so the object cases go through it.
@@ -854,26 +855,27 @@ $sample06 = $sampleFiles | Where-Object { $_.Name -eq '06-limits-badges-lines.js
 # $tmp\probe instead: the folder segment prints the same leaf, and the probe is provably not a repository.
 # The probe dirs get their own parent so a sample leaf can never collide with one of the git fixtures the
 # group above creates directly under $tmp (a sample whose folder was called `repo-clean` would otherwise
-# be pointed at a real repository). A sample that also carries workspace.project_dir with current_dir
-# below it keeps that shape: the probe stands in for the project root and current_dir keeps its path
-# under it, so the folder segment still sees a session below its root. The rewrite is in memory, for
-# every config including a user-supplied -Config; the sample files never change.
+# be pointed at a real repository). A sample that also carries workspace.project_dir with current_dir at
+# or below it keeps that shape: the probe stands in for the project root and current_dir keeps its path
+# under it, so the folder segment still sees the same session. The two paths are compared the way
+# Get-FolderSegment compares them (slashes to backslashes, trailing separators trimmed, case ignored),
+# and the root has to end at a separator, so `C:\src\demo2` is not under `C:\src\demo`. When current_dir
+# is not under project_dir the root is current_dir itself and project_dir is left alone. The rewrite is
+# in memory, for every config including a user-supplied -Config; the sample files never change.
 function Convert-ToHermeticPayload([string] $Path) {
     $text = Get-Content -LiteralPath $Path -Raw
     $json = $text | ConvertFrom-Json
     if ($null -ne $json.git) { return $text }
     $dir = [string] $json.workspace.current_dir
     if (-not $dir) { return $text }
-    $root = [string] $json.workspace.project_dir
-    $probeParent = Join-Path $tmp 'probe'
-    if ($root -and $dir.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
-        $probeRoot = Join-Path $probeParent (Split-Path $root -Leaf)
-        $below = $dir.Substring($root.Length).TrimStart('\', '/')
-        $probe = if ($below) { Join-Path $probeRoot $below } else { $probeRoot }
-        $json.workspace.project_dir = $probeRoot
-    } else {
-        $probe = Join-Path $probeParent (Split-Path $dir -Leaf)
-    }
+    $here = ($dir -replace '/', '\').TrimEnd('\')
+    $there = (([string] $json.workspace.project_dir) -replace '/', '\').TrimEnd('\')
+    $underRoot = $there -and ($here -eq $there -or $here.StartsWith("$there\", [System.StringComparison]::OrdinalIgnoreCase))
+    if (-not $underRoot) { $there = $here }
+    $probeRoot = Join-Path (Join-Path $tmp 'probe') (Split-Path $there -Leaf)
+    $below = $here.Substring($there.Length).TrimStart('\')
+    $probe = if ($below) { Join-Path $probeRoot $below } else { $probeRoot }
+    if ($underRoot) { $json.workspace.project_dir = $probeRoot }
     New-Item -ItemType Directory -Force $probe | Out-Null
     $json.workspace.current_dir = $probe
     return ($json | ConvertTo-Json -Depth 20 -Compress)
@@ -957,9 +959,11 @@ $sampleSegments = @{
 # table, which only names a few glyphs per sample. Money is formatted the way the script formats it so
 # the check survives a culture that writes 12,50. Markers stop short of anything that moves: 06's limits
 # segment carries a countdown to a 2100 reset, so its marker ends at the percentage. Badges and branch
-# have no single glyph of their own, so their markers are the whole segment text.
+# have no single glyph of their own, so their markers are the whole segment text. A marker that depends
+# on the config's folder mode is a hashtable keyed by mode, repo and leaf.
 # Samples with a segment whose Short form differs from its Text, with the icon that proves the segment
-# is on the line at all. Checked at every set width in the matrix.
+# is on the line at all. Checked at every set width in the matrix. A folder entry is checked in repo
+# mode only, because the segment has no Short form in leaf mode.
 $sampleShortForms = @{
     '02-feature-dirty-high.json'            = @{
         branch = @{ Icon = $iconBranch; Full = "$iconBranch feature/x ~2 ?1 $iconDirty"; Short = "$iconBranch feature/x $iconDirty" }
@@ -1001,7 +1005,7 @@ $sampleMarkers = @{
     }
     '08-repo-identity.json'                 = @{
         model = "$iconModel Fable 5.1"; context = "$iconCtx 12%"; cost = "$iconCost `$$('{0:N2}' -f 0.88)"
-        folder = "$iconFolder octo/demo $iconChevron tools"
+        folder = @{ repo = "$iconFolder octo/demo $iconChevron tools"; leaf = "$iconFolder tools" }
     }
 }
 # Every glyph a segment can put on the line: a segment the config turns off must show none of them, and
@@ -1042,14 +1046,20 @@ if ($Config) {
     $parsed = Read-StatusConfig $resolved
     $off = @($allSegments | Where-Object { -not $parsed.Segments[$_] })
     if ($off.Count -gt 0) { Write-Host "note: $(Split-Path $resolved -Leaf) turns off $($off -join ', '); those segments are checked for absence instead" -ForegroundColor Yellow }
-    $configSet.Add(@{ Name = (Split-Path $resolved -Leaf); Path = $resolved; Layout = $parsed.Layout; Style = $parsed.Style; Enabled = $parsed.Segments })
+    $configSet.Add(@{ Name = (Split-Path $resolved -Leaf); Path = $resolved; Layout = $parsed.Layout; Style = $parsed.Style; Folder = $parsed.Folder; Enabled = $parsed.Segments })
 } else {
     foreach ($layout in @('one', 'two')) {
         foreach ($style in @('plain', 'powerline')) {
             $path = Write-TempConfig "$layout-$style.json" ('{ "layout": "' + $layout + '", "style": "' + $style + '" }')
-            $configSet.Add(@{ Name = "$layout-$style"; Path = $path; Layout = $layout; Style = $style; Enabled = (Read-StatusConfig $path).Segments })
+            $parsed = Read-StatusConfig $path
+            $configSet.Add(@{ Name = "$layout-$style"; Path = $path; Layout = $layout; Style = $style; Folder = $parsed.Folder; Enabled = $parsed.Segments })
         }
     }
+    # Leaf mode through the whole script, so the registry's wiring of the config into Get-FolderSegment
+    # is covered by a real render and not only by the unit call.
+    $path = Write-TempConfig 'folder-leaf.json' '{ "folder": "leaf" }'
+    $parsed = Read-StatusConfig $path
+    $configSet.Add(@{ Name = 'folder-leaf'; Path = $path; Layout = $parsed.Layout; Style = $parsed.Style; Folder = $parsed.Folder; Enabled = $parsed.Segments })
 }
 
 foreach ($cfg in $configSet) {
@@ -1085,6 +1095,7 @@ foreach ($cfg in $configSet) {
                 $text = ConvertTo-PlainText ($lines -join "`n")
                 foreach ($entry in $sampleShortForms[$sample.Name].GetEnumerator()) {
                     if (-not $cfg.Enabled[$entry.Key]) { continue }
+                    if ($entry.Key -eq 'folder' -and $cfg.Folder -eq 'leaf') { continue }
                     $forms = $entry.Value
                     $full = $text.Contains($forms.Full)
                     $short = -not $full -and $text.Contains($forms.Short)
@@ -1129,6 +1140,7 @@ foreach ($cfg in $configSet) {
                             # absence table names only a few glyphs per sample.
                             foreach ($name in $mine) {
                                 $marker = $marks[$name]
+                                if ($marker -is [hashtable]) { $marker = $marker[$cfg.Folder] }
                                 if (-not $marker) { Confirm-True $false "${label}: no marker for $name in the marker table"; continue }
                                 Confirm-True ($rowText.Contains($marker)) "${label}: line $($ri + 1) shows $name as '$marker'"
                             }

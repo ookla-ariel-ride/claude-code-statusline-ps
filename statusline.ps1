@@ -69,8 +69,9 @@ function Get-VisibleWidth([string] $Text) {
 # The segment table: one record per segment, in layout-one order. It is the single source for the config
 # defaults, the shrink and drop order in Get-FittedLine, the build dispatch and the layout-two rows.
 # Build takes the payload and the config and returns the segment record or $null. Default seeds
-# Read-StatusConfig. ShrinkRank orders stage one of Get-FittedLine and is $null for a segment with no
-# Short form; DropRank orders stage two, and the model record has none because it is never dropped.
+# Read-StatusConfig. ShrinkRank orders stage one of Get-FittedLine for the segments that can have a Short
+# form; a record whose Short is $null is skipped there. DropRank orders stage two, and the model record
+# has none because it is never dropped.
 # Row is the layout-two line and RowRank the position on it, because a row is not in layout-one order.
 function Get-SegmentRegistry {
     # Every Build block takes the same two arguments so the build loop needs no per-segment case; most builders do not read $cfg.
@@ -402,8 +403,7 @@ function Get-FolderSegment($d, $cfg) {
     $leaf = Split-Path $dir -Leaf
     $owner = $d.workspace.repo.owner
     $name = $d.workspace.repo.name
-    $hasRepo = $owner -is [string] -and -not [string]::IsNullOrWhiteSpace($owner) -and $name -is [string] -and -not [string]::IsNullOrWhiteSpace($name)
-    if ($cfg.Folder -eq 'leaf' -or -not $hasRepo) {
+    if ($cfg.Folder -eq 'leaf' -or -not (Test-PayloadText $owner) -or -not (Test-PayloadText $name)) {
         return @{ Name = 'folder'; Text = "$iconFolder $leaf"; Short = $null; Role = 'folder'; Bold = $false }
     }
     $root = [string] $d.workspace.project_dir
@@ -424,6 +424,12 @@ function Get-PayloadNumber($v) {
     if ([double]::IsNaN($d) -or [double]::IsInfinity($d) -or $d -ne [math]::Floor($d)) { return $null }
     if ($d -gt [int]::MaxValue -or $d -lt [int]::MinValue) { return $null }
     return [int] $d
+}
+
+# Whether a payload value is text: a string with visible content. Numbers, arrays, objects, nulls and
+# blank strings are not, so a field that should name something cannot be rendered from one of those.
+function Test-PayloadText($v) {
+    return ($v -is [string] -and -not [string]::IsNullOrWhiteSpace($v))
 }
 
 # Dirty flag from a payload git.status value: "clean"/other string, or an object of counts/booleans.
