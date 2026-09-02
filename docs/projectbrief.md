@@ -3,8 +3,9 @@
 ## Purpose
 
 A single-file PowerShell status line for Claude Code on Windows. It replaces the default status line
-with one line showing the active model, context-window usage, session cost, current folder, and git
-branch state, rendered with Nerd Font glyphs and ANSI colour.
+with one or two lines showing the active model, context-window usage, session cost, lines changed,
+rate limits, mode badges, current folder, and git branch state, rendered with Nerd Font glyphs and
+ANSI colour.
 
 ## Problem
 
@@ -20,6 +21,8 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 - Degrade gracefully: omit any segment whose data is missing from the payload, and never print nothing.
 - One-command install and uninstall that preserves the rest of `~/.claude/settings.json`.
 - Be easy to customise by editing constants at the top of one file.
+- Fit the terminal width rather than wrap.
+- Be configurable from one small JSON file without editing the script.
 
 ## Non-goals
 
@@ -31,10 +34,13 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 | File | Role |
 |---|---|
-| `statusline.ps1` | The status line. Reads JSON on stdin, prints one coloured line. |
+| `statusline.ps1` | Reads JSON on stdin and `statusline.json` beside it; prints one or two coloured lines fitted to `COLUMNS`. |
 | `install.ps1` | Copies the script to `~/.claude/`, writes the `statusLine` entry to user settings, optionally installs JetBrainsMono Nerd Font via winget and sets it as the Windows Terminal default font. Supports `-Uninstall`. |
-| `test.ps1` | Renders every payload in `samples/` and reports timing. `-Raw` shows ANSI escapes. Exits non-zero on empty output. |
-| `samples/*.json` | Five representative payloads: clean main, dirty feature branch at high context, dirty main at mid context, minimal payload, no git. |
+| `statusline.json` | Defaults for layout, style and segment toggles. Installed beside the script. |
+| `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, and checks the git fallback in temporary repositories. `-Columns`, `-Config`, `-Raw`. |
+| `samples/*.json` | Seven payloads: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort. |
+| `docs/render-screenshot.ps1` | Renders a payload and config through the script and captures the terminal as the README screenshot. |
+| `docs/render-icons.ps1` | Extracts the Nerd Font glyphs used by the script as SVG outlines for `docs/icons/`. |
 
 ## Segments
 
@@ -43,8 +49,11 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | Model | `model.display_name` | Bold cyan, robot glyph |
 | Context | `context_window.used_percentage`, `total_input_tokens`, `total_output_tokens`, `context_window_size` | Percent, ten-block bar, used/total in k or M. Green below 60%, yellow below 85%, red above |
 | Cost | `cost.total_cost_usd` | Dimmed, two decimals |
+| Lines | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
+| Limits | `rate_limits.five_hour`, `seven_day` | Coloured by the worse of the two |
+| Badges | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dim glyphs |
 | Folder | `workspace.current_dir` | Blue, leaf directory name |
-| Branch | `git.branch`, `git.status` | Home glyph on main/master, branch glyph otherwise. Yellow with pencil glyph when dirty, magenta when clean |
+| Branch | `git.branch`/`git.status` when present, else `git status --porcelain=v1 --branch` in `workspace.current_dir` | Home glyph on main/master, branch glyph otherwise. Yellow with pencil glyph when dirty, magenta when clean |
 
 ## Key design decisions
 
@@ -55,6 +64,14 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 - **Silent error handling in the status line.** `$ErrorActionPreference` is `SilentlyContinue` and a
   JSON parse failure falls back to a plain model glyph. A broken status line must never break Claude Code.
 - **Line endings.** `.gitattributes` forces CRLF on `.ps1` files and LF elsewhere.
+- **Git fallback with a hard timeout.** The documented payload has no `git` object, so the branch
+  segment runs `git status` itself through `System.Diagnostics.Process`, kills it after 1.5 s, and
+  omits the segment on any failure.
+- **Segment records and one renderer.** Each segment is a small record (name, text, short text,
+  colour role, bold); one function renders a line in plain or powerline style, and width fitting
+  shrinks then drops records in a fixed order.
+- **Silent config.** Any missing or invalid value in `statusline.json` falls back to its default with
+  no output.
 
 ## Constraints
 
@@ -65,19 +82,22 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 ## Success criteria
 
-- `.\test.ps1` renders all five samples with non-empty output.
+- `.\test.ps1` passes: all seven samples across four configs and three widths, plus the git cases.
 - `.\install.ps1` on a fresh machine produces a working status line in Claude Code after one session restart.
 - `.\install.ps1 -Uninstall` returns `settings.json` to its prior state minus the `statusLine` key.
+- `.\install.ps1` leaves an existing `~/.claude/statusline.json` untouched.
 
 ## Status
 
-Initial release committed. Core script, installer, test harness, and sample payloads are in place.
+Two-line layout, powerline style, config file, width fitting and the git fallback are implemented.
+Segment order, thresholds, glyphs and a light palette are still constants in the script.
 
 ## Possible future work
 
-- Additional optional segments (elapsed session time, lines added/removed) gated on payload fields.
-- A colour-theme switch for light terminals.
-- Publishing to the PowerShell Gallery if demand warrants.
+Later: configurable segment order, thresholds, glyphs; light palette; session duration; PR number as
+an OSC 8 link; prompt-cache health; `owner/repo` and worktree identity; agent name; 1M-context colour
+scaling; `refreshInterval` in the installer; git status cache; configurable git timeout; full
+`wcwidth`.
 
 ## License
 
