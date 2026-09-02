@@ -72,7 +72,7 @@ function Measure-VisibleWidth([string] $Text) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig'))
 
 Write-Host '== unit: width' -ForegroundColor Cyan
 $widthTable = @(
@@ -93,6 +93,46 @@ foreach ($row in $widthTable) {
     Confirm-Equal -Actual (Measure-VisibleWidth $row.Text) -Expected $row.Width -Label "test width of '$shown'"
 }
 
+Write-Host '== unit: config' -ForegroundColor Cyan
+$tmp = Join-Path ([System.IO.Path]::GetTempPath()) "statusline-test-$PID"
+New-Item -ItemType Directory -Force $tmp | Out-Null
+function Write-TempConfig([string] $Name, [string] $Json) {
+    $p = Join-Path $tmp $Name
+    [System.IO.File]::WriteAllText($p, $Json, [System.Text.UTF8Encoding]::new($false))
+    return $p
+}
+$allSegments = @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch')
+
+$c = Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')
+Confirm-Equal $c.Layout 'one' 'config missing: layout'
+Confirm-Equal $c.Style 'plain' 'config missing: style'
+Confirm-True (@($allSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'config missing: all segments on'
+
+$c = Read-StatusConfig (Write-TempConfig 'valid.json' '{ "layout": "Two", "style": "POWERLINE", "segments": { "cost": false, "lines": true } }')
+Confirm-Equal $c.Layout 'two' 'config valid: layout case-insensitive'
+Confirm-Equal $c.Style 'powerline' 'config valid: style case-insensitive'
+Confirm-Equal $c.Segments.cost $false 'config valid: cost off'
+Confirm-Equal $c.Segments.lines $true 'config valid: lines on'
+Confirm-Equal $c.Segments.model $true 'config valid: unmentioned segment on'
+
+$c = Read-StatusConfig (Write-TempConfig 'broken.json' '{ "layout": ')
+Confirm-Equal $c.Layout 'one' 'config broken json: default layout'
+
+$c = Read-StatusConfig (Write-TempConfig 'wrong-types.json' '{ "layout": "three", "style": 5, "segments": { "cost": "no", "bogus": false }, "extra": 1 }')
+Confirm-Equal $c.Layout 'one' 'config bad layout value: default'
+Confirm-Equal $c.Style 'plain' 'config non-string style: default'
+Confirm-Equal $c.Segments.cost $true 'config non-bool segment: on'
+Confirm-True (-not $c.Segments.ContainsKey('bogus')) 'config unknown segment: ignored'
+
+$c = Read-StatusConfig (Write-TempConfig 'segments-array.json' '{ "segments": [true] }')
+Confirm-Equal $c.Segments.model $true 'config segments not an object: all on'
+
+$c = Read-StatusConfig (Write-TempConfig 'empty.json' '')
+Confirm-Equal $c.Layout 'one' 'config empty file: default'
+
+$c = Read-StatusConfig (Write-TempConfig 'array.json' '[1, 2]')
+Confirm-Equal $c.Style 'plain' 'config top-level array: default'
+
 # ---- Sample renders (replaced by the matrix in a later task) ----
 Write-Host '== samples' -ForegroundColor Cyan
 foreach ($sample in Get-ChildItem (Join-Path $PSScriptRoot 'samples') -Filter *.json | Sort-Object Name) {
@@ -105,6 +145,8 @@ foreach ($sample in Get-ChildItem (Join-Path $PSScriptRoot 'samples') -Filter *.
     Write-Host ("{0,-40} {1,5:N0} ms  " -f $sample.Name, $sw.ElapsedMilliseconds) -NoNewline
     Write-Host $shown
 }
+
+Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 
 Write-Host ''
 Write-Host "passed $script:passed, failed $script:failed" -ForegroundColor $(if ($script:failed -gt 0) { 'Red' } else { 'Green' })

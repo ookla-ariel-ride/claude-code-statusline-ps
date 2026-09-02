@@ -1,9 +1,15 @@
 ﻿#Requires -Version 7.0
 # Claude Code status line (PowerShell 7) with Nerd Font glyphs and ANSI colour.
 # Requires a Nerd Font in the terminal (install.ps1 can set up JetBrainsMono Nerd Font).
-# Reads the JSON Claude Code pipes on stdin and prints one line, e.g.
+# Reads the JSON Claude Code pipes on stdin and prints one or two lines, e.g.
 #   󰚩 Fable 5.1  󰍛 37% ████░░░░░░   $0.43   my-project   main
+# Layout, separator style and segment toggles come from statusline.json next to this script.
 # Glyphs are emitted from code points so the file's own encoding never matters.
+[CmdletBinding()]
+param(
+    # Path to the config file. Defaults to statusline.json beside this script. Claude Code never passes it.
+    [string] $Config
+)
 $ErrorActionPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 # PowerShell strips ANSI colour when stdout is redirected unless told otherwise; the host always redirects it.
@@ -57,6 +63,31 @@ function Get-VisibleWidth([string] $Text) {
     }
     return $width
 }
+
+# Reads statusline.json. Anything missing or invalid silently falls back to its default.
+function Read-StatusConfig([string] $Path) {
+    $cfg = @{ Layout = 'one'; Style = 'plain'; Segments = @{} }
+    foreach ($n in @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch')) { $cfg.Segments[$n] = $true }
+    try {
+        if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $cfg }
+        $j = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if ($j -isnot [System.Management.Automation.PSCustomObject]) { return $cfg }
+        if ($j.layout -is [string] -and $j.layout.ToLowerInvariant() -in @('one', 'two')) { $cfg.Layout = $j.layout.ToLowerInvariant() }
+        if ($j.style -is [string] -and $j.style.ToLowerInvariant() -in @('plain', 'powerline')) { $cfg.Style = $j.style.ToLowerInvariant() }
+        $segs = $j.segments
+        if ($segs -is [System.Management.Automation.PSCustomObject]) {
+            foreach ($n in @($cfg.Segments.Keys)) {
+                $v = $segs.$n
+                if ($v -is [bool]) { $cfg.Segments[$n] = $v }
+            }
+        }
+    } catch { return $cfg }
+    return $cfg
+}
+
+if (-not $Config) { $Config = Join-Path $PSScriptRoot 'statusline.json' }
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '', Justification = 'Used in later tasks')]
+$statusConfig = Read-StatusConfig $Config
 
 $raw = [Console]::In.ReadToEnd()
 try { $d = $raw | ConvertFrom-Json } catch { Write-Host (C '36' "$iconModel claude"); exit 0 }
