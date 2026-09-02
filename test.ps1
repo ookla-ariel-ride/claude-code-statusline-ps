@@ -764,7 +764,6 @@ $iconModel = [char]::ConvertFromUtf32(0xF06A9)
 $iconCost = [char]::ConvertFromUtf32(0xF0155)
 $iconFolder = [char]::ConvertFromUtf32(0xF07C)
 $iconLines = [char]::ConvertFromUtf32(0xF121)
-$iconLimits = [char]::ConvertFromUtf32(0xF0E4)
 $iconFast = [char]::ConvertFromUtf32(0xF0E7)
 $iconThink = [char]::ConvertFromUtf32(0xF09D0)
 $iconEffort = [char]::ConvertFromUtf32(0xF04C5)
@@ -779,17 +778,17 @@ $absentGlyphs = @{
     '01-main-clean.json'                    = @(
         @{ Icon = $iconDirty; Name = 'pencil' }
         @{ Icon = $iconLines; Name = 'lines' }
-        @{ Icon = $iconLimits; Name = 'limits' }
+        @{ Icon = $iconLimit; Name = 'limits' }
         @{ Icon = $iconBranch; Name = 'branch' }
     )
     '02-feature-dirty-high.json'            = @(
         @{ Icon = $iconHome; Name = 'home' }
         @{ Icon = $iconLines; Name = 'lines' }
-        @{ Icon = $iconLimits; Name = 'limits' }
+        @{ Icon = $iconLimit; Name = 'limits' }
     )
     '03-main-dirty-mid.json'                = @(
         @{ Icon = $iconLines; Name = 'lines' }
-        @{ Icon = $iconLimits; Name = 'limits' }
+        @{ Icon = $iconLimit; Name = 'limits' }
     )
     '04-minimal.json'                       = @(
         @{ Icon = $iconCtx; Name = 'context' }
@@ -859,13 +858,13 @@ $sampleMarkers = @{
     }
     '06-limits-badges-lines.json'           = @{
         model  = "$iconModel Fable 5.1"; context = "$iconCtx 32%"; cost = "$iconCost `$$('{0:N2}' -f 1.07)"
-        lines  = "$iconLines +156 ${minus}23"; limits = "$iconLimits 5h 24%"
+        lines  = "$iconLines +156 ${minus}23"; limits = "$iconLimit 5h 24%"
         badges = "$iconFast $iconThink $iconEffort xhigh $iconVim NORMAL"
         folder = "$iconFolder my-project"; branch = "$iconHome main"
     }
     '07-limits-expired-default-effort.json' = @{
         model = "$iconModel Opus 5"; context = "$iconCtx 5%"; cost = "$iconCost `$$('{0:N2}' -f 0.02)"
-        lines = "$iconLines +0 ${minus}4"; limits = "$iconLimits 5h 61% 7d 12% `$ 44%"
+        lines = "$iconLines +0 ${minus}4"; limits = "$iconLimit 5h 61% 7d 12% `$ 44%"
         folder = "$iconFolder repo"
     }
 }
@@ -876,7 +875,7 @@ $segmentGlyphs = @{
     context = @($iconCtx)
     cost    = @($iconCost)
     lines   = @($iconLines)
-    limits  = @($iconLimits)
+    limits  = @($iconLimit)
     badges  = @($iconFast, $iconThink, $iconEffort, $iconVim)
     folder  = @($iconFolder)
     branch  = @($iconHome, $iconBranch, $iconDirty, $iconAhead, $iconBehind, $iconConflict)

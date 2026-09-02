@@ -28,7 +28,7 @@ how close you are to a rate limit, and which modes are on.
 ## Features
 
 - Context meter with a ten-block bar, percent, and used/total tokens. Green, then yellow, then red.
-- Rate limits for the 5-hour and 7-day windows, with a countdown to the next 5-hour reset, and the spend limit on accounts that have one.
+- Rate limits for the 5-hour and 7-day windows, with a countdown to the next 5-hour reset, and the spend limit when Claude Code reports one (accounts behind a Claude apps gateway with a spend limit).
 - Session cost and lines added or removed.
 - Badges for fast mode, extended thinking, effort level, and vim mode. They disappear when nothing is on.
 - Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory.
@@ -140,7 +140,7 @@ The model segment always stays.
 | context | <img src="docs/icons/memory.svg" height="18" alt="memory"> `nf-md-memory` | `context_window.*` | Percent, ten-block bar, used/total tokens. Green below 60%, yellow below 85%, red above |
 | cost | <img src="docs/icons/cash.svg" height="18" alt="cash"> `nf-md-cash` | `cost.total_cost_usd` | Dimmed, two decimals |
 | lines | <img src="docs/icons/code.svg" height="18" alt="code"> `nf-fa-code` | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
-| limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day`, `spend_limit` | `5h 24% (1h12m) 7d 41% $ 62%`. Coloured by the worst of the figures using the context thresholds. The countdown is omitted once the reset time has passed. The `$` figure is the spend limit, shown only when the account has one; it needs Claude Code 2.1.251 or later |
+| limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day`, `spend_limit` | `5h 24% (1h12m) 7d 41% $ 62%`. Coloured by the worst of the figures using the context thresholds. The countdown is omitted once the reset time has passed. The `$` figure is the spend limit. Claude Code sends it only behind a Claude apps gateway with a spend limit, and only from 2.1.251 on |
 | badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
 | folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.current_dir` | Blue, leaf directory name |
 | branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git status --porcelain=v1 --branch` run in `workspace.current_dir` | Magenta when clean, yellow with the pencil when the tree has changes. The counts described below sit between the name and the pencil. Shows `detached` on a detached HEAD |
