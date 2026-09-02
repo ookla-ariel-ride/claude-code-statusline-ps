@@ -703,6 +703,135 @@ Write-Host ("{0,-40} {1,5:N0} ms  {2} ping(s) at {3} ms, 0 after" -f 'git hangs 
     if ($null -ne $oldGitConfigNoSystem) { $env:GIT_CONFIG_NOSYSTEM = $oldGitConfigNoSystem } else { Remove-Item Env:GIT_CONFIG_NOSYSTEM -ErrorAction SilentlyContinue }
 }
 
+# ---- Install group: install.ps1 against a settings.json inside the temp tree ----
+# USERPROFILE is pointed at a folder under $tmp for the child pwsh, so the installer's copy target
+# (~/.claude/statusline.ps1) lands there, and -SettingsPath puts the settings file in the same tree. The
+# installer run is the worktree's own install.ps1, so $PSScriptRoot in the child is still the worktree
+# and the copy source is the real script. The real ~/.claude files are stamped before the group and
+# compared after it: nothing here may write outside $tmp.
+Write-Host '== install' -ForegroundColor Cyan
+$installer = Join-Path $PSScriptRoot 'install.ps1'
+$installHome = Join-Path $tmp 'install-home'
+New-Item -ItemType Directory -Force $installHome | Out-Null
+$realClaudeDir = Join-Path $env:USERPROFILE '.claude'
+function Get-WriteStamp([string] $Path) { if (Test-Path -LiteralPath $Path) { return (Get-Item -LiteralPath $Path).LastWriteTimeUtc }; return $null }
+$realStamp = [ordered]@{}
+foreach ($name in @('settings.json', 'settings.json.bak', 'statusline.ps1', 'statusline.json')) { $realStamp[$name] = Get-WriteStamp (Join-Path $realClaudeDir $name) }
+$oldUserProfile = $env:USERPROFILE
+try {
+$env:USERPROFILE = $installHome
+# Runs install.ps1 in a child pwsh the way Invoke-StatusLine runs the status line.
+function Invoke-Installer([string] $Name, [string[]] $Arguments) {
+    $pwshArgs = @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', $installer) + $Arguments
+    $err = [System.Collections.Generic.List[string]]::new()
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $out = pwsh @pwshArgs 2>&1 | ForEach-Object {
+        if ($_ -is [System.Management.Automation.ErrorRecord]) { $err.Add("$_") } else { "$_" }
+    }
+    $sw.Stop()
+    Write-Host ("{0,-40} {1,5:N0} ms  exit {2}" -f $Name, $sw.ElapsedMilliseconds, $LASTEXITCODE)
+    return @{ Lines = @($out); Err = @($err); ExitCode = $LASTEXITCODE }
+}
+function Read-SettingFile([string] $Path) { return (Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json) }
+function Get-KeyList($Object) { return (@($Object.PSObject.Properties.Name) -join ',') }
+$installedScript = Join-Path $installHome '.claude\statusline.ps1'
+$installedConfig = Join-Path $installHome '.claude\statusline.json'
+$expectCommand = 'pwsh -NoProfile -NoLogo -NonInteractive -File ' + ($installedScript -replace '\\', '/')
+
+# A fresh file: neither settings.json nor its parent directory exists yet.
+$fresh = Join-Path $installHome 'fresh\settings.json'
+$r = Invoke-Installer 'install fresh' @('-SettingsPath', $fresh)
+Confirm-True ($r.ExitCode -eq 0) "install fresh: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "install fresh: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-True (Test-Path $fresh) 'install fresh: settings.json created'
+Confirm-True (-not (Test-Path "$fresh.bak")) 'install fresh: no .bak when there was nothing to back up'
+Confirm-True (Test-Path $installedScript) 'install fresh: statusline.ps1 copied into the temp home'
+Confirm-True (Test-Path $installedConfig) 'install fresh: statusline.json copied into the temp home'
+if (Test-Path $fresh) {
+    $s = Read-SettingFile $fresh
+    Confirm-Equal (Get-KeyList $s) 'statusLine' 'install fresh: statusLine is the only key'
+    Confirm-Equal (Get-KeyList $s.statusLine) 'type,command,padding,hideVimModeIndicator' 'install fresh: statusLine has four keys in order'
+    Confirm-Equal $s.statusLine.type 'command' 'install fresh: type'
+    Confirm-Equal $s.statusLine.command $expectCommand 'install fresh: command points at the temp home with forward slashes'
+    Confirm-Equal $s.statusLine.padding 0 'install fresh: padding'
+    Confirm-True ($s.statusLine.hideVimModeIndicator -is [bool] -and $s.statusLine.hideVimModeIndicator) 'install fresh: hideVimModeIndicator is boolean true'
+}
+
+# An existing file with unrelated keys, including a top-level hideVimModeIndicator the installer must not touch.
+$existing = Join-Path $installHome 'existing.json'
+$existingJson = '{ "theme": "dark", "permissions": { "allow": [ "Bash(git:*)" ] }, "hideVimModeIndicator": false }'
+[System.IO.File]::WriteAllText($existing, $existingJson, [System.Text.UTF8Encoding]::new($false))
+$r = Invoke-Installer 'install existing -RefreshInterval 10' @('-SettingsPath', $existing, '-RefreshInterval', '10')
+Confirm-True ($r.ExitCode -eq 0) "install existing: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "install existing: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-True (Test-Path "$existing.bak") 'install existing: .bak written'
+if (Test-Path "$existing.bak") { Confirm-Equal (Get-Content -LiteralPath "$existing.bak" -Raw) $existingJson 'install existing: .bak holds the previous content' }
+$s = Read-SettingFile $existing
+Confirm-Equal (Get-KeyList $s) 'theme,permissions,hideVimModeIndicator,statusLine' 'install existing: unrelated keys kept, statusLine appended'
+Confirm-Equal $s.theme 'dark' 'install existing: theme kept'
+Confirm-Equal ($s.permissions.allow -join ',') 'Bash(git:*)' 'install existing: nested permissions kept'
+Confirm-True ($s.hideVimModeIndicator -is [bool] -and -not $s.hideVimModeIndicator) 'install existing: top-level hideVimModeIndicator left alone'
+Confirm-Equal (Get-KeyList $s.statusLine) 'type,command,padding,hideVimModeIndicator,refreshInterval' 'install -RefreshInterval 10: five keys in order'
+Confirm-Equal $s.statusLine.refreshInterval 10 'install -RefreshInterval 10: refreshInterval is 10'
+Confirm-True ((Get-Content -LiteralPath $existing -Raw).Contains('"refreshInterval": 10')) 'install -RefreshInterval 10: written as a number, not a string'
+Confirm-True ($s.statusLine.hideVimModeIndicator -is [bool] -and $s.statusLine.hideVimModeIndicator) 'install -RefreshInterval 10: hideVimModeIndicator is boolean true'
+
+# A run without the switch writes no refreshInterval, even over an entry that had one.
+$r = Invoke-Installer 'install existing, no switch' @('-SettingsPath', $existing)
+Confirm-True ($r.ExitCode -eq 0) "install no switch: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "install no switch: stderr empty, got '$($r.Err -join ' | ')'"
+$s = Read-SettingFile $existing
+Confirm-Equal (Get-KeyList $s.statusLine) 'type,command,padding,hideVimModeIndicator' 'install no switch: no refreshInterval key'
+Confirm-Equal (Get-KeyList $s) 'theme,permissions,hideVimModeIndicator,statusLine' 'install no switch: unrelated keys still kept'
+
+# 0 and a negative value are refused before anything is written: no settings rewrite, no new .bak, no copy.
+Remove-Item $installedScript -Force -ErrorAction SilentlyContinue
+foreach ($bad in @('0', '-5')) {
+    $label = "install -RefreshInterval $bad"
+    $before = Get-Content -LiteralPath $existing -Raw
+    $beforeStamp = Get-WriteStamp $existing
+    $beforeBakStamp = Get-WriteStamp "$existing.bak"
+    $r = Invoke-Installer $label @('-SettingsPath', $existing, '-RefreshInterval', $bad)
+    Confirm-True ($r.ExitCode -ne 0) "${label}: exit code $($r.ExitCode) is non-zero"
+    Confirm-True (($r.Err -join ' ') -match 'RefreshInterval') "${label}: error names the parameter, got '$($r.Err -join ' | ')'"
+    Confirm-Equal (Get-Content -LiteralPath $existing -Raw) $before "${label}: settings.json content unchanged"
+    Confirm-True ((Get-WriteStamp $existing) -eq $beforeStamp) "${label}: settings.json not rewritten"
+    Confirm-True ((Get-WriteStamp "$existing.bak") -eq $beforeBakStamp) "${label}: .bak not rewritten"
+    Confirm-True (-not (Test-Path $installedScript)) "${label}: statusline.ps1 not copied"
+}
+
+# Uninstall removes the whole statusLine object, both keys with it, and names them; everything else stays.
+$r = Invoke-Installer 'install existing -RefreshInterval 7' @('-SettingsPath', $existing, '-RefreshInterval', '7')
+Confirm-True ($r.ExitCode -eq 0 -and (Test-Path $installedScript)) 'install before uninstall: statusline.ps1 back in place'
+$r = Invoke-Installer 'uninstall' @('-Uninstall', '-SettingsPath', $existing)
+Confirm-True ($r.ExitCode -eq 0) "uninstall: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "uninstall: stderr empty, got '$($r.Err -join ' | ')'"
+$s = Read-SettingFile $existing
+Confirm-Equal (Get-KeyList $s) 'theme,permissions,hideVimModeIndicator' 'uninstall: statusLine removed, unrelated keys kept'
+Confirm-True ($s.hideVimModeIndicator -is [bool] -and -not $s.hideVimModeIndicator) 'uninstall: top-level hideVimModeIndicator left alone'
+Confirm-True (-not (Test-Path $installedScript)) 'uninstall: statusline.ps1 deleted from the temp home'
+Confirm-True (Test-Path $installedConfig) 'uninstall: statusline.json kept'
+$bak = Read-SettingFile "$existing.bak"
+Confirm-Equal (Get-KeyList $bak.statusLine) 'type,command,padding,hideVimModeIndicator,refreshInterval' 'uninstall: .bak holds the entry that was removed'
+$text = $r.Lines -join "`n"
+Confirm-True ($text.Contains('hideVimModeIndicator') -and $text.Contains('refreshInterval')) "uninstall: message names both keys, got '$text'"
+
+# A second uninstall has nothing to remove and leaves the file as it is.
+$before = Get-Content -LiteralPath $existing -Raw
+$beforeStamp = Get-WriteStamp $existing
+$r = Invoke-Installer 'uninstall again' @('-Uninstall', '-SettingsPath', $existing)
+Confirm-True ($r.ExitCode -eq 0) "uninstall again: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "uninstall again: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-Equal (Get-Content -LiteralPath $existing -Raw) $before 'uninstall again: settings.json content unchanged'
+Confirm-True ((Get-WriteStamp $existing) -eq $beforeStamp) 'uninstall again: settings.json not rewritten'
+} finally {
+    $env:USERPROFILE = $oldUserProfile
+}
+foreach ($name in $realStamp.Keys) {
+    $p = Join-Path $realClaudeDir $name
+    Confirm-True ((Get-WriteStamp $p) -eq $realStamp[$name]) "install: real $p untouched"
+}
+
 # ---- Render matrix: samples x configs x widths ----
 $sampleFiles = Get-ChildItem (Join-Path $PSScriptRoot 'samples') -Filter *.json | Sort-Object Name
 $sample06 = $sampleFiles | Where-Object { $_.Name -eq '06-limits-badges-lines.json' }

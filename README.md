@@ -62,21 +62,32 @@ Restart Claude Code, or wait for its next status refresh.
 - Copies `statusline.ps1` to `~/.claude/statusline.ps1`.
 - Copies `statusline.json` to `~/.claude/statusline.json` unless one is already there. If the repo copy is missing it warns and carries on. The script has the same defaults built in.
 - Adds a `statusLine` entry to your user-level `~/.claude/settings.json`. It keeps every other key and writes a `.bak` copy first.
+- Sets `hideVimModeIndicator` inside that entry. The badges segment already shows the vim mode, so Claude Code's own indicator would be the same word twice on one bar.
+- With `-RefreshInterval <seconds>`, sets `refreshInterval` inside that entry so Claude Code re-renders the line on a timer as well as on events. Without the switch the key is not written. A value below 1 is refused and nothing is written.
 - With `-InstallFont`, installs JetBrainsMono Nerd Font through winget. Expect one elevation prompt.
 - With `-ConfigureWindowsTerminal`, sets Windows Terminal's default font to `JetBrainsMono NF` and backs up its settings.
 
-The settings entry it writes:
+The settings entry it writes after `.\install.ps1 -RefreshInterval 10`:
 
 ```json
 "statusLine": {
   "type": "command",
   "command": "pwsh -NoProfile -NoLogo -NonInteractive -File C:/Users/<you>/.claude/statusline.ps1",
-  "padding": 0
+  "padding": 0,
+  "hideVimModeIndicator": true,
+  "refreshInterval": 10
 }
 ```
 
 The path uses forward slashes on purpose. Claude Code may run the command through Git Bash, which
 strips backslashes.
+
+`refreshInterval` is what keeps a clock, or a taskbar bar driven by the context percentage, moving
+between events. Nothing in the line needs it today, so the installer only writes it when asked. A
+reinstall without the switch writes an entry without the key. Pass the switch again to keep it.
+
+`-SettingsPath <file>` edits a different settings file instead of `~/.claude/settings.json`. The test
+suite uses it to run the installer against a temp folder.
 
 ### Other terminals
 
@@ -89,7 +100,9 @@ terminal's font to a Nerd Font yourself and skip `-ConfigureWindowsTerminal`.
 .\install.ps1 -Uninstall
 ```
 
-This removes the `statusLine` entry and deletes `~/.claude/statusline.ps1`. Fonts and `~/.claude/statusline.json` stay.
+This removes the whole `statusLine` entry, `hideVimModeIndicator` and `refreshInterval` with it, and
+deletes `~/.claude/statusline.ps1`. Fonts and `~/.claude/statusline.json` stay. A `.bak` of the
+settings file from before the removal is kept beside it.
 
 ## Configuration
 
@@ -180,11 +193,14 @@ arrows. A `git` object with an empty branch name shows nothing.
 
 ## Test without Claude Code
 
-`test.ps1` runs three groups. Unit checks call the script's helper functions directly (width
+`test.ps1` runs four groups. Unit checks call the script's helper functions directly (width
 measurement, config parsing, rendering, width fitting, the context meter, `git status` parsing, the
 payload counts, the branch segment). The git group runs the branch fallback against temporary
 repositories: clean, dirty, unborn, detached, one commit ahead, one behind, a mixed tree with a
-staged, a modified and an untracked file, a fake `git` that fails and one that hangs. The render
+staged, a modified and an untracked file, a fake `git` that fails and one that hangs. The install
+group runs `install.ps1` with `USERPROFILE` and `-SettingsPath` pointed into a temp folder: a fresh
+settings file, an existing one with unrelated keys, `-RefreshInterval`, a refused value, and
+`-Uninstall`. It checks afterwards that the real `~/.claude` files were not touched. The render
 matrix pipes every payload in `samples/` through the script for each layout and style at each
 width:
 
