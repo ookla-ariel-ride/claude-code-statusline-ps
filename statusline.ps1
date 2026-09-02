@@ -363,12 +363,16 @@ function Get-FolderSegment($d) {
     return @{ Name = 'folder'; Text = "$iconFolder $(Split-Path $dir -Leaf)"; Short = $null; Role = 'folder'; Bold = $false }
 }
 
-# A payload value as a number, or $null when it is not one. ConvertFrom-Json hands counts over as Int64;
-# booleans and strings are not counts. Test-PayloadDirty and Get-PayloadCount share this one rule so the
-# pencil and the counts can never disagree about what a value means.
+# A payload value as a count, or $null when it is not one: a whole number that fits an Int32. ConvertFrom-Json
+# hands counts over as Int64; booleans, strings, fractions and out-of-range values are not counts.
+# Test-PayloadDirty and Get-PayloadCount share this one rule so the pencil and the counts can never
+# disagree about what a value means.
 function Get-PayloadNumber($v) {
-    if ($v -is [ValueType] -and -not ($v -is [bool])) { return [double] $v }
-    return $null
+    if (-not ($v -is [ValueType]) -or $v -is [bool]) { return $null }
+    $d = try { [double] $v } catch { return $null }
+    if ([double]::IsNaN($d) -or [double]::IsInfinity($d) -or $d -ne [math]::Floor($d)) { return $null }
+    if ($d -gt [int]::MaxValue -or $d -lt [int]::MinValue) { return $null }
+    return [int] $d
 }
 
 # Dirty flag from a payload git.status value: "clean"/other string, or an object of counts/booleans.
@@ -391,7 +395,7 @@ function Get-PayloadCount($status) {
     if ($null -eq $status -or $status -is [string]) { return $counts }
     foreach ($key in @($counts.Keys)) {
         $n = Get-PayloadNumber $status.($key.ToLowerInvariant())
-        if ($null -ne $n -and $n -gt 0) { $counts[$key] = [int] $n }
+        if ($null -ne $n -and $n -gt 0) { $counts[$key] = $n }
     }
     return $counts
 }

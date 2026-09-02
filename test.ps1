@@ -399,15 +399,20 @@ foreach ($status in @('clean', 'modified', $null)) {
     $shown = if ($null -eq $status) { 'null' } else { "'$status'" }
     Confirm-True (($c.Staged + $c.Modified + $c.Untracked + $c.Conflicts) -eq 0 -and $c.Staged -is [int]) "payload counts: $shown status gives four zeros"
 }
-# The counts and the dirty flag read a value by the same rule, so a value that is not a number gives no
-# count and no dirty flag, and a boolean gives the flag but never a fabricated count.
+# The counts and the dirty flag read a value by the same rule: a whole number that fits an Int32. Anything
+# else gives no count and no dirty flag, except a boolean, which gives the flag but never a fabricated count.
 foreach ($case in @(
-        @{ Json = '{"modified":"2"}';  Count = 0; Dirty = $false; Name = 'string count' }
-        @{ Json = '{"modified":true}'; Count = 0; Dirty = $true;  Name = 'boolean' }
-        @{ Json = '{"modified":0}';    Count = 0; Dirty = $false; Name = 'zero' }
-        @{ Json = '{"modified":-1}';   Count = 0; Dirty = $false; Name = 'negative' }
-        @{ Json = '{"modified":2.0}';  Count = 2; Dirty = $true;  Name = 'float' }
-        @{ Json = '{"modified":2}';    Count = 2; Dirty = $true;  Name = 'integer' })) {
+        @{ Json = '{"modified":"2"}';           Count = 0; Dirty = $false; Name = 'string count' }
+        @{ Json = '{"modified":true}';          Count = 0; Dirty = $true;  Name = 'boolean' }
+        @{ Json = '{"modified":0}';             Count = 0; Dirty = $false; Name = 'zero' }
+        @{ Json = '{"modified":-1}';            Count = 0; Dirty = $false; Name = 'negative' }
+        @{ Json = '{"modified":2.0}';           Count = 2; Dirty = $true;  Name = 'whole float' }
+        @{ Json = '{"modified":1.5}';           Count = 0; Dirty = $false; Name = 'fraction' }
+        @{ Json = '{"modified":0.5}';           Count = 0; Dirty = $false; Name = 'fraction below one' }
+        @{ Json = '{"modified":2147483647}';    Count = 2147483647; Dirty = $true; Name = 'Int32 max' }
+        @{ Json = '{"modified":2147483648}';    Count = 0; Dirty = $false; Name = 'above Int32 max' }
+        @{ Json = '{"modified":1e300}';         Count = 0; Dirty = $false; Name = 'huge double' }
+        @{ Json = '{"modified":2}';             Count = 2; Dirty = $true;  Name = 'integer' })) {
     $status = $case.Json | ConvertFrom-Json
     Confirm-Equal (Get-PayloadCount $status).Modified $case.Count "payload counts: $($case.Name) count"
     Confirm-Equal (Test-PayloadDirty $status) $case.Dirty "payload counts: $($case.Name) dirty flag"
