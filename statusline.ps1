@@ -90,20 +90,16 @@ function Get-SegmentRegistry {
 }
 
 # Segment names sorted by one of the registry's rank keys, skipping records where it is $null. A row
-# number limits the list to that layout-two row. A plain loop and [array]::Sort rather than a cmdlet
-# pipeline: this runs before the first line is printed, and a cold pipeline costs tens of milliseconds.
+# number limits the list to that layout-two row. Ranks are dense, 1 to N within the list asked for, so
+# the names are dropped into slots by rank and read back in order: a plain loop over a hashtable, because
+# this runs before the first line is printed and a cold pipeline, generic list or [array]::Sort each cost
+# several milliseconds the first time.
 function Get-SegmentOrder([ValidateSet('ShrinkRank', 'DropRank', 'RowRank')] [string] $Rank, [int] $Row = 0) {
-    $keys = [System.Collections.Generic.List[int]]::new()
-    $names = [System.Collections.Generic.List[string]]::new()
+    $slots = @{}
     foreach ($rec in Get-SegmentRegistry) {
-        if ($null -eq $rec[$Rank] -or ($Row -ne 0 -and $rec.Row -ne $Row)) { continue }
-        $keys.Add($rec[$Rank])
-        $names.Add($rec.Name)
+        if ($null -ne $rec[$Rank] -and ($Row -eq 0 -or $rec.Row -eq $Row)) { $slots[$rec[$Rank]] = $rec.Name }
     }
-    $sortedKeys = $keys.ToArray()
-    $sortedNames = $names.ToArray()
-    [array]::Sort($sortedKeys, $sortedNames)
-    return $sortedNames
+    return @(for ($i = 1; $i -le $slots.Count; $i++) { $slots[$i] })
 }
 
 # Reads statusline.json. Anything missing or invalid silently falls back to its default.
