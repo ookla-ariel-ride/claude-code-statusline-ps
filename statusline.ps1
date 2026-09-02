@@ -28,6 +28,7 @@ $iconHome   = G 0xF015    # nf-fa-home  (on main/master)
 $iconDirty  = G 0xF040    # nf-fa-pencil (uncommitted changes)
 $iconAhead  = G 0x2191    # up arrow (commits ahead of upstream)
 $iconBehind = G 0x2193    # down arrow (commits behind upstream)
+$iconConflict = G 0xF071  # nf-fa-exclamation_triangle (merge conflicts)
 $iconLines  = G 0xF121    # nf-fa-code  (lines added/removed)
 $iconLimit  = G 0xF0E4    # nf-fa-tachometer (rate limits)
 $iconFast   = G 0xF0E7    # nf-fa-bolt  (fast mode)
@@ -176,7 +177,10 @@ function Get-FittedLine($Segments, [string] $Style, $Width) {
 
 # Parses `git status --porcelain=v1 --branch` output. $null when the header line is missing.
 # Ahead and Behind come from the header's bracket ([ahead 1], [behind 2], [ahead 1, behind 2]); no bracket
-# or [gone] means 0 and 0.
+# or [gone] means 0 and 0. Every later line starts with two status columns, XY, and is counted as
+# staged (X set and not a conflict), modified (Y set: M, D, T, or A for an intent-to-add file), untracked
+# (??) or a conflict (the unmerged pairs: U in either column, DD or AA). A file can be both staged and
+# modified. Dirty is true when any count is above zero.
 function Read-PorcelainStatus([string] $Text) {
     if (-not $Text) { return $null }
     $lines = $Text -split "`r?`n"
@@ -191,8 +195,27 @@ function Read-PorcelainStatus([string] $Text) {
         if ($Matches[1]) { $ahead = [int] $Matches[1] }
         if ($Matches[2]) { $behind = [int] $Matches[2] }
     }
-    $dirty = @($lines | Select-Object -Skip 1 | Where-Object { $_.Trim() }).Count -gt 0
-    return @{ Branch = $branch; Dirty = $dirty; Ahead = $ahead; Behind = $behind }
+    $staged = 0
+    $modified = 0
+    $untracked = 0
+    $conflicts = 0
+    # Porcelain v1 keeps the leading space of " M file", so the columns are read from the raw line. An
+    # index loop with char tests rather than a pipeline: this runs once per entry, and a large unignored
+    # tree has thousands of them.
+    for ($i = 1; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        if ($line.Length -lt 2 -or -not $line.Trim()) { continue }
+        $x = $line[0]
+        $y = $line[1]
+        if ($x -eq '!') { continue }
+        if ($x -eq 'U' -or $y -eq 'U' -or ($x -eq 'D' -and $y -eq 'D') -or ($x -eq 'A' -and $y -eq 'A')) { $conflicts++; continue }
+        if ($x -eq '?') { $untracked++; continue }
+        if ($x -ne ' ') { $staged++ }
+        if ($y -ne ' ') { $modified++ }
+    }
+    $dirty = ($staged + $modified + $untracked + $conflicts) -gt 0
+    return @{ Branch = $branch; Dirty = $dirty; Ahead = $ahead; Behind = $behind
+              Staged = $staged; Modified = $modified; Untracked = $untracked; Conflicts = $conflicts }
 }
 
 # Runs git status in $Dir with a hard timeout. Any failure, or no git on PATH, returns $null.
@@ -340,37 +363,77 @@ function Get-FolderSegment($d) {
     return @{ Name = 'folder'; Text = "$iconFolder $(Split-Path $dir -Leaf)"; Short = $null; Role = 'folder'; Bold = $false }
 }
 
+# A payload value as a count, or $null when it is not one: a whole number that fits an Int32. ConvertFrom-Json
+# hands counts over as Int64; booleans, strings, fractions and out-of-range values are not counts.
+# Test-PayloadDirty and Get-PayloadCount share this one rule so the pencil and the counts can never
+# disagree about what a value means.
+function Get-PayloadNumber($v) {
+    if (-not ($v -is [ValueType]) -or $v -is [bool]) { return $null }
+    $d = try { [double] $v } catch { return $null }
+    if ([double]::IsNaN($d) -or [double]::IsInfinity($d) -or $d -ne [math]::Floor($d)) { return $null }
+    if ($d -gt [int]::MaxValue -or $d -lt [int]::MinValue) { return $null }
+    return [int] $d
+}
+
 # Dirty flag from a payload git.status value: "clean"/other string, or an object of counts/booleans.
 function Test-PayloadDirty($status) {
     if ($status -is [string]) { return [bool] ($status -and $status -ne 'clean') }
     if (-not $status) { return $false }
-    # Counts arrive as Int64 from ConvertFrom-Json; treat any positive numeric or "true" as dirty.
     foreach ($p in $status.PSObject.Properties) {
         $v = $p.Value
-        if (($v -is [ValueType] -and -not ($v -is [bool]) -and [double] $v -gt 0) -or ($v -is [bool] -and $v)) { return $true }
+        $n = Get-PayloadNumber $v
+        if (($null -ne $n -and $n -gt 0) -or ($v -is [bool] -and $v)) { return $true }
     }
     return $false
 }
 
-# Branch from the payload's git object when present; otherwise from git status in current_dir.
-# A git object that carries no branch name means "no branch", not "go and look" - the segment is omitted.
-# Ahead/behind counts only exist on the git path and render dim between the name and the pencil; Short
-# is the same text without them, so a wide line sheds the counts before it sheds whole segments.
-function Get-BranchSegment($d, $cfg) {
-    $info = $null
-    if ($null -ne $d.git) {
-        if (-not $d.git.branch) { return $null }
-        $info = @{ Branch = "$($d.git.branch)"; Dirty = (Test-PayloadDirty $d.git.status); Ahead = 0; Behind = 0 }
+# File counts from a payload git.status object: the named properties staged, modified, untracked and
+# conflicts, each 0 when missing or not a positive number. A string status ("clean", "modified") or
+# nothing gives four zeros.
+function Get-PayloadCount($status) {
+    $counts = @{ Staged = 0; Modified = 0; Untracked = 0; Conflicts = 0 }
+    if ($null -eq $status -or $status -is [string]) { return $counts }
+    foreach ($key in @($counts.Keys)) {
+        $n = Get-PayloadNumber $status.($key.ToLowerInvariant())
+        if ($null -ne $n -and $n -gt 0) { $counts[$key] = $n }
     }
-    else { $info = Get-GitBranch $d.workspace.current_dir $gitTimeoutMs }
+    return $counts
+}
+
+# The branch record from a payload git object, in the shape Read-PorcelainStatus returns, so the segment
+# builder reads one record whichever source filled it. Ahead and Behind are always 0 here: the payload
+# carries no upstream data. $null when the object names no branch, which means "no branch", not "go
+# and look".
+function Read-PayloadStatus($git) {
+    if (-not $git.branch) { return $null }
+    $info = Get-PayloadCount $git.status
+    $info.Branch = "$($git.branch)"
+    $info.Dirty = Test-PayloadDirty $git.status
+    $info.Ahead = 0
+    $info.Behind = 0
+    return $info
+}
+
+# Branch from the payload's git object when present; otherwise from git status in current_dir. Either
+# way the record has the same keys. Ahead/behind counts only exist on the git path; the file counts come
+# from either source. All of them render dim between the name and the pencil, arrows first, then +staged
+# ~modified ?untracked, then the conflict glyph in red. Short is icon, name and pencil, so a wide line
+# sheds the counts before it sheds whole segments. Zero counts render nothing, so a clean tree is the
+# same text as before.
+function Get-BranchSegment($d, $cfg) {
+    $info = if ($null -ne $d.git) { Read-PayloadStatus $d.git } else { Get-GitBranch $d.workspace.current_dir $gitTimeoutMs }
     if (-not $info) { return $null }
     $isMain = $info.Branch -in @('main', 'master')
     $icon = if ($isMain) { $iconHome } else { $iconBranch }
     $role = if ($info.Dirty) { 'warn' } else { 'branch' }
     $name = "$icon $($info.Branch)"
     $counts = ''
-    if ($info.Ahead -gt 0) { $counts += ' ' + (Format-Inline 'track' "$iconAhead$($info.Ahead)" $role $cfg.Style) }
-    if ($info.Behind -gt 0) { $counts += ' ' + (Format-Inline 'track' "$iconBehind$($info.Behind)" $role $cfg.Style) }
+    # Record key, prefix and inline colour role for each count, in the order they render.
+    foreach ($row in @(@('Ahead', $iconAhead, 'track'), @('Behind', $iconBehind, 'track'), @('Staged', '+', 'track'),
+                       @('Modified', '~', 'track'), @('Untracked', '?', 'track'), @('Conflicts', $iconConflict, 'removed'))) {
+        $n = $info[$row[0]]
+        if ($n -gt 0) { $counts += ' ' + (Format-Inline $row[2] "$($row[1])$n" $role $cfg.Style) }
+    }
     $pencil = if ($info.Dirty) { " $iconDirty" } else { '' }
     return @{ Name = 'branch'; Text = "$name$counts$pencil"; Short = "$name$pencil"; Role = $role; Bold = $false }
 }
