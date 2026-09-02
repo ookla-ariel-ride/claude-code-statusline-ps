@@ -37,7 +37,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | `statusline.ps1` | Reads JSON on stdin and `statusline.json` beside it; prints one or two coloured lines fitted to `COLUMNS`. |
 | `install.ps1` | Copies the script to `~/.claude/`, writes the `statusLine` entry to user settings, optionally installs JetBrainsMono Nerd Font via winget and sets it as the Windows Terminal default font. Supports `-Uninstall`. |
 | `statusline.json` | Defaults for layout, style and segment toggles. Installed beside the script. |
-| `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, and checks the git fallback in temporary repositories. `-Columns`, `-Config`, `-Raw`. |
+| `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, and checks the git fallback in temporary repositories, including a git that fails and one that hangs. `-Columns`, `-Config`, `-Raw`. |
 | `samples/*.json` | Seven payloads: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort. |
 | `docs/render-screenshot.ps1` | Renders a payload and config through the script and captures the terminal as the README screenshot. |
 | `docs/render-icons.ps1` | Extracts the Nerd Font glyphs used by the script as SVG outlines for `docs/icons/`. |
@@ -53,7 +53,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | Limits | `rate_limits.five_hour`, `seven_day` | Coloured by the worse of the two |
 | Badges | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dim glyphs |
 | Folder | `workspace.current_dir` | Blue, leaf directory name |
-| Branch | `git.branch`/`git.status` when present, else `git status --porcelain=v1 --branch` in `workspace.current_dir` | Home glyph on main/master, branch glyph otherwise. Yellow with pencil glyph when dirty, magenta when clean |
+| Branch | `git status --porcelain=v1 --branch` in `workspace.current_dir`. The Claude Code payload has no `git` object, so this is the normal path; a payload that does carry `git.branch` and `git.status` (the test samples) is used as is | Home glyph on main/master, branch glyph otherwise. Yellow with pencil glyph when dirty, magenta when clean |
 
 ## Key design decisions
 
@@ -82,7 +82,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 ## Success criteria
 
-- `.\test.ps1` passes: all seven samples across four configs and three widths, plus the git cases.
+- `.\test.ps1` passes: the unit checks, all seven samples across four configs and four widths (120, 60, 20 and unset) with content checks at the unset width, and the git cases.
 - `.\install.ps1` on a fresh machine produces a working status line in Claude Code after one session restart.
 - `.\install.ps1 -Uninstall` returns `settings.json` to its prior state minus the `statusLine` key.
 - `.\install.ps1` leaves an existing `~/.claude/statusline.json` untouched.
