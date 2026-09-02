@@ -72,7 +72,7 @@ function Measure-VisibleWidth([string] $Text) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line'))
 
 Write-Host '== unit: width' -ForegroundColor Cyan
 $widthTable = @(
@@ -132,6 +132,27 @@ Confirm-Equal $c.Layout 'one' 'config empty file: default'
 
 $c = Read-StatusConfig (Write-TempConfig 'array.json' '[1, 2]')
 Confirm-Equal $c.Style 'plain' 'config top-level array: default'
+
+Write-Host '== unit: renderer' -ForegroundColor Cyan
+$arrow = [char]::ConvertFromUtf32(0xE0B0)
+$chevron = [char]::ConvertFromUtf32(0xE0B1)
+$segModel = @{ Name = 'model'; Text = 'M'; Short = $null; Role = 'model'; Bold = $true }
+$segFolder = @{ Name = 'folder'; Text = 'F'; Short = $null; Role = 'folder'; Bold = $false }
+$segDim = @{ Name = 'cost'; Text = 'X'; Short = $null; Role = 'dim'; Bold = $false }
+
+Confirm-Equal (Format-Line @($segModel, $segFolder) 'plain') "$esc[1;36mM$esc[0m $esc[90m$chevron$esc[0m $esc[34mF$esc[0m" 'plain: two segments'
+Confirm-Equal (Format-Line @($segDim) 'plain') "$esc[90mX$esc[0m" 'plain: one segment'
+Confirm-Equal (Format-Line @() 'plain') '' 'plain: no segments'
+Confirm-Equal (Format-Line @($segModel, $segFolder) 'powerline') "$esc[0;1;48;5;31;38;5;231m M $esc[38;5;31;48;5;25m$arrow$esc[0;48;5;25;38;5;231m F $esc[0m$esc[38;5;25m$arrow$esc[0m" 'powerline: two segments'
+Confirm-Equal (Format-Line @($segDim) 'powerline') "$esc[0;48;5;238;38;5;250m X $esc[0m$esc[38;5;238m$arrow$esc[0m" 'powerline: one segment'
+Confirm-Equal (Format-Inline 'added' '+1' 'dim' 'plain') "$esc[32m+1$esc[90m" 'inline plain restores segment colour'
+Confirm-Equal (Format-Inline 'removed' '-2' 'dim' 'powerline') "$esc[38;5;203m-2$esc[38;5;250m" 'inline powerline restores segment fg'
+
+$pal = Get-Palette
+Confirm-Equal $pal.Roles.warn.Sgr '33' 'palette warn sgr'
+Confirm-Equal $pal.Roles.warn.Fg 16 'palette warn fg'
+Confirm-Equal $pal.Roles.branch.Bg 90 'palette branch bg'
+Confirm-Equal $pal.Inline.added.Fg 46 'palette inline added fg'
 
 # ---- Sample renders (replaced by the matrix in a later task) ----
 Write-Host '== samples' -ForegroundColor Cyan

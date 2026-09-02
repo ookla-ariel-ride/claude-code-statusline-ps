@@ -85,6 +85,62 @@ function Read-StatusConfig([string] $Path) {
     return $cfg
 }
 
+# Colour table. Plain style uses the SGR codes the script has always used; powerline uses 256-colour
+# foreground/background pairs so blocks look the same on every terminal theme.
+function Get-Palette {
+    return @{
+        Roles = @{
+            model  = @{ Sgr = '1;36'; Fg = 231; Bg = 31 }
+            ok     = @{ Sgr = '32';   Fg = 231; Bg = 28 }
+            warn   = @{ Sgr = '33';   Fg = 16;  Bg = 178 }
+            bad    = @{ Sgr = '31';   Fg = 231; Bg = 160 }
+            dim    = @{ Sgr = '90';   Fg = 250; Bg = 238 }
+            folder = @{ Sgr = '34';   Fg = 231; Bg = 25 }
+            branch = @{ Sgr = '35';   Fg = 231; Bg = 90 }
+        }
+        Inline = @{
+            added   = @{ Sgr = '32'; Fg = 46 }
+            removed = @{ Sgr = '31'; Fg = 203 }
+        }
+    }
+}
+
+# A foreground-only colour change inside a segment that restores the segment's own foreground afterwards,
+# so a powerline background is never interrupted by a reset.
+function Format-Inline([string] $Role, [string] $Text, [string] $SegmentRole, [string] $Style) {
+    $pal = Get-Palette
+    if ($Style -eq 'powerline') { return "`e[38;5;$($pal.Inline[$Role].Fg)m$Text`e[38;5;$($pal.Roles[$SegmentRole].Fg)m" }
+    return "`e[$($pal.Inline[$Role].Sgr)m$Text`e[$($pal.Roles[$SegmentRole].Sgr)m"
+}
+
+# Renders an ordered list of segment records as one line in the given style.
+function Format-Line($Segments, [string] $Style) {
+    $segs = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($s in $Segments) { if ($s) { $segs.Add($s) } }
+    if ($segs.Count -eq 0) { return '' }
+    $pal = Get-Palette
+    if ($Style -eq 'powerline') {
+        $arrow = [char]::ConvertFromUtf32(0xE0B0)
+        $sb = [System.Text.StringBuilder]::new()
+        for ($i = 0; $i -lt $segs.Count; $i++) {
+            $s = $segs[$i]
+            $c = $pal.Roles[$s.Role]
+            $bold = if ($s.Bold) { '1;' } else { '' }
+            [void] $sb.Append("`e[0;${bold}48;5;$($c.Bg);38;5;$($c.Fg)m $($s.Text) ")
+            if ($i -lt $segs.Count - 1) {
+                $n = $pal.Roles[$segs[$i + 1].Role]
+                [void] $sb.Append("`e[38;5;$($c.Bg);48;5;$($n.Bg)m$arrow")
+            } else {
+                [void] $sb.Append("`e[0m`e[38;5;$($c.Bg)m$arrow`e[0m")
+            }
+        }
+        return $sb.ToString()
+    }
+    $sep = " `e[90m$([char]::ConvertFromUtf32(0xE0B1))`e[0m "
+    $parts = foreach ($s in $segs) { $c = $pal.Roles[$s.Role]; "`e[$($c.Sgr)m$($s.Text)`e[0m" }
+    return ($parts -join $sep)
+}
+
 if (-not $Config) { $Config = Join-Path $PSScriptRoot 'statusline.json' }
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '', Justification = 'Used in later tasks')]
 $statusConfig = Read-StatusConfig $Config
