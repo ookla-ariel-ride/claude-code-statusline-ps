@@ -39,9 +39,10 @@ EOF
 
 1. **Powerline segment SGR starts with `0;`.** The spec writes `ESC[48;5;<bg>;38;5;<fg>m`. Without a reset the model segment's bold leaks into every later segment. Each powerline segment therefore starts `ESC[0;48;5;<bg>;38;5;<fg>m` (`ESC[0;1;48;...` when bold). The between-segment arrow sequence is unchanged.
 2. **Stdout drain uses `ReadToEndAsync`, not `BeginOutputReadLine`.** A PowerShell script block attached to `OutputDataReceived` runs on a thread-pool thread with no runspace and fails. `$p.StandardOutput.ReadToEndAsync()` drains the pipe on a .NET thread with no PowerShell involvement, which satisfies the spec's reason for draining (no deadlock on large output). Stderr is drained the same way and discarded.
-3. **git is resolved with `Get-Command git -CommandType Application` before `Process.Start`.** `CreateProcess` only appends `.exe` when searching `PATH`, so a bare `git` would never find the test's fake `git.cmd`. Passing the resolved full path makes the fake work and changes nothing for a real `git.exe`.
-4. **Fallback line also covers "nothing printed".** If `model` is toggled off and every other segment drops for width, no line would print. The script prints the existing `claude` fallback in that case too.
-5. **`docs/statusline-two-line.json` is committed.** It is the config `render-screenshot.ps1` uses for the second screenshot and doubles as a copyable example.
+3. **git is resolved with `Get-Command git -CommandType Application` before `Process.Start`.** `CreateProcess` only appends `.exe` when searching `PATH`, so a bare `git` would never find the test's fake `git.cmd`. Passing the resolved full path makes the fake work and changes nothing for a real `git.exe`. Verified on this machine before implementation: a `.cmd` given by full path to `ProcessStartInfo` with `UseShellExecute = $false` runs, its exit code and both streams come back, and `Kill($true)` on timeout removes its `ping` child.
+4. **`docs/statusline-two-line.json` is committed.** It is the config `render-screenshot.ps1` uses for the second screenshot and doubles as a copyable example.
+
+A rejected idea, recorded so it is not re-proposed: printing the `claude` fallback when segments were built but every line fitted down to nothing. That would override a user's `model: false`. If the terminal is too narrow for anything the user left on, the script prints nothing, which matches the spec's rule that the fallback is only for "no segment built".
 
 ## File map
 
@@ -879,13 +880,13 @@ $lineSets = if ($cfg.Layout -eq 'two') {
     @(@('model', 'folder', 'branch', 'badges'), @('context', 'limits', 'cost', 'lines'))
 } else { , $segmentNames }
 
-$printed = 0
+# A line that fits down to nothing is not printed. With model toggled off and a very narrow terminal
+# that can mean no output at all, which is what the user asked for.
 foreach ($names in $lineSets) {
     $onLine = foreach ($n in $names) { foreach ($s in $segments) { if ($s.Name -eq $n) { $s } } }
     $text = Get-FittedLine @($onLine) $cfg.Style $width
-    if ($text) { Write-Host $text; $printed++ }
+    if ($text) { Write-Host $text }
 }
-if ($printed -eq 0) { Write-Host (C '36' "$iconModel claude") }
 ```
 
 Also delete the old `$sep = ...` line near the top (line 29 in the original; the renderer builds its own separator). Keep `function C` because the fallback uses it.
@@ -1018,12 +1019,17 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
         $psi.Environment['GIT_OPTIONAL_LOCKS'] = '0'
         $p = [System.Diagnostics.Process]::Start($psi)
         $outTask = $p.StandardOutput.ReadToEndAsync()
-        $null = $p.StandardError.ReadToEndAsync()
-        if (-not $p.WaitForExit($TimeoutMs)) {
+        $errTask = $p.StandardError.ReadToEndAsync()
+        $exited = $p.WaitForExit($TimeoutMs)
+        if (-not $exited) {
+            # Kill the whole tree, then give it a moment to actually go away before we dispose the handles.
             try { $p.Kill($true) } catch { }
-            return $null
+            [void] $p.WaitForExit(500)
         }
-        if (-not $outTask.Wait(500)) { return $null }
+        # Bounded waits on both drains; a faulted task is observed here rather than left to the finalizer.
+        try { [void] [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask), 500) } catch { }
+        if (-not $exited) { return $null }
+        if (-not $outTask.IsCompletedSuccessfully) { return $null }
         if ($p.ExitCode -ne 0) { return $null }
         return Read-PorcelainStatus $outTask.Result
     } catch { return $null }
@@ -1137,8 +1143,18 @@ if ($haveGit) {
 }
 $notRepo = Join-Path $tmp 'not-a-repo'; New-Item -ItemType Directory -Force $notRepo | Out-Null
 $gitCases.Add(@{ Name = 'not a repo'; Dir = $notRepo; NoBranch = $true })
-$gitCases.Add(@{ Name = 'git fails';  Dir = $notRepo; NoBranch = $true; NoStderr = $true; PathPrefix = (Write-FakeGit 'fake-fail' "echo fatal: not a git repository 1>&2`r`nexit 128") })
-$gitCases.Add(@{ Name = 'git hangs';  Dir = $notRepo; NoBranch = $true; MaxMs = 3000; PathPrefix = (Write-FakeGit 'fake-hang' "ping -n 11 127.0.0.1 > nul`r`nexit 0") })
+# Each fake writes a marker file so the test can prove it really ran, and the hang fake's ping child must
+# be gone afterwards, which proves Kill($true) took the tree down.
+$failMarker = Join-Path $tmp 'fake-fail.ran'
+$hangMarker = Join-Path $tmp 'fake-hang.ran'
+$gitCases.Add(@{ Name = 'git fails'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; Marker = $failMarker
+                 PathPrefix = (Write-FakeGit 'fake-fail' "echo ran > `"$failMarker`"`r`necho fatal: not a git repository 1>&2`r`nexit 128") })
+$gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; MinMs = 1500; MaxMs = 3000; Marker = $hangMarker; NoPing = $true
+                 PathPrefix = (Write-FakeGit 'fake-hang' "echo ran > `"$hangMarker`"`r`nping -n 11 127.0.0.1 > nul`r`nexit 0") })
+
+function Get-FakePingCount {
+    return @(Get-CimInstance Win32_Process -Filter "Name='PING.EXE'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match '-n 11 127\.0\.0\.1' }).Count
+}
 
 foreach ($case in $gitCases) {
     $r = Invoke-StatusLine (Get-GitPayload $case.Dir) $null 0 $case.PathPrefix
@@ -1151,7 +1167,10 @@ foreach ($case in $gitCases) {
     if ($case.Raw) { Assert-True ($rawOut.Contains($case.Raw)) "${label}: expected colour $($case.Raw -replace $esc, '<ESC>')" }
     if ($case.NoBranch) { Assert-True (-not $text.Contains($iconHome) -and -not $text.Contains($iconBranch)) "${label}: branch segment omitted, got '$text'" }
     if ($case.NoStderr) { Assert-True ($r.Err.Count -eq 0) "${label}: nothing on stderr, got '$($r.Err -join ' | ')'" }
+    if ($case.Marker) { Assert-True (Test-Path $case.Marker) "${label}: fake git was actually launched" }
+    if ($case.MinMs) { Assert-True ($r.Ms -ge $case.MinMs) "${label}: waited the full timeout ($($r.Ms) ms, expected at least $($case.MinMs))" }
     if ($case.MaxMs) { Assert-True ($r.Ms -lt $case.MaxMs) "${label}: finished in $($r.Ms) ms (limit $($case.MaxMs))" }
+    if ($case.NoPing) { Start-Sleep -Milliseconds 300; Assert-True ((Get-FakePingCount) -eq 0) "${label}: ping child killed with the tree" }
     Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f $case.Name, $r.Ms, $text)
 }
 ```
@@ -1159,9 +1178,9 @@ foreach ($case in $gitCases) {
 - [ ] **Step 6: Run the test to verify the git group passes**
 
 Run: `pwsh -NoProfile -File .\test.ps1`
-Expected: `== git` prints nine case lines; clean shows the home glyph and `main`, dirty cases add the pencil, feature shows the branch glyph, unborn shows `main`, detached shows `detached`, the last three show only `M`. The hang case takes about 2 seconds. `failed 0`.
+Expected: `== git` prints nine case lines; clean shows the home glyph and `main`, dirty cases add the pencil, feature shows the branch glyph, unborn shows `main`, detached shows `detached`, the last three show only `M`. The hang case takes about 2 seconds (at least 1500 ms, which proves the timeout path ran, and under 3000 ms). Both marker files exist afterwards. `failed 0`.
 
-If the hang case exceeds 3000 ms, check that `Kill($true)` ran (the `ping` child must die with `cmd.exe`) and that `pwsh` start-up on this machine is under a second.
+If the hang case exceeds 3000 ms, check that `Kill($true)` ran (the `ping` child must die with `cmd.exe`) and that `pwsh` start-up on this machine is under a second. If "fake git was actually launched" fails, `Get-Command git` in the child did not pick up the prepended PATH entry.
 
 - [ ] **Step 7: Lint**
 
@@ -1654,7 +1673,13 @@ segment, then removes whole segments from the right: lines, badges, cost, limits
 context. The model segment always stays.
 ````
 
-5. In the segment table, change the branch row's Data cell to `` `git.branch`, `git.status`, else `git status` in `workspace.current_dir` `` and its Rendering cell to `Magenta when clean. Yellow with the pencil when the tree has uncommitted or untracked changes. Shows `detached` on a detached HEAD`. Change the separator paragraph to:
+5. In the segment table, change the branch row's Data cell to `` `git.branch`, `git.status`, else `git status` in `workspace.current_dir` `` and its Rendering cell to `Magenta when clean. Yellow with the pencil when the tree has uncommitted or untracked changes. Shows `detached` on a detached HEAD`. Add a final row to the table:
+
+```markdown
+| separator | <img src="docs/icons/chevron.svg" height="18" alt="chevron"> in `plain`, <img src="docs/icons/arrow.svg" height="18" alt="arrow"> in `powerline` | none | Dim chevron between segments, or a solid arrow coloured to blend the neighbouring blocks |
+```
+
+Change the separator paragraph to:
 
 ```markdown
 A dim <img src="docs/icons/chevron.svg" height="14" alt="chevron"> separates the segments in plain
