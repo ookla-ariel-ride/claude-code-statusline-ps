@@ -65,10 +65,39 @@ function Get-VisibleWidth([string] $Text) {
     return $width
 }
 
+# The segment table: one record per segment, in layout-one order. It is the single source for the config
+# defaults, the shrink and drop order in Get-FittedLine, the build dispatch and the layout-two rows.
+# Build takes the payload and the config and returns the segment record or $null. Default seeds
+# Read-StatusConfig. ShrinkRank orders stage one of Get-FittedLine and is $null for a segment with no
+# Short form; DropRank orders stage two, and the model record has none because it is never dropped.
+# Row is the layout-two line and RowRank the position on it, because a row is not in layout-one order.
+function Get-SegmentRegistry {
+    # Every Build block takes the same two arguments so the build loop needs no per-segment case; most builders do not read $cfg.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'cfg')]
+    param()
+    return @(
+        @{ Name = 'model';   Build = { param($d, $cfg) Get-ModelSegment $d };        Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
+        @{ Name = 'context'; Build = { param($d, $cfg) Get-ContextSegment $d };      Default = $true; ShrinkRank = 2;     DropRank = 7;     Row = 2; RowRank = 1 }
+        @{ Name = 'cost';    Build = { param($d, $cfg) Get-CostSegment $d };         Default = $true; ShrinkRank = $null; DropRank = 3;     Row = 2; RowRank = 3 }
+        @{ Name = 'lines';   Build = { param($d, $cfg) Get-LinesSegment $d $cfg };   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
+        @{ Name = 'limits';  Build = { param($d, $cfg) Get-LimitsSegment $d };       Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
+        @{ Name = 'badges';  Build = { param($d, $cfg) Get-BadgesSegment $d };       Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 4 }
+        @{ Name = 'folder';  Build = { param($d, $cfg) Get-FolderSegment $d };       Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 2 }
+        @{ Name = 'branch';  Build = { param($d, $cfg) Get-BranchSegment $d $cfg };  Default = $true; ShrinkRank = 3;     DropRank = 6;     Row = 1; RowRank = 3 }
+    )
+}
+
+# Segment names sorted by one of the registry's rank keys, skipping records where it is $null. A row
+# number limits the list to that layout-two row.
+function Get-SegmentOrder([string] $Rank, [int] $Row = 0) {
+    $picked = @(Get-SegmentRegistry | Where-Object { $null -ne $_[$Rank] -and ($Row -eq 0 -or $_.Row -eq $Row) })
+    return @($picked | Sort-Object { $_[$Rank] } | ForEach-Object { $_.Name })
+}
+
 # Reads statusline.json. Anything missing or invalid silently falls back to its default.
 function Read-StatusConfig([string] $Path) {
     $cfg = @{ Layout = 'one'; Style = 'plain'; Segments = @{} }
-    foreach ($n in @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch')) { $cfg.Segments[$n] = $true }
+    foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
     try {
         if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $cfg }
         $j = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
@@ -144,9 +173,11 @@ function Format-Line($Segments, [string] $Style) {
 }
 
 # Renders a line and, when a width is given, shrinks then drops segments until it fits.
-# Stage 1 swaps limits, context, then branch for their Short form. Stage 2 drops whole segments in a fixed order.
-# The model segment is never dropped and may overflow on its own. Returns $null when nothing is left.
-function Get-FittedLine($Segments, [string] $Style, $Width) {
+# Stage 1 swaps segments for their Short form in $ShrinkOrder (limits, context, then branch by default).
+# Stage 2 drops whole segments in $DropOrder. Both default to the registry's ranks; the model segment
+# is in neither, so it is never dropped and may overflow on its own. Returns $null when nothing is left.
+function Get-FittedLine($Segments, [string] $Style, $Width,
+                        [string[]] $ShrinkOrder = (Get-SegmentOrder 'ShrinkRank'), [string[]] $DropOrder = (Get-SegmentOrder 'DropRank')) {
     $segs = [System.Collections.Generic.List[hashtable]]::new()
     foreach ($s in $Segments) { if ($s) { $segs.Add($s.Clone()) } }
     if ($segs.Count -eq 0) { return $null }
@@ -154,7 +185,7 @@ function Get-FittedLine($Segments, [string] $Style, $Width) {
     if ($null -eq $Width) { return $line }
     $target = [int] $Width
     if ((Get-VisibleWidth $line) -le $target) { return $line }
-    foreach ($name in @('limits', 'context', 'branch')) {
+    foreach ($name in $ShrinkOrder) {
         for ($i = 0; $i -lt $segs.Count; $i++) {
             if ($segs[$i].Name -eq $name -and $segs[$i].Short) {
                 $segs[$i].Text = $segs[$i].Short
@@ -163,7 +194,7 @@ function Get-FittedLine($Segments, [string] $Style, $Width) {
             }
         }
     }
-    foreach ($name in @('lines', 'badges', 'cost', 'limits', 'folder', 'branch', 'context')) {
+    foreach ($name in $DropOrder) {
         $at = -1
         for ($i = 0; $i -lt $segs.Count; $i++) { if ($segs[$i].Name -eq $name) { $at = $i } }
         if ($at -lt 0) { continue }
@@ -440,20 +471,10 @@ function Get-BranchSegment($d, $cfg) {
 
 # ---- Build, lay out, fit, print ----
 
-$segmentNames = @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch')
 $segments = [System.Collections.Generic.List[hashtable]]::new()
-foreach ($name in $segmentNames) {
-    if (-not $cfg.Segments[$name]) { continue }
-    $seg = switch ($name) {
-        'model'   { Get-ModelSegment $d }
-        'context' { Get-ContextSegment $d }
-        'cost'    { Get-CostSegment $d }
-        'lines'   { Get-LinesSegment $d $cfg }
-        'limits'  { Get-LimitsSegment $d }
-        'badges'  { Get-BadgesSegment $d }
-        'folder'  { Get-FolderSegment $d }
-        'branch'  { Get-BranchSegment $d $cfg }
-    }
+foreach ($rec in Get-SegmentRegistry) {
+    if (-not $cfg.Segments[$rec.Name]) { continue }
+    $seg = & $rec.Build $d $cfg
     if ($seg) { $segments.Add($seg) }
 }
 if ($segments.Count -eq 0) { Write-Host (C '36' "$iconModel claude"); exit 0 }
@@ -464,8 +485,8 @@ $cols = 0
 if ([int]::TryParse([string] $env:COLUMNS, [ref] $cols) -and $cols -gt 0) { $width = $cols - 1 }
 
 $lineSets = @(if ($cfg.Layout -eq 'two') {
-    @(@('model', 'folder', 'branch', 'badges'), @('context', 'limits', 'cost', 'lines'))
-} else { , $segmentNames })
+    @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
+} else { , @(Get-SegmentRegistry | ForEach-Object { $_.Name }) })
 
 # A line that fits down to nothing is not printed. With model toggled off and a very narrow terminal
 # that can mean no output at all, which is what the user asked for.

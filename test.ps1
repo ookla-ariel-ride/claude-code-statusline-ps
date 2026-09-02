@@ -130,7 +130,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder'))
 
 # Get-BranchSegment closes over these script-level names in statusline.ps1, so the test has to supply them.
 $gitTimeoutMs = 1500
@@ -161,6 +161,37 @@ foreach ($row in $widthTable) {
     Confirm-Equal -Actual (Measure-VisibleWidth $row.Text) -Expected $row.Width -Label "test width of '$shown'"
 }
 
+Write-Host '== unit: registry' -ForegroundColor Cyan
+# The registry is the one table behind the config defaults, the shrink and drop order, the build
+# dispatch and the row split. This pins its contents to what the script did when each list was written
+# out by hand, so a change there is a deliberate one. Array order is layout one.
+$registryTable = @(
+    @{ Name = 'model';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
+    @{ Name = 'context'; Default = $true; ShrinkRank = 2;     DropRank = 7;     Row = 2; RowRank = 1 }
+    @{ Name = 'cost';    Default = $true; ShrinkRank = $null; DropRank = 3;     Row = 2; RowRank = 3 }
+    @{ Name = 'lines';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
+    @{ Name = 'limits';  Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
+    @{ Name = 'badges';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 4 }
+    @{ Name = 'folder';  Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 2 }
+    @{ Name = 'branch';  Default = $true; ShrinkRank = 3;     DropRank = 6;     Row = 1; RowRank = 3 }
+)
+$registry = @(Get-SegmentRegistry)
+Confirm-Equal $registry.Count $registryTable.Count 'registry: eight records'
+for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
+    $want = $registryTable[$i]
+    $got = $registry[$i]
+    Confirm-Equal $got.Name $want.Name "registry: record $i is $($want.Name)"
+    Confirm-True ($got.Build -is [scriptblock]) "registry: $($want.Name) has a Build scriptblock"
+    foreach ($key in @('Default', 'ShrinkRank', 'DropRank', 'Row', 'RowRank')) {
+        Confirm-True ($got.ContainsKey($key)) "registry: $($want.Name) has $key"
+        Confirm-Equal $got[$key] $want[$key] "registry: $($want.Name) $key"
+    }
+}
+Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'limits,context,branch' 'registry: shrink order'
+Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,badges,cost,limits,folder,branch,context' 'registry: drop order'
+Confirm-Equal ((Get-SegmentOrder 'RowRank' 1) -join ',') 'model,folder,branch,badges' 'registry: layout two row 1'
+Confirm-Equal ((Get-SegmentOrder 'RowRank' 2) -join ',') 'context,limits,cost,lines' 'registry: layout two row 2'
+
 Write-Host '== unit: config' -ForegroundColor Cyan
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "statusline-test-$PID"
 New-Item -ItemType Directory -Force $tmp | Out-Null
@@ -174,7 +205,8 @@ function Write-TempConfig([string] $Name, [string] $Json) {
     [System.IO.File]::WriteAllText($p, $Json, [System.Text.UTF8Encoding]::new($false))
     return $p
 }
-$allSegments = @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch')
+# Every segment name in layout-one order, from the registry, so this list cannot drift from the script's.
+$allSegments = @(Get-SegmentRegistry | ForEach-Object { $_.Name })
 
 $c = Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')
 Confirm-Equal $c.Layout 'one' 'config missing: layout'
@@ -288,6 +320,12 @@ Confirm-True ($line.Contains('BBBB') -and $line.Contains('CCC') -and -not $line.
 $line = Get-FittedLine $fitBranch 'plain' 39
 Confirm-Equal (Get-VisibleWidth $line) 38 'fit: stage 1 shrinks branch third'
 Confirm-True ($line.Contains('BB') -and -not $line.Contains('BBBB') -and $line.Contains('LL')) 'fit: branch shortened, nothing dropped at 39'
+
+# The shrink and drop orders are parameters that default to the registry, so a caller can hand in its own.
+$line = Get-FittedLine $fit 'plain' 43 -ShrinkOrder @('context')
+Confirm-True ($line.Contains('CCC') -and -not $line.Contains('CCCCCC') -and $line.Contains('IIIIII')) 'fit: custom shrink order shortens context before limits'
+$line = Get-FittedLine $fit 'plain' 37 -DropOrder @('badges')
+Confirm-True ($line.Contains('LL') -and -not $line.Contains('GG')) 'fit: custom drop order drops badges, keeps lines'
 
 Write-Host '== unit: context' -ForegroundColor Cyan
 $iconCtx = [char]::ConvertFromUtf32(0xF035B)
@@ -857,10 +895,10 @@ $glyphSegment = @{
     home = 'branch'; pencil = 'branch'; branch = 'branch'
     fast = 'badges'; think = 'badges'; effort = 'badges'; vim = 'badges'
 }
-# statusline.ps1's own line sets, mirrored here so the test knows which segments share a line.
+# statusline.ps1's own line sets, derived from the registry so the test knows which segments share a line.
 $layoutRows = @{
-    one = @(, @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch'))
-    two = @(@('model', 'folder', 'branch', 'badges'), @('context', 'limits', 'cost', 'lines'))
+    one = @(, $allSegments)
+    two = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
 }
 $modelOnlyPath = @{}
 foreach ($style in @('plain', 'powerline')) {
