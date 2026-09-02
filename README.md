@@ -182,7 +182,9 @@ The things you are likely to change sit at the top of `statusline.ps1`:
 - The 60% and 85% colour cut-offs live in the context and rate-limit blocks.
 - `Get-Palette` holds the colours for both styles.
 
-Segments appear in the order of the `$segmentNames` list. Use `statusline.json` to hide one; edit the list to reorder.
+Segment order is fixed for each layout, and `statusline.json` only hides segments rather than moving them.
+To change the order, edit the lists near the bottom of `statusline.ps1`: `$segmentNames` for layout `one`, and
+`$lineSets` for the two rows of layout `two`.
 
 ## Troubleshooting
 

@@ -57,8 +57,13 @@ Write-Host "Installed $target"
 if (Test-Path $configTarget) {
     Write-Host "Kept existing $configTarget"
 } else {
-    Copy-Item (Join-Path $PSScriptRoot 'statusline.json') $configTarget
-    Write-Host "Installed $configTarget (edit it to change layout, style or segments)"
+    $configSource = Join-Path $PSScriptRoot 'statusline.json'
+    if (Test-Path $configSource) {
+        Copy-Item $configSource $configTarget
+        Write-Host "Installed $configTarget (edit it to change layout, style or segments)"
+    } else {
+        Write-Warning "statusline.json was not found beside the installer; the status line will use its built-in defaults."
+    }
 }
 
 # Forward slashes: Claude Code may run the command through Git Bash, which eats backslashes.

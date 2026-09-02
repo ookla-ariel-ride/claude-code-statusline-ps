@@ -178,7 +178,7 @@ function Read-PorcelainStatus([string] $Text) {
     if (-not $lines[0].StartsWith('## ')) { return $null }
     $head = $lines[0].Substring(3)
     $branch = if ($head -eq 'HEAD (no branch)') { 'detached' }
-    elseif ($head -match '^(No commits yet|Initial commit) on (.+)$') { $Matches[2] }
+    elseif ($head -match '^(No commits yet|Initial commit) on (.+)$') { ($Matches[2] -split '\.\.\.', 2)[0] }
     else { ($head -split '\.\.\.', 2)[0] }
     $dirty = @($lines | Select-Object -Skip 1 | Where-Object { $_.Trim() }).Count -gt 0
     return @{ Branch = $branch; Dirty = $dirty }
@@ -209,10 +209,10 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
         if (-not $exited) {
             # Kill the whole tree, then give it a moment to actually go away before we dispose the handles.
             try { $p.Kill($true) } catch { $null = $_ }
-            [void] $p.WaitForExit(500)
+            [void] $p.WaitForExit(100)
         }
         # Bounded waits on both drains; a faulted task is observed here rather than left to the finalizer.
-        try { [void] [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask), 500) } catch { $null = $_ }
+        try { [void] [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask), 100) } catch { $null = $_ }
         if (-not $exited) { return $null }
         if (-not $outTask.IsCompletedSuccessfully) { return $null }
         if ($p.ExitCode -ne 0) { return $null }
@@ -331,9 +331,13 @@ function Test-PayloadDirty($status) {
 }
 
 # Branch from the payload's git object when present; otherwise from git status in current_dir.
+# A git object that carries no branch name means "no branch", not "go and look" - the segment is omitted.
 function Get-BranchSegment($d) {
     $info = $null
-    if ($d.git.branch) { $info = @{ Branch = "$($d.git.branch)"; Dirty = (Test-PayloadDirty $d.git.status) } }
+    if ($null -ne $d.git) {
+        if (-not $d.git.branch) { return $null }
+        $info = @{ Branch = "$($d.git.branch)"; Dirty = (Test-PayloadDirty $d.git.status) }
+    }
     else { $info = Get-GitBranch $d.workspace.current_dir $gitTimeoutMs }
     if (-not $info) { return $null }
     $isMain = $info.Branch -in @('main', 'master')

@@ -272,6 +272,9 @@ Confirm-Equal $r.Branch 'feature/x' 'porcelain: feature branch'
 $r = Read-PorcelainStatus "## No commits yet on main`n"
 Confirm-Equal $r.Branch 'main' 'porcelain: unborn'
 Confirm-Equal $r.Dirty $false 'porcelain: unborn clean'
+$r = Read-PorcelainStatus "## No commits yet on master...origin/master [gone]`n"
+Confirm-Equal $r.Branch 'master' 'porcelain: unborn with upstream'
+Confirm-Equal $r.Dirty $false 'porcelain: unborn with upstream clean'
 $r = Read-PorcelainStatus "## HEAD (no branch)`n"
 Confirm-Equal $r.Branch 'detached' 'porcelain: detached'
 Confirm-Equal (Read-PorcelainStatus "fatal: not a git repository`n") $null 'porcelain: no header'
