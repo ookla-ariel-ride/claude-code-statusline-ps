@@ -286,13 +286,22 @@ function Get-SessionStateDir([bool] $Create) {
     } catch { return $null }
 }
 
-# The file for a session: the id with anything outside [A-Za-z0-9_.-] stripped, at most 64 characters,
-# plus .json. Slashes go with the rest, so an id cannot name a path outside the directory. $null when
-# nothing is left of the id or there is no directory.
+# The file for a session, <name>.json. When the id is at most 64 characters and has nothing outside
+# [A-Za-z0-9_.-] (a UUID), the id is the name. Otherwise stripping or cutting it could give two ids one
+# file - `a/b` and `ab`, or two long ids with the same first 64 characters - and they would inherit each
+# other's history. So the name is then the stripped id cut to 47 characters, a hyphen, and the first 16
+# hex characters of the SHA-256 of the whole original id; the hash alone when nothing readable is left.
+# Slashes are never kept, so an id cannot name a path outside the directory. $null for an empty id or
+# when there is no directory.
 function Get-SessionStatePath([string] $SessionId, [bool] $Create) {
-    $name = [regex]::Replace("$SessionId", '[^A-Za-z0-9_.-]', '')
-    if (-not $name) { return $null }
-    if ($name.Length -gt 64) { $name = $name.Substring(0, 64) }
+    if (-not $SessionId) { return $null }
+    $name = [regex]::Replace($SessionId, '[^A-Za-z0-9_.-]', '')
+    if ($name -cne $SessionId -or $name.Length -gt 64) {
+        $digest = [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($SessionId))
+        $hash = [System.Convert]::ToHexString($digest, 0, 8).ToLowerInvariant()
+        $prefix = if ($name.Length -gt 47) { $name.Substring(0, 47) } else { $name }
+        $name = if ($prefix) { "$prefix-$hash" } else { $hash }
+    }
     $dir = Get-SessionStateDir $Create
     if (-not $dir) { return $null }
     return Join-Path $dir "$name.json"

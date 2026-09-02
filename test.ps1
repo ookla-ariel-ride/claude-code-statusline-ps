@@ -342,20 +342,36 @@ Confirm-Equal $odd.cost_usd $null 'state read: string cost reads as null'
 Confirm-Equal @($odd.history).Count 1 'state read: history entries without both numbers are dropped'
 Confirm-Equal $odd.history[0].cost_usd 0.5 'state read: the whole entry is kept'
 
-# The file name is the id with anything outside [A-Za-z0-9_.-] stripped and capped at 64 characters.
+# The file name is the id itself when it is clean and at most 64 characters, as a UUID is. An id that had
+# characters stripped, or was longer than that, gets a hash of the whole id as a suffix, so two ids that
+# strip or cut to the same text (a/b and ab; two long ids with one first 64 characters) never share a file.
+function Get-StateFileName([string] $Id) { return (Split-Path (Get-SessionStatePath $Id $false) -Leaf) }
+function Get-IdHash([string] $Id) { return [System.Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($Id)), 0, 8).ToLowerInvariant() }
+$uuid = '0f8fad5b-d9cb-469f-a165-70867728950e'
+Confirm-Equal (Get-StateFileName $uuid) "$uuid.json" 'state name: a UUID keeps its readable name'
+Confirm-Equal (Get-StateFileName ('x' * 64)) (('x' * 64) + '.json') 'state name: 64 clean characters kept as they are'
+Confirm-Equal (Get-StateFileName 'ab') 'ab.json' 'state name: ab is readable'
+Confirm-Equal (Get-StateFileName 'a/b') "ab-$(Get-IdHash 'a/b').json" 'state name: a/b is the stripped prefix, a hyphen and 16 hex characters of the SHA-256'
+Confirm-True ((Get-StateFileName 'a/b') -cne (Get-StateFileName 'ab')) 'state name: a/b and ab get different files'
+$long1 = ('y' * 64) + 'AAAAAA'
+$long2 = ('y' * 64) + 'BBBBBB'
+Confirm-True ((Get-StateFileName $long1) -cne (Get-StateFileName $long2)) 'state name: two 70-character ids sharing the first 64 get different files'
+Confirm-True ((Get-StateFileName $long1) -cmatch ('^' + ('y' * 47) + '-[0-9a-f]{16}\.json$')) 'state name: a long id is a 47-character prefix, a hyphen and 16 hex characters'
+Confirm-Equal (Get-StateFileName ('x' * 100)).Length 69 'state name: a hashed name is 64 characters plus .json'
+Confirm-True ((Get-StateFileName '///') -cmatch '^[0-9a-f]{16}\.json$') 'state name: an id of only punctuation is the hash alone'
+Confirm-Equal (Get-StateFileName '../abc') "..abc-$(Get-IdHash '../abc').json" 'state name: slashes stripped, dots kept, hash added'
 Write-SessionState 'a b/c:d\e' $state
-Confirm-True (Test-Path -LiteralPath (Join-Path $stateDir 'abcde.json')) 'state name: punctuation stripped'
-Write-SessionState ('x' * 100) $state
-Confirm-True (Test-Path -LiteralPath (Join-Path $stateDir (('x' * 64) + '.json'))) 'state name: capped at 64 characters'
+Confirm-True (Test-Path -LiteralPath (Join-Path $stateDir "abcde-$(Get-IdHash 'a b/c:d\e').json")) 'state write: stripped id lands under its hashed name'
 Write-SessionState '../up' $state
-Confirm-True (Test-Path -LiteralPath (Join-Path $stateDir '..up.json')) 'state name: a dotdot id stays inside the directory'
+Confirm-True (Test-Path -LiteralPath (Join-Path $stateDir "..up-$(Get-IdHash '../up').json")) 'state write: a dotdot id stays inside the directory'
+Write-SessionState '///' $state
+Confirm-True (Test-Path -LiteralPath (Join-Path $stateDir "$(Get-IdHash '///').json")) 'state write: a punctuation-only id still gets a file'
 $countBefore = Get-StateFileCount
 Write-SessionState '' $state
-Write-SessionState '///' $state
 Write-SessionState 'abc' $null
-Confirm-Equal (Get-StateFileCount) $countBefore 'state write: empty id, id with nothing left and null state write nothing'
+Confirm-Equal (Get-StateFileCount) $countBefore 'state write: empty id and null state write nothing'
 Confirm-Equal (Read-SessionState '') $null 'state read: empty id gives null'
-Confirm-Equal (Get-SessionStatePath '../abc' $false) (Join-Path $stateDir '..abc.json') 'state path: slashes stripped, dots kept'
+Confirm-Equal (Get-SessionStatePath '' $false) $null 'state path: empty id gives null'
 
 # The sweep: state files not written for a day go, at most once per six hours, marked by the stamp.
 $oldFile = Join-Path $stateDir 'old.json'
