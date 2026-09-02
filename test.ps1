@@ -1,11 +1,24 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-  Tests statusline.ps1. Unit checks on its pure functions, then renders every sample in ./samples.
-  Add -Raw to show ANSI escapes as <ESC> for inspection.
+  Tests statusline.ps1.
+.DESCRIPTION
+  Runs unit checks on the script's pure functions, then renders every sample in ./samples against
+  every layout x style combination at each width in -Columns, then exercises the git fallback in
+  temporary repositories. Exits non-zero if any check fails.
+.PARAMETER Columns
+  Terminal widths to test. 0 means COLUMNS unset (no fitting). Default 120, 60, 20.
+.PARAMETER Config
+  Render only this config file instead of the generated layout x style set.
+.PARAMETER Raw
+  Show ANSI escapes as <ESC>.
 #>
 [CmdletBinding()]
-param([switch] $Raw)
+param(
+    [int[]] $Columns = @(120, 60, 20),
+    [string] $Config,
+    [switch] $Raw
+)
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
@@ -317,17 +330,53 @@ foreach ($case in $gitCases) {
     Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f $case.Name, $r.Ms, $text)
 }
 
-# ---- Sample renders (replaced by the matrix in a later task) ----
-Write-Host '== samples' -ForegroundColor Cyan
-foreach ($sample in Get-ChildItem (Join-Path $PSScriptRoot 'samples') -Filter *.json | Sort-Object Name) {
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $out = Get-Content $sample.FullName -Raw | pwsh -NoProfile -NoLogo -NonInteractive -File $script
-    $sw.Stop()
-    if ([string]::IsNullOrWhiteSpace($out)) { $script:failed++; Write-Host "FAIL $($sample.Name): empty output" -ForegroundColor Red; continue }
-    $script:passed++
-    $shown = if ($Raw) { $out -replace [char]27, '<ESC>' } else { $out }
-    Write-Host ("{0,-40} {1,5:N0} ms  " -f $sample.Name, $sw.ElapsedMilliseconds) -NoNewline
-    Write-Host $shown
+# ---- Render matrix: samples x configs x widths ----
+$sampleFiles = Get-ChildItem (Join-Path $PSScriptRoot 'samples') -Filter *.json | Sort-Object Name
+$modelOnlyPath = @{}
+foreach ($style in @('plain', 'powerline')) {
+    $modelOnlyPath[$style] = Write-TempConfig "model-only-$style.json" ('{ "layout": "one", "style": "' + $style + '", "segments": { "context": false, "cost": false, "lines": false, "limits": false, "badges": false, "folder": false, "branch": false } }')
+}
+$configSet = [System.Collections.Generic.List[hashtable]]::new()
+if ($Config) {
+    $resolved = (Resolve-Path $Config).Path
+    $parsed = Read-StatusConfig $resolved
+    $configSet.Add(@{ Name = (Split-Path $resolved -Leaf); Path = $resolved; Layout = $parsed.Layout; Style = $parsed.Style })
+} else {
+    foreach ($layout in @('one', 'two')) {
+        foreach ($style in @('plain', 'powerline')) {
+            $path = Write-TempConfig "$layout-$style.json" ('{ "layout": "' + $layout + '", "style": "' + $style + '" }')
+            $configSet.Add(@{ Name = "$layout-$style"; Path = $path; Layout = $layout; Style = $style })
+        }
+    }
+}
+
+foreach ($cfg in $configSet) {
+    foreach ($c in $Columns) {
+        Write-Host ''
+        Write-Host ("== render {0}  COLUMNS={1}" -f $cfg.Name, $(if ($c -gt 0) { $c } else { 'unset' })) -ForegroundColor Cyan
+        $maxLines = if ($cfg.Layout -eq 'two') { 2 } else { 1 }
+        foreach ($sample in $sampleFiles) {
+            $payload = Get-Content $sample.FullName -Raw
+            $r = Invoke-StatusLine $payload $cfg.Path $c
+            $label = "$($cfg.Name) COLUMNS=$c $($sample.Name)"
+            $lines = $r.Lines
+            if ([string]::IsNullOrWhiteSpace(($lines -join ''))) { Confirm-True $false "${label}: empty output"; continue }
+            Confirm-True ($lines.Count -le $maxLines) "${label}: $($lines.Count) lines, layout allows $maxLines"
+            foreach ($line in $lines) {
+                Confirm-True (-not [string]::IsNullOrWhiteSpace($line)) "${label}: empty line"
+                if ($c -le 0) { continue }
+                $w = Measure-VisibleWidth $line
+                if ($w -le $c - 1) { $script:passed++; continue }
+                $only = Invoke-StatusLine $payload $modelOnlyPath[$cfg.Style] $c
+                $isModelOnly = (ConvertTo-PlainText $line) -ceq (ConvertTo-PlainText ($only.Lines -join ''))
+                Confirm-True $isModelOnly "${label}: width $w exceeds $($c - 1) and the line is not the model-only fallback"
+            }
+            $shown = if ($Raw) { $lines -replace $esc, '<ESC>' } else { $lines }
+            Write-Host ("{0,-40} {1,5:N0} ms  " -f $sample.Name, $r.Ms) -NoNewline
+            Write-Host $shown[0]
+            for ($i = 1; $i -lt $shown.Count; $i++) { Write-Host ((' ' * 50) + $shown[$i]) }
+        }
+    }
 }
 
 Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
