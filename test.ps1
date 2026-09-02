@@ -107,7 +107,13 @@ function Invoke-StatusLine([string] $Payload, [string] $ConfigPath, [int] $Colum
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Test-PayloadDirty', 'Get-BranchSegment'))
+
+# Get-BranchSegment closes over these script-level names in statusline.ps1, so the test has to supply them.
+$gitTimeoutMs = 1500
+$iconHome = [char]::ConvertFromUtf32(0xF015)
+$iconBranch = [char]::ConvertFromUtf32(0xE0A0)
+$iconDirty = [char]::ConvertFromUtf32(0xF040)
 
 Write-Host '== unit: width' -ForegroundColor Cyan
 $widthTable = @(
@@ -131,6 +137,10 @@ foreach ($row in $widthTable) {
 Write-Host '== unit: config' -ForegroundColor Cyan
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "statusline-test-$PID"
 New-Item -ItemType Directory -Force $tmp | Out-Null
+# Every git probe in this file - the unit checks, the git group and the render matrix (whose child pwsh
+# processes inherit this) - must stop at the temp root's parent so an ancestor repository cannot be found.
+$oldGitCeiling = $env:GIT_CEILING_DIRECTORIES
+$env:GIT_CEILING_DIRECTORIES = (Split-Path $tmp -Parent).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
 try {
 function Write-TempConfig([string] $Name, [string] $Json) {
     $p = Join-Path $tmp $Name
@@ -168,6 +178,20 @@ Confirm-Equal $c.Layout 'one' 'config empty file: default'
 
 $c = Read-StatusConfig (Write-TempConfig 'array.json' '[1, 2]')
 Confirm-Equal $c.Style 'plain' 'config top-level array: default'
+
+# The config that ships with the repo has to be valid JSON and to mean what the README says it means.
+$shippedConfig = Join-Path $PSScriptRoot 'statusline.json'
+$shippedJson = try { Get-Content -LiteralPath $shippedConfig -Raw | ConvertFrom-Json } catch { $null }
+Confirm-True ($shippedJson -is [System.Management.Automation.PSCustomObject]) 'shipped config: parses as a JSON object'
+$c = Read-StatusConfig $shippedConfig
+Confirm-Equal $c.Layout 'one' 'shipped config: layout one'
+Confirm-Equal $c.Style 'plain' 'shipped config: style plain'
+$shippedSegments = @($c.Segments.Keys)
+Confirm-Equal $shippedSegments.Count 8 'shipped config: eight segments'
+Confirm-True (@($shippedSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'shipped config: every segment on'
+$shippedFileSegments = @($shippedJson.segments.PSObject.Properties)
+Confirm-Equal $shippedFileSegments.Count 8 'shipped config: the file itself lists eight segments'
+Confirm-True (@($shippedFileSegments | Where-Object { $_.Value -ne $true }).Count -eq 0) 'shipped config: the file itself sets them all true'
 
 Write-Host '== unit: renderer' -ForegroundColor Cyan
 $arrow = [char]::ConvertFromUtf32(0xE0B0)
@@ -280,6 +304,26 @@ Confirm-Equal $r.Branch 'detached' 'porcelain: detached'
 Confirm-Equal (Read-PorcelainStatus "fatal: not a git repository`n") $null 'porcelain: no header'
 Confirm-Equal (Read-PorcelainStatus '') $null 'porcelain: empty'
 
+Write-Host '== unit: branch segment' -ForegroundColor Cyan
+$seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'main'; status = 'clean' } })
+Confirm-True ($null -ne $seg -and $seg.Text.Contains('main')) "branch payload clean: text has the branch name, got '$($seg.Text)'"
+Confirm-Equal $seg.Text "$iconHome main" 'branch payload clean: home icon, no pencil'
+Confirm-Equal $seg.Role 'branch' 'branch payload clean: role'
+
+$seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = @{ modified = 2 } } })
+Confirm-Equal $seg.Text "$iconBranch feature/x $iconDirty" 'branch payload dirty counts: branch icon and pencil'
+Confirm-Equal $seg.Role 'warn' 'branch payload dirty counts: role'
+
+Confirm-True ($null -eq (Get-BranchSegment ([pscustomobject]@{ git = @{} }))) 'branch payload git object with no branch: segment omitted'
+Confirm-True ($null -eq (Get-BranchSegment ([pscustomobject]@{ git = @{ branch = '' } }))) 'branch payload empty branch: segment omitted'
+
+# No git key at all falls through to Get-GitBranch. GIT_CEILING_DIRECTORIES (set above) stops the probe
+# from walking out of the temp tree, so this cannot find a repository on the machine running the test.
+$branchProbeDir = Join-Path $tmp 'branch-unit-not-a-repo'
+New-Item -ItemType Directory -Force $branchProbeDir | Out-Null
+Confirm-True ($null -eq (Get-BranchSegment ([pscustomobject]@{ workspace = @{ current_dir = $branchProbeDir } }))) 'branch no git key: falls through to git and finds no repo'
+Confirm-True ($null -eq (Get-BranchSegment ([pscustomobject]@{}))) 'branch no git key and no dir: segment omitted'
+
 Write-Host '== git' -ForegroundColor Cyan
 $gitConfigEmpty = Join-Path $tmp 'gitconfig-empty'
 [System.IO.File]::WriteAllText($gitConfigEmpty, '', [System.Text.UTF8Encoding]::new($false))
@@ -288,9 +332,6 @@ $oldGitConfigNoSystem = $env:GIT_CONFIG_NOSYSTEM
 $env:GIT_CONFIG_GLOBAL = $gitConfigEmpty
 $env:GIT_CONFIG_NOSYSTEM = '1'
 try {
-$iconHome = [char]::ConvertFromUtf32(0xF015)
-$iconBranch = [char]::ConvertFromUtf32(0xE0A0)
-$iconDirty = [char]::ConvertFromUtf32(0xF040)
 $gitCfg = @('-c', 'user.name=test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false')
 function Initialize-TestRepo([string] $Name) {
     $p = Join-Path $tmp $Name
@@ -326,12 +367,12 @@ if ($haveGit) {
     $detached = Initialize-TestRepo 'repo-detached'; Add-Commit $detached; git -C $detached checkout -q --detach
 
     # In-process checks of Get-GitBranch itself
-    $g = Get-GitBranch $clean 1500
+    $g = Get-GitBranch $clean $gitTimeoutMs
     Confirm-Equal $g.Branch 'main' 'Get-GitBranch: clean branch'
     Confirm-Equal $g.Dirty $false 'Get-GitBranch: clean not dirty'
-    $g = Get-GitBranch $dirtyUntracked 1500
+    $g = Get-GitBranch $dirtyUntracked $gitTimeoutMs
     Confirm-Equal $g.Dirty $true 'Get-GitBranch: untracked dirty'
-    Confirm-Equal (Get-GitBranch (Join-Path $tmp 'nowhere') 1500) $null 'Get-GitBranch: missing dir'
+    Confirm-Equal (Get-GitBranch (Join-Path $tmp 'nowhere') $gitTimeoutMs) $null 'Get-GitBranch: missing dir'
 
     $gitCases.Add(@{ Name = 'clean';           Dir = $clean;          Has = "$iconHome main";              Not = $iconDirty })
     $gitCases.Add(@{ Name = 'dirty tracked';   Dir = $dirtyTracked;   Has = "$iconHome main $iconDirty";  Raw = "$esc[33m" })
@@ -342,17 +383,20 @@ if ($haveGit) {
 }
 $notRepo = Join-Path $tmp 'not-a-repo'; New-Item -ItemType Directory -Force $notRepo | Out-Null
 $gitCases.Add(@{ Name = 'not a repo'; Dir = $notRepo; NoBranch = $true })
-# Each fake writes a marker file so the test can prove it really ran, and the hang fake's ping child must
-# be gone afterwards, which proves Kill($true) took the tree down.
-$failMarker = Join-Path $tmp 'fake-fail.ran'
-$hangMarker = Join-Path $tmp 'fake-hang.ran'
-$gitCases.Add(@{ Name = 'git fails'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; Marker = $failMarker
-                 PathPrefix = (Write-FakeGit 'fake-fail' "echo ran > `"$failMarker`"`r`necho fatal: not a git repository 1>&2`r`nexit 128") })
-$gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 1500; MaxMs = 4000; Marker = $hangMarker; NoPing = $true
-                 PathPrefix = (Write-FakeGit 'fake-hang' "echo ran > `"$hangMarker`"`r`nping -n 11 127.0.0.1 > nul`r`nexit 0") })
+# Each fake writes a marker file next to itself so the test can prove it really ran. The marker path is
+# %~dp0-relative so the batch file stays pure ASCII however the temp path is spelled. The hang fake's ping
+# child must be gone afterwards, which proves Kill($true) took the tree down; its -w value tags the
+# process so concurrent runs of this test do not see each other's pings.
+$pingTag = "1000$PID"
+$fakeFail = Write-FakeGit 'fake-fail' "echo ran > `"%~dp0fake.ran`"`r`necho fatal: not a git repository 1>&2`r`nexit 128"
+$fakeHang = Write-FakeGit 'fake-hang' "echo ran > `"%~dp0fake.ran`"`r`nping -n 11 -w $pingTag 127.0.0.1 > nul`r`nexit 0"
+$gitCases.Add(@{ Name = 'git fails'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; Marker = (Join-Path $fakeFail 'fake.ran')
+                 PathPrefix = $fakeFail })
+$gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 1500; MaxMs = 4000; Marker = (Join-Path $fakeHang 'fake.ran'); NoPing = $true
+                 PathPrefix = $fakeHang })
 
-function Get-FakePingCount {
-    return @(Get-CimInstance Win32_Process -Filter "Name='PING.EXE'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match '-n 11 127\.0\.0\.1' }).Count
+function Get-FakePingCount([string] $Tag) {
+    return @(Get-CimInstance Win32_Process -Filter "Name='PING.EXE'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match "-n 11 -w $Tag " }).Count
 }
 
 foreach ($case in $gitCases) {
@@ -369,7 +413,7 @@ foreach ($case in $gitCases) {
     if ($case.Marker) { Confirm-True (Test-Path $case.Marker) "${label}: fake git was actually launched" }
     if ($case.MinMs) { Confirm-True ($r.Ms -ge $case.MinMs) "${label}: waited the full timeout ($($r.Ms) ms, expected at least $($case.MinMs))" }
     if ($case.MaxMs) { Confirm-True ($r.Ms -lt $case.MaxMs) "${label}: finished in $($r.Ms) ms (limit $($case.MaxMs))" }
-    if ($case.NoPing) { Start-Sleep -Milliseconds 300; Confirm-True ((Get-FakePingCount) -eq 0) "${label}: ping child killed with the tree" }
+    if ($case.NoPing) { Start-Sleep -Milliseconds 300; Confirm-True ((Get-FakePingCount $pingTag) -eq 0) "${label}: ping child killed with the tree" }
     Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f $case.Name, $r.Ms, $text)
 }
 } finally {
@@ -453,16 +497,21 @@ $modelOnlyPath = @{}
 foreach ($style in @('plain', 'powerline')) {
     $modelOnlyPath[$style] = Write-TempConfig "model-only-$style.json" ('{ "layout": "one", "style": "' + $style + '", "segments": { "context": false, "cost": false, "lines": false, "limits": false, "badges": false, "folder": false, "branch": false } }')
 }
+# AllOn says whether every segment is enabled. The glyph, two-line and toggle assertions below describe a
+# full status line, so they only apply then; a user-supplied -Config with segments off still gets the
+# structural checks (exit code, empty stderr, width, line count against the layout).
 $configSet = [System.Collections.Generic.List[hashtable]]::new()
 if ($Config) {
     $resolved = (Resolve-Path $Config).Path
     $parsed = Read-StatusConfig $resolved
-    $configSet.Add(@{ Name = (Split-Path $resolved -Leaf); Path = $resolved; Layout = $parsed.Layout; Style = $parsed.Style })
+    $allOn = (@($parsed.Segments.Keys | Where-Object { -not $parsed.Segments[$_] }).Count -eq 0)
+    if (-not $allOn) { Write-Host "note: $(Split-Path $resolved -Leaf) turns segments off; running structural checks only" -ForegroundColor Yellow }
+    $configSet.Add(@{ Name = (Split-Path $resolved -Leaf); Path = $resolved; Layout = $parsed.Layout; Style = $parsed.Style; AllOn = $allOn })
 } else {
     foreach ($layout in @('one', 'two')) {
         foreach ($style in @('plain', 'powerline')) {
             $path = Write-TempConfig "$layout-$style.json" ('{ "layout": "' + $layout + '", "style": "' + $style + '" }')
-            $configSet.Add(@{ Name = "$layout-$style"; Path = $path; Layout = $layout; Style = $style })
+            $configSet.Add(@{ Name = "$layout-$style"; Path = $path; Layout = $layout; Style = $style; AllOn = $true })
         }
     }
 }
@@ -492,7 +541,7 @@ foreach ($cfg in $configSet) {
                 $isModelOnly = (ConvertTo-PlainText $line) -ceq (ConvertTo-PlainText ($only.Lines -join ''))
                 Confirm-True $isModelOnly "${label}: width $w exceeds $($c - 1) and the line is not the model-only fallback"
             }
-            if ($c -le 0) {
+            if ($c -le 0 -and $cfg.AllOn) {
                 $text = ConvertTo-PlainText ($lines -join "`n")
                 Confirm-True ($text.Contains($iconModel)) "${label}: has model glyph"
                 if ($presenceTable.ContainsKey($sample.Name)) {
@@ -531,7 +580,7 @@ foreach ($cfg in $configSet) {
             Write-Host $shown[0]
             for ($i = 1; $i -lt $shown.Count; $i++) { Write-Host ((' ' * 50) + $shown[$i]) }
         }
-        if ($c -le 0) {
+        if ($c -le 0 -and $cfg.AllOn) {
             $togglePath = Write-TempConfig "toggle-$($cfg.Name).json" ('{ "layout": "' + $cfg.Layout + '", "style": "' + $cfg.Style + '", "segments": { "cost": false, "badges": false } }')
             $payload06 = Get-Content $sample06.FullName -Raw
             $toggle = Invoke-StatusLine $payload06 $togglePath $c
@@ -546,6 +595,7 @@ foreach ($cfg in $configSet) {
     }
 }
 } finally {
+    if ($null -ne $oldGitCeiling) { $env:GIT_CEILING_DIRECTORIES = $oldGitCeiling } else { Remove-Item Env:GIT_CEILING_DIRECTORIES -ErrorAction SilentlyContinue }
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }
 
