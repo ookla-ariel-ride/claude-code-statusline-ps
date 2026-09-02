@@ -137,6 +137,8 @@ $gitTimeoutMs = 1500
 $iconHome = [char]::ConvertFromUtf32(0xF015)
 $iconBranch = [char]::ConvertFromUtf32(0xE0A0)
 $iconDirty = [char]::ConvertFromUtf32(0xF040)
+$iconAhead = [char]::ConvertFromUtf32(0x2191)
+$iconBehind = [char]::ConvertFromUtf32(0x2193)
 
 Write-Host '== unit: width' -ForegroundColor Cyan
 $widthTable = @(
@@ -150,6 +152,7 @@ $widthTable = @(
     @{ Text = 'e' + [string][char]0x0301; Width = 1 }                                   # e + combining acute
     @{ Text = [string][char]0x0301; Width = 0 }                                         # lone combining mark
     @{ Text = "$esc[1;36mab$esc[0m $esc[90mc$esc[0m"; Width = 4 }                     # escapes stripped
+    @{ Text = "${iconAhead}1 ${iconBehind}2"; Width = 5 }                              # ahead/behind arrows are narrow
 )
 foreach ($row in $widthTable) {
     $shown = $row.Text -replace $esc, '<ESC>'
@@ -275,6 +278,16 @@ Confirm-Equal (Get-FittedLine @() 'plain' 40) $null 'fit: no segments gives null
 $line = Get-FittedLine $fit 'powerline' 30
 Confirm-True ((Get-VisibleWidth $line) -le 30) 'fit: powerline respects width'
 
+# A branch with a Short form (its ahead/behind counts stripped) sheds it in stage 1, after context and
+# before any whole segment goes. Full width is 46 here; limits short gives 43, context 40, branch 38.
+$fitBranch = Get-FitSegmentSet
+$fitBranch[7] = @{ Name = 'branch'; Text = 'BBBB'; Short = 'BB'; Role = 'branch'; Bold = $false }
+$line = Get-FittedLine $fitBranch 'plain' 40
+Confirm-True ($line.Contains('BBBB') -and $line.Contains('CCC') -and -not $line.Contains('CCCCCC')) 'fit: context shortened before branch at 40'
+$line = Get-FittedLine $fitBranch 'plain' 39
+Confirm-Equal (Get-VisibleWidth $line) 38 'fit: stage 1 shrinks branch third'
+Confirm-True ($line.Contains('BB') -and -not $line.Contains('BBBB') -and $line.Contains('LL')) 'fit: branch shortened, nothing dropped at 39'
+
 Write-Host '== unit: context' -ForegroundColor Cyan
 $iconCtx = [char]::ConvertFromUtf32(0xF035B)
 $blockFull = [char]::ConvertFromUtf32(0x2588)
@@ -311,6 +324,21 @@ Write-Host '== unit: porcelain' -ForegroundColor Cyan
 $r = Read-PorcelainStatus "## main...origin/main [ahead 1]`n"
 Confirm-Equal $r.Branch 'main' 'porcelain: tracking branch'
 Confirm-Equal $r.Dirty $false 'porcelain: clean'
+Confirm-Equal $r.Ahead 1 'porcelain: ahead only gives the count'
+Confirm-Equal $r.Behind 0 'porcelain: ahead only gives behind 0'
+$r = Read-PorcelainStatus "## main...origin/main [behind 2]`n"
+Confirm-Equal $r.Ahead 0 'porcelain: behind only gives ahead 0'
+Confirm-Equal $r.Behind 2 'porcelain: behind only gives the count'
+$r = Read-PorcelainStatus "## main...origin/main [ahead 1, behind 2]`n"
+Confirm-Equal $r.Ahead 1 'porcelain: both gives ahead'
+Confirm-Equal $r.Behind 2 'porcelain: both gives behind'
+Confirm-Equal $r.Branch 'main' 'porcelain: both keeps the branch name'
+$r = Read-PorcelainStatus "## main...origin/main [gone]`n"
+Confirm-Equal $r.Ahead 0 'porcelain: gone gives ahead 0'
+Confirm-Equal $r.Behind 0 'porcelain: gone gives behind 0'
+$r = Read-PorcelainStatus "## main`n"
+Confirm-Equal $r.Ahead 0 'porcelain: no bracket gives ahead 0'
+Confirm-Equal $r.Behind 0 'porcelain: no bracket gives behind 0'
 $r = Read-PorcelainStatus "## main`n M file.txt`n"
 Confirm-Equal $r.Dirty $true 'porcelain: modified is dirty'
 $r = Read-PorcelainStatus "## main`r`n?? new.txt`r`n"
@@ -323,6 +351,8 @@ Confirm-Equal $r.Dirty $false 'porcelain: unborn clean'
 $r = Read-PorcelainStatus "## No commits yet on master...origin/master [gone]`n"
 Confirm-Equal $r.Branch 'master' 'porcelain: unborn with upstream'
 Confirm-Equal $r.Dirty $false 'porcelain: unborn with upstream clean'
+Confirm-Equal $r.Ahead 0 'porcelain: unborn with upstream ahead 0'
+Confirm-Equal $r.Behind 0 'porcelain: unborn with upstream behind 0'
 $r = Read-PorcelainStatus "## HEAD (no branch)`n"
 Confirm-Equal $r.Branch 'detached' 'porcelain: detached'
 Confirm-Equal (Read-PorcelainStatus "fatal: not a git repository`n") $null 'porcelain: no header'
@@ -337,9 +367,40 @@ Confirm-Equal $seg.Role 'branch' 'branch payload clean: role'
 $seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = @{ modified = 2 } } })
 Confirm-Equal $seg.Text "$iconBranch feature/x $iconDirty" 'branch payload dirty counts: branch icon and pencil'
 Confirm-Equal $seg.Role 'warn' 'branch payload dirty counts: role'
+Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch payload dirty counts: short is the same text'
 
 Confirm-True ($null -eq (Get-BranchSegment ([pscustomobject]@{ git = @{} }))) 'branch payload git object with no branch: segment omitted'
 Confirm-True ($null -eq (Get-BranchSegment ([pscustomobject]@{ git = @{ branch = '' } }))) 'branch payload empty branch: segment omitted'
+
+# Ahead and behind counts only ever come from the git probe, so stand in for Get-GitBranch here and put
+# the real one back afterwards. The "not a repo" checks below then double as proof the restore worked.
+function Get-GitBranch([string] $Dir, [int] $TimeoutMs) { return $script:mockGitBranch }
+$probePayload = [pscustomobject]@{ workspace = @{ current_dir = 'x' } }
+$script:mockGitBranch = @{ Branch = 'feature/x'; Dirty = $false; Ahead = 1; Behind = 2 }
+$seg = Get-BranchSegment $probePayload
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ${iconAhead}1 ${iconBehind}2" 'branch counts: ahead then behind after the name'
+Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m${iconAhead}1$esc[35m $esc[90m${iconBehind}2$esc[35m" 'branch counts: arrows dim, branch colour restored (plain, no cfg)'
+Confirm-Equal $seg.Short "$iconBranch feature/x" 'branch counts: short has no arrows'
+Confirm-Equal $seg.Role 'branch' 'branch counts: role'
+$seg = Get-BranchSegment $probePayload @{ Style = 'powerline' }
+Confirm-Equal $seg.Text "$iconBranch feature/x $esc[38;5;245m${iconAhead}1$esc[38;5;231m $esc[38;5;245m${iconBehind}2$esc[38;5;231m" 'branch counts: powerline arrows restore the block fg'
+$script:mockGitBranch = @{ Branch = 'topic'; Dirty = $false; Ahead = 2; Behind = 0 }
+$seg = Get-BranchSegment $probePayload @{ Style = 'plain' }
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch topic ${iconAhead}2" 'branch ahead only: no behind arrow'
+$script:mockGitBranch = @{ Branch = 'main'; Dirty = $false; Ahead = 0; Behind = 3 }
+$seg = Get-BranchSegment $probePayload @{ Style = 'plain' }
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconHome main ${iconBehind}3" 'branch behind only: no ahead arrow'
+$script:mockGitBranch = @{ Branch = 'main'; Dirty = $false; Ahead = 0; Behind = 0 }
+$seg = Get-BranchSegment $probePayload @{ Style = 'plain' }
+Confirm-Equal $seg.Text "$iconHome main" 'branch zero counts: exactly the old text, no escapes'
+Confirm-Equal $seg.Short "$iconHome main" 'branch zero counts: short is the same text'
+$script:mockGitBranch = @{ Branch = 'feature/x'; Dirty = $true; Ahead = 1; Behind = 1 }
+$seg = Get-BranchSegment $probePayload @{ Style = 'plain' }
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ${iconAhead}1 ${iconBehind}1 $iconDirty" 'branch dirty with counts: pencil last'
+Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m${iconAhead}1$esc[33m $esc[90m${iconBehind}1$esc[33m $iconDirty" 'branch dirty with counts: arrows restore the warn colour'
+Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch dirty with counts: short keeps the pencil, drops the arrows'
+Confirm-Equal $seg.Role 'warn' 'branch dirty with counts: role'
+. (Import-ScriptFunction $script @('Get-GitBranch'))
 
 # No git key at all falls through to Get-GitBranch. GIT_CEILING_DIRECTORIES (set above) stops the probe
 # from walking out of the temp tree, so this cannot find a repository on the machine running the test.
@@ -363,8 +424,8 @@ function Initialize-TestRepo([string] $Name) {
     git init -q -b main $p
     return $p
 }
-function Add-Commit([string] $Path) {
-    Set-Content (Join-Path $Path 'file.txt') 'hello'
+function Add-Commit([string] $Path, [string] $Content = 'hello') {
+    Set-Content (Join-Path $Path 'file.txt') $Content
     git -C $Path add .
     git -C $Path @gitCfg commit -q -m init
 }
@@ -389,11 +450,28 @@ if ($haveGit) {
     $feature = Initialize-TestRepo 'repo-feature'; Add-Commit $feature; git -C $feature checkout -q -b feature/x
     $unborn = Initialize-TestRepo 'repo-unborn'
     $detached = Initialize-TestRepo 'repo-detached'; Add-Commit $detached; git -C $detached checkout -q --detach
+    # A local branch tracking another local branch gives git status a real [ahead N] / [behind N]
+    # bracket with no remote involved: topic tracks main and carries one commit main does not.
+    $ahead = Initialize-TestRepo 'repo-ahead'; Add-Commit $ahead
+    git -C $ahead checkout -q -b topic; git -C $ahead branch -q --set-upstream-to=main; Add-Commit $ahead 'topic'
+    # The mirror image: main tracks a topic that is one commit further on.
+    $behind = Initialize-TestRepo 'repo-behind'; Add-Commit $behind
+    git -C $behind checkout -q -b topic; Add-Commit $behind 'topic'; git -C $behind checkout -q main; git -C $behind branch -q --set-upstream-to=topic
 
     # In-process checks of Get-GitBranch itself
     $g = Get-GitBranch $clean $gitTimeoutMs
     Confirm-Equal $g.Branch 'main' 'Get-GitBranch: clean branch'
     Confirm-Equal $g.Dirty $false 'Get-GitBranch: clean not dirty'
+    Confirm-Equal $g.Ahead 0 'Get-GitBranch: no upstream means ahead 0'
+    Confirm-Equal $g.Behind 0 'Get-GitBranch: no upstream means behind 0'
+    $g = Get-GitBranch $ahead $gitTimeoutMs
+    Confirm-Equal $g.Branch 'topic' 'Get-GitBranch: ahead fixture branch'
+    Confirm-Equal $g.Ahead 1 'Get-GitBranch: one commit ahead of the tracked branch'
+    Confirm-Equal $g.Behind 0 'Get-GitBranch: ahead fixture is not behind'
+    $g = Get-GitBranch $behind $gitTimeoutMs
+    Confirm-Equal $g.Branch 'main' 'Get-GitBranch: behind fixture branch'
+    Confirm-Equal $g.Ahead 0 'Get-GitBranch: behind fixture is not ahead'
+    Confirm-Equal $g.Behind 1 'Get-GitBranch: one commit behind the tracked branch'
     $g = Get-GitBranch $dirtyUntracked $gitTimeoutMs
     Confirm-Equal $g.Dirty $true 'Get-GitBranch: untracked dirty'
     Confirm-Equal (Get-GitBranch (Join-Path $tmp 'nowhere') $gitTimeoutMs) $null 'Get-GitBranch: missing dir'
@@ -425,6 +503,8 @@ if ($haveGit) {
     $gitCases.Add(@{ Name = 'feature';         Dir = $feature;        Has = "$iconBranch feature/x" })
     $gitCases.Add(@{ Name = 'unborn';          Dir = $unborn;         Has = "$iconHome main";              Not = $iconDirty })
     $gitCases.Add(@{ Name = 'detached';        Dir = $detached;       Has = "$iconBranch detached" })
+    $gitCases.Add(@{ Name = 'ahead';           Dir = $ahead;          Has = "$iconBranch topic ${iconAhead}1"; Not = $iconBehind; Raw = "$esc[90m${iconAhead}1$esc[35m" })
+    $gitCases.Add(@{ Name = 'behind';          Dir = $behind;         Has = "$iconHome main ${iconBehind}1";   Not = $iconAhead })
 }
 $notRepo = Join-Path $tmp 'not-a-repo'; New-Item -ItemType Directory -Force $notRepo | Out-Null
 $gitCases.Add(@{ Name = 'not a repo'; Dir = $notRepo; NoBranch = $true })
@@ -635,7 +715,7 @@ $segmentGlyphs = @{
     limits  = @($iconLimits)
     badges  = @($iconFast, $iconThink, $iconEffort, $iconVim)
     folder  = @($iconFolder)
-    branch  = @($iconHome, $iconBranch, $iconDirty)
+    branch  = @($iconHome, $iconBranch, $iconDirty, $iconAhead, $iconBehind)
 }
 # The segment behind each row of the absence table, so a row can be skipped when its segment is off
 # (the per-segment absence assertions cover that case instead, for every glyph the segment owns).
