@@ -76,7 +76,7 @@ function Get-SegmentRegistry {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'cfg')]
     param()
     return @(
-        @{ Name = 'model';   Build = { param($d, $cfg) Get-ModelSegment $d };        Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
+        @{ Name = 'model';   Build = { param($d, $cfg) Get-ModelSegment $d $cfg };   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
         @{ Name = 'context'; Build = { param($d, $cfg) Get-ContextSegment $d };      Default = $true; ShrinkRank = 2;     DropRank = 7;     Row = 2; RowRank = 1 }
         @{ Name = 'cost';    Build = { param($d, $cfg) Get-CostSegment $d };         Default = $true; ShrinkRank = $null; DropRank = 3;     Row = 2; RowRank = 3 }
         @{ Name = 'lines';   Build = { param($d, $cfg) Get-LinesSegment $d $cfg };   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
@@ -132,6 +132,7 @@ function Get-Palette {
             added   = @{ Sgr = '32'; Fg = 46 }
             removed = @{ Sgr = '31'; Fg = 203 }
             track   = @{ Sgr = '90'; Fg = 245 }
+            muted   = @{ Sgr = '22;36'; Fg = 152 }
         }
     }
 }
@@ -305,15 +306,22 @@ $cfg = Read-StatusConfig $configPath
 
 # ---- Segment builders. Each returns $null (segment omitted) or @{ Name; Text; Short; Role; Bold }. ----
 
-function Get-ThresholdRole([int] $pct) { if ($pct -ge 85) { 'bad' } elseif ($pct -ge 60) { 'warn' } else { 'ok' } }
+# Colour bands for a percentage. The defaults suit a 200k window; a 1M window passes wider bands, because
+# 85% of 1M still leaves 150k tokens, more than a whole fresh 200k session.
+function Get-ThresholdRole([int] $pct, [int] $Warn = 60, [int] $Bad = 85) { if ($pct -ge $Bad) { 'bad' } elseif ($pct -ge $Warn) { 'warn' } else { 'ok' } }
 
 # Thousands of tokens: 1.5k, 64k, 1.0M
 function K([double] $n) { if ($n -ge 1000000) { '{0:N1}M' -f ($n / 1000000) } elseif ($n -ge 10000) { '{0:N0}k' -f ($n / 1000) } else { '{0:N1}k' -f ($n / 1000) } }
 
-function Get-ModelSegment($d) {
+# A 1M window gets a dim "1M" after the name, so a percentage in the context segment reads against the
+# right total. Once the session has passed 200k tokens the warning glyph follows it.
+function Get-ModelSegment($d, $cfg) {
     $model = $d.model.display_name
     if (-not $model) { return $null }
-    return @{ Name = 'model'; Text = "$iconModel $model"; Short = $null; Role = 'model'; Bold = $true }
+    $text = "$iconModel $model"
+    if ($d.context_window.context_window_size -eq 1000000) { $text += ' ' + (Format-Inline 'muted' '1M' 'model' $cfg.Style) }
+    if ($d.exceeds_200k_tokens -eq $true) { $text += " $iconConflict" }
+    return @{ Name = 'model'; Text = $text; Short = $null; Role = 'model'; Bold = $true }
 }
 
 function Get-ContextSegment($d) {
@@ -327,7 +335,8 @@ function Get-ContextSegment($d) {
     $size = $d.context_window.context_window_size
     $counts = if ($used -gt 0 -and $size) { " $(K $used)/$(K $size)" } elseif ($used -gt 0) { " $(K $used)" } else { '' }
     $short = "$iconCtx $pct% $bar"
-    return @{ Name = 'context'; Text = "$short$counts"; Short = $(if ($counts) { $short } else { $null }); Role = (Get-ThresholdRole $pct); Bold = $false }
+    $role = if ($size -eq 1000000) { Get-ThresholdRole $pct 70 90 } else { Get-ThresholdRole $pct }
+    return @{ Name = 'context'; Text = "$short$counts"; Short = $(if ($counts) { $short } else { $null }); Role = $role; Bold = $false }
 }
 
 function Get-CostSegment($d) {
