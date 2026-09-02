@@ -130,10 +130,11 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'TimeLeft', 'Get-LimitsSegment'))
 
-# Get-BranchSegment closes over these script-level names in statusline.ps1, so the test has to supply them.
+# Get-BranchSegment and Get-LimitsSegment close over these script-level names in statusline.ps1, so the test has to supply them.
 $gitTimeoutMs = 1500
+$iconLimit = [char]::ConvertFromUtf32(0xF0E4)
 $iconHome = [char]::ConvertFromUtf32(0xF015)
 $iconBranch = [char]::ConvertFromUtf32(0xE0A0)
 $iconDirty = [char]::ConvertFromUtf32(0xF040)
@@ -320,6 +321,36 @@ Confirm-Equal (Get-ContextSegment (Get-ContextPayload 64)).Role 'warn' 'context 
 Confirm-Equal (Get-ContextSegment (Get-ContextPayload 85)).Role 'bad' 'context 85: role'
 
 Confirm-Equal (Get-ContextSegment ([pscustomobject]@{})) $null 'context: missing context_window'
+
+Write-Host '== unit: limits' -ForegroundColor Cyan
+# Resets in the past keep TimeLeft empty, so the text is deterministic. Payloads go through ConvertFrom-Json
+# so a null used_percentage is a real null property, the way Claude Code sends it.
+function Get-LimitsPayload([string] $RateLimits) {
+    return ('{"rate_limits":' + $RateLimits + '}') | ConvertFrom-Json
+}
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":24,"resets_at":1700000000},"seven_day":{"used_percentage":41,"resets_at":1700000000},"spend_limit":{"used_percentage":62,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit 5h 24% 7d 41% `$ 62%" 'limits all three: 5h, 7d, then spend'
+Confirm-Equal $seg.Short "$iconLimit 5h 24%" 'limits all three: short keeps the 5h figure only'
+Confirm-Equal $seg.Role 'warn' 'limits all three: role from the worst figure'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"spend_limit":{"used_percentage":62,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit `$ 62%" 'limits spend alone: one figure, no 5h'
+Confirm-Equal $seg.Short $null 'limits spend alone: no short form'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"spend_limit":{"used_percentage":92,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit 5h 10% `$ 92%" 'limits spend 92 with 5h 10: text'
+Confirm-Equal $seg.Role 'bad' 'limits spend 92 with 5h 10: spend drives the colour'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit absent: unchanged text'
+Confirm-Equal $seg.Role 'warn' 'limits spend_limit absent: role'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000},"spend_limit":{"used_percentage":null,"resets_at":null}}')
+Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit null percentage: unchanged text'
+
+Confirm-Equal (Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":null},"seven_day":{"used_percentage":null},"spend_limit":{"used_percentage":null}}')) $null 'limits all null: segment omitted'
+Confirm-Equal (Get-LimitsSegment ([pscustomobject]@{})) $null 'limits: missing rate_limits'
 
 Write-Host '== unit: porcelain' -ForegroundColor Cyan
 $r = Read-PorcelainStatus "## main...origin/main [ahead 1]`n"
@@ -834,7 +865,7 @@ $sampleMarkers = @{
     }
     '07-limits-expired-default-effort.json' = @{
         model = "$iconModel Opus 5"; context = "$iconCtx 5%"; cost = "$iconCost `$$('{0:N2}' -f 0.02)"
-        lines = "$iconLines +0 ${minus}4"; limits = "$iconLimits 5h 61% 7d 12%"
+        lines = "$iconLines +0 ${minus}4"; limits = "$iconLimits 5h 61% 7d 12% `$ 44%"
         folder = "$iconFolder repo"
     }
 }

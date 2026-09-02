@@ -323,13 +323,16 @@ function TimeLeft([object] $epoch) {
     return ' ({0}h{1:00}m)' -f [int] [math]::Floor($left.TotalHours), $left.Minutes
 }
 
-# Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets.
+# Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets, and the spend limit when
+# the account has one. The spend figure uses a literal dollar sign, not the cash glyph, so it does not read
+# as a second cost; its resets_at is not shown, one countdown is enough.
 function Get-LimitsSegment($d) {
     $rl = $d.rate_limits
     if (-not $rl) { return $null }
     $h5 = $rl.five_hour.used_percentage
     $d7 = $rl.seven_day.used_percentage
-    if ($null -eq $h5 -and $null -eq $d7) { return $null }
+    $sp = $rl.spend_limit.used_percentage
+    if ($null -eq $h5 -and $null -eq $d7 -and $null -eq $sp) { return $null }
     $bits = [System.Collections.Generic.List[string]]::new()
     $worst = 0
     $short = $null
@@ -339,6 +342,7 @@ function Get-LimitsSegment($d) {
         $short = "$iconLimit 5h $h5%"
     }
     if ($null -ne $d7) { $d7 = [int] [math]::Round([double] $d7); $worst = [math]::Max($worst, $d7); $bits.Add("7d $d7%") }
+    if ($null -ne $sp) { $sp = [int] [math]::Round([double] $sp); $worst = [math]::Max($worst, $sp); $bits.Add("`$ $sp%") }
     $text = "$iconLimit $($bits -join ' ')"
     if ($short -eq $text) { $short = $null }
     return @{ Name = 'limits'; Text = $text; Short = $short; Role = (Get-ThresholdRole $worst); Bold = $false }
