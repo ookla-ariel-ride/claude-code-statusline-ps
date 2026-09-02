@@ -320,7 +320,7 @@ function Get-ModelSegment($d, $cfg) {
     if (-not $model) { return $null }
     $text = "$iconModel $model"
     if ($d.context_window.context_window_size -eq 1000000) { $text += ' ' + (Format-Inline 'muted' '1M' 'model' $cfg.Style) }
-    if ($d.exceeds_200k_tokens -eq $true) { $text += " $iconConflict" }
+    if ($d.exceeds_200k_tokens -is [bool] -and $d.exceeds_200k_tokens) { $text += " $iconConflict" }
     return @{ Name = 'model'; Text = $text; Short = $null; Role = 'model'; Bold = $true }
 }
 

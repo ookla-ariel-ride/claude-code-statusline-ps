@@ -402,6 +402,13 @@ Confirm-True ((ConvertTo-PlainText $seg.Text).EndsWith("Fable 5.1 1M $iconConfli
 $seg = Get-ModelSegment (Get-ModelPayload 1000000 $false) $plainCfg
 Confirm-True (-not $seg.Text.Contains($iconConflict)) 'model 1M not exceeded: no glyph'
 Confirm-Equal (Get-ModelSegment (Get-ModelPayload 200000 $true) $plainCfg).Text "$iconModel Fable 5.1 $iconConflict" 'model 200k exceeds: glyph without a marker'
+# The field is a documented boolean; anything else, including values -eq $true would coerce, gives no glyph.
+foreach ($odd in @(@{ Label = 'string true'; Value = 'true' }, @{ Label = 'number 1'; Value = 1 }, @{ Label = 'null'; Value = $null },
+        @{ Label = 'array'; Value = @($true) }, @{ Label = 'object'; Value = [pscustomobject]@{ value = $true } })) {
+    $p = Get-ModelPayload 200000
+    $p | Add-Member -NotePropertyName exceeds_200k_tokens -NotePropertyValue $odd.Value
+    Confirm-Equal (Get-ModelSegment $p $plainCfg).Text "$iconModel Fable 5.1" "model exceeds as $($odd.Label): no glyph"
+}
 Confirm-Equal (Get-ModelSegment ([pscustomobject]@{ model = [pscustomobject]@{ display_name = '' } }) $plainCfg) $null 'model: empty name omits the segment'
 
 Write-Host '== unit: porcelain' -ForegroundColor Cyan
