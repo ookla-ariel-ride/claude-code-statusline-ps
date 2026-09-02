@@ -171,9 +171,17 @@ The real payload carries no `git` object. The branch builder therefore:
 Rendering is unchanged: home glyph on `main` or `master`, branch glyph otherwise, pencil glyph and
 `warn` role when dirty, `branch` role when clean.
 
-No timeout is added. `git status --porcelain` on a warm repo is tens of milliseconds and the status
-line refreshes on events, not on a timer. If this proves slow on large repos, a later round can add
-`-uno` or a cache.
+### Timeout
+
+The status line must never hang on git. The command is started with
+`System.Diagnostics.Process` (redirected stdout, `UseShellExecute` false, `CreateNoWindow` true)
+and given `$gitTimeoutMs = 1500` to finish. If `WaitForExit` returns false the process is killed
+with `Kill($true)` (the whole tree) and the segment is omitted. Any exception from starting or
+reading the process also omits the segment. Stdout is drained while waiting, using
+`BeginOutputReadLine` with a handler that appends to a list, so a large porcelain listing cannot
+fill the pipe and deadlock a process that would otherwise finish in time.
+
+The number is a constant at the top of the script, not a config key this round.
 
 ## 4. Width fitting
 
@@ -185,9 +193,20 @@ margin avoids the pending-wrap glitch some terminals show when a line ends exact
 
 ### Measuring
 
-Visible width is measured on the fully rendered line: strip every `ESC[...m` sequence, then count
-text elements with `[System.Globalization.StringInfo]`. That counts each Nerd Font glyph above
-U+FFFF as one cell, which `.Length` would count as two. Glyphs are assumed single-width.
+Visible width is measured on the fully rendered line: strip every `ESC[...m` sequence, then walk
+the text elements from `[System.Globalization.StringInfo]` and sum a cell width per element:
+
+| Element | Cells |
+|---|---|
+| First code point is a combining mark (Unicode category `Mn`, `Mc`, or `Me`) or a zero-width char (U+200B–U+200D, U+FE0F) | 0 |
+| First code point is in an East Asian Wide or Fullwidth block: U+1100–115F, U+2E80–A4CF, U+AC00–D7A3, U+F900–FAFF, U+FE30–FE4F, U+FF00–FF60, U+FFE0–FFE6, U+20000–3FFFD | 2 |
+| First code point is emoji presentation: U+1F300–1F64F, U+1F680–1F6FF, U+1F900–1FAFF, U+2600–27BF | 2 |
+| Anything else, including Nerd Font private-use glyphs and the box characters | 1 |
+
+This is a small `wcwidth` approximation, not the full algorithm. It covers the text a user controls
+(folder and branch names, model display name) well enough to stop wrapping in the common cases.
+Terminals disagree on some emoji and on Nerd Font glyph widths; that residual risk is accepted and
+documented in the README's troubleshooting section.
 
 ### Algorithm
 
@@ -200,8 +219,12 @@ For each line independently:
 3. Stage 2, drop. Remove whole segments in this order, re-rendering after each: `lines`, `badges`,
    `cost`, `limits`, `folder`, `branch`, `context`. Stop as soon as it fits.
 4. `model` is never dropped. If only `model` remains and still does not fit, print it anyway.
-   Line 2 in two-line layout has no `model`, so every segment on it can drop; if all do, the line
-   is not printed.
+   This is the one case where output may exceed the target width, and the test oracle exempts it
+   (see "test.ps1"). Line 2 in two-line layout has no `model`, so every segment on it can drop;
+   if all do, the line is not printed.
+
+The minimum supported width is therefore the rendered width of the model segment plus the
+margin. Below that, the status line prints the model segment alone and lets the terminal wrap.
 
 Short forms:
 
@@ -236,13 +259,13 @@ Parameters:
 
 | Parameter | Meaning |
 |---|---|
-| `-Columns <int[]>` | Widths to test. Default `120, 60`. `0` means unset, no fitting. |
+| `-Columns <int[]>` | Widths to test. Default `120, 60, 20`. `0` means unset, no fitting. Width 20 forces the model-only fallback on every sample. |
 | `-Config <path>` | Run only this config instead of the generated matrix. |
 | `-Raw` | Show ANSI escapes as `<ESC>`, as today. |
 
 Without `-Config`, the script writes four config files into a temp folder, one per layout × style
-combination, and runs every sample in `samples/` against each at every width. That is 7 × 4 × 2 =
-56 renders, roughly 15 seconds. Output is grouped by combination and width, one rendered line (or
+combination, and runs every sample in `samples/` against each at every width. That is 7 × 4 × 3 =
+84 renders, roughly 20 seconds. Output is grouped by combination and width, one rendered line (or
 two) per sample, so the matrix doubles as a visual check.
 
 A render fails, and the script exits non-zero after finishing the matrix, when:
@@ -250,17 +273,46 @@ A render fails, and the script exits non-zero after finishing the matrix, when:
 - output is empty or whitespace;
 - layout `one` produced more than one line, or layout `two` produced more than two;
 - any printed line is empty;
-- any printed line's visible width exceeds `COLUMNS - 1` when `COLUMNS` is set.
+- any printed line's visible width exceeds `COLUMNS - 1` when `COLUMNS` is set, unless the
+  line consists of the model segment alone (the documented fallback). The test detects that case
+  by rendering the same sample with every segment except `model` toggled off and comparing.
+
+Visible width in the test is measured by a copy of the same cell-width function, kept in
+`test.ps1` rather than dot-sourced from `statusline.ps1`, so a bug in the script's measurement
+does not silently agree with itself. Both copies are exercised by a fixed table of strings with
+known widths (ASCII, a Nerd Font glyph, CJK, an emoji, a combining mark) at the start of the run.
 
 `$env:COLUMNS` is set in the child's environment for each width, and removed for width `0`.
+
+### Git fallback tests
+
+`test.ps1` also runs a git group that does not depend on the developer's own repository. It
+creates temporary repositories under the scratch folder with `git init -b main` (so the result does
+not depend on the machine's `init.defaultBranch`) and pipes a payload with no `git` object and
+`current_dir` set to each:
+
+| Case | Setup | Expected branch segment |
+|---|---|---|
+| clean | one commit on `main` | `main`, home glyph, no pencil |
+| dirty tracked | commit, then modify the file | `main` with pencil, warn colour |
+| dirty untracked | commit, then add an untracked file | `main` with pencil |
+| feature | checkout `-b feature/x` | `feature/x`, branch glyph |
+| unborn | `git init` only | `main` (from `## No commits yet on main`) |
+| detached | checkout the commit hash | `detached` |
+| not a repo | empty directory | segment omitted |
+| git fails | fake `git` on PATH that exits 128 with stderr | segment omitted, nothing on stderr |
+| git hangs | fake `git` on PATH that sleeps 10 s | segment omitted, render completes in under 3 s |
+
+The fake `git` is a `git.cmd` written to a temp folder that is prepended to `PATH` for that child
+only. Each case asserts on the ANSI-stripped output text. Cases that need a real git are skipped
+with a warning when `git` is not on PATH.
 
 ### Samples
 
 No new sample files. Samples 04, 05, and 07 already lack a `git` object, which exercises the
 fallback path. Their `current_dir` values are absent or point at directories that do not exist on
-a normal machine, so they take the "omit segment" branch. The live `git status` path is exercised
-by a manual check in the plan (pipe a payload whose `current_dir` is this repo) and by running the
-installed script inside Claude Code.
+a normal machine, so they take the "omit segment" branch. The live `git status` path is covered by
+the git fallback tests below, which build their own repositories.
 
 ### Static analysis
 
@@ -273,6 +325,8 @@ installed script inside Claude Code.
   keys, and notes that missing or invalid values fall back silently. The "What each segment
   shows" table gains the arrow glyph row. A second screenshot, `docs/statusline-two-line.png`,
   shows two-line powerline. "Test without Claude Code" documents the new parameters.
+  "Troubleshooting" gains an entry for lines that still wrap (wide glyphs or emoji in folder or
+  branch names, and the model-only fallback at very narrow widths).
 - `docs/render-screenshot.ps1` gains `-Config <path>` and `-Out <path>` so it can render both
   screenshots; the two-line render draws two rows.
 - `docs/render-icons.ps1` gains the `arrow` glyph.
@@ -291,4 +345,4 @@ installed script inside Claude Code.
 Not in this round, recorded so they are not lost: configurable segment order, thresholds, glyphs,
 a light palette, session duration, PR number as an OSC 8 link, prompt-cache health, `owner/repo`
 and worktree identity, agent name, 1M-context colour scaling, `refreshInterval` in the installer,
-a git status timeout or cache.
+a git status cache, a configurable git timeout, a full `wcwidth` implementation.
