@@ -44,6 +44,7 @@ how close you are to a rate limit, and which modes are on.
 - [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows) on your `PATH` as `pwsh`
 - Claude Code
 - A [Nerd Font](https://www.nerdfonts.com/) in your terminal. The installer can set up JetBrainsMono Nerd Font for you.
+- `git` on your `PATH` if you want the branch segment. Without it the segment is skipped and everything else still renders.
 
 ## Installation
 
@@ -58,7 +59,7 @@ Restart Claude Code, or wait for its next status refresh.
 ### What the installer does
 
 - Copies `statusline.ps1` to `~/.claude/statusline.ps1`.
-- Copies `statusline.json` to `~/.claude/statusline.json` unless one is already there.
+- Copies `statusline.json` to `~/.claude/statusline.json` unless one is already there. If the repo copy is missing it warns and carries on. The script has the same defaults built in.
 - Adds a `statusLine` entry to your user-level `~/.claude/settings.json`. It keeps every other key and writes a `.bak` copy first.
 - With `-InstallFont`, installs JetBrainsMono Nerd Font through winget. Expect one elevation prompt.
 - With `-ConfigureWindowsTerminal`, sets Windows Terminal's default font to `JetBrainsMono NF` and backs up its settings.
@@ -137,7 +138,7 @@ context. The model segment always stays.
 | limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day` | `5h 24% (1h12m) 7d 41%`. Coloured by the worse of the two using the context thresholds. The countdown is omitted once the reset time has passed |
 | badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
 | folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.current_dir` | Blue, leaf directory name |
-| branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git.branch`, `git.status`, or `git status` in `workspace.current_dir` when the payload has no `git` object at all (a `git` object with an empty branch shows nothing) | Magenta when clean. Yellow with the pencil when the tree has uncommitted or untracked changes. Shows `detached` on a detached HEAD |
+| branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git status` run in `workspace.current_dir`. Claude Code's payload carries no `git` object, so this is the normal path. If a payload does include `git.branch` and `git.status` (the test samples do), the script uses those instead, and a `git` object with an empty branch shows nothing | Magenta when clean. Yellow with the pencil when the tree has uncommitted or untracked changes. Shows `detached` on a detached HEAD |
 | separator | <img src="docs/icons/chevron.svg" height="18" alt="chevron"> in `plain`, <img src="docs/icons/arrow.svg" height="18" alt="arrow"> in `powerline` | none | Dim chevron between segments, or a solid arrow coloured to blend the neighbouring blocks |
 
 A dim <img src="docs/icons/chevron.svg" height="14" alt="chevron"> separates the segments in plain
@@ -150,20 +151,28 @@ GitHub cannot render the font itself. Icon names are from the
 
 ## Test without Claude Code
 
-`test.ps1` checks the script's helper functions, then renders every payload in `samples/` against
-each layout and style at several terminal widths, then runs the branch segment against temporary
-git repositories:
+`test.ps1` runs three groups. Unit checks call the script's helper functions directly (width
+measurement, config parsing, rendering, width fitting, the context meter, `git status` parsing, the
+branch segment). The git group runs the branch fallback against temporary repositories, including a
+fake `git` that fails and one that hangs. The render matrix pipes every payload in `samples/`
+through the script for each layout and style at each width:
 
 ```powershell
-.\test.ps1                                # full run, about half a minute
+.\test.ps1                                # full run, about a minute
 .\test.ps1 -Columns 80                    # one width instead of 120, 60, 20 and unset
 .\test.ps1 -Config .\statusline.json      # one config instead of the four combinations
 .\test.ps1 -Raw                           # show ANSI escapes as <ESC>
 ```
 
-It exits non-zero if a render is empty, prints more lines than the layout allows, or is wider than
-the terminal. Each render takes about 250 ms, nearly all of it `pwsh` start-up, plus a `git status`
-call when the payload has no `git` object.
+Every render must exit 0 with nothing on stderr, print the number of lines its layout allows, and fit
+the terminal width. At the unset width the matrix also checks content: each segment the sample and
+config enable must appear on its row with its glyph and value, disabled segments must not, and the
+separators must match the style. Those content checks only run when `-Columns` includes `0`, which
+the default does. The script exits non-zero if any check fails. Each render takes about 250 ms,
+nearly all of it `pwsh` start-up.
+
+The tests never touch your own repositories. They point `GIT_CEILING_DIRECTORIES` at the temp
+folder and pass an empty global git config, so the results do not depend on the machine.
 
 To try a payload of your own:
 
@@ -194,8 +203,7 @@ Icons show as boxes or question marks: the terminal font is not a Nerd Font. Set
 The status line is blank: run `.\test.ps1` to confirm the script works, then check that `pwsh` is on
 your `PATH` and that the `command` path in `settings.json` exists.
 
-No branch segment: the script falls back to `git status` in the session's working directory only when
-the payload has no `git` object at all, and a `git` object whose branch is empty shows nothing. Check that
+No branch segment: the script runs `git status` in the session's working directory. Check that
 `git` is on your `PATH` and that the directory is inside a repository. If `git status` takes longer
 than 1.5 seconds the segment is skipped for that refresh.
 
@@ -217,8 +225,10 @@ Get-ChildItem *.ps1 | ForEach-Object { Invoke-ScriptAnalyzer -Path $_.FullName -
 
 The analyzer settings exclude the Write-Host rule, which a status line cannot avoid, and the
 positional-parameters rule, because the script and its tests call their own small helpers
-positionally. If you add a segment, add a sample payload to `samples/` so `test.ps1` exercises it,
-and regenerate the screenshot at the top of this file with `pwsh docs/render-screenshot.ps1` and
+positionally. If you add a segment or a sample, add a payload to `samples/` and give it a row in the
+`$sampleSegments` and `$sampleMarkers` tables in `test.ps1` (which segments it shows, and the glyph
+and value to look for). A sample without those rows fails the run by name. Then regenerate the
+screenshot at the top of this file with `pwsh docs/render-screenshot.ps1` and
 `pwsh docs/render-screenshot.ps1 -Config docs/statusline-two-line.json -Out docs/statusline-two-line.png`.
 
 Commits are scanned for secrets with [gitleaks](https://github.com/gitleaks/gitleaks), both in CI

@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 <#
 .SYNOPSIS
   Installs the PowerShell status line for Claude Code (Windows).
