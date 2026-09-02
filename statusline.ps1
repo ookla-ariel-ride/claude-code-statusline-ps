@@ -244,6 +244,7 @@ function Get-ContextSegment($d) {
     $pct = $d.context_window.used_percentage
     if ($null -eq $pct) { return $null }
     $pct = [int] $pct
+    $pct = [math]::Max(0, [math]::Min(100, $pct))
     $filled = [math]::Round($pct / 10)
     $bar = ((G 0x2588) * $filled) + ((G 0x2591) * (10 - $filled))
     $used = [double] ($d.context_window.total_input_tokens ?? 0) + [double] ($d.context_window.total_output_tokens ?? 0)

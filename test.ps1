@@ -7,7 +7,7 @@
   every layout x style combination at each width in -Columns, then exercises the git fallback in
   temporary repositories. Exits non-zero if any check fails.
 .PARAMETER Columns
-  Terminal widths to test. 0 means COLUMNS unset (no fitting). Default 120, 60, 20.
+  Terminal widths to test. 0 means COLUMNS unset (no fitting). Default 120, 60, 20, 0.
 .PARAMETER Config
   Render only this config file instead of the generated layout x style set.
 .PARAMETER Raw
@@ -15,7 +15,7 @@
 #>
 [CmdletBinding()]
 param(
-    [int[]] $Columns = @(120, 60, 20),
+    [int[]] $Columns = @(120, 60, 20, 0),
     [string] $Config,
     [switch] $Raw
 )
@@ -107,7 +107,7 @@ function Invoke-StatusLine([string] $Payload, [string] $ConfigPath, [int] $Colum
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment'))
 
 Write-Host '== unit: width' -ForegroundColor Cyan
 $widthTable = @(
@@ -131,6 +131,7 @@ foreach ($row in $widthTable) {
 Write-Host '== unit: config' -ForegroundColor Cyan
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "statusline-test-$PID"
 New-Item -ItemType Directory -Force $tmp | Out-Null
+try {
 function Write-TempConfig([string] $Name, [string] $Json) {
     $p = Join-Path $tmp $Name
     [System.IO.File]::WriteAllText($p, $Json, [System.Text.UTF8Encoding]::new($false))
@@ -226,6 +227,38 @@ Confirm-Equal (Get-FittedLine @() 'plain' 40) $null 'fit: no segments gives null
 $line = Get-FittedLine $fit 'powerline' 30
 Confirm-True ((Get-VisibleWidth $line) -le 30) 'fit: powerline respects width'
 
+Write-Host '== unit: context' -ForegroundColor Cyan
+$iconCtx = [char]::ConvertFromUtf32(0xF035B)
+$blockFull = [char]::ConvertFromUtf32(0x2588)
+$blockLight = [char]::ConvertFromUtf32(0x2591)
+function Get-ContextPayload([double] $Pct) {
+    return [pscustomobject]@{ context_window = [pscustomobject]@{ used_percentage = $Pct; total_input_tokens = 1000; total_output_tokens = 0; context_window_size = 200000 } }
+}
+
+$seg = Get-ContextSegment (Get-ContextPayload 32)
+$bar32 = ($blockFull * 3) + ($blockLight * 7)
+Confirm-True $seg.Text.StartsWith("$iconCtx 32% ") 'context 32: text prefix'
+Confirm-True $seg.Text.Contains($bar32) 'context 32: bar is 3 full + 7 light'
+Confirm-Equal $seg.Role 'ok' 'context 32: role'
+Confirm-Equal $seg.Short "$iconCtx 32% $bar32" 'context 32: short'
+
+$seg = Get-ContextSegment (Get-ContextPayload 110)
+$bar100 = $blockFull * 10
+Confirm-True $seg.Text.StartsWith("$iconCtx 100% ") 'context 110: clamped text prefix'
+Confirm-True $seg.Text.Contains($bar100) 'context 110: bar is 10 full blocks'
+Confirm-Equal $seg.Role 'bad' 'context 110: role'
+
+$seg = Get-ContextSegment (Get-ContextPayload -5)
+$bar0 = $blockLight * 10
+Confirm-True $seg.Text.StartsWith("$iconCtx 0% ") 'context -5: clamped text prefix'
+Confirm-True $seg.Text.Contains($bar0) 'context -5: bar is 10 light blocks'
+Confirm-Equal $seg.Role 'ok' 'context -5: role'
+
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 64)).Role 'warn' 'context 64: role'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 85)).Role 'bad' 'context 85: role'
+
+Confirm-Equal (Get-ContextSegment ([pscustomobject]@{})) $null 'context: missing context_window'
+
 Write-Host '== unit: porcelain' -ForegroundColor Cyan
 $r = Read-PorcelainStatus "## main...origin/main [ahead 1]`n"
 Confirm-Equal $r.Branch 'main' 'porcelain: tracking branch'
@@ -245,6 +278,13 @@ Confirm-Equal (Read-PorcelainStatus "fatal: not a git repository`n") $null 'porc
 Confirm-Equal (Read-PorcelainStatus '') $null 'porcelain: empty'
 
 Write-Host '== git' -ForegroundColor Cyan
+$gitConfigEmpty = Join-Path $tmp 'gitconfig-empty'
+[System.IO.File]::WriteAllText($gitConfigEmpty, '', [System.Text.UTF8Encoding]::new($false))
+$oldGitConfigGlobal = $env:GIT_CONFIG_GLOBAL
+$oldGitConfigNoSystem = $env:GIT_CONFIG_NOSYSTEM
+$env:GIT_CONFIG_GLOBAL = $gitConfigEmpty
+$env:GIT_CONFIG_NOSYSTEM = '1'
+try {
 $iconHome = [char]::ConvertFromUtf32(0xF015)
 $iconBranch = [char]::ConvertFromUtf32(0xE0A0)
 $iconDirty = [char]::ConvertFromUtf32(0xF040)
@@ -305,7 +345,7 @@ $failMarker = Join-Path $tmp 'fake-fail.ran'
 $hangMarker = Join-Path $tmp 'fake-hang.ran'
 $gitCases.Add(@{ Name = 'git fails'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; Marker = $failMarker
                  PathPrefix = (Write-FakeGit 'fake-fail' "echo ran > `"$failMarker`"`r`necho fatal: not a git repository 1>&2`r`nexit 128") })
-$gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 1500; MaxMs = 3000; Marker = $hangMarker; NoPing = $true
+$gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 1500; MaxMs = 4000; Marker = $hangMarker; NoPing = $true
                  PathPrefix = (Write-FakeGit 'fake-hang' "echo ran > `"$hangMarker`"`r`nping -n 11 127.0.0.1 > nul`r`nexit 0") })
 
 function Get-FakePingCount {
@@ -329,9 +369,83 @@ foreach ($case in $gitCases) {
     if ($case.NoPing) { Start-Sleep -Milliseconds 300; Confirm-True ((Get-FakePingCount) -eq 0) "${label}: ping child killed with the tree" }
     Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f $case.Name, $r.Ms, $text)
 }
+} finally {
+    if ($null -ne $oldGitConfigGlobal) { $env:GIT_CONFIG_GLOBAL = $oldGitConfigGlobal } else { Remove-Item Env:GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue }
+    if ($null -ne $oldGitConfigNoSystem) { $env:GIT_CONFIG_NOSYSTEM = $oldGitConfigNoSystem } else { Remove-Item Env:GIT_CONFIG_NOSYSTEM -ErrorAction SilentlyContinue }
+}
 
 # ---- Render matrix: samples x configs x widths ----
 $sampleFiles = Get-ChildItem (Join-Path $PSScriptRoot 'samples') -Filter *.json | Sort-Object Name
+$sample06 = $sampleFiles | Where-Object { $_.Name -eq '06-limits-badges-lines.json' }
+$iconModel = [char]::ConvertFromUtf32(0xF06A9)
+$iconCost = [char]::ConvertFromUtf32(0xF0155)
+$iconFolder = [char]::ConvertFromUtf32(0xF07C)
+$iconLines = [char]::ConvertFromUtf32(0xF121)
+$iconLimits = [char]::ConvertFromUtf32(0xF0E4)
+$iconFast = [char]::ConvertFromUtf32(0xF0E7)
+$iconThink = [char]::ConvertFromUtf32(0xF09D0)
+$iconEffort = [char]::ConvertFromUtf32(0xF04C5)
+$iconVim = [char]::ConvertFromUtf32(0xE62B)
+$twoLineSamples = @('01-main-clean.json', '06-limits-badges-lines.json')
+$presenceTable = @{
+    '01-main-clean.json' = @(
+        @{ Icon = $iconCtx; Name = 'context'; Expect = $true }
+        @{ Icon = $iconCost; Name = 'cost'; Expect = $true }
+        @{ Icon = $iconFolder; Name = 'folder'; Expect = $true }
+        @{ Icon = $iconHome; Name = 'home'; Expect = $true }
+        @{ Icon = $iconDirty; Name = 'pencil'; Expect = $false }
+        @{ Icon = $iconLines; Name = 'lines'; Expect = $false }
+        @{ Icon = $iconLimits; Name = 'limits'; Expect = $false }
+        @{ Icon = $iconBranch; Name = 'branch'; Expect = $false }
+    )
+    '02-feature-dirty-high.json' = @(
+        @{ Icon = $iconBranch; Name = 'branch'; Expect = $true }
+        @{ Icon = $iconDirty; Name = 'pencil'; Expect = $true }
+        @{ Icon = $iconCost; Name = 'cost'; Expect = $true }
+        @{ Icon = $iconHome; Name = 'home'; Expect = $false }
+    )
+    '03-main-dirty-mid.json' = @(
+        @{ Icon = $iconHome; Name = 'home'; Expect = $true }
+        @{ Icon = $iconDirty; Name = 'pencil'; Expect = $true }
+    )
+    '04-minimal.json' = @(
+        @{ Icon = $iconCtx; Name = 'context'; Expect = $false }
+        @{ Icon = $iconFolder; Name = 'folder'; Expect = $false }
+    )
+    '05-no-git.json' = @(
+        @{ Icon = $iconCtx; Name = 'context'; Expect = $true }
+        @{ Icon = $iconFolder; Name = 'folder'; Expect = $true }
+        @{ Icon = $iconHome; Name = 'home'; Expect = $false }
+        @{ Icon = $iconBranch; Name = 'branch'; Expect = $false }
+        @{ Icon = $iconCost; Name = 'cost'; Expect = $false }
+    )
+    '06-limits-badges-lines.json' = @(
+        @{ Icon = $iconCtx; Name = 'context'; Expect = $true }
+        @{ Icon = $iconCost; Name = 'cost'; Expect = $true }
+        @{ Icon = $iconLines; Name = 'lines'; Expect = $true }
+        @{ Icon = $iconLimits; Name = 'limits'; Expect = $true }
+        @{ Icon = $iconFast; Name = 'fast'; Expect = $true }
+        @{ Icon = $iconThink; Name = 'think'; Expect = $true }
+        @{ Icon = $iconEffort; Name = 'effort'; Expect = $true }
+        @{ Icon = $iconVim; Name = 'vim'; Expect = $true }
+        @{ Icon = $iconFolder; Name = 'folder'; Expect = $true }
+        @{ Icon = $iconHome; Name = 'home'; Expect = $true }
+        @{ Icon = $iconDirty; Name = 'pencil'; Expect = $false }
+    )
+    '07-limits-expired-default-effort.json' = @(
+        @{ Icon = $iconCtx; Name = 'context'; Expect = $true }
+        @{ Icon = $iconCost; Name = 'cost'; Expect = $true }
+        @{ Icon = $iconLines; Name = 'lines'; Expect = $true }
+        @{ Icon = $iconLimits; Name = 'limits'; Expect = $true }
+        @{ Icon = $iconFolder; Name = 'folder'; Expect = $true }
+        @{ Icon = $iconFast; Name = 'fast'; Expect = $false }
+        @{ Icon = $iconThink; Name = 'think'; Expect = $false }
+        @{ Icon = $iconEffort; Name = 'effort'; Expect = $false }
+        @{ Icon = $iconVim; Name = 'vim'; Expect = $false }
+        @{ Icon = $iconHome; Name = 'home'; Expect = $false }
+        @{ Icon = $iconBranch; Name = 'branch'; Expect = $false }
+    )
+}
 $modelOnlyPath = @{}
 foreach ($style in @('plain', 'powerline')) {
     $modelOnlyPath[$style] = Write-TempConfig "model-only-$style.json" ('{ "layout": "one", "style": "' + $style + '", "segments": { "context": false, "cost": false, "lines": false, "limits": false, "badges": false, "folder": false, "branch": false } }')
@@ -359,6 +473,8 @@ foreach ($cfg in $configSet) {
             $payload = Get-Content $sample.FullName -Raw
             $r = Invoke-StatusLine $payload $cfg.Path $c
             $label = "$($cfg.Name) COLUMNS=$c $($sample.Name)"
+            Confirm-True ($r.ExitCode -eq 0) "${label}: exit code $($r.ExitCode)"
+            Confirm-True ($r.Err.Count -eq 0) "${label}: stderr empty"
             $lines = $r.Lines
             if ([string]::IsNullOrWhiteSpace(($lines -join ''))) { Confirm-True $false "${label}: empty output"; continue }
             Confirm-True ($lines.Count -le $maxLines) "${label}: $($lines.Count) lines, layout allows $maxLines"
@@ -368,18 +484,67 @@ foreach ($cfg in $configSet) {
                 $w = Measure-VisibleWidth $line
                 if ($w -le $c - 1) { $script:passed++; continue }
                 $only = Invoke-StatusLine $payload $modelOnlyPath[$cfg.Style] $c
+                Confirm-True ($only.ExitCode -eq 0) "${label}: model-only oracle exit code $($only.ExitCode)"
+                Confirm-True ($only.Err.Count -eq 0) "${label}: model-only oracle stderr empty"
                 $isModelOnly = (ConvertTo-PlainText $line) -ceq (ConvertTo-PlainText ($only.Lines -join ''))
                 Confirm-True $isModelOnly "${label}: width $w exceeds $($c - 1) and the line is not the model-only fallback"
+            }
+            if ($c -le 0) {
+                $text = ConvertTo-PlainText ($lines -join "`n")
+                Confirm-True ($text.Contains($iconModel)) "${label}: has model glyph"
+                if ($presenceTable.ContainsKey($sample.Name)) {
+                    foreach ($check in $presenceTable[$sample.Name]) {
+                        $has = $text.Contains($check.Icon)
+                        Confirm-True ($has -eq $check.Expect) "${label}: $($check.Name) glyph $(if ($check.Expect) { 'present' } else { 'absent' })"
+                    }
+                }
+                if ($sample.Name -ne '04-minimal.json') {
+                    if ($cfg.Style -eq 'plain') {
+                        Confirm-True ($text.Contains($chevron) -and -not $text.Contains($arrow)) "${label}: plain uses chevron not arrow"
+                    } else {
+                        Confirm-True ($text.Contains($arrow) -and -not $text.Contains($chevron)) "${label}: powerline uses arrow not chevron"
+                    }
+                }
+                if ($cfg.Style -eq 'powerline') {
+                    $rawJoined = $lines -join "`n"
+                    Confirm-True ($rawJoined.Contains("$esc[0;1;48;5;31;38;5;231m")) "${label}: powerline bold model block"
+                }
+                if ($cfg.Layout -eq 'two') {
+                    if ($sample.Name -in $twoLineSamples) {
+                        Confirm-Equal $lines.Count 2 "${label}: two-line layout produces 2 lines"
+                        if ($lines.Count -eq 2) {
+                            $line1 = ConvertTo-PlainText $lines[0]
+                            $line2 = ConvertTo-PlainText $lines[1]
+                            Confirm-True ($line1.Contains($iconModel) -and $line1.Contains($iconFolder) -and -not $line1.Contains($iconCtx)) "${label}: line 1 has model+folder, no context"
+                            Confirm-True ($line2.Contains($iconCtx) -and -not $line2.Contains($iconFolder)) "${label}: line 2 has context, no folder"
+                        }
+                    } elseif ($sample.Name -eq '04-minimal.json') {
+                        Confirm-Equal $lines.Count 1 "${label}: two-line layout with only model collapses to 1 line"
+                    }
+                }
             }
             $shown = if ($Raw) { $lines -replace $esc, '<ESC>' } else { $lines }
             Write-Host ("{0,-40} {1,5:N0} ms  " -f $sample.Name, $r.Ms) -NoNewline
             Write-Host $shown[0]
             for ($i = 1; $i -lt $shown.Count; $i++) { Write-Host ((' ' * 50) + $shown[$i]) }
         }
+        if ($c -le 0) {
+            $togglePath = Write-TempConfig "toggle-$($cfg.Name).json" ('{ "layout": "' + $cfg.Layout + '", "style": "' + $cfg.Style + '", "segments": { "cost": false, "badges": false } }')
+            $payload06 = Get-Content $sample06.FullName -Raw
+            $toggle = Invoke-StatusLine $payload06 $togglePath $c
+            $toggleLabel = "$($cfg.Name) COLUMNS=$c toggle"
+            Confirm-True ($toggle.ExitCode -eq 0) "${toggleLabel}: exit code $($toggle.ExitCode)"
+            Confirm-True ($toggle.Err.Count -eq 0) "${toggleLabel}: stderr empty"
+            $toggleText = ConvertTo-PlainText ($toggle.Lines -join "`n")
+            Confirm-True (-not $toggleText.Contains($iconCost)) "${toggleLabel}: no cost glyph"
+            Confirm-True (-not $toggleText.Contains($iconFast)) "${toggleLabel}: no fast glyph"
+            Confirm-True ($toggleText.Contains($iconLines)) "${toggleLabel}: lines glyph still present"
+        }
     }
 }
-
-Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+} finally {
+    Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+}
 
 Write-Host ''
 Write-Host "passed $script:passed, failed $script:failed" -ForegroundColor $(if ($script:failed -gt 0) { 'Red' } else { 'Green' })

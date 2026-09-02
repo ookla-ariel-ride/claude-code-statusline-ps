@@ -33,7 +33,7 @@ how close you are to a rate limit, and which modes are on.
 - Badges for fast mode, extended thinking, effort level, and vim mode. They disappear when nothing is on.
 - Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory.
 - One line or two, plain separators or powerline blocks, and any segment switched off, all from `statusline.json`.
-- Fits the terminal width. Long lines shorten the limits and context segments first, then drop segments from the right, so the status line never wraps.
+- Fits the terminal width. Long lines shorten the limits and context segments first, then drop segments from the right, so lines stop wrapping in normal use.
 - If a field is missing from the payload, the script drops that segment. If the payload will not parse, it still prints the model glyph.
 - Icons come from Unicode code points rather than pasted characters, so the file's own encoding cannot corrupt them.
 - No modules to install. PowerShell 7 and a Nerd Font are the whole dependency list.
