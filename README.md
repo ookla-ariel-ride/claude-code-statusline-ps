@@ -156,7 +156,7 @@ git repositories:
 
 ```powershell
 .\test.ps1                                # full run, about half a minute
-.\test.ps1 -Columns 80                    # one width instead of 120, 60 and 20
+.\test.ps1 -Columns 80                    # one width instead of 120, 60, 20 and unset
 .\test.ps1 -Config .\statusline.json      # one config instead of the four combinations
 .\test.ps1 -Raw                           # show ANSI escapes as <ESC>
 ```
