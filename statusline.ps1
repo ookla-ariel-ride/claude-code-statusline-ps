@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+﻿#Requires -Version 7.0
 # Claude Code status line (PowerShell 7) with Nerd Font glyphs and ANSI colour.
 # Requires a Nerd Font in the terminal (install.ps1 can set up JetBrainsMono Nerd Font).
 # Reads the JSON Claude Code pipes on stdin and prints one line, e.g.
@@ -28,6 +28,35 @@ $iconEffort = G 0xF04C5   # nf-md-speedometer (effort level)
 $iconVim    = G 0xE62B    # nf-custom-vim
 $sep = ' ' + (C '90' (G 0xE0B1)) + ' '   # powerline thin separator, dim
 $defaultEffort = 'high'   # effort badge is hidden at this level
+
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '', Justification = 'Used in later tasks')]
+$gitTimeoutMs = 1500      # how long the branch segment waits for `git status` before giving up
+
+# Visible cell width of a rendered line: escapes stripped, combining marks 0, CJK and emoji 2, else 1.
+# A small wcwidth approximation; Nerd Font glyphs count as 1.
+function Get-VisibleWidth([string] $Text) {
+    if (-not $Text) { return 0 }
+    $plain = [regex]::Replace($Text, "`e\[[0-9;]*m", '')
+    $width = 0
+    $en = [System.Globalization.StringInfo]::GetTextElementEnumerator($plain)
+    while ($en.MoveNext()) {
+        $el = [string] $en.Current
+        $cp = try { [char]::ConvertToUtf32($el, 0) } catch { 0x3F }
+        $cat = [System.Globalization.CharUnicodeInfo]::GetUnicodeCategory($cp)
+        if ($cat -eq [System.Globalization.UnicodeCategory]::NonSpacingMark -or
+            $cat -eq [System.Globalization.UnicodeCategory]::SpacingCombiningMark -or
+            $cat -eq [System.Globalization.UnicodeCategory]::EnclosingMark -or
+            ($cp -ge 0x200B -and $cp -le 0x200D) -or $cp -eq 0xFE0F) { continue }
+        if (($cp -ge 0x1100 -and $cp -le 0x115F) -or ($cp -ge 0x2E80 -and $cp -le 0xA4CF) -or
+            ($cp -ge 0xAC00 -and $cp -le 0xD7A3) -or ($cp -ge 0xF900 -and $cp -le 0xFAFF) -or
+            ($cp -ge 0xFE30 -and $cp -le 0xFE4F) -or ($cp -ge 0xFF00 -and $cp -le 0xFF60) -or
+            ($cp -ge 0xFFE0 -and $cp -le 0xFFE6) -or ($cp -ge 0x20000 -and $cp -le 0x3FFFD) -or
+            ($cp -ge 0x1F300 -and $cp -le 0x1F64F) -or ($cp -ge 0x1F680 -and $cp -le 0x1F6FF) -or
+            ($cp -ge 0x1F900 -and $cp -le 0x1FAFF) -or ($cp -ge 0x2600 -and $cp -le 0x27BF)) { $width += 2; continue }
+        $width += 1
+    }
+    return $width
+}
 
 $raw = [Console]::In.ReadToEnd()
 try { $d = $raw | ConvertFrom-Json } catch { Write-Host (C '36' "$iconModel claude"); exit 0 }
