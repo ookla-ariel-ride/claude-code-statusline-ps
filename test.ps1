@@ -71,8 +71,30 @@ function Measure-VisibleWidth([string] $Text) {
     return $width
 }
 
+# Runs statusline.ps1 in a child pwsh. $Columns 0 means COLUMNS unset. $PathPrefix is prepended to PATH for the child.
+function Invoke-StatusLine([string] $Payload, [string] $ConfigPath, [int] $Columns = 0, [string] $PathPrefix) {
+    $oldCols = $env:COLUMNS
+    $oldPath = $env:PATH
+    try {
+        if ($Columns -gt 0) { $env:COLUMNS = "$Columns" } else { Remove-Item Env:COLUMNS -ErrorAction SilentlyContinue }
+        if ($PathPrefix) { $env:PATH = $PathPrefix + [System.IO.Path]::PathSeparator + $env:PATH }
+        $pwshArgs = @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', $script)
+        if ($ConfigPath) { $pwshArgs += @('-Config', $ConfigPath) }
+        $err = [System.Collections.Generic.List[string]]::new()
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $out = $Payload | pwsh @pwshArgs 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { $err.Add("$_") } else { "$_" }
+        }
+        $sw.Stop()
+        return @{ Lines = @($out); Err = @($err); ExitCode = $LASTEXITCODE; Ms = $sw.ElapsedMilliseconds }
+    } finally {
+        if ($null -ne $oldCols) { $env:COLUMNS = $oldCols } else { Remove-Item Env:COLUMNS -ErrorAction SilentlyContinue }
+        $env:PATH = $oldPath
+    }
+}
+
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch'))
 
 Write-Host '== unit: width' -ForegroundColor Cyan
 $widthTable = @(
@@ -190,6 +212,110 @@ Confirm-Equal (Get-FittedLine @($fit[2]) 'plain' 1) $null 'fit: line without mod
 Confirm-Equal (Get-FittedLine @() 'plain' 40) $null 'fit: no segments gives null'
 $line = Get-FittedLine $fit 'powerline' 30
 Confirm-True ((Get-VisibleWidth $line) -le 30) 'fit: powerline respects width'
+
+Write-Host '== unit: porcelain' -ForegroundColor Cyan
+$r = Read-PorcelainStatus "## main...origin/main [ahead 1]`n"
+Confirm-Equal $r.Branch 'main' 'porcelain: tracking branch'
+Confirm-Equal $r.Dirty $false 'porcelain: clean'
+$r = Read-PorcelainStatus "## main`n M file.txt`n"
+Confirm-Equal $r.Dirty $true 'porcelain: modified is dirty'
+$r = Read-PorcelainStatus "## main`r`n?? new.txt`r`n"
+Confirm-Equal $r.Dirty $true 'porcelain: untracked is dirty (CRLF)'
+$r = Read-PorcelainStatus "## feature/x...origin/feature/x`n"
+Confirm-Equal $r.Branch 'feature/x' 'porcelain: feature branch'
+$r = Read-PorcelainStatus "## No commits yet on main`n"
+Confirm-Equal $r.Branch 'main' 'porcelain: unborn'
+Confirm-Equal $r.Dirty $false 'porcelain: unborn clean'
+$r = Read-PorcelainStatus "## HEAD (no branch)`n"
+Confirm-Equal $r.Branch 'detached' 'porcelain: detached'
+Confirm-Equal (Read-PorcelainStatus "fatal: not a git repository`n") $null 'porcelain: no header'
+Confirm-Equal (Read-PorcelainStatus '') $null 'porcelain: empty'
+
+Write-Host '== git' -ForegroundColor Cyan
+$iconHome = [char]::ConvertFromUtf32(0xF015)
+$iconBranch = [char]::ConvertFromUtf32(0xE0A0)
+$iconDirty = [char]::ConvertFromUtf32(0xF040)
+$gitCfg = @('-c', 'user.name=test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false')
+function Initialize-TestRepo([string] $Name) {
+    $p = Join-Path $tmp $Name
+    New-Item -ItemType Directory -Force $p | Out-Null
+    git init -q -b main $p
+    return $p
+}
+function Add-Commit([string] $Path) {
+    Set-Content (Join-Path $Path 'file.txt') 'hello'
+    git -C $Path add .
+    git -C $Path @gitCfg commit -q -m init
+}
+function Get-GitPayload([string] $Dir) {
+    return ([ordered]@{ model = @{ display_name = 'M' }; workspace = @{ current_dir = $Dir } } | ConvertTo-Json -Compress)
+}
+function Write-FakeGit([string] $Name, [string] $Body) {
+    $dir = Join-Path $tmp $Name
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $dir 'git.cmd'), "@echo off`r`n$Body`r`n", [System.Text.Encoding]::ASCII)
+    return $dir
+}
+
+$haveGit = [bool] (Get-Command git -CommandType Application -ErrorAction SilentlyContinue)
+if (-not $haveGit) { Write-Warning 'git is not on PATH; skipping the real-repository git cases' }
+
+$gitCases = [System.Collections.Generic.List[hashtable]]::new()
+if ($haveGit) {
+    $clean = Initialize-TestRepo 'repo-clean'; Add-Commit $clean
+    $dirtyTracked = Initialize-TestRepo 'repo-dirty-tracked'; Add-Commit $dirtyTracked; Set-Content (Join-Path $dirtyTracked 'file.txt') 'changed'
+    $dirtyUntracked = Initialize-TestRepo 'repo-dirty-untracked'; Add-Commit $dirtyUntracked; Set-Content (Join-Path $dirtyUntracked 'new.txt') 'x'
+    $feature = Initialize-TestRepo 'repo-feature'; Add-Commit $feature; git -C $feature checkout -q -b feature/x
+    $unborn = Initialize-TestRepo 'repo-unborn'
+    $detached = Initialize-TestRepo 'repo-detached'; Add-Commit $detached; git -C $detached checkout -q --detach
+
+    # In-process checks of Get-GitBranch itself
+    $g = Get-GitBranch $clean 1500
+    Confirm-Equal $g.Branch 'main' 'Get-GitBranch: clean branch'
+    Confirm-Equal $g.Dirty $false 'Get-GitBranch: clean not dirty'
+    $g = Get-GitBranch $dirtyUntracked 1500
+    Confirm-Equal $g.Dirty $true 'Get-GitBranch: untracked dirty'
+    Confirm-Equal (Get-GitBranch (Join-Path $tmp 'nowhere') 1500) $null 'Get-GitBranch: missing dir'
+
+    $gitCases.Add(@{ Name = 'clean';           Dir = $clean;          Has = "$iconHome main";              Not = $iconDirty })
+    $gitCases.Add(@{ Name = 'dirty tracked';   Dir = $dirtyTracked;   Has = "$iconHome main $iconDirty";  Raw = "$esc[33m" })
+    $gitCases.Add(@{ Name = 'dirty untracked'; Dir = $dirtyUntracked; Has = "$iconHome main $iconDirty" })
+    $gitCases.Add(@{ Name = 'feature';         Dir = $feature;        Has = "$iconBranch feature/x" })
+    $gitCases.Add(@{ Name = 'unborn';          Dir = $unborn;         Has = "$iconHome main";              Not = $iconDirty })
+    $gitCases.Add(@{ Name = 'detached';        Dir = $detached;       Has = "$iconBranch detached" })
+}
+$notRepo = Join-Path $tmp 'not-a-repo'; New-Item -ItemType Directory -Force $notRepo | Out-Null
+$gitCases.Add(@{ Name = 'not a repo'; Dir = $notRepo; NoBranch = $true })
+# Each fake writes a marker file so the test can prove it really ran, and the hang fake's ping child must
+# be gone afterwards, which proves Kill($true) took the tree down.
+$failMarker = Join-Path $tmp 'fake-fail.ran'
+$hangMarker = Join-Path $tmp 'fake-hang.ran'
+$gitCases.Add(@{ Name = 'git fails'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; Marker = $failMarker
+                 PathPrefix = (Write-FakeGit 'fake-fail' "echo ran > `"$failMarker`"`r`necho fatal: not a git repository 1>&2`r`nexit 128") })
+$gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; MinMs = 1500; MaxMs = 3000; Marker = $hangMarker; NoPing = $true
+                 PathPrefix = (Write-FakeGit 'fake-hang' "echo ran > `"$hangMarker`"`r`nping -n 11 127.0.0.1 > nul`r`nexit 0") })
+
+function Get-FakePingCount {
+    return @(Get-CimInstance Win32_Process -Filter "Name='PING.EXE'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match '-n 11 127\.0\.0\.1' }).Count
+}
+
+foreach ($case in $gitCases) {
+    $r = Invoke-StatusLine (Get-GitPayload $case.Dir) $null 0 $case.PathPrefix
+    $rawOut = $r.Lines -join "`n"
+    $text = ConvertTo-PlainText $rawOut
+    $label = "git $($case.Name)"
+    Confirm-True ($text.Contains('M')) "${label}: model still printed"
+    if ($case.Has) { Confirm-True ($text.Contains($case.Has)) "${label}: expected '$($case.Has)' in '$text'" }
+    if ($case.Not) { Confirm-True (-not $text.Contains($case.Not)) "${label}: unexpected '$($case.Not)' in '$text'" }
+    if ($case.Raw) { Confirm-True ($rawOut.Contains($case.Raw)) "${label}: expected colour $($case.Raw -replace $esc, '<ESC>')" }
+    if ($case.NoBranch) { Confirm-True (-not $text.Contains($iconHome) -and -not $text.Contains($iconBranch)) "${label}: branch segment omitted, got '$text'" }
+    if ($case.NoStderr) { Confirm-True ($r.Err.Count -eq 0) "${label}: nothing on stderr, got '$($r.Err -join ' | ')'" }
+    if ($case.Marker) { Confirm-True (Test-Path $case.Marker) "${label}: fake git was actually launched" }
+    if ($case.MinMs) { Confirm-True ($r.Ms -ge $case.MinMs) "${label}: waited the full timeout ($($r.Ms) ms, expected at least $($case.MinMs))" }
+    if ($case.MaxMs) { Confirm-True ($r.Ms -lt $case.MaxMs) "${label}: finished in $($r.Ms) ms (limit $($case.MaxMs))" }
+    if ($case.NoPing) { Start-Sleep -Milliseconds 300; Confirm-True ((Get-FakePingCount) -eq 0) "${label}: ping child killed with the tree" }
+    Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f $case.Name, $r.Ms, $text)
+}
 
 # ---- Sample renders (replaced by the matrix in a later task) ----
 Write-Host '== samples' -ForegroundColor Cyan

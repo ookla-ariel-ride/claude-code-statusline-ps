@@ -34,7 +34,6 @@ $iconEffort = G 0xF04C5   # nf-md-speedometer (effort level)
 $iconVim    = G 0xE62B    # nf-custom-vim
 $defaultEffort = 'high'   # effort badge is hidden at this level
 
-[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '', Justification = 'Used in later tasks')]
 $gitTimeoutMs = 1500      # how long the branch segment waits for `git status` before giving up
 
 # Visible cell width of a rendered line: escapes stripped, combining marks 0, CJK and emoji 2, else 1.
@@ -172,6 +171,56 @@ function Get-FittedLine($Segments, [string] $Style, $Width) {
     return $line
 }
 
+# Parses `git status --porcelain=v1 --branch` output. $null when the header line is missing.
+function Read-PorcelainStatus([string] $Text) {
+    if (-not $Text) { return $null }
+    $lines = $Text -split "`r?`n"
+    if (-not $lines[0].StartsWith('## ')) { return $null }
+    $head = $lines[0].Substring(3)
+    $branch = if ($head -eq 'HEAD (no branch)') { 'detached' }
+    elseif ($head -match '^(No commits yet|Initial commit) on (.+)$') { $Matches[2] }
+    else { ($head -split '\.\.\.', 2)[0] }
+    $dirty = @($lines | Select-Object -Skip 1 | Where-Object { $_.Trim() }).Count -gt 0
+    return @{ Branch = $branch; Dirty = $dirty }
+}
+
+# Runs git status in $Dir with a hard timeout. Any failure, or no git on PATH, returns $null.
+# Stdout and stderr are drained on .NET threads so a long listing cannot fill the pipe and stall git.
+function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
+    if (-not $Dir) { return $null }
+    if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return $null }
+    $git = (Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    if (-not $git) { return $null }
+    $p = $null
+    try {
+        $psi = [System.Diagnostics.ProcessStartInfo]::new($git)
+        foreach ($a in @('-C', $Dir, 'status', '--porcelain=v1', '--branch')) { $psi.ArgumentList.Add($a) }
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+        $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+        $psi.Environment['GIT_OPTIONAL_LOCKS'] = '0'
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $outTask = $p.StandardOutput.ReadToEndAsync()
+        $errTask = $p.StandardError.ReadToEndAsync()
+        $exited = $p.WaitForExit($TimeoutMs)
+        if (-not $exited) {
+            # Kill the whole tree, then give it a moment to actually go away before we dispose the handles.
+            try { $p.Kill($true) } catch { $null = $_ }
+            [void] $p.WaitForExit(500)
+        }
+        # Bounded waits on both drains; a faulted task is observed here rather than left to the finalizer.
+        try { [void] [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask), 500) } catch { $null = $_ }
+        if (-not $exited) { return $null }
+        if (-not $outTask.IsCompletedSuccessfully) { return $null }
+        if ($p.ExitCode -ne 0) { return $null }
+        return Read-PorcelainStatus $outTask.Result
+    } catch { return $null }
+    finally { if ($p) { $p.Dispose() } }
+}
+
 $raw = [Console]::In.ReadToEnd()
 try { $d = $raw | ConvertFrom-Json } catch { Write-Host (C '36' "$iconModel claude"); exit 0 }
 
@@ -280,10 +329,11 @@ function Test-PayloadDirty($status) {
     return $false
 }
 
-# Branch from the payload's git object when present; otherwise from `git status` (Task 6).
+# Branch from the payload's git object when present; otherwise from git status in current_dir.
 function Get-BranchSegment($d) {
     $info = $null
     if ($d.git.branch) { $info = @{ Branch = "$($d.git.branch)"; Dirty = (Test-PayloadDirty $d.git.status) } }
+    else { $info = Get-GitBranch $d.workspace.current_dir $gitTimeoutMs }
     if (-not $info) { return $null }
     $isMain = $info.Branch -in @('main', 'master')
     $icon = if ($isMain) { $iconHome } else { $iconBranch }
