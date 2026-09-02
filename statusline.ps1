@@ -192,6 +192,8 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
     $git = (Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
     if (-not $git) { return $null }
     $p = $null
+    $outTask = $null
+    $errTask = $null
     try {
         $psi = [System.Diagnostics.ProcessStartInfo]::new($git)
         foreach ($a in @('-C', $Dir, 'status', '--porcelain=v1', '--branch')) { $psi.ArgumentList.Add($a) }
@@ -221,7 +223,13 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
         if ($p.ExitCode -ne 0) { return $null }
         return Read-PorcelainStatus $outTask.Result
     } catch { return $null }
-    finally { if ($p) { $p.Dispose() } }
+    finally {
+        # Disposing closes the redirected streams, so it is only safe once both drains have finished. The
+        # bounded wait after a kill can return with a ReadToEndAsync still pending; disposing then would
+        # pull the reader out from under it. In that case leave the handles alone - the script exits a few
+        # milliseconds later and the operating system reclaims them.
+        if ($p -and $outTask -and $errTask -and $outTask.IsCompleted -and $errTask.IsCompleted) { $p.Dispose() }
+    }
 }
 
 $raw = [Console]::In.ReadToEnd()

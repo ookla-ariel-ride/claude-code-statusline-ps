@@ -106,6 +106,29 @@ function Invoke-StatusLine([string] $Payload, [string] $ConfigPath, [int] $Colum
     }
 }
 
+# Starts statusline.ps1 in a child pwsh and returns before it finishes, so the caller can look at the
+# machine while the render is still running. The payload goes in on stdin and both output streams are
+# drained on .NET threads, so the child never blocks on a full pipe. COLUMNS is cleared for the child the
+# way Invoke-StatusLine clears it for a width of 0.
+function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
+    $pwshPath = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
+    $psi = [System.Diagnostics.ProcessStartInfo]::new($pwshPath)
+    foreach ($a in @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', $script)) { $psi.ArgumentList.Add($a) }
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    [void] $psi.Environment.Remove('COLUMNS')
+    if ($PathPrefix) { $psi.Environment['PATH'] = $PathPrefix + [System.IO.Path]::PathSeparator + $env:PATH }
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $out = $p.StandardOutput.ReadToEndAsync()
+    $err = $p.StandardError.ReadToEndAsync()
+    $p.StandardInput.Write($Payload)
+    $p.StandardInput.Close()
+    return @{ Process = $p; Out = $out; Err = $err }
+}
+
 # ---- Unit group: functions extracted from statusline.ps1 ----
 . (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Test-PayloadDirty', 'Get-BranchSegment'))
 
@@ -375,6 +398,27 @@ if ($haveGit) {
     Confirm-Equal $g.Dirty $true 'Get-GitBranch: untracked dirty'
     Confirm-Equal (Get-GitBranch (Join-Path $tmp 'nowhere') $gitTimeoutMs) $null 'Get-GitBranch: missing dir'
 
+    # Positive controls for the "not a repo" case below, which on its own would also pass if the probe
+    # never ran. The first shows the walk upwards really happens and that the ceiling above $tmp does not
+    # block it: a plain directory inside a fixture repo still reports that repo's branch. The second
+    # shows GIT_CEILING_DIRECTORIES is what stops the walk - with the ceiling moved onto the trap repo the
+    # same directory finds nothing, and with the normal ceiling back it finds the trap's branch.
+    $nested = Join-Path $clean 'sub'
+    New-Item -ItemType Directory -Force $nested | Out-Null
+    Confirm-Equal (Get-GitBranch $nested $gitTimeoutMs).Branch 'main' 'Get-GitBranch: a directory inside a repo reports that repo'
+
+    $trapRepo = Initialize-TestRepo 'trap'; Add-Commit $trapRepo
+    $trapChild = Join-Path $trapRepo 'child'
+    New-Item -ItemType Directory -Force $trapChild | Out-Null
+    $ceiling = $env:GIT_CEILING_DIRECTORIES
+    $blocked = 'the probe did not run'
+    try {
+        $env:GIT_CEILING_DIRECTORIES = $trapRepo
+        $blocked = Get-GitBranch $trapChild $gitTimeoutMs
+    } finally { $env:GIT_CEILING_DIRECTORIES = $ceiling }
+    Confirm-Equal $blocked $null 'Get-GitBranch: a ceiling on the parent repo hides it'
+    Confirm-Equal (Get-GitBranch $trapChild $gitTimeoutMs).Branch 'main' 'Get-GitBranch: the same directory finds the repo once the ceiling moves back'
+
     $gitCases.Add(@{ Name = 'clean';           Dir = $clean;          Has = "$iconHome main";              Not = $iconDirty })
     $gitCases.Add(@{ Name = 'dirty tracked';   Dir = $dirtyTracked;   Has = "$iconHome main $iconDirty";  Raw = "$esc[33m" })
     $gitCases.Add(@{ Name = 'dirty untracked'; Dir = $dirtyUntracked; Has = "$iconHome main $iconDirty" })
@@ -418,6 +462,35 @@ foreach ($case in $gitCases) {
     if ($case.NoPing) { Start-Sleep -Milliseconds 300; Confirm-True ((Get-FakePingCount $pingTag) -eq 0) "${label}: ping child killed with the tree" }
     Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f $case.Name, $r.Ms, $text)
 }
+
+# Positive control for the hang case's "no ping is left behind": that assertion would also pass if the
+# fake had never started a ping. Run the same fake once more without waiting for the render, and watch
+# the ping from outside - it has to be running while the render is still blocked, and gone once the
+# render has exited.
+$hang = Invoke-StatusLineAsync (Get-GitPayload $notRepo) $fakeHang
+$midPings = 0
+$midMs = 0
+$hangSw = [System.Diagnostics.Stopwatch]::StartNew()
+try {
+    Start-Sleep -Milliseconds 500
+    $midPings = Get-FakePingCount $pingTag
+    # pwsh's own start-up is not instant, so allow a little longer for the child to reach the ping.
+    while ($midPings -lt 1 -and $hangSw.ElapsedMilliseconds -lt 5000 -and -not $hang.Process.HasExited) {
+        Start-Sleep -Milliseconds 100
+        $midPings = Get-FakePingCount $pingTag
+    }
+    $midMs = $hangSw.ElapsedMilliseconds
+    Confirm-True ($midPings -ge 1) "git hangs control: ping child running $midMs ms into the render (count $midPings)"
+    Confirm-True ($hang.Process.WaitForExit(30000)) 'git hangs control: the render exited'
+    [void] [System.Threading.Tasks.Task]::WaitAll(@($hang.Out, $hang.Err), 5000)
+} finally {
+    if (-not $hang.Process.HasExited) { try { $hang.Process.Kill($true) } catch { $null = $_ } }
+    $hang.Process.Dispose()
+}
+$hangSw.Stop()
+Start-Sleep -Milliseconds 300
+Confirm-True ((Get-FakePingCount $pingTag) -eq 0) 'git hangs control: ping child gone once the render exited'
+Write-Host ("{0,-40} {1,5:N0} ms  {2} ping(s) at {3} ms, 0 after" -f 'git hangs control', $hangSw.ElapsedMilliseconds, $midPings, $midMs)
 } finally {
     if ($null -ne $oldGitConfigGlobal) { $env:GIT_CONFIG_GLOBAL = $oldGitConfigGlobal } else { Remove-Item Env:GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue }
     if ($null -ne $oldGitConfigNoSystem) { $env:GIT_CONFIG_NOSYSTEM = $oldGitConfigNoSystem } else { Remove-Item Env:GIT_CONFIG_NOSYSTEM -ErrorAction SilentlyContinue }
@@ -431,15 +504,18 @@ $sample06 = $sampleFiles | Where-Object { $_.Name -eq '06-limits-badges-lines.js
 # samples spell that path out (C:\repo, C:\Users\jim\Downloads). GIT_CEILING_DIRECTORIES only stops the
 # walk upwards, so on a machine where one of those paths is a repository the matrix would render a branch
 # the presence table says is absent. Point those payloads at an empty directory of the same name under
-# $tmp instead: the folder segment prints the same leaf, and the probe is provably not a repository. The
-# rewrite is in memory, for every config including a user-supplied -Config; the sample files never change.
+# $tmp\probe instead: the folder segment prints the same leaf, and the probe is provably not a repository.
+# The probe dirs get their own parent so a sample leaf can never collide with one of the git fixtures the
+# group above creates directly under $tmp (a sample whose folder was called `repo-clean` would otherwise
+# be pointed at a real repository). The rewrite is in memory, for every config including a user-supplied
+# -Config; the sample files never change.
 function Convert-ToHermeticPayload([string] $Path) {
     $text = Get-Content -LiteralPath $Path -Raw
     $json = $text | ConvertFrom-Json
     if ($null -ne $json.git) { return $text }
     $dir = $json.workspace.current_dir
     if (-not $dir) { return $text }
-    $probe = Join-Path $tmp (Split-Path $dir -Leaf)
+    $probe = Join-Path (Join-Path $tmp 'probe') (Split-Path $dir -Leaf)
     New-Item -ItemType Directory -Force $probe | Out-Null
     $json.workspace.current_dir = $probe
     return ($json | ConvertTo-Json -Depth 20 -Compress)
@@ -515,25 +591,63 @@ $presenceTable = @{
         @{ Icon = $iconBranch; Name = 'branch'; Expect = $false }
     )
 }
+# What each sample renders when every segment is enabled and nothing is fitted away: 04 carries nothing
+# but a model, 05 and 07 have no git object and their probe directory is not a repository, and 07's
+# badges are all off or at the default level. Intersected with a config's enabled set this gives the
+# segments the line should actually show, which is what the gates below are built on.
+$sampleSegments = @{
+    '01-main-clean.json'                    = @('model', 'context', 'cost', 'folder', 'branch')
+    '02-feature-dirty-high.json'            = @('model', 'context', 'cost', 'folder', 'branch')
+    '03-main-dirty-mid.json'                = @('model', 'context', 'cost', 'folder', 'branch')
+    '04-minimal.json'                       = @('model')
+    '05-no-git.json'                        = @('model', 'context', 'folder')
+    '06-limits-badges-lines.json'           = @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch')
+    '07-limits-expired-default-effort.json' = @('model', 'context', 'cost', 'lines', 'limits', 'folder')
+}
+# Every glyph a segment can put on the line: a segment the config turns off must show none of them, and
+# the two-line checks use them to say which row a segment landed on.
+$segmentGlyphs = @{
+    model   = @($iconModel)
+    context = @($iconCtx)
+    cost    = @($iconCost)
+    lines   = @($iconLines)
+    limits  = @($iconLimits)
+    badges  = @($iconFast, $iconThink, $iconEffort, $iconVim)
+    folder  = @($iconFolder)
+    branch  = @($iconHome, $iconBranch, $iconDirty)
+}
+# The segment behind each row of the presence table, so a row can be skipped when its segment is off
+# (the absence assertions cover that case instead).
+$glyphSegment = @{
+    context = 'context'; cost = 'cost'; folder = 'folder'; lines = 'lines'; limits = 'limits'
+    home = 'branch'; pencil = 'branch'; branch = 'branch'
+    fast = 'badges'; think = 'badges'; effort = 'badges'; vim = 'badges'
+}
+# statusline.ps1's own line sets, mirrored here so the test knows which segments share a line.
+$layoutRows = @{
+    one = @(, @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch'))
+    two = @(@('model', 'folder', 'branch', 'badges'), @('context', 'limits', 'cost', 'lines'))
+}
 $modelOnlyPath = @{}
 foreach ($style in @('plain', 'powerline')) {
     $modelOnlyPath[$style] = Write-TempConfig "model-only-$style.json" ('{ "layout": "one", "style": "' + $style + '", "segments": { "context": false, "cost": false, "lines": false, "limits": false, "badges": false, "folder": false, "branch": false } }')
 }
-# AllOn says whether every segment is enabled. The glyph, two-line and toggle assertions below describe a
-# full status line, so they only apply then; a user-supplied -Config with segments off still gets the
-# structural checks (exit code, empty stderr, width, line count against the layout).
+# Each config carries the set of segments it leaves enabled. Every assertion below is gated on that set
+# rather than on "all segments on", so a user-supplied -Config keeps each check its own segment set still
+# justifies: the glyphs of its enabled segments, the absence of the glyphs of the ones it turns off, the
+# separator style wherever a line still holds two segments, and the two-line layout's row contents.
 $configSet = [System.Collections.Generic.List[hashtable]]::new()
 if ($Config) {
     $resolved = (Resolve-Path $Config).Path
     $parsed = Read-StatusConfig $resolved
-    $allOn = (@($parsed.Segments.Keys | Where-Object { -not $parsed.Segments[$_] }).Count -eq 0)
-    if (-not $allOn) { Write-Host "note: $(Split-Path $resolved -Leaf) turns segments off; running structural checks only" -ForegroundColor Yellow }
-    $configSet.Add(@{ Name = (Split-Path $resolved -Leaf); Path = $resolved; Layout = $parsed.Layout; Style = $parsed.Style; AllOn = $allOn })
+    $off = @($allSegments | Where-Object { -not $parsed.Segments[$_] })
+    if ($off.Count -gt 0) { Write-Host "note: $(Split-Path $resolved -Leaf) turns off $($off -join ', '); those segments are checked for absence instead" -ForegroundColor Yellow }
+    $configSet.Add(@{ Name = (Split-Path $resolved -Leaf); Path = $resolved; Layout = $parsed.Layout; Style = $parsed.Style; Enabled = $parsed.Segments })
 } else {
     foreach ($layout in @('one', 'two')) {
         foreach ($style in @('plain', 'powerline')) {
             $path = Write-TempConfig "$layout-$style.json" ('{ "layout": "' + $layout + '", "style": "' + $style + '" }')
-            $configSet.Add(@{ Name = "$layout-$style"; Path = $path; Layout = $layout; Style = $style; AllOn = $true })
+            $configSet.Add(@{ Name = "$layout-$style"; Path = $path; Layout = $layout; Style = $style; Enabled = (Read-StatusConfig $path).Segments })
         }
     }
 }
@@ -563,46 +677,79 @@ foreach ($cfg in $configSet) {
                 $isModelOnly = (ConvertTo-PlainText $line) -ceq (ConvertTo-PlainText ($only.Lines -join ''))
                 Confirm-True $isModelOnly "${label}: width $w exceeds $($c - 1) and the line is not the model-only fallback"
             }
-            if ($c -le 0 -and $cfg.AllOn) {
+            if ($c -le 0) {
                 $text = ConvertTo-PlainText ($lines -join "`n")
-                Confirm-True ($text.Contains($iconModel)) "${label}: has model glyph"
-                if ($presenceTable.ContainsKey($sample.Name)) {
-                    foreach ($check in $presenceTable[$sample.Name]) {
-                        $has = $text.Contains($check.Icon)
-                        Confirm-True ($has -eq $check.Expect) "${label}: $($check.Name) glyph $(if ($check.Expect) { 'present' } else { 'absent' })"
+                $known = if ($sampleSegments.ContainsKey($sample.Name)) { @($sampleSegments[$sample.Name]) } else { @($allSegments) }
+                $visible = @($allSegments | Where-Object { $cfg.Enabled[$_] -and $_ -in $known })
+                $rowVisible = [System.Collections.Generic.List[object]]::new()
+                foreach ($row in $layoutRows[$cfg.Layout]) { $rowVisible.Add(@($row | Where-Object { $_ -in $visible })) }
+                if ($visible.Count -eq 0) {
+                    # The config turns off everything this sample could show. statusline.ps1 builds no
+                    # segments at all then and prints its fallback, the model glyph and the word claude.
+                    Confirm-Equal $text "$iconModel claude" "${label}: nothing left on gives the claude fallback"
+                } else {
+                    if ($cfg.Enabled['model']) { Confirm-True ($text.Contains($iconModel)) "${label}: has model glyph" }
+                    foreach ($name in $allSegments) {
+                        if ($cfg.Enabled[$name]) { continue }
+                        $seen = @($segmentGlyphs[$name] | Where-Object { $text.Contains($_) })
+                        Confirm-True ($seen.Count -eq 0) "${label}: $name is off, none of its glyphs appear"
                     }
-                }
-                if ($sample.Name -ne '04-minimal.json') {
-                    if ($cfg.Style -eq 'plain') {
-                        Confirm-True ($text.Contains($chevron) -and -not $text.Contains($arrow)) "${label}: plain uses chevron not arrow"
-                    } else {
-                        Confirm-True ($text.Contains($arrow) -and -not $text.Contains($chevron)) "${label}: powerline uses arrow not chevron"
-                    }
-                }
-                if ($cfg.Style -eq 'powerline') {
-                    $rawJoined = $lines -join "`n"
-                    Confirm-True ($rawJoined.Contains("$esc[0;1;48;5;31;38;5;231m")) "${label}: powerline bold model block"
-                }
-                if ($cfg.Layout -eq 'two') {
-                    if ($sample.Name -in $twoLineSamples) {
-                        Confirm-Equal $lines.Count 2 "${label}: two-line layout produces 2 lines"
-                        if ($lines.Count -eq 2) {
-                            $line1 = ConvertTo-PlainText $lines[0]
-                            $line2 = ConvertTo-PlainText $lines[1]
-                            Confirm-True ($line1.Contains($iconModel) -and $line1.Contains($iconFolder) -and -not $line1.Contains($iconCtx)) "${label}: line 1 has model+folder, no context"
-                            Confirm-True ($line2.Contains($iconCtx) -and -not $line2.Contains($iconFolder)) "${label}: line 2 has context, no folder"
+                    if ($presenceTable.ContainsKey($sample.Name)) {
+                        foreach ($check in $presenceTable[$sample.Name]) {
+                            if (-not $cfg.Enabled[$glyphSegment[$check.Name]]) { continue }
+                            $has = $text.Contains($check.Icon)
+                            Confirm-True ($has -eq $check.Expect) "${label}: $($check.Name) glyph $(if ($check.Expect) { 'present' } else { 'absent' })"
                         }
-                    } elseif ($sample.Name -eq '04-minimal.json') {
-                        Confirm-Equal $lines.Count 1 "${label}: two-line layout with only model collapses to 1 line"
+                    }
+                    # A separator only exists between two segments on the same line, so this asks the row
+                    # sets rather than the sample: one segment left on a row means nothing to separate.
+                    if (@($rowVisible | Where-Object { $_.Count -ge 2 }).Count -gt 0) {
+                        if ($cfg.Style -eq 'plain') {
+                            Confirm-True ($text.Contains($chevron) -and -not $text.Contains($arrow)) "${label}: plain uses chevron not arrow"
+                        } else {
+                            Confirm-True ($text.Contains($arrow) -and -not $text.Contains($chevron)) "${label}: powerline uses arrow not chevron"
+                        }
+                    }
+                    if ($cfg.Style -eq 'powerline') {
+                        $rawJoined = $lines -join "`n"
+                        if ($cfg.Enabled['model']) {
+                            Confirm-True ($rawJoined.Contains("$esc[0;1;48;5;31;38;5;231m")) "${label}: powerline bold model block"
+                        } else {
+                            # No model means no bold block, but every other segment is still a block.
+                            Confirm-True ($rawJoined.Contains("$esc[0;48;5;")) "${label}: powerline block without a model segment"
+                        }
+                    }
+                    if ($cfg.Layout -eq 'two') {
+                        if ($sample.Name -in $twoLineSamples) {
+                            # A row with nothing left on it fits down to nothing and is not printed.
+                            $wantLines = @($rowVisible | Where-Object { $_.Count -gt 0 }).Count
+                            Confirm-Equal $lines.Count $wantLines "${label}: two-line layout produces $wantLines line(s)"
+                            if ($lines.Count -eq 2 -and $wantLines -eq 2) {
+                                for ($ri = 0; $ri -lt 2; $ri++) {
+                                    $rowText = ConvertTo-PlainText $lines[$ri]
+                                    $mine = @($rowVisible[$ri])
+                                    $other = @($rowVisible[1 - $ri])
+                                    $missing = @($mine | Where-Object { @($segmentGlyphs[$_] | Where-Object { $rowText.Contains($_) }).Count -eq 0 })
+                                    $strayed = @($other | Where-Object { @($segmentGlyphs[$_] | Where-Object { $rowText.Contains($_) }).Count -gt 0 })
+                                    Confirm-True ($missing.Count -eq 0 -and $strayed.Count -eq 0) "${label}: line $($ri + 1) has $($mine -join '+') and none of $($other -join '+') (missing '$($missing -join ',')', strayed '$($strayed -join ',')')"
+                                }
+                            }
+                        } elseif ($sample.Name -eq '04-minimal.json') {
+                            Confirm-Equal $lines.Count 1 "${label}: two-line layout with only model collapses to 1 line"
+                        }
                     }
                 }
             }
-            $shown = if ($Raw) { $lines -replace $esc, '<ESC>' } else { $lines }
+            # @() or a one-line render collapses to a bare string here and $shown[0] echoes its first
+            # character instead of the line.
+            $shown = @(if ($Raw) { $lines -replace $esc, '<ESC>' } else { $lines })
             Write-Host ("{0,-40} {1,5:N0} ms  " -f $sample.Name, $r.Ms) -NoNewline
             Write-Host $shown[0]
             for ($i = 1; $i -lt $shown.Count; $i++) { Write-Host ((' ' * 50) + $shown[$i]) }
         }
-        if ($c -le 0 -and $cfg.AllOn) {
+        # The toggle config is generated from the layout and style under test, never from the segment set
+        # of a user-supplied -Config, so this runs for every config.
+        if ($c -le 0) {
             $togglePath = Write-TempConfig "toggle-$($cfg.Name).json" ('{ "layout": "' + $cfg.Layout + '", "style": "' + $cfg.Style + '", "segments": { "cost": false, "badges": false } }')
             $payload06 = $samplePayloads[$sample06.Name]
             $toggle = Invoke-StatusLine $payload06 $togglePath $c
