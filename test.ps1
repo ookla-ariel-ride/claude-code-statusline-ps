@@ -130,10 +130,11 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'TimeLeft', 'Get-LimitsSegment'))
 
-# Get-BranchSegment closes over these script-level names in statusline.ps1, so the test has to supply them.
+# Get-BranchSegment and Get-LimitsSegment close over these script-level names in statusline.ps1, so the test has to supply them.
 $gitTimeoutMs = 1500
+$iconLimit = [char]::ConvertFromUtf32(0xF0E4)
 $iconHome = [char]::ConvertFromUtf32(0xF015)
 $iconBranch = [char]::ConvertFromUtf32(0xE0A0)
 $iconDirty = [char]::ConvertFromUtf32(0xF040)
@@ -320,6 +321,36 @@ Confirm-Equal (Get-ContextSegment (Get-ContextPayload 64)).Role 'warn' 'context 
 Confirm-Equal (Get-ContextSegment (Get-ContextPayload 85)).Role 'bad' 'context 85: role'
 
 Confirm-Equal (Get-ContextSegment ([pscustomobject]@{})) $null 'context: missing context_window'
+
+Write-Host '== unit: limits' -ForegroundColor Cyan
+# Resets in the past keep TimeLeft empty, so the text is deterministic. Payloads go through ConvertFrom-Json
+# so a null used_percentage is a real null property, the way Claude Code sends it.
+function Get-LimitsPayload([string] $RateLimits) {
+    return ('{"rate_limits":' + $RateLimits + '}') | ConvertFrom-Json
+}
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":24,"resets_at":1700000000},"seven_day":{"used_percentage":41,"resets_at":1700000000},"spend_limit":{"used_percentage":62,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit 5h 24% 7d 41% `$ 62%" 'limits all three: 5h, 7d, then spend'
+Confirm-Equal $seg.Short "$iconLimit 5h 24%" 'limits all three: short keeps the 5h figure only'
+Confirm-Equal $seg.Role 'warn' 'limits all three: role from the worst figure'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"spend_limit":{"used_percentage":62,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit `$ 62%" 'limits spend alone: one figure, no 5h'
+Confirm-Equal $seg.Short $null 'limits spend alone: no short form'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"spend_limit":{"used_percentage":92,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit 5h 10% `$ 92%" 'limits spend 92 with 5h 10: text'
+Confirm-Equal $seg.Role 'bad' 'limits spend 92 with 5h 10: spend drives the colour'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit absent: unchanged text'
+Confirm-Equal $seg.Role 'warn' 'limits spend_limit absent: role'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000},"spend_limit":{"used_percentage":null,"resets_at":null}}')
+Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit null percentage: unchanged text'
+
+Confirm-Equal (Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":null},"seven_day":{"used_percentage":null},"spend_limit":{"used_percentage":null}}')) $null 'limits all null: segment omitted'
+Confirm-Equal (Get-LimitsSegment ([pscustomobject]@{})) $null 'limits: missing rate_limits'
 
 Write-Host '== unit: porcelain' -ForegroundColor Cyan
 $r = Read-PorcelainStatus "## main...origin/main [ahead 1]`n"
@@ -733,7 +764,6 @@ $iconModel = [char]::ConvertFromUtf32(0xF06A9)
 $iconCost = [char]::ConvertFromUtf32(0xF0155)
 $iconFolder = [char]::ConvertFromUtf32(0xF07C)
 $iconLines = [char]::ConvertFromUtf32(0xF121)
-$iconLimits = [char]::ConvertFromUtf32(0xF0E4)
 $iconFast = [char]::ConvertFromUtf32(0xF0E7)
 $iconThink = [char]::ConvertFromUtf32(0xF09D0)
 $iconEffort = [char]::ConvertFromUtf32(0xF04C5)
@@ -748,17 +778,17 @@ $absentGlyphs = @{
     '01-main-clean.json'                    = @(
         @{ Icon = $iconDirty; Name = 'pencil' }
         @{ Icon = $iconLines; Name = 'lines' }
-        @{ Icon = $iconLimits; Name = 'limits' }
+        @{ Icon = $iconLimit; Name = 'limits' }
         @{ Icon = $iconBranch; Name = 'branch' }
     )
     '02-feature-dirty-high.json'            = @(
         @{ Icon = $iconHome; Name = 'home' }
         @{ Icon = $iconLines; Name = 'lines' }
-        @{ Icon = $iconLimits; Name = 'limits' }
+        @{ Icon = $iconLimit; Name = 'limits' }
     )
     '03-main-dirty-mid.json'                = @(
         @{ Icon = $iconLines; Name = 'lines' }
-        @{ Icon = $iconLimits; Name = 'limits' }
+        @{ Icon = $iconLimit; Name = 'limits' }
     )
     '04-minimal.json'                       = @(
         @{ Icon = $iconCtx; Name = 'context' }
@@ -828,13 +858,13 @@ $sampleMarkers = @{
     }
     '06-limits-badges-lines.json'           = @{
         model  = "$iconModel Fable 5.1"; context = "$iconCtx 32%"; cost = "$iconCost `$$('{0:N2}' -f 1.07)"
-        lines  = "$iconLines +156 ${minus}23"; limits = "$iconLimits 5h 24%"
+        lines  = "$iconLines +156 ${minus}23"; limits = "$iconLimit 5h 24%"
         badges = "$iconFast $iconThink $iconEffort xhigh $iconVim NORMAL"
         folder = "$iconFolder my-project"; branch = "$iconHome main"
     }
     '07-limits-expired-default-effort.json' = @{
         model = "$iconModel Opus 5"; context = "$iconCtx 5%"; cost = "$iconCost `$$('{0:N2}' -f 0.02)"
-        lines = "$iconLines +0 ${minus}4"; limits = "$iconLimits 5h 61% 7d 12%"
+        lines = "$iconLines +0 ${minus}4"; limits = "$iconLimit 5h 61% 7d 12% `$ 44%"
         folder = "$iconFolder repo"
     }
 }
@@ -845,7 +875,7 @@ $segmentGlyphs = @{
     context = @($iconCtx)
     cost    = @($iconCost)
     lines   = @($iconLines)
-    limits  = @($iconLimits)
+    limits  = @($iconLimit)
     badges  = @($iconFast, $iconThink, $iconEffort, $iconVim)
     folder  = @($iconFolder)
     branch  = @($iconHome, $iconBranch, $iconDirty, $iconAhead, $iconBehind, $iconConflict)

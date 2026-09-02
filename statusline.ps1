@@ -323,22 +323,27 @@ function TimeLeft([object] $epoch) {
     return ' ({0}h{1:00}m)' -f [int] [math]::Floor($left.TotalHours), $left.Minutes
 }
 
-# Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets.
+# Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets, and the spend limit when
+# the payload carries one (Claude Code sends it behind a Claude apps gateway with a spend limit). The spend
+# figure uses a literal dollar sign, not the cash glyph, so it does not read as a second cost; its resets_at
+# is not shown, one countdown is enough. Every figure that is present joins the worst-of colour.
 function Get-LimitsSegment($d) {
     $rl = $d.rate_limits
     if (-not $rl) { return $null }
-    $h5 = $rl.five_hour.used_percentage
-    $d7 = $rl.seven_day.used_percentage
-    if ($null -eq $h5 -and $null -eq $d7) { return $null }
     $bits = [System.Collections.Generic.List[string]]::new()
     $worst = 0
     $short = $null
-    if ($null -ne $h5) {
-        $h5 = [int] [math]::Round([double] $h5); $worst = [math]::Max($worst, $h5)
-        $bits.Add("5h $h5%$(TimeLeft $rl.five_hour.resets_at)")
-        $short = "$iconLimit 5h $h5%"
+    # Label, source object and whether the countdown follows, in render order.
+    foreach ($row in @(@('5h', $rl.five_hour, $true), @('7d', $rl.seven_day, $false), @('$', $rl.spend_limit, $false))) {
+        $pct = $row[1].used_percentage
+        if ($null -eq $pct) { continue }
+        $pct = [int] [math]::Round([double] $pct)
+        $worst = [math]::Max($worst, $pct)
+        $tail = if ($row[2]) { TimeLeft $row[1].resets_at } else { '' }
+        $bits.Add("$($row[0]) $pct%$tail")
+        if ($row[0] -eq '5h') { $short = "$iconLimit 5h $pct%" }
     }
-    if ($null -ne $d7) { $d7 = [int] [math]::Round([double] $d7); $worst = [math]::Max($worst, $d7); $bits.Add("7d $d7%") }
+    if ($bits.Count -eq 0) { return $null }
     $text = "$iconLimit $($bits -join ' ')"
     if ($short -eq $text) { $short = $null }
     return @{ Name = 'limits'; Text = $text; Short = $short; Role = (Get-ThresholdRole $worst); Bold = $false }

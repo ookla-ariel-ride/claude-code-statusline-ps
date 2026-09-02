@@ -4,7 +4,8 @@
   "cost": { "total_cost_usd": 0.02, "total_lines_added": 0, "total_lines_removed": 4 },
   "rate_limits": {
     "five_hour": { "used_percentage": 61, "resets_at": 1700000000 },
-    "seven_day": { "used_percentage": 12, "resets_at": 1700000000 }
+    "seven_day": { "used_percentage": 12, "resets_at": 1700000000 },
+    "spend_limit": { "used_percentage": 44, "resets_at": 1767225600 }
   },
   "fast_mode": false,
   "effort": { "level": "high" },
