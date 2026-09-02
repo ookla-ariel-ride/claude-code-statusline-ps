@@ -130,10 +130,13 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder'))
 
-# Get-BranchSegment closes over these script-level names in statusline.ps1, so the test has to supply them.
+# Get-BranchSegment and Get-FolderSegment close over these script-level names in statusline.ps1, so the
+# test has to supply them.
 $gitTimeoutMs = 1500
+$iconFolder = [char]::ConvertFromUtf32(0xF07C)
+$iconChevron = [char]::ConvertFromUtf32(0x203A)
 $iconHome = [char]::ConvertFromUtf32(0xF015)
 $iconBranch = [char]::ConvertFromUtf32(0xE0A0)
 $iconDirty = [char]::ConvertFromUtf32(0xF040)
@@ -172,7 +175,7 @@ $registryTable = @(
     @{ Name = 'lines';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
     @{ Name = 'limits';  Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
     @{ Name = 'badges';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 4 }
-    @{ Name = 'folder';  Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 2 }
+    @{ Name = 'folder';  Default = $true; ShrinkRank = 4;     DropRank = 5;     Row = 1; RowRank = 2 }
     @{ Name = 'branch';  Default = $true; ShrinkRank = 3;     DropRank = 6;     Row = 1; RowRank = 3 }
 )
 $registry = @(Get-SegmentRegistry)
@@ -187,7 +190,7 @@ for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
         Confirm-Equal $got[$key] $want[$key] "registry: $($want.Name) $key"
     }
 }
-Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'limits,context,branch' 'registry: shrink order'
+Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'limits,context,branch,folder' 'registry: shrink order'
 Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,badges,cost,limits,folder,branch,context' 'registry: drop order'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 1) -join ',') 'model,folder,branch,badges' 'registry: layout two row 1'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 2) -join ',') 'context,limits,cost,lines' 'registry: layout two row 2'
@@ -211,7 +214,16 @@ $allSegments = @(Get-SegmentRegistry | ForEach-Object { $_.Name })
 $c = Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')
 Confirm-Equal $c.Layout 'one' 'config missing: layout'
 Confirm-Equal $c.Style 'plain' 'config missing: style'
+Confirm-Equal $c.Folder 'repo' 'config missing: folder repo'
 Confirm-True (@($allSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'config missing: all segments on'
+
+$c = Read-StatusConfig (Write-TempConfig 'folder-leaf.json' '{ "folder": "LEAF" }')
+Confirm-Equal $c.Folder 'leaf' 'config folder: leaf, case-insensitive'
+Confirm-Equal $c.Segments.folder $true 'config folder: the mode does not touch the segment toggle'
+$c = Read-StatusConfig (Write-TempConfig 'folder-nonsense.json' '{ "folder": "nonsense" }')
+Confirm-Equal $c.Folder 'repo' 'config folder: unknown value falls back to repo'
+$c = Read-StatusConfig (Write-TempConfig 'folder-number.json' '{ "folder": 7 }')
+Confirm-Equal $c.Folder 'repo' 'config folder: non-string falls back to repo'
 
 $c = Read-StatusConfig (Write-TempConfig 'valid.json' '{ "layout": "Two", "style": "POWERLINE", "segments": { "cost": false, "lines": true } }')
 Confirm-Equal $c.Layout 'two' 'config valid: layout case-insensitive'
@@ -245,6 +257,8 @@ Confirm-True ($shippedJson -is [System.Management.Automation.PSCustomObject]) 's
 $c = Read-StatusConfig $shippedConfig
 Confirm-Equal $c.Layout 'one' 'shipped config: layout one'
 Confirm-Equal $c.Style 'plain' 'shipped config: style plain'
+Confirm-Equal $c.Folder 'repo' 'shipped config: folder repo'
+Confirm-Equal $shippedJson.folder 'repo' 'shipped config: the file itself says folder repo'
 $shippedSegments = @($c.Segments.Keys)
 Confirm-Equal $shippedSegments.Count 8 'shipped config: eight segments'
 Confirm-True (@($shippedSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'shipped config: every segment on'
@@ -252,6 +266,49 @@ $shippedFileSegments = @($shippedJson.segments.PSObject.Properties)
 Confirm-Equal $shippedFileSegments.Count 8 'shipped config: the file itself lists eight segments'
 # -ne coerces its right side to the left side's type, so 'true' -ne $true is False; test the type too.
 Confirm-True (@($shippedFileSegments | Where-Object { $_.Value -isnot [bool] -or $_.Value -ne $true }).Count -eq 0) 'shipped config: the file itself sets them all to the boolean true'
+
+Write-Host '== unit: folder' -ForegroundColor Cyan
+# The four render paths from the issue, then both config modes. Nothing here touches the file system:
+# the builder only splits strings, so the directories need not exist.
+function Get-FolderPayload([string] $Dir, [string] $Root, [string] $Owner, [string] $Name) {
+    $ws = [ordered]@{}
+    if ($Dir) { $ws.current_dir = $Dir }
+    if ($Root) { $ws.project_dir = $Root }
+    if ($Owner -or $Name) { $ws.repo = [pscustomobject]@{ owner = $Owner; name = $Name } }
+    return [pscustomobject]@{ workspace = [pscustomobject]$ws }
+}
+$cfgRepo = @{ Folder = 'repo'; Style = 'plain' }
+$cfgLeaf = @{ Folder = 'leaf'; Style = 'plain' }
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo' 'C:\src\demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder at root: owner/name'
+Confirm-Equal $seg.Short "$iconFolder demo" 'folder at root: short is the name alone'
+Confirm-Equal $seg.Role 'folder' 'folder at root: role'
+Confirm-Equal $seg.Name 'folder' 'folder at root: name'
+Confirm-Equal $seg.Bold $false 'folder at root: not bold'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo $iconChevron tools" 'folder below root: owner/name, chevron, leaf'
+Confirm-Equal $seg.Short "$iconFolder demo" 'folder below root: short is the name alone'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\' 'C:\src\demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder at root with a trailing separator: still the root'
+$seg = Get-FolderSegment (Get-FolderPayload 'c:\SRC\Demo' 'C:\src\demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder at root in another case: still the root'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' '' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder with no project_dir: owner/name, no leaf'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder tools" 'folder with no repo: the leaf as before'
+Confirm-Equal $seg.Short $null 'folder with no repo: no short form'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' 'octo' '') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder tools" 'folder with an empty repo name: the leaf'
+Confirm-Equal $seg.Short $null 'folder with an empty repo name: no short form'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' '' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder tools" 'folder with an empty repo owner: the leaf'
+Confirm-Equal (Get-FolderSegment (Get-FolderPayload '' 'C:\src\demo' 'octo' 'demo') $cfgRepo) $null 'folder with no current_dir: null'
+Confirm-Equal (Get-FolderSegment ([pscustomobject]@{ model = @{ display_name = 'M' } }) $cfgRepo) $null 'folder with no workspace: null'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' 'octo' 'demo') $cfgLeaf
+Confirm-Equal $seg.Text "$iconFolder tools" 'folder leaf mode: the leaf even with a repo'
+Confirm-Equal $seg.Short $null 'folder leaf mode: no short form'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo' 'C:\src\demo' 'octo' 'demo') $cfgLeaf
+Confirm-Equal $seg.Text "$iconFolder demo" 'folder leaf mode at root: the leaf'
 
 Write-Host '== unit: renderer' -ForegroundColor Cyan
 $arrow = [char]::ConvertFromUtf32(0xE0B0)
@@ -320,6 +377,17 @@ Confirm-True ($line.Contains('BBBB') -and $line.Contains('CCC') -and -not $line.
 $line = Get-FittedLine $fitBranch 'plain' 39
 Confirm-Equal (Get-VisibleWidth $line) 38 'fit: stage 1 shrinks branch third'
 Confirm-True ($line.Contains('BB') -and -not $line.Contains('BBBB') -and $line.Contains('LL')) 'fit: branch shortened, nothing dropped at 39'
+
+# A folder with a Short form (the repo name alone) sheds it fourth in stage 1, after branch and still
+# before any whole segment goes. Full width is 48 here; limits short gives 45, context 42, branch 40, folder 38.
+$fitFolder = Get-FitSegmentSet
+$fitFolder[6] = @{ Name = 'folder'; Text = 'FFFF'; Short = 'FF'; Role = 'folder'; Bold = $false }
+$fitFolder[7] = @{ Name = 'branch'; Text = 'BBBB'; Short = 'BB'; Role = 'branch'; Bold = $false }
+$line = Get-FittedLine $fitFolder 'plain' 40
+Confirm-True ($line.Contains('FFFF') -and $line.Contains('BB') -and -not $line.Contains('BBBB')) 'fit: branch shortened before folder at 40'
+$line = Get-FittedLine $fitFolder 'plain' 39
+Confirm-Equal (Get-VisibleWidth $line) 38 'fit: stage 1 shrinks folder fourth'
+Confirm-True ($line.Contains('FF') -and -not $line.Contains('FFFF') -and $line.Contains('LL')) 'fit: folder shortened, nothing dropped at 39'
 
 # The shrink and drop orders are parameters that default to the registry, so a caller can hand in its own.
 $line = Get-FittedLine $fit 'plain' 43 -ShrinkOrder @('context')
@@ -752,15 +820,26 @@ $sample06 = $sampleFiles | Where-Object { $_.Name -eq '06-limits-badges-lines.js
 # $tmp\probe instead: the folder segment prints the same leaf, and the probe is provably not a repository.
 # The probe dirs get their own parent so a sample leaf can never collide with one of the git fixtures the
 # group above creates directly under $tmp (a sample whose folder was called `repo-clean` would otherwise
-# be pointed at a real repository). The rewrite is in memory, for every config including a user-supplied
-# -Config; the sample files never change.
+# be pointed at a real repository). A sample that also carries workspace.project_dir with current_dir
+# below it keeps that shape: the probe stands in for the project root and current_dir keeps its path
+# under it, so the folder segment still sees a session below its root. The rewrite is in memory, for
+# every config including a user-supplied -Config; the sample files never change.
 function Convert-ToHermeticPayload([string] $Path) {
     $text = Get-Content -LiteralPath $Path -Raw
     $json = $text | ConvertFrom-Json
     if ($null -ne $json.git) { return $text }
-    $dir = $json.workspace.current_dir
+    $dir = [string] $json.workspace.current_dir
     if (-not $dir) { return $text }
-    $probe = Join-Path (Join-Path $tmp 'probe') (Split-Path $dir -Leaf)
+    $root = [string] $json.workspace.project_dir
+    $probeParent = Join-Path $tmp 'probe'
+    if ($root -and $dir.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $probeRoot = Join-Path $probeParent (Split-Path $root -Leaf)
+        $below = $dir.Substring($root.Length).TrimStart('\', '/')
+        $probe = if ($below) { Join-Path $probeRoot $below } else { $probeRoot }
+        $json.workspace.project_dir = $probeRoot
+    } else {
+        $probe = Join-Path $probeParent (Split-Path $dir -Leaf)
+    }
     New-Item -ItemType Directory -Force $probe | Out-Null
     $json.workspace.current_dir = $probe
     return ($json | ConvertTo-Json -Depth 20 -Compress)
@@ -769,7 +848,6 @@ $samplePayloads = @{}
 foreach ($sample in $sampleFiles) { $samplePayloads[$sample.Name] = Convert-ToHermeticPayload $sample.FullName }
 $iconModel = [char]::ConvertFromUtf32(0xF06A9)
 $iconCost = [char]::ConvertFromUtf32(0xF0155)
-$iconFolder = [char]::ConvertFromUtf32(0xF07C)
 $iconLines = [char]::ConvertFromUtf32(0xF121)
 $iconLimits = [char]::ConvertFromUtf32(0xF0E4)
 $iconFast = [char]::ConvertFromUtf32(0xF0E7)
@@ -818,9 +896,15 @@ $absentGlyphs = @{
         @{ Icon = $iconHome; Name = 'home' }
         @{ Icon = $iconBranch; Name = 'branch' }
     )
+    '08-repo-identity.json'                 = @(
+        @{ Icon = $iconHome; Name = 'home' }
+        @{ Icon = $iconBranch; Name = 'branch' }
+        @{ Icon = $iconLines; Name = 'lines' }
+        @{ Icon = $iconLimits; Name = 'limits' }
+    )
 }
 # What each sample renders when every segment is enabled and nothing is fitted away: 04 carries nothing
-# but a model, 05 and 07 have no git object and their probe directory is not a repository, and 07's
+# but a model, 05, 07 and 08 have no git object and their probe directory is not a repository, and 07's
 # badges are all off or at the default level. Intersected with a config's enabled set this gives the
 # segments the line should actually show, which is what the gates below are built on.
 $sampleSegments = @{
@@ -831,6 +915,7 @@ $sampleSegments = @{
     '05-no-git.json'                        = @('model', 'context', 'folder')
     '06-limits-badges-lines.json'           = @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch')
     '07-limits-expired-default-effort.json' = @('model', 'context', 'cost', 'lines', 'limits', 'folder')
+    '08-repo-identity.json'                 = @('model', 'context', 'cost', 'folder')
 }
 # One marker per segment per sample: the segment's glyph plus the value this payload gives it, spelled
 # the way it reaches the line once the escapes are stripped. Every visible segment has to put its marker
@@ -839,10 +924,15 @@ $sampleSegments = @{
 # the check survives a culture that writes 12,50. Markers stop short of anything that moves: 06's limits
 # segment carries a countdown to a 2100 reset, so its marker ends at the percentage. Badges and branch
 # have no single glyph of their own, so their markers are the whole segment text.
-# Samples whose branch segment has a Short form that differs from its Text, with the icon that proves
-# the segment is on the line at all. Checked at every set width in the matrix.
-$sampleBranchForms = @{
-    '02-feature-dirty-high.json'            = @{ Icon = $iconBranch; Full = "$iconBranch feature/x ~2 ?1 $iconDirty"; Short = "$iconBranch feature/x $iconDirty" }
+# Samples with a segment whose Short form differs from its Text, with the icon that proves the segment
+# is on the line at all. Checked at every set width in the matrix.
+$sampleShortForms = @{
+    '02-feature-dirty-high.json'            = @{
+        branch = @{ Icon = $iconBranch; Full = "$iconBranch feature/x ~2 ?1 $iconDirty"; Short = "$iconBranch feature/x $iconDirty" }
+    }
+    '08-repo-identity.json'                 = @{
+        folder = @{ Icon = $iconFolder; Full = "$iconFolder octo/demo $iconChevron tools"; Short = "$iconFolder demo" }
+    }
 }
 
 $sampleMarkers = @{
@@ -874,6 +964,10 @@ $sampleMarkers = @{
         model = "$iconModel Opus 5"; context = "$iconCtx 5%"; cost = "$iconCost `$$('{0:N2}' -f 0.02)"
         lines = "$iconLines +0 ${minus}4"; limits = "$iconLimits 5h 61% 7d 12%"
         folder = "$iconFolder repo"
+    }
+    '08-repo-identity.json'                 = @{
+        model = "$iconModel Fable 5.1"; context = "$iconCtx 12%"; cost = "$iconCost `$$('{0:N2}' -f 0.88)"
+        folder = "$iconFolder octo/demo $iconChevron tools"
     }
 }
 # Every glyph a segment can put on the line: a segment the config turns off must show none of them, and
@@ -949,18 +1043,21 @@ foreach ($cfg in $configSet) {
                 $isModelOnly = (ConvertTo-PlainText $line) -ceq (ConvertTo-PlainText ($only.Lines -join ''))
                 Confirm-True $isModelOnly "${label}: width $w exceeds $($c - 1) and the line is not the model-only fallback"
             }
-            if ($c -gt 0 -and $cfg.Enabled['branch'] -and $sampleBranchForms.ContainsKey($sample.Name)) {
-                # At a set width the branch is one of two whole forms or gone: the full text with its
-                # counts, the Short form without them, or dropped outright. A half-shed branch, or the
-                # full form at a width it cannot fit, is what this catches; the content checks below run
-                # only for the unset width.
-                $forms = $sampleBranchForms[$sample.Name]
+            if ($c -gt 0 -and $sampleShortForms.ContainsKey($sample.Name)) {
+                # At a set width a segment with a Short form is one of two whole forms or gone: the full
+                # text, the Short form, or dropped outright. A half-shed segment, or the full form at a
+                # width it cannot fit, is what this catches; the content checks below run only for the
+                # unset width.
                 $text = ConvertTo-PlainText ($lines -join "`n")
-                $full = $text.Contains($forms.Full)
-                $short = -not $full -and $text.Contains($forms.Short)
-                $dropped = -not $text.Contains($forms.Icon)
-                Confirm-True ($full -or $short -or $dropped) "${label}: branch is the full form, the short form, or dropped"
-                if ($c -ge 120) { Confirm-True $full "${label}: branch shows its counts at $c columns" }
+                foreach ($entry in $sampleShortForms[$sample.Name].GetEnumerator()) {
+                    if (-not $cfg.Enabled[$entry.Key]) { continue }
+                    $forms = $entry.Value
+                    $full = $text.Contains($forms.Full)
+                    $short = -not $full -and $text.Contains($forms.Short)
+                    $dropped = -not $text.Contains($forms.Icon)
+                    Confirm-True ($full -or $short -or $dropped) "${label}: $($entry.Key) is the full form, the short form, or dropped"
+                    if ($c -ge 120) { Confirm-True $full "${label}: $($entry.Key) shows its full form at $c columns" }
+                }
             }
             if ($c -le 0) {
                 # A sample with no row in the two tables would be checked against nothing at all, so say

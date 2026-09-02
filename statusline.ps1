@@ -23,6 +23,7 @@ $iconModel  = G 0xF06A9   # nf-md-robot
 $iconCtx    = G 0xF035B   # nf-md-memory
 $iconCost   = G 0xF0155   # nf-md-cash
 $iconFolder = G 0xF07C    # nf-fa-folder_open
+$iconChevron = G 0x203A   # single right-pointing angle quotation mark (between owner/name and the leaf)
 $iconBranch = G 0xE0A0    # powerline branch
 $iconHome   = G 0xF015    # nf-fa-home  (on main/master)
 $iconDirty  = G 0xF040    # nf-fa-pencil (uncommitted changes)
@@ -82,7 +83,7 @@ function Get-SegmentRegistry {
         @{ Name = 'lines';   Build = { param($d, $cfg) Get-LinesSegment $d $cfg };   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
         @{ Name = 'limits';  Build = { param($d, $cfg) Get-LimitsSegment $d };       Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
         @{ Name = 'badges';  Build = { param($d, $cfg) Get-BadgesSegment $d };       Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 4 }
-        @{ Name = 'folder';  Build = { param($d, $cfg) Get-FolderSegment $d };       Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 2 }
+        @{ Name = 'folder';  Build = { param($d, $cfg) Get-FolderSegment $d $cfg };  Default = $true; ShrinkRank = 4;     DropRank = 5;     Row = 1; RowRank = 2 }
         @{ Name = 'branch';  Build = { param($d, $cfg) Get-BranchSegment $d $cfg };  Default = $true; ShrinkRank = 3;     DropRank = 6;     Row = 1; RowRank = 3 }
     )
 }
@@ -96,7 +97,7 @@ function Get-SegmentOrder([string] $Rank, [int] $Row = 0) {
 
 # Reads statusline.json. Anything missing or invalid silently falls back to its default.
 function Read-StatusConfig([string] $Path) {
-    $cfg = @{ Layout = 'one'; Style = 'plain'; Segments = @{} }
+    $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; Segments = @{} }
     foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
     try {
         if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $cfg }
@@ -104,6 +105,7 @@ function Read-StatusConfig([string] $Path) {
         if ($j -isnot [System.Management.Automation.PSCustomObject]) { return $cfg }
         if ($j.layout -is [string] -and $j.layout.ToLowerInvariant() -in @('one', 'two')) { $cfg.Layout = $j.layout.ToLowerInvariant() }
         if ($j.style -is [string] -and $j.style.ToLowerInvariant() -in @('plain', 'powerline')) { $cfg.Style = $j.style.ToLowerInvariant() }
+        if ($j.folder -is [string] -and $j.folder.ToLowerInvariant() -in @('repo', 'leaf')) { $cfg.Folder = $j.folder.ToLowerInvariant() }
         $segs = $j.segments
         if ($segs -is [System.Management.Automation.PSCustomObject]) {
             foreach ($n in @($cfg.Segments.Keys)) {
@@ -173,7 +175,7 @@ function Format-Line($Segments, [string] $Style) {
 }
 
 # Renders a line and, when a width is given, shrinks then drops segments until it fits.
-# Stage 1 swaps segments for their Short form in $ShrinkOrder (limits, context, then branch by default).
+# Stage 1 swaps segments for their Short form in $ShrinkOrder (limits, context, branch, then folder by default).
 # Stage 2 drops whole segments in $DropOrder. Both default to the registry's ranks; the model segment
 # is in neither, so it is never dropped and may overflow on its own. Returns $null when nothing is left.
 function Get-FittedLine($Segments, [string] $Style, $Width,
@@ -388,10 +390,23 @@ function Get-BadgesSegment($d) {
     return @{ Name = 'badges'; Text = ($badges -join ' '); Short = $null; Role = 'dim'; Bold = $false }
 }
 
-function Get-FolderSegment($d) {
-    $dir = $d.workspace.current_dir
+# With workspace.repo in the payload and the folder config at repo, the text is owner/name, followed by a
+# chevron and the leaf of current_dir once the session has moved below project_dir (no project_dir counts
+# as the root). Short is the name alone. Without a repo, with either field empty, or in leaf mode, it is
+# the leaf of current_dir as it always was, with no Short form. No current_dir means no segment.
+function Get-FolderSegment($d, $cfg) {
+    $dir = [string] $d.workspace.current_dir
     if (-not $dir) { return $null }
-    return @{ Name = 'folder'; Text = "$iconFolder $(Split-Path $dir -Leaf)"; Short = $null; Role = 'folder'; Bold = $false }
+    $leaf = Split-Path $dir -Leaf
+    $owner = $d.workspace.repo.owner
+    $name = $d.workspace.repo.name
+    if ($cfg.Folder -eq 'leaf' -or -not $owner -or -not $name) {
+        return @{ Name = 'folder'; Text = "$iconFolder $leaf"; Short = $null; Role = 'folder'; Bold = $false }
+    }
+    $root = [string] $d.workspace.project_dir
+    $text = "$owner/$name"
+    if ($root -and $dir.TrimEnd('\', '/') -ne $root.TrimEnd('\', '/')) { $text += " $iconChevron $leaf" }
+    return @{ Name = 'folder'; Text = "$iconFolder $text"; Short = "$iconFolder $name"; Role = 'folder'; Bold = $false }
 }
 
 # A payload value as a count, or $null when it is not one: a whole number that fits an Int32. ConvertFrom-Json

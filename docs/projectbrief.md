@@ -38,7 +38,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | `install.ps1` | Copies the script to `~/.claude/`, writes the `statusLine` entry to user settings, optionally installs JetBrainsMono Nerd Font via winget and sets it as the Windows Terminal default font. Supports `-Uninstall`. |
 | `statusline.json` | Defaults for layout, style and segment toggles. Installed beside the script. |
 | `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, and checks the git fallback in temporary repositories: clean, dirty, unborn, detached, ahead, behind, a mixed tree, a git that fails and one that hangs. `-Columns`, `-Config`, `-Raw`. |
-| `samples/*.json` | Seven payloads: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort. |
+| `samples/*.json` | Eight payloads: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort, a repository identity below its project root. |
 | `docs/render-screenshot.ps1` | Renders a payload and config through the script and captures the terminal as the README screenshot. |
 | `docs/render-icons.ps1` | Extracts the Nerd Font glyphs used by the script as SVG outlines for `docs/icons/`. |
 
@@ -52,7 +52,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | Lines | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
 | Limits | `rate_limits.five_hour`, `seven_day` | Coloured by the worse of the two |
 | Badges | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dim glyphs |
-| Folder | `workspace.current_dir` | Blue, leaf directory name |
+| Folder | `workspace.repo.owner`, `workspace.repo.name`, `workspace.project_dir`, `workspace.current_dir` | Blue. `owner/name` when the payload carries a repository, followed by `›` and the leaf of `current_dir` when it differs from `project_dir`. The leaf alone without a repository or with `"folder": "leaf"` in the config. Short form is the repository name |
 | Branch | `git status --porcelain=v1 --branch` in `workspace.current_dir`. The Claude Code payload has no `git` object, so this is the normal path; a payload that does carry `git.branch` and `git.status` (the test samples) is used as is | Home glyph on main/master, branch glyph otherwise. Yellow with pencil glyph when dirty, magenta when clean. Between the name and the pencil, dim counts in a fixed order: `↑N` `↓N` ahead of and behind the upstream (header bracket, git path only), `+N` staged, `~N` changed in the work tree, `?N` untracked entries, then a red triangle with the conflict count. Zero counts are left out. The short form used at a narrow width is icon, name and pencil |
 
 ## Key design decisions
@@ -91,7 +91,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 ## Success criteria
 
-- `.\test.ps1` passes: the unit checks, all seven samples across four configs and four widths (120, 60, 20 and unset) with content checks at the unset width, and the git cases.
+- `.\test.ps1` passes: the unit checks, all eight samples across four configs and four widths (120, 60, 20 and unset) with content checks at the unset width, and the git cases.
 - `.\install.ps1` on a fresh machine produces a working status line in Claude Code after one session restart.
 - `.\install.ps1 -Uninstall` returns `settings.json` to its prior state minus the `statusLine` key.
 - `.\install.ps1` leaves an existing `~/.claude/statusline.json` untouched.

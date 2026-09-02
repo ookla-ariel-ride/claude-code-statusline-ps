@@ -100,6 +100,7 @@ The script reads `statusline.json` from its own folder, so after installing that
 {
   "layout": "one",
   "style": "plain",
+  "folder": "repo",
   "segments": {
     "model": true,
     "context": true,
@@ -117,6 +118,7 @@ The script reads `statusline.json` from its own folder, so after installing that
 |---|---|---|
 | `layout` | `one`, `two` | `two` puts model, folder, branch and badges on the first line and context, limits, cost and lines on the second. |
 | `style` | `plain`, `powerline` | `plain` is coloured text with a dim chevron between segments. `powerline` is coloured blocks joined by solid arrows. |
+| `folder` | `repo`, `leaf` | `repo` shows `owner/name` from `workspace.repo` when the payload has one, with the current directory's name after a `›` once you are below the project root. `leaf` always shows the directory name alone. |
 | `segments.<name>` | `true`, `false` | `false` hides that segment. |
 
 Anything missing or invalid falls back to its default without a message, so a typo cannot blank
@@ -126,8 +128,9 @@ config behind the second screenshot.
 Claude Code tells the script the terminal width. When a line is too long the script shortens it in
 two stages:
 
-1. Detail comes off three segments, in this order: the countdown and 7-day figure from limits, the
-   token counts from context, and every count from the branch.
+1. Detail comes off four segments, in this order: the countdown and 7-day figure from limits, the
+   token counts from context, every count from the branch, and the owner and directory name from
+   the folder, which keeps only the repository name.
 2. Whole segments go, from the right: lines, badges, cost, limits, folder, branch, context.
 
 The model segment always stays.
@@ -142,7 +145,7 @@ The model segment always stays.
 | lines | <img src="docs/icons/code.svg" height="18" alt="code"> `nf-fa-code` | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
 | limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day` | `5h 24% (1h12m) 7d 41%`. Coloured by the worse of the two using the context thresholds. The countdown is omitted once the reset time has passed |
 | badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
-| folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.current_dir` | Blue, leaf directory name |
+| folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.repo`, `workspace.project_dir`, `workspace.current_dir` | Blue. `owner/name` when the payload names the repository, then `›` and the directory name once the session is below the project root. Without a repository, the directory name alone. The short form is the repository name |
 | branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git status --porcelain=v1 --branch` run in `workspace.current_dir` | Magenta when clean, yellow with the pencil when the tree has changes. The counts described below sit between the name and the pencil. Shows `detached` on a detached HEAD |
 | separator | <img src="docs/icons/chevron.svg" height="18" alt="chevron"> in `plain`, <img src="docs/icons/arrow.svg" height="18" alt="arrow"> in `powerline` | none | Dim chevron between segments, or a solid arrow coloured to blend the neighbouring blocks |
 
