@@ -531,64 +531,47 @@ $iconFast = [char]::ConvertFromUtf32(0xF0E7)
 $iconThink = [char]::ConvertFromUtf32(0xF09D0)
 $iconEffort = [char]::ConvertFromUtf32(0xF04C5)
 $iconVim = [char]::ConvertFromUtf32(0xE62B)
-$twoLineSamples = @('01-main-clean.json', '06-limits-badges-lines.json')
-$presenceTable = @{
-    '01-main-clean.json' = @(
-        @{ Icon = $iconCtx; Name = 'context'; Expect = $true }
-        @{ Icon = $iconCost; Name = 'cost'; Expect = $true }
-        @{ Icon = $iconFolder; Name = 'folder'; Expect = $true }
-        @{ Icon = $iconHome; Name = 'home'; Expect = $true }
-        @{ Icon = $iconDirty; Name = 'pencil'; Expect = $false }
-        @{ Icon = $iconLines; Name = 'lines'; Expect = $false }
-        @{ Icon = $iconLimits; Name = 'limits'; Expect = $false }
-        @{ Icon = $iconBranch; Name = 'branch'; Expect = $false }
+$minus = [char]::ConvertFromUtf32(0x2212)
+# Glyphs a sample must NOT show when every segment is enabled. This is the variant coverage the markers
+# below cannot give, because a marker can only say that something rendered: a clean tree carries no
+# pencil, a feature branch no home icon, a payload without rate limits no tachometer, and 07's badges
+# are all off or at the default level. Rows that only said "this glyph is present" are gone - the
+# per-segment markers assert that, by value, for every visible segment.
+$absentGlyphs = @{
+    '01-main-clean.json'                    = @(
+        @{ Icon = $iconDirty; Name = 'pencil' }
+        @{ Icon = $iconLines; Name = 'lines' }
+        @{ Icon = $iconLimits; Name = 'limits' }
+        @{ Icon = $iconBranch; Name = 'branch' }
     )
-    '02-feature-dirty-high.json' = @(
-        @{ Icon = $iconBranch; Name = 'branch'; Expect = $true }
-        @{ Icon = $iconDirty; Name = 'pencil'; Expect = $true }
-        @{ Icon = $iconCost; Name = 'cost'; Expect = $true }
-        @{ Icon = $iconHome; Name = 'home'; Expect = $false }
+    '02-feature-dirty-high.json'            = @(
+        @{ Icon = $iconHome; Name = 'home' }
+        @{ Icon = $iconLines; Name = 'lines' }
+        @{ Icon = $iconLimits; Name = 'limits' }
     )
-    '03-main-dirty-mid.json' = @(
-        @{ Icon = $iconHome; Name = 'home'; Expect = $true }
-        @{ Icon = $iconDirty; Name = 'pencil'; Expect = $true }
+    '03-main-dirty-mid.json'                = @(
+        @{ Icon = $iconLines; Name = 'lines' }
+        @{ Icon = $iconLimits; Name = 'limits' }
     )
-    '04-minimal.json' = @(
-        @{ Icon = $iconCtx; Name = 'context'; Expect = $false }
-        @{ Icon = $iconFolder; Name = 'folder'; Expect = $false }
+    '04-minimal.json'                       = @(
+        @{ Icon = $iconCtx; Name = 'context' }
+        @{ Icon = $iconFolder; Name = 'folder' }
     )
-    '05-no-git.json' = @(
-        @{ Icon = $iconCtx; Name = 'context'; Expect = $true }
-        @{ Icon = $iconFolder; Name = 'folder'; Expect = $true }
-        @{ Icon = $iconHome; Name = 'home'; Expect = $false }
-        @{ Icon = $iconBranch; Name = 'branch'; Expect = $false }
-        @{ Icon = $iconCost; Name = 'cost'; Expect = $false }
+    '05-no-git.json'                        = @(
+        @{ Icon = $iconHome; Name = 'home' }
+        @{ Icon = $iconBranch; Name = 'branch' }
+        @{ Icon = $iconCost; Name = 'cost' }
     )
-    '06-limits-badges-lines.json' = @(
-        @{ Icon = $iconCtx; Name = 'context'; Expect = $true }
-        @{ Icon = $iconCost; Name = 'cost'; Expect = $true }
-        @{ Icon = $iconLines; Name = 'lines'; Expect = $true }
-        @{ Icon = $iconLimits; Name = 'limits'; Expect = $true }
-        @{ Icon = $iconFast; Name = 'fast'; Expect = $true }
-        @{ Icon = $iconThink; Name = 'think'; Expect = $true }
-        @{ Icon = $iconEffort; Name = 'effort'; Expect = $true }
-        @{ Icon = $iconVim; Name = 'vim'; Expect = $true }
-        @{ Icon = $iconFolder; Name = 'folder'; Expect = $true }
-        @{ Icon = $iconHome; Name = 'home'; Expect = $true }
-        @{ Icon = $iconDirty; Name = 'pencil'; Expect = $false }
+    '06-limits-badges-lines.json'           = @(
+        @{ Icon = $iconDirty; Name = 'pencil' }
     )
     '07-limits-expired-default-effort.json' = @(
-        @{ Icon = $iconCtx; Name = 'context'; Expect = $true }
-        @{ Icon = $iconCost; Name = 'cost'; Expect = $true }
-        @{ Icon = $iconLines; Name = 'lines'; Expect = $true }
-        @{ Icon = $iconLimits; Name = 'limits'; Expect = $true }
-        @{ Icon = $iconFolder; Name = 'folder'; Expect = $true }
-        @{ Icon = $iconFast; Name = 'fast'; Expect = $false }
-        @{ Icon = $iconThink; Name = 'think'; Expect = $false }
-        @{ Icon = $iconEffort; Name = 'effort'; Expect = $false }
-        @{ Icon = $iconVim; Name = 'vim'; Expect = $false }
-        @{ Icon = $iconHome; Name = 'home'; Expect = $false }
-        @{ Icon = $iconBranch; Name = 'branch'; Expect = $false }
+        @{ Icon = $iconFast; Name = 'fast' }
+        @{ Icon = $iconThink; Name = 'think' }
+        @{ Icon = $iconEffort; Name = 'effort' }
+        @{ Icon = $iconVim; Name = 'vim' }
+        @{ Icon = $iconHome; Name = 'home' }
+        @{ Icon = $iconBranch; Name = 'branch' }
     )
 }
 # What each sample renders when every segment is enabled and nothing is fitted away: 04 carries nothing
@@ -604,6 +587,44 @@ $sampleSegments = @{
     '06-limits-badges-lines.json'           = @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch')
     '07-limits-expired-default-effort.json' = @('model', 'context', 'cost', 'lines', 'limits', 'folder')
 }
+# One marker per segment per sample: the segment's glyph plus the value this payload gives it, spelled
+# the way it reaches the line once the escapes are stripped. Every visible segment has to put its marker
+# on its own row, so a segment that stops rendering fails by name rather than slipping past the absence
+# table, which only names a few glyphs per sample. Money is formatted the way the script formats it so
+# the check survives a culture that writes 12,50. Markers stop short of anything that moves: 06's limits
+# segment carries a countdown to a 2100 reset, so its marker ends at the percentage. Badges and branch
+# have no single glyph of their own, so their markers are the whole segment text.
+$sampleMarkers = @{
+    '01-main-clean.json'                    = @{
+        model  = "$iconModel Fable 5.1"; context = "$iconCtx 8%"; cost = "$iconCost `$$('{0:N2}' -f 0.4312)"
+        folder = "$iconFolder my-project"; branch = "$iconHome main"
+    }
+    '02-feature-dirty-high.json'            = @{
+        model  = "$iconModel Fable 5.1"; context = "$iconCtx 90%"; cost = "$iconCost `$$('{0:N2}' -f 12.5)"
+        folder = "$iconFolder repo"; branch = "$iconBranch feature/x $iconDirty"
+    }
+    '03-main-dirty-mid.json'                = @{
+        model  = "$iconModel Opus 5"; context = "$iconCtx 65%"; cost = "$iconCost `$$('{0:N2}' -f 3.07)"
+        folder = "$iconFolder project"; branch = "$iconHome main $iconDirty"
+    }
+    '04-minimal.json'                       = @{
+        model = "$iconModel Fable 5.1"
+    }
+    '05-no-git.json'                        = @{
+        model = "$iconModel Sonnet 5"; context = "$iconCtx 25%"; folder = "$iconFolder Downloads"
+    }
+    '06-limits-badges-lines.json'           = @{
+        model  = "$iconModel Fable 5.1"; context = "$iconCtx 32%"; cost = "$iconCost `$$('{0:N2}' -f 1.07)"
+        lines  = "$iconLines +156 ${minus}23"; limits = "$iconLimits 5h 24%"
+        badges = "$iconFast $iconThink $iconEffort xhigh $iconVim NORMAL"
+        folder = "$iconFolder my-project"; branch = "$iconHome main"
+    }
+    '07-limits-expired-default-effort.json' = @{
+        model = "$iconModel Opus 5"; context = "$iconCtx 5%"; cost = "$iconCost `$$('{0:N2}' -f 0.02)"
+        lines = "$iconLines +0 ${minus}4"; limits = "$iconLimits 5h 61% 7d 12%"
+        folder = "$iconFolder repo"
+    }
+}
 # Every glyph a segment can put on the line: a segment the config turns off must show none of them, and
 # the two-line checks use them to say which row a segment landed on.
 $segmentGlyphs = @{
@@ -616,8 +637,8 @@ $segmentGlyphs = @{
     folder  = @($iconFolder)
     branch  = @($iconHome, $iconBranch, $iconDirty)
 }
-# The segment behind each row of the presence table, so a row can be skipped when its segment is off
-# (the absence assertions cover that case instead).
+# The segment behind each row of the absence table, so a row can be skipped when its segment is off
+# (the per-segment absence assertions cover that case instead, for every glyph the segment owns).
 $glyphSegment = @{
     context = 'context'; cost = 'cost'; folder = 'folder'; lines = 'lines'; limits = 'limits'
     home = 'branch'; pencil = 'branch'; branch = 'branch'
@@ -678,8 +699,14 @@ foreach ($cfg in $configSet) {
                 Confirm-True $isModelOnly "${label}: width $w exceeds $($c - 1) and the line is not the model-only fallback"
             }
             if ($c -le 0) {
+                # A sample with no row in the two tables would be checked against nothing at all, so say
+                # so instead of quietly degrading to "whatever the render happened to print".
+                $listed = $sampleSegments.ContainsKey($sample.Name) -and $sampleMarkers.ContainsKey($sample.Name)
+                Confirm-True $listed "${label}: sample has a row in the segment and marker tables"
+                if (-not $listed) { continue }
                 $text = ConvertTo-PlainText ($lines -join "`n")
-                $known = if ($sampleSegments.ContainsKey($sample.Name)) { @($sampleSegments[$sample.Name]) } else { @($allSegments) }
+                $known = @($sampleSegments[$sample.Name])
+                $marks = $sampleMarkers[$sample.Name]
                 $visible = @($allSegments | Where-Object { $cfg.Enabled[$_] -and $_ -in $known })
                 $rowVisible = [System.Collections.Generic.List[object]]::new()
                 foreach ($row in $layoutRows[$cfg.Layout]) { $rowVisible.Add(@($row | Where-Object { $_ -in $visible })) }
@@ -688,17 +715,39 @@ foreach ($cfg in $configSet) {
                     # segments at all then and prints its fallback, the model glyph and the word claude.
                     Confirm-Equal $text "$iconModel claude" "${label}: nothing left on gives the claude fallback"
                 } else {
-                    if ($cfg.Enabled['model']) { Confirm-True ($text.Contains($iconModel)) "${label}: has model glyph" }
                     foreach ($name in $allSegments) {
                         if ($cfg.Enabled[$name]) { continue }
                         $seen = @($segmentGlyphs[$name] | Where-Object { $text.Contains($_) })
                         Confirm-True ($seen.Count -eq 0) "${label}: $name is off, none of its glyphs appear"
                     }
-                    if ($presenceTable.ContainsKey($sample.Name)) {
-                        foreach ($check in $presenceTable[$sample.Name]) {
+                    # The rows this render should print, in order. Layout one is a single row; layout two
+                    # drops a row that has nothing visible left on it, because Get-FittedLine returns
+                    # $null for an empty set and the print loop skips it.
+                    if ($cfg.Layout -eq 'two') { $rows = @($rowVisible | Where-Object { $_.Count -gt 0 }) } else { $rows = @(, $visible) }
+                    Confirm-Equal $lines.Count $rows.Count "${label}: renders $($rows.Count) line(s)"
+                    if ($lines.Count -eq $rows.Count) {
+                        for ($ri = 0; $ri -lt $rows.Count; $ri++) {
+                            $rowText = ConvertTo-PlainText $lines[$ri]
+                            $mine = @($rows[$ri])
+                            # Every visible segment has to prove it rendered, by its own marker, on its
+                            # own row. This is the check that a dropped segment cannot slip past: the
+                            # absence table names only a few glyphs per sample.
+                            foreach ($name in $mine) {
+                                $marker = $marks[$name]
+                                if (-not $marker) { Confirm-True $false "${label}: no marker for $name in the marker table"; continue }
+                                Confirm-True ($rowText.Contains($marker)) "${label}: line $($ri + 1) shows $name as '$marker'"
+                            }
+                            $other = @($visible | Where-Object { $_ -notin $mine })
+                            if ($other.Count -gt 0) {
+                                $strayed = @($other | Where-Object { @($segmentGlyphs[$_] | Where-Object { $rowText.Contains($_) }).Count -gt 0 })
+                                Confirm-True ($strayed.Count -eq 0) "${label}: line $($ri + 1) carries none of $($other -join '+') (strayed '$($strayed -join ',')')"
+                            }
+                        }
+                    }
+                    if ($absentGlyphs.ContainsKey($sample.Name)) {
+                        foreach ($check in $absentGlyphs[$sample.Name]) {
                             if (-not $cfg.Enabled[$glyphSegment[$check.Name]]) { continue }
-                            $has = $text.Contains($check.Icon)
-                            Confirm-True ($has -eq $check.Expect) "${label}: $($check.Name) glyph $(if ($check.Expect) { 'present' } else { 'absent' })"
+                            Confirm-True (-not $text.Contains($check.Icon)) "${label}: $($check.Name) glyph absent"
                         }
                     }
                     # A separator only exists between two segments on the same line, so this asks the row
@@ -717,25 +766,6 @@ foreach ($cfg in $configSet) {
                         } else {
                             # No model means no bold block, but every other segment is still a block.
                             Confirm-True ($rawJoined.Contains("$esc[0;48;5;")) "${label}: powerline block without a model segment"
-                        }
-                    }
-                    if ($cfg.Layout -eq 'two') {
-                        if ($sample.Name -in $twoLineSamples) {
-                            # A row with nothing left on it fits down to nothing and is not printed.
-                            $wantLines = @($rowVisible | Where-Object { $_.Count -gt 0 }).Count
-                            Confirm-Equal $lines.Count $wantLines "${label}: two-line layout produces $wantLines line(s)"
-                            if ($lines.Count -eq 2 -and $wantLines -eq 2) {
-                                for ($ri = 0; $ri -lt 2; $ri++) {
-                                    $rowText = ConvertTo-PlainText $lines[$ri]
-                                    $mine = @($rowVisible[$ri])
-                                    $other = @($rowVisible[1 - $ri])
-                                    $missing = @($mine | Where-Object { @($segmentGlyphs[$_] | Where-Object { $rowText.Contains($_) }).Count -eq 0 })
-                                    $strayed = @($other | Where-Object { @($segmentGlyphs[$_] | Where-Object { $rowText.Contains($_) }).Count -gt 0 })
-                                    Confirm-True ($missing.Count -eq 0 -and $strayed.Count -eq 0) "${label}: line $($ri + 1) has $($mine -join '+') and none of $($other -join '+') (missing '$($missing -join ',')', strayed '$($strayed -join ',')')"
-                                }
-                            }
-                        } elseif ($sample.Name -eq '04-minimal.json') {
-                            Confirm-Equal $lines.Count 1 "${label}: two-line layout with only model collapses to 1 line"
                         }
                     }
                 }
