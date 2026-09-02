@@ -32,7 +32,6 @@ $iconFast   = G 0xF0E7    # nf-fa-bolt  (fast mode)
 $iconThink  = G 0xF09D0   # nf-md-brain (extended thinking)
 $iconEffort = G 0xF04C5   # nf-md-speedometer (effort level)
 $iconVim    = G 0xE62B    # nf-custom-vim
-$sep = ' ' + (C '90' (G 0xE0B1)) + ' '   # powerline thin separator, dim
 $defaultEffort = 'high'   # effort badge is hidden at this level
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '', Justification = 'Used in later tasks')]
@@ -173,97 +172,159 @@ function Get-FittedLine($Segments, [string] $Style, $Width) {
     return $line
 }
 
-if (-not $Config) { $Config = Join-Path $PSScriptRoot 'statusline.json' }
-[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '', Justification = 'Used in later tasks')]
-$statusConfig = Read-StatusConfig $Config
-
 $raw = [Console]::In.ReadToEnd()
 try { $d = $raw | ConvertFrom-Json } catch { Write-Host (C '36' "$iconModel claude"); exit 0 }
 
-$parts = [System.Collections.Generic.List[string]]::new()
+$configPath = if ($Config) { $Config } else { Join-Path $PSScriptRoot 'statusline.json' }
+$cfg = Read-StatusConfig $configPath
 
-$model = $d.model.display_name
-if ($model) { $parts.Add((C '1;36' "$iconModel $model")) }
+# ---- Segment builders. Each returns $null (segment omitted) or @{ Name; Text; Short; Role; Bold }. ----
 
-$pct = $d.context_window.used_percentage
-if ($null -ne $pct) {
-    $pct = [int]$pct
-    $filled = [math]::Round($pct / 10)
-    $bar = ((G 0x2588) * $filled) + ((G 0x2591) * (10 - $filled))
-    $colour = if ($pct -ge 85) { '31' } elseif ($pct -ge 60) { '33' } else { '32' }
+function Get-ThresholdRole([int] $pct) { if ($pct -ge 85) { 'bad' } elseif ($pct -ge 60) { 'warn' } else { 'ok' } }
 
-    # used/total in thousands of tokens, when the payload carries the counts.
-    function K([double] $n) { if ($n -ge 1000000) { '{0:N1}M' -f ($n / 1000000) } elseif ($n -ge 10000) { '{0:N0}k' -f ($n / 1000) } else { '{0:N1}k' -f ($n / 1000) } }
-    $used = [double]($d.context_window.total_input_tokens ?? 0) + [double]($d.context_window.total_output_tokens ?? 0)
-    $size = $d.context_window.context_window_size
-    $counts = if ($used -gt 0 -and $size) { " $(K $used)/$(K $size)" } elseif ($used -gt 0) { " $(K $used)" } else { '' }
+# Thousands of tokens: 1.5k, 64k, 1.0M
+function K([double] $n) { if ($n -ge 1000000) { '{0:N1}M' -f ($n / 1000000) } elseif ($n -ge 10000) { '{0:N0}k' -f ($n / 1000) } else { '{0:N1}k' -f ($n / 1000) } }
 
-    $parts.Add((C $colour "$iconCtx $pct% $bar$counts"))
+function Get-ModelSegment($d) {
+    $model = $d.model.display_name
+    if (-not $model) { return $null }
+    return @{ Name = 'model'; Text = "$iconModel $model"; Short = $null; Role = 'model'; Bold = $true }
 }
 
-$cost = $d.cost.total_cost_usd
-if ($null -ne $cost) { $parts.Add((C '90' ("$iconCost `$" + ('{0:N2}' -f [double]$cost)))) }
+function Get-ContextSegment($d) {
+    $pct = $d.context_window.used_percentage
+    if ($null -eq $pct) { return $null }
+    $pct = [int] $pct
+    $filled = [math]::Round($pct / 10)
+    $bar = ((G 0x2588) * $filled) + ((G 0x2591) * (10 - $filled))
+    $used = [double] ($d.context_window.total_input_tokens ?? 0) + [double] ($d.context_window.total_output_tokens ?? 0)
+    $size = $d.context_window.context_window_size
+    $counts = if ($used -gt 0 -and $size) { " $(K $used)/$(K $size)" } elseif ($used -gt 0) { " $(K $used)" } else { '' }
+    $short = "$iconCtx $pct% $bar"
+    return @{ Name = 'context'; Text = "$short$counts"; Short = $(if ($counts) { $short } else { $null }); Role = (Get-ThresholdRole $pct); Bold = $false }
+}
 
-# Lines added/removed this session; shown when either is non-zero.
-$added = [int]($d.cost.total_lines_added ?? 0)
-$removed = [int]($d.cost.total_lines_removed ?? 0)
-if ($added -gt 0 -or $removed -gt 0) {
-    $parts.Add((C '90' $iconLines) + ' ' + (C '32' "+$added") + ' ' + (C '31' ((G 0x2212) + "$removed")))
+function Get-CostSegment($d) {
+    $cost = $d.cost.total_cost_usd
+    if ($null -eq $cost) { return $null }
+    return @{ Name = 'cost'; Text = ("$iconCost `$" + ('{0:N2}' -f [double] $cost)); Short = $null; Role = 'dim'; Bold = $false }
+}
+
+# Lines added/removed this session; shown when either is non-zero. Inline colours keep the dim background intact.
+function Get-LinesSegment($d, $cfg) {
+    $added = [int] ($d.cost.total_lines_added ?? 0)
+    $removed = [int] ($d.cost.total_lines_removed ?? 0)
+    if ($added -le 0 -and $removed -le 0) { return $null }
+    $text = "$iconLines " + (Format-Inline 'added' "+$added" 'dim' $cfg.Style) + ' ' + (Format-Inline 'removed' ((G 0x2212) + "$removed") 'dim' $cfg.Style)
+    return @{ Name = 'lines'; Text = $text; Short = $null; Role = 'dim'; Bold = $false }
+}
+
+# " (1h12m)" or " (3d)" until the given epoch; empty when absent or already past.
+function TimeLeft([object] $epoch) {
+    if ($null -eq $epoch) { return '' }
+    $left = [DateTimeOffset]::FromUnixTimeSeconds([long] $epoch) - [DateTimeOffset]::UtcNow
+    if ($left.TotalMinutes -lt 1) { return '' }
+    if ($left.TotalHours -ge 48) { return ' ({0}d)' -f [int] [math]::Floor($left.TotalDays) }
+    return ' ({0}h{1:00}m)' -f [int] [math]::Floor($left.TotalHours), $left.Minutes
 }
 
 # Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets.
-$rl = $d.rate_limits
-if ($rl -and ($null -ne $rl.five_hour.used_percentage -or $null -ne $rl.seven_day.used_percentage)) {
-    # " (1h12m)" or " (3d)" until the given epoch; empty when absent or already past.
-    function TimeLeft([object] $epoch) {
-        if ($null -eq $epoch) { return '' }
-        $left = [DateTimeOffset]::FromUnixTimeSeconds([long]$epoch) - [DateTimeOffset]::UtcNow
-        if ($left.TotalMinutes -lt 1) { return '' }
-        if ($left.TotalHours -ge 48) { return ' ({0}d)' -f [int][math]::Floor($left.TotalDays) }
-        return ' ({0}h{1:00}m)' -f [int][math]::Floor($left.TotalHours), $left.Minutes
-    }
+function Get-LimitsSegment($d) {
+    $rl = $d.rate_limits
+    if (-not $rl) { return $null }
+    $h5 = $rl.five_hour.used_percentage
+    $d7 = $rl.seven_day.used_percentage
+    if ($null -eq $h5 -and $null -eq $d7) { return $null }
     $bits = [System.Collections.Generic.List[string]]::new()
     $worst = 0
-    $h5 = $rl.five_hour.used_percentage
-    if ($null -ne $h5) { $h5 = [int][math]::Round([double]$h5); $worst = [math]::Max($worst, $h5); $bits.Add("5h $h5%$(TimeLeft $rl.five_hour.resets_at)") }
-    $d7 = $rl.seven_day.used_percentage
-    if ($null -ne $d7) { $d7 = [int][math]::Round([double]$d7); $worst = [math]::Max($worst, $d7); $bits.Add("7d $d7%") }
-    $colour = if ($worst -ge 85) { '31' } elseif ($worst -ge 60) { '33' } else { '32' }
-    $parts.Add((C $colour "$iconLimit $($bits -join ' ')"))
+    $short = $null
+    if ($null -ne $h5) {
+        $h5 = [int] [math]::Round([double] $h5); $worst = [math]::Max($worst, $h5)
+        $bits.Add("5h $h5%$(TimeLeft $rl.five_hour.resets_at)")
+        $short = "$iconLimit 5h $h5%"
+    }
+    if ($null -ne $d7) { $d7 = [int] [math]::Round([double] $d7); $worst = [math]::Max($worst, $d7); $bits.Add("7d $d7%") }
+    $text = "$iconLimit $($bits -join ' ')"
+    if ($short -eq $text) { $short = $null }
+    return @{ Name = 'limits'; Text = $text; Short = $short; Role = (Get-ThresholdRole $worst); Bold = $false }
 }
 
 # Session mode badges: fast mode, thinking, non-default effort, vim mode. Omitted when nothing is on.
-$badges = [System.Collections.Generic.List[string]]::new()
-if ($d.fast_mode -eq $true) { $badges.Add($iconFast) }
-if ($d.thinking.enabled -eq $true) { $badges.Add($iconThink) }
-$effort = $d.effort.level
-if ($effort -and $effort -ne $defaultEffort) { $badges.Add("$iconEffort $effort") }
-$vim = $d.vim.mode
-if ($vim) { $badges.Add("$iconVim $vim") }
-if ($badges.Count -gt 0) { $parts.Add((C '90' ($badges -join ' '))) }
-
-$dir = $d.workspace.current_dir
-if ($dir) { $parts.Add((C '34' "$iconFolder $(Split-Path $dir -Leaf)")) }
-
-$branch = $d.git.branch
-if ($branch) {
-    $dirty = $false
-    $status = $d.git.status
-    if ($status -is [string]) { $dirty = $status -and $status -ne 'clean' }
-    elseif ($status) {
-        # Counts arrive as Int64 from ConvertFrom-Json; treat any positive numeric or "true" as dirty.
-        foreach ($p in $status.PSObject.Properties) {
-            $v = $p.Value
-            if (($v -is [ValueType] -and -not ($v -is [bool]) -and [double]$v -gt 0) -or ($v -is [bool] -and $v)) { $dirty = $true }
-        }
-    }
-
-    $isMain = $branch -in @('main', 'master')
-    $icon = if ($isMain) { $iconHome } else { $iconBranch }
-    $text = "$icon $branch"
-    if ($dirty) { $text += " $iconDirty" }
-    $parts.Add((C ($(if ($dirty) { '33' } else { '35' })) $text))
+function Get-BadgesSegment($d) {
+    $badges = [System.Collections.Generic.List[string]]::new()
+    if ($d.fast_mode -eq $true) { $badges.Add($iconFast) }
+    if ($d.thinking.enabled -eq $true) { $badges.Add($iconThink) }
+    $effort = $d.effort.level
+    if ($effort -and $effort -ne $defaultEffort) { $badges.Add("$iconEffort $effort") }
+    $vim = $d.vim.mode
+    if ($vim) { $badges.Add("$iconVim $vim") }
+    if ($badges.Count -eq 0) { return $null }
+    return @{ Name = 'badges'; Text = ($badges -join ' '); Short = $null; Role = 'dim'; Bold = $false }
 }
 
-if ($parts.Count -eq 0) { $parts.Add((C '36' "$iconModel claude")) }
-Write-Host ($parts -join $sep)
+function Get-FolderSegment($d) {
+    $dir = $d.workspace.current_dir
+    if (-not $dir) { return $null }
+    return @{ Name = 'folder'; Text = "$iconFolder $(Split-Path $dir -Leaf)"; Short = $null; Role = 'folder'; Bold = $false }
+}
+
+# Dirty flag from a payload git.status value: "clean"/other string, or an object of counts/booleans.
+function Test-PayloadDirty($status) {
+    if ($status -is [string]) { return [bool] ($status -and $status -ne 'clean') }
+    if (-not $status) { return $false }
+    # Counts arrive as Int64 from ConvertFrom-Json; treat any positive numeric or "true" as dirty.
+    foreach ($p in $status.PSObject.Properties) {
+        $v = $p.Value
+        if (($v -is [ValueType] -and -not ($v -is [bool]) -and [double] $v -gt 0) -or ($v -is [bool] -and $v)) { return $true }
+    }
+    return $false
+}
+
+# Branch from the payload's git object when present; otherwise from `git status` (Task 6).
+function Get-BranchSegment($d) {
+    $info = $null
+    if ($d.git.branch) { $info = @{ Branch = "$($d.git.branch)"; Dirty = (Test-PayloadDirty $d.git.status) } }
+    if (-not $info) { return $null }
+    $isMain = $info.Branch -in @('main', 'master')
+    $icon = if ($isMain) { $iconHome } else { $iconBranch }
+    $text = "$icon $($info.Branch)"
+    if ($info.Dirty) { $text += " $iconDirty" }
+    return @{ Name = 'branch'; Text = $text; Short = $null; Role = $(if ($info.Dirty) { 'warn' } else { 'branch' }); Bold = $false }
+}
+
+# ---- Build, lay out, fit, print ----
+
+$segmentNames = @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch')
+$segments = [System.Collections.Generic.List[hashtable]]::new()
+foreach ($name in $segmentNames) {
+    if (-not $cfg.Segments[$name]) { continue }
+    $seg = switch ($name) {
+        'model'   { Get-ModelSegment $d }
+        'context' { Get-ContextSegment $d }
+        'cost'    { Get-CostSegment $d }
+        'lines'   { Get-LinesSegment $d $cfg }
+        'limits'  { Get-LimitsSegment $d }
+        'badges'  { Get-BadgesSegment $d }
+        'folder'  { Get-FolderSegment $d }
+        'branch'  { Get-BranchSegment $d }
+    }
+    if ($seg) { $segments.Add($seg) }
+}
+if ($segments.Count -eq 0) { Write-Host (C '36' "$iconModel claude"); exit 0 }
+
+# Claude Code sets COLUMNS before running the script. Leave one column free to avoid the pending-wrap glitch.
+$width = $null
+$cols = 0
+if ([int]::TryParse([string] $env:COLUMNS, [ref] $cols) -and $cols -gt 0) { $width = $cols - 1 }
+
+$lineSets = @(if ($cfg.Layout -eq 'two') {
+    @(@('model', 'folder', 'branch', 'badges'), @('context', 'limits', 'cost', 'lines'))
+} else { , $segmentNames })
+
+# A line that fits down to nothing is not printed. With model toggled off and a very narrow terminal
+# that can mean no output at all, which is what the user asked for.
+foreach ($names in $lineSets) {
+    $onLine = foreach ($n in $names) { foreach ($s in $segments) { if ($s.Name -eq $n) { $s } } }
+    $text = Get-FittedLine @($onLine) $cfg.Style $width
+    if ($text) { Write-Host $text }
+}
