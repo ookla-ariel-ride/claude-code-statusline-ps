@@ -69,7 +69,7 @@ A rejected idea, recorded so it is not re-proposed: printing the `claude` fallba
 
 **Interfaces:**
 - Produces: `Get-VisibleWidth([string] $Text) -> [int]` in `statusline.ps1`. Strips `ESC[...m` and sums cell widths per spec section 4.
-- Produces in `test.ps1`: `Assert-Equal($Actual, $Expected, $Label)`, `Assert-True([bool] $Condition, $Label)`, `ConvertTo-PlainText([string] $Text)`, `Import-ScriptFunction([string] $Path, [string[]] $Name) -> scriptblock`, `Measure-VisibleWidth([string] $Text)` (the test's own copy), `$esc`, `$script:passed`, `$script:failed`.
+- Produces in `test.ps1`: `Confirm-Equal($Actual, $Expected, $Label)`, `Confirm-True([bool] $Condition, $Label)`, `ConvertTo-PlainText([string] $Text)`, `Import-ScriptFunction([string] $Path, [string[]] $Name) -> scriptblock`, `Measure-VisibleWidth([string] $Text)` (the test's own copy), `$esc`, `$script:passed`, `$script:failed`.
 
 - [ ] **Step 1: Rewrite the top of `test.ps1` with helpers and the width unit group**
 
@@ -94,7 +94,7 @@ $esc = [char]27
 $script:passed = 0
 $script:failed = 0
 
-function Assert-Equal($Actual, $Expected, [string] $Label) {
+function Confirm-Equal($Actual, $Expected, [string] $Label) {
     if ("$Actual" -ceq "$Expected") { $script:passed++; return }
     $script:failed++
     Write-Host "FAIL $Label" -ForegroundColor Red
@@ -102,7 +102,7 @@ function Assert-Equal($Actual, $Expected, [string] $Label) {
     Write-Host "  actual:   $("$Actual" -replace $esc, '<ESC>')"
 }
 
-function Assert-True([bool] $Condition, [string] $Label) {
+function Confirm-True([bool] $Condition, [string] $Label) {
     if ($Condition) { $script:passed++; return }
     $script:failed++
     Write-Host "FAIL $Label" -ForegroundColor Red
@@ -167,8 +167,8 @@ $widthTable = @(
 )
 foreach ($row in $widthTable) {
     $shown = $row.Text -replace $esc, '<ESC>'
-    Assert-Equal (Get-VisibleWidth $row.Text) $row.Width "script width of '$shown'"
-    Assert-Equal (Measure-VisibleWidth $row.Text) $row.Width "test width of '$shown'"
+    Confirm-Equal (Get-VisibleWidth $row.Text) $row.Width "script width of '$shown'"
+    Confirm-Equal (Measure-VisibleWidth $row.Text) $row.Width "test width of '$shown'"
 }
 
 # ---- Sample renders (replaced by the matrix in a later task) ----
@@ -289,34 +289,34 @@ function Write-TempConfig([string] $Name, [string] $Json) {
 $allSegments = @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch')
 
 $c = Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')
-Assert-Equal $c.Layout 'one' 'config missing: layout'
-Assert-Equal $c.Style 'plain' 'config missing: style'
-Assert-True (@($allSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'config missing: all segments on'
+Confirm-Equal $c.Layout 'one' 'config missing: layout'
+Confirm-Equal $c.Style 'plain' 'config missing: style'
+Confirm-True (@($allSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'config missing: all segments on'
 
 $c = Read-StatusConfig (Write-TempConfig 'valid.json' '{ "layout": "Two", "style": "POWERLINE", "segments": { "cost": false, "lines": true } }')
-Assert-Equal $c.Layout 'two' 'config valid: layout case-insensitive'
-Assert-Equal $c.Style 'powerline' 'config valid: style case-insensitive'
-Assert-Equal $c.Segments.cost $false 'config valid: cost off'
-Assert-Equal $c.Segments.lines $true 'config valid: lines on'
-Assert-Equal $c.Segments.model $true 'config valid: unmentioned segment on'
+Confirm-Equal $c.Layout 'two' 'config valid: layout case-insensitive'
+Confirm-Equal $c.Style 'powerline' 'config valid: style case-insensitive'
+Confirm-Equal $c.Segments.cost $false 'config valid: cost off'
+Confirm-Equal $c.Segments.lines $true 'config valid: lines on'
+Confirm-Equal $c.Segments.model $true 'config valid: unmentioned segment on'
 
 $c = Read-StatusConfig (Write-TempConfig 'broken.json' '{ "layout": ')
-Assert-Equal $c.Layout 'one' 'config broken json: default layout'
+Confirm-Equal $c.Layout 'one' 'config broken json: default layout'
 
 $c = Read-StatusConfig (Write-TempConfig 'wrong-types.json' '{ "layout": "three", "style": 5, "segments": { "cost": "no", "bogus": false }, "extra": 1 }')
-Assert-Equal $c.Layout 'one' 'config bad layout value: default'
-Assert-Equal $c.Style 'plain' 'config non-string style: default'
-Assert-Equal $c.Segments.cost $true 'config non-bool segment: on'
-Assert-True (-not $c.Segments.ContainsKey('bogus')) 'config unknown segment: ignored'
+Confirm-Equal $c.Layout 'one' 'config bad layout value: default'
+Confirm-Equal $c.Style 'plain' 'config non-string style: default'
+Confirm-Equal $c.Segments.cost $true 'config non-bool segment: on'
+Confirm-True (-not $c.Segments.ContainsKey('bogus')) 'config unknown segment: ignored'
 
 $c = Read-StatusConfig (Write-TempConfig 'segments-array.json' '{ "segments": [true] }')
-Assert-Equal $c.Segments.model $true 'config segments not an object: all on'
+Confirm-Equal $c.Segments.model $true 'config segments not an object: all on'
 
 $c = Read-StatusConfig (Write-TempConfig 'empty.json' '')
-Assert-Equal $c.Layout 'one' 'config empty file: default'
+Confirm-Equal $c.Layout 'one' 'config empty file: default'
 
 $c = Read-StatusConfig (Write-TempConfig 'array.json' '[1, 2]')
-Assert-Equal $c.Style 'plain' 'config top-level array: default'
+Confirm-Equal $c.Style 'plain' 'config top-level array: default'
 ```
 
 Insert `Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue` immediately before the final `Write-Host ''` summary line.
@@ -369,7 +369,7 @@ function Read-StatusConfig([string] $Path) {
                 if ($v -is [bool]) { $cfg.Segments[$n] = $v }
             }
         }
-    } catch { }
+    } catch { return $cfg }
     return $cfg
 }
 ```
@@ -451,19 +451,19 @@ $segModel = @{ Name = 'model'; Text = 'M'; Short = $null; Role = 'model'; Bold =
 $segFolder = @{ Name = 'folder'; Text = 'F'; Short = $null; Role = 'folder'; Bold = $false }
 $segDim = @{ Name = 'cost'; Text = 'X'; Short = $null; Role = 'dim'; Bold = $false }
 
-Assert-Equal (Format-Line @($segModel, $segFolder) 'plain') "$esc[1;36mM$esc[0m $esc[90m$chevron$esc[0m $esc[34mF$esc[0m" 'plain: two segments'
-Assert-Equal (Format-Line @($segDim) 'plain') "$esc[90mX$esc[0m" 'plain: one segment'
-Assert-Equal (Format-Line @() 'plain') '' 'plain: no segments'
-Assert-Equal (Format-Line @($segModel, $segFolder) 'powerline') "$esc[0;1;48;5;31;38;5;231m M $esc[38;5;31;48;5;25m$arrow$esc[0;48;5;25;38;5;231m F $esc[0m$esc[38;5;25m$arrow$esc[0m" 'powerline: two segments'
-Assert-Equal (Format-Line @($segDim) 'powerline') "$esc[0;48;5;238;38;5;250m X $esc[0m$esc[38;5;238m$arrow$esc[0m" 'powerline: one segment'
-Assert-Equal (Format-Inline 'added' '+1' 'dim' 'plain') "$esc[32m+1$esc[90m" 'inline plain restores segment colour'
-Assert-Equal (Format-Inline 'removed' '-2' 'dim' 'powerline') "$esc[38;5;203m-2$esc[38;5;250m" 'inline powerline restores segment fg'
+Confirm-Equal (Format-Line @($segModel, $segFolder) 'plain') "$esc[1;36mM$esc[0m $esc[90m$chevron$esc[0m $esc[34mF$esc[0m" 'plain: two segments'
+Confirm-Equal (Format-Line @($segDim) 'plain') "$esc[90mX$esc[0m" 'plain: one segment'
+Confirm-Equal (Format-Line @() 'plain') '' 'plain: no segments'
+Confirm-Equal (Format-Line @($segModel, $segFolder) 'powerline') "$esc[0;1;48;5;31;38;5;231m M $esc[38;5;31;48;5;25m$arrow$esc[0;48;5;25;38;5;231m F $esc[0m$esc[38;5;25m$arrow$esc[0m" 'powerline: two segments'
+Confirm-Equal (Format-Line @($segDim) 'powerline') "$esc[0;48;5;238;38;5;250m X $esc[0m$esc[38;5;238m$arrow$esc[0m" 'powerline: one segment'
+Confirm-Equal (Format-Inline 'added' '+1' 'dim' 'plain') "$esc[32m+1$esc[90m" 'inline plain restores segment colour'
+Confirm-Equal (Format-Inline 'removed' '-2' 'dim' 'powerline') "$esc[38;5;203m-2$esc[38;5;250m" 'inline powerline restores segment fg'
 
 $pal = Get-Palette
-Assert-Equal $pal.Roles.warn.Sgr '33' 'palette warn sgr'
-Assert-Equal $pal.Roles.warn.Fg 16 'palette warn fg'
-Assert-Equal $pal.Roles.branch.Bg 90 'palette branch bg'
-Assert-Equal $pal.Inline.added.Fg 46 'palette inline added fg'
+Confirm-Equal $pal.Roles.warn.Sgr '33' 'palette warn sgr'
+Confirm-Equal $pal.Roles.warn.Fg 16 'palette warn fg'
+Confirm-Equal $pal.Roles.branch.Bg 90 'palette branch bg'
+Confirm-Equal $pal.Inline.added.Fg 46 'palette inline added fg'
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -583,7 +583,7 @@ Insert before the `# ---- Sample renders` comment. Plain separators are 3 cells 
 
 ```powershell
 Write-Host '== unit: fitting' -ForegroundColor Cyan
-function Get-FitSegments {
+function Get-FitSegmentSet {
     return @(
         @{ Name = 'model';   Text = 'M';      Short = $null; Role = 'model';  Bold = $true }
         @{ Name = 'context'; Text = 'CCCCCC'; Short = 'CCC'; Role = 'ok';     Bold = $false }
@@ -595,29 +595,29 @@ function Get-FitSegments {
         @{ Name = 'branch';  Text = 'BB';     Short = $null; Role = 'branch'; Bold = $false }
     )
 }
-$fit = Get-FitSegments
+$fit = Get-FitSegmentSet
 $line = Get-FittedLine $fit 'plain' $null
-Assert-Equal (Get-VisibleWidth $line) 44 'fit: no width means no fitting'
-Assert-Equal (Get-VisibleWidth (Get-FittedLine $fit 'plain' 44)) 44 'fit: exact fit unchanged'
+Confirm-Equal (Get-VisibleWidth $line) 44 'fit: no width means no fitting'
+Confirm-Equal (Get-VisibleWidth (Get-FittedLine $fit 'plain' 44)) 44 'fit: exact fit unchanged'
 $line = Get-FittedLine $fit 'plain' 43
-Assert-Equal (Get-VisibleWidth $line) 41 'fit: stage 1 shrinks limits first'
-Assert-True ($line.Contains('III') -and -not $line.Contains('IIIIII') -and $line.Contains('CCCCCC')) 'fit: only limits shortened at 43'
-Assert-Equal $fit[4].Text 'IIIIII' 'fit: input not mutated'
+Confirm-Equal (Get-VisibleWidth $line) 41 'fit: stage 1 shrinks limits first'
+Confirm-True ($line.Contains('III') -and -not $line.Contains('IIIIII') -and $line.Contains('CCCCCC')) 'fit: only limits shortened at 43'
+Confirm-Equal $fit[4].Text 'IIIIII' 'fit: input not mutated'
 $line = Get-FittedLine $fit 'plain' 40
-Assert-Equal (Get-VisibleWidth $line) 38 'fit: stage 1 shrinks context second'
+Confirm-Equal (Get-VisibleWidth $line) 38 'fit: stage 1 shrinks context second'
 $line = Get-FittedLine $fit 'plain' 37
-Assert-Equal (Get-VisibleWidth $line) 33 'fit: stage 2 drops lines first'
-Assert-True (-not $line.Contains('LL') -and $line.Contains('GG')) 'fit: lines dropped, badges kept at 37'
+Confirm-Equal (Get-VisibleWidth $line) 33 'fit: stage 2 drops lines first'
+Confirm-True (-not $line.Contains('LL') -and $line.Contains('GG')) 'fit: lines dropped, badges kept at 37'
 $line = Get-FittedLine $fit 'plain' 10
-Assert-Equal (ConvertTo-PlainText $line) "M $chevron CCC" 'fit: drops down to model and short context'
+Confirm-Equal (ConvertTo-PlainText $line) "M $chevron CCC" 'fit: drops down to model and short context'
 $line = Get-FittedLine $fit 'plain' 6
-Assert-Equal (ConvertTo-PlainText $line) 'M' 'fit: context dropped last'
+Confirm-Equal (ConvertTo-PlainText $line) 'M' 'fit: context dropped last'
 $line = Get-FittedLine $fit 'plain' 0
-Assert-Equal $line "$esc[1;36mM$esc[0m" 'fit: model alone may overflow'
-Assert-Equal (Get-FittedLine @($fit[2]) 'plain' 1) $null 'fit: line without model drops to nothing'
-Assert-Equal (Get-FittedLine @() 'plain' 40) $null 'fit: no segments gives null'
+Confirm-Equal $line "$esc[1;36mM$esc[0m" 'fit: model alone may overflow'
+Confirm-Equal (Get-FittedLine @($fit[2]) 'plain' 1) $null 'fit: line without model drops to nothing'
+Confirm-Equal (Get-FittedLine @() 'plain' 40) $null 'fit: no segments gives null'
 $line = Get-FittedLine $fit 'powerline' 30
-Assert-True ((Get-VisibleWidth $line) -le 30) 'fit: powerline respects width'
+Confirm-True ((Get-VisibleWidth $line) -le 30) 'fit: powerline respects width'
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -694,7 +694,7 @@ EOF
 
 **Interfaces:**
 - Consumes: `Read-StatusConfig`, `Format-Inline`, `Get-FittedLine`, `$gitTimeoutMs`, icons, `$defaultEffort`.
-- Produces: builders `Get-ModelSegment`, `Get-ContextSegment`, `Get-CostSegment`, `Get-LinesSegment`, `Get-LimitsSegment`, `Get-BadgesSegment`, `Get-FolderSegment`, `Get-BranchSegment`, each `($d, $cfg) -> hashtable or $null`; `Test-PayloadDirty($status) -> bool`; `Get-ThresholdRole([int] $pct) -> 'ok'|'warn'|'bad'`. Task 6 replaces the body of `Get-BranchSegment`'s fallback.
+- Produces: builders `Get-ModelSegment`, `Get-ContextSegment`, `Get-CostSegment`, `Get-LimitsSegment`, `Get-BadgesSegment`, `Get-FolderSegment`, `Get-BranchSegment`, each `($d) -> hashtable or $null`, and `Get-LinesSegment($d, $cfg)` (the only builder that needs the style); `Test-PayloadDirty($status) -> bool`; `Get-ThresholdRole([int] $pct) -> 'ok'|'warn'|'bad'`. Task 6 replaces the body of `Get-BranchSegment`'s fallback.
 
 - [ ] **Step 1: Capture today's output as the regression baseline**
 
@@ -744,13 +744,13 @@ function Get-ThresholdRole([int] $pct) { if ($pct -ge 85) { 'bad' } elseif ($pct
 # Thousands of tokens: 1.5k, 64k, 1.0M
 function K([double] $n) { if ($n -ge 1000000) { '{0:N1}M' -f ($n / 1000000) } elseif ($n -ge 10000) { '{0:N0}k' -f ($n / 1000) } else { '{0:N1}k' -f ($n / 1000) } }
 
-function Get-ModelSegment($d, $cfg) {
+function Get-ModelSegment($d) {
     $model = $d.model.display_name
     if (-not $model) { return $null }
     return @{ Name = 'model'; Text = "$iconModel $model"; Short = $null; Role = 'model'; Bold = $true }
 }
 
-function Get-ContextSegment($d, $cfg) {
+function Get-ContextSegment($d) {
     $pct = $d.context_window.used_percentage
     if ($null -eq $pct) { return $null }
     $pct = [int] $pct
@@ -763,7 +763,7 @@ function Get-ContextSegment($d, $cfg) {
     return @{ Name = 'context'; Text = "$short$counts"; Short = $(if ($counts) { $short } else { $null }); Role = (Get-ThresholdRole $pct); Bold = $false }
 }
 
-function Get-CostSegment($d, $cfg) {
+function Get-CostSegment($d) {
     $cost = $d.cost.total_cost_usd
     if ($null -eq $cost) { return $null }
     return @{ Name = 'cost'; Text = ("$iconCost `$" + ('{0:N2}' -f [double] $cost)); Short = $null; Role = 'dim'; Bold = $false }
@@ -788,7 +788,7 @@ function TimeLeft([object] $epoch) {
 }
 
 # Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets.
-function Get-LimitsSegment($d, $cfg) {
+function Get-LimitsSegment($d) {
     $rl = $d.rate_limits
     if (-not $rl) { return $null }
     $h5 = $rl.five_hour.used_percentage
@@ -809,7 +809,7 @@ function Get-LimitsSegment($d, $cfg) {
 }
 
 # Session mode badges: fast mode, thinking, non-default effort, vim mode. Omitted when nothing is on.
-function Get-BadgesSegment($d, $cfg) {
+function Get-BadgesSegment($d) {
     $badges = [System.Collections.Generic.List[string]]::new()
     if ($d.fast_mode -eq $true) { $badges.Add($iconFast) }
     if ($d.thinking.enabled -eq $true) { $badges.Add($iconThink) }
@@ -821,7 +821,7 @@ function Get-BadgesSegment($d, $cfg) {
     return @{ Name = 'badges'; Text = ($badges -join ' '); Short = $null; Role = 'dim'; Bold = $false }
 }
 
-function Get-FolderSegment($d, $cfg) {
+function Get-FolderSegment($d) {
     $dir = $d.workspace.current_dir
     if (-not $dir) { return $null }
     return @{ Name = 'folder'; Text = "$iconFolder $(Split-Path $dir -Leaf)"; Short = $null; Role = 'folder'; Bold = $false }
@@ -840,7 +840,7 @@ function Test-PayloadDirty($status) {
 }
 
 # Branch from the payload's git object when present; otherwise from `git status` (Task 6).
-function Get-BranchSegment($d, $cfg) {
+function Get-BranchSegment($d) {
     $info = $null
     if ($d.git.branch) { $info = @{ Branch = "$($d.git.branch)"; Dirty = (Test-PayloadDirty $d.git.status) } }
     if (-not $info) { return $null }
@@ -858,14 +858,14 @@ $segments = [System.Collections.Generic.List[hashtable]]::new()
 foreach ($name in $segmentNames) {
     if (-not $cfg.Segments[$name]) { continue }
     $seg = switch ($name) {
-        'model'   { Get-ModelSegment $d $cfg }
-        'context' { Get-ContextSegment $d $cfg }
-        'cost'    { Get-CostSegment $d $cfg }
+        'model'   { Get-ModelSegment $d }
+        'context' { Get-ContextSegment $d }
+        'cost'    { Get-CostSegment $d }
         'lines'   { Get-LinesSegment $d $cfg }
-        'limits'  { Get-LimitsSegment $d $cfg }
-        'badges'  { Get-BadgesSegment $d $cfg }
-        'folder'  { Get-FolderSegment $d $cfg }
-        'branch'  { Get-BranchSegment $d $cfg }
+        'limits'  { Get-LimitsSegment $d }
+        'badges'  { Get-BadgesSegment $d }
+        'folder'  { Get-FolderSegment $d }
+        'branch'  { Get-BranchSegment $d }
     }
     if ($seg) { $segments.Add($seg) }
 }
@@ -959,21 +959,21 @@ Insert before the `# ---- Sample renders` comment:
 ```powershell
 Write-Host '== unit: porcelain' -ForegroundColor Cyan
 $r = Read-PorcelainStatus "## main...origin/main [ahead 1]`n"
-Assert-Equal $r.Branch 'main' 'porcelain: tracking branch'
-Assert-Equal $r.Dirty $false 'porcelain: clean'
+Confirm-Equal $r.Branch 'main' 'porcelain: tracking branch'
+Confirm-Equal $r.Dirty $false 'porcelain: clean'
 $r = Read-PorcelainStatus "## main`n M file.txt`n"
-Assert-Equal $r.Dirty $true 'porcelain: modified is dirty'
+Confirm-Equal $r.Dirty $true 'porcelain: modified is dirty'
 $r = Read-PorcelainStatus "## main`r`n?? new.txt`r`n"
-Assert-Equal $r.Dirty $true 'porcelain: untracked is dirty (CRLF)'
+Confirm-Equal $r.Dirty $true 'porcelain: untracked is dirty (CRLF)'
 $r = Read-PorcelainStatus "## feature/x...origin/feature/x`n"
-Assert-Equal $r.Branch 'feature/x' 'porcelain: feature branch'
+Confirm-Equal $r.Branch 'feature/x' 'porcelain: feature branch'
 $r = Read-PorcelainStatus "## No commits yet on main`n"
-Assert-Equal $r.Branch 'main' 'porcelain: unborn'
-Assert-Equal $r.Dirty $false 'porcelain: unborn clean'
+Confirm-Equal $r.Branch 'main' 'porcelain: unborn'
+Confirm-Equal $r.Dirty $false 'porcelain: unborn clean'
 $r = Read-PorcelainStatus "## HEAD (no branch)`n"
-Assert-Equal $r.Branch 'detached' 'porcelain: detached'
-Assert-Equal (Read-PorcelainStatus "fatal: not a git repository`n") $null 'porcelain: no header'
-Assert-Equal (Read-PorcelainStatus '') $null 'porcelain: empty'
+Confirm-Equal $r.Branch 'detached' 'porcelain: detached'
+Confirm-Equal (Read-PorcelainStatus "fatal: not a git repository`n") $null 'porcelain: no header'
+Confirm-Equal (Read-PorcelainStatus '') $null 'porcelain: empty'
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1023,11 +1023,11 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
         $exited = $p.WaitForExit($TimeoutMs)
         if (-not $exited) {
             # Kill the whole tree, then give it a moment to actually go away before we dispose the handles.
-            try { $p.Kill($true) } catch { }
+            try { $p.Kill($true) } catch { $null = $_ }
             [void] $p.WaitForExit(500)
         }
         # Bounded waits on both drains; a faulted task is observed here rather than left to the finalizer.
-        try { [void] [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask), 500) } catch { }
+        try { [void] [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask), 500) } catch { $null = $_ }
         if (-not $exited) { return $null }
         if (-not $outTask.IsCompletedSuccessfully) { return $null }
         if ($p.ExitCode -ne 0) { return $null }
@@ -1128,11 +1128,11 @@ if ($haveGit) {
 
     # In-process checks of Get-GitBranch itself
     $g = Get-GitBranch $clean 1500
-    Assert-Equal $g.Branch 'main' 'Get-GitBranch: clean branch'
-    Assert-Equal $g.Dirty $false 'Get-GitBranch: clean not dirty'
+    Confirm-Equal $g.Branch 'main' 'Get-GitBranch: clean branch'
+    Confirm-Equal $g.Dirty $false 'Get-GitBranch: clean not dirty'
     $g = Get-GitBranch $dirtyUntracked 1500
-    Assert-Equal $g.Dirty $true 'Get-GitBranch: untracked dirty'
-    Assert-Equal (Get-GitBranch (Join-Path $tmp 'nowhere') 1500) $null 'Get-GitBranch: missing dir'
+    Confirm-Equal $g.Dirty $true 'Get-GitBranch: untracked dirty'
+    Confirm-Equal (Get-GitBranch (Join-Path $tmp 'nowhere') 1500) $null 'Get-GitBranch: missing dir'
 
     $gitCases.Add(@{ Name = 'clean';           Dir = $clean;          Has = "$iconHome main";              Not = $iconDirty })
     $gitCases.Add(@{ Name = 'dirty tracked';   Dir = $dirtyTracked;   Has = "$iconHome main $iconDirty";  Raw = "$esc[33m" })
@@ -1161,16 +1161,16 @@ foreach ($case in $gitCases) {
     $rawOut = $r.Lines -join "`n"
     $text = ConvertTo-PlainText $rawOut
     $label = "git $($case.Name)"
-    Assert-True ($text.Contains('M')) "${label}: model still printed"
-    if ($case.Has) { Assert-True ($text.Contains($case.Has)) "${label}: expected '$($case.Has)' in '$text'" }
-    if ($case.Not) { Assert-True (-not $text.Contains($case.Not)) "${label}: unexpected '$($case.Not)' in '$text'" }
-    if ($case.Raw) { Assert-True ($rawOut.Contains($case.Raw)) "${label}: expected colour $($case.Raw -replace $esc, '<ESC>')" }
-    if ($case.NoBranch) { Assert-True (-not $text.Contains($iconHome) -and -not $text.Contains($iconBranch)) "${label}: branch segment omitted, got '$text'" }
-    if ($case.NoStderr) { Assert-True ($r.Err.Count -eq 0) "${label}: nothing on stderr, got '$($r.Err -join ' | ')'" }
-    if ($case.Marker) { Assert-True (Test-Path $case.Marker) "${label}: fake git was actually launched" }
-    if ($case.MinMs) { Assert-True ($r.Ms -ge $case.MinMs) "${label}: waited the full timeout ($($r.Ms) ms, expected at least $($case.MinMs))" }
-    if ($case.MaxMs) { Assert-True ($r.Ms -lt $case.MaxMs) "${label}: finished in $($r.Ms) ms (limit $($case.MaxMs))" }
-    if ($case.NoPing) { Start-Sleep -Milliseconds 300; Assert-True ((Get-FakePingCount) -eq 0) "${label}: ping child killed with the tree" }
+    Confirm-True ($text.Contains('M')) "${label}: model still printed"
+    if ($case.Has) { Confirm-True ($text.Contains($case.Has)) "${label}: expected '$($case.Has)' in '$text'" }
+    if ($case.Not) { Confirm-True (-not $text.Contains($case.Not)) "${label}: unexpected '$($case.Not)' in '$text'" }
+    if ($case.Raw) { Confirm-True ($rawOut.Contains($case.Raw)) "${label}: expected colour $($case.Raw -replace $esc, '<ESC>')" }
+    if ($case.NoBranch) { Confirm-True (-not $text.Contains($iconHome) -and -not $text.Contains($iconBranch)) "${label}: branch segment omitted, got '$text'" }
+    if ($case.NoStderr) { Confirm-True ($r.Err.Count -eq 0) "${label}: nothing on stderr, got '$($r.Err -join ' | ')'" }
+    if ($case.Marker) { Confirm-True (Test-Path $case.Marker) "${label}: fake git was actually launched" }
+    if ($case.MinMs) { Confirm-True ($r.Ms -ge $case.MinMs) "${label}: waited the full timeout ($($r.Ms) ms, expected at least $($case.MinMs))" }
+    if ($case.MaxMs) { Confirm-True ($r.Ms -lt $case.MaxMs) "${label}: finished in $($r.Ms) ms (limit $($case.MaxMs))" }
+    if ($case.NoPing) { Start-Sleep -Milliseconds 300; Confirm-True ((Get-FakePingCount) -eq 0) "${label}: ping child killed with the tree" }
     Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f $case.Name, $r.Ms, $text)
 }
 ```
@@ -1280,16 +1280,16 @@ foreach ($cfg in $configSet) {
             $r = Invoke-StatusLine $payload $cfg.Path $c
             $label = "$($cfg.Name) COLUMNS=$c $($sample.Name)"
             $lines = $r.Lines
-            if ([string]::IsNullOrWhiteSpace(($lines -join ''))) { Assert-True $false "${label}: empty output"; continue }
-            Assert-True ($lines.Count -le $maxLines) "${label}: $($lines.Count) lines, layout allows $maxLines"
+            if ([string]::IsNullOrWhiteSpace(($lines -join ''))) { Confirm-True $false "${label}: empty output"; continue }
+            Confirm-True ($lines.Count -le $maxLines) "${label}: $($lines.Count) lines, layout allows $maxLines"
             foreach ($line in $lines) {
-                Assert-True (-not [string]::IsNullOrWhiteSpace($line)) "${label}: empty line"
+                Confirm-True (-not [string]::IsNullOrWhiteSpace($line)) "${label}: empty line"
                 if ($c -le 0) { continue }
                 $w = Measure-VisibleWidth $line
                 if ($w -le $c - 1) { $script:passed++; continue }
                 $only = Invoke-StatusLine $payload $modelOnlyPath[$cfg.Style] $c
                 $isModelOnly = (ConvertTo-PlainText $line) -ceq (ConvertTo-PlainText ($only.Lines -join ''))
-                Assert-True $isModelOnly "${label}: width $w exceeds $($c - 1) and the line is not the model-only fallback"
+                Confirm-True $isModelOnly "${label}: width $w exceeds $($c - 1) and the line is not the model-only fallback"
             }
             $shown = if ($Raw) { $lines -replace $esc, '<ESC>' } else { $lines }
             Write-Host ("{0,-40} {1,5:N0} ms  " -f $sample.Name, $r.Ms) -NoNewline
