@@ -1,6 +1,6 @@
 # claude-code-statusline-ps
 
-A single-file PowerShell status line for [Claude Code](https://code.claude.com) on Windows.
+A PowerShell status line for [Claude Code](https://code.claude.com) on Windows. One script, one small JSON config, a Nerd Font.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![PowerShell 7+](https://img.shields.io/badge/PowerShell-7%2B-5391FE.svg?logo=powershell&logoColor=white)](https://github.com/PowerShell/PowerShell)
@@ -8,9 +8,9 @@ A single-file PowerShell status line for [Claude Code](https://code.claude.com) 
 
 ![Status line rendered in Windows Terminal with JetBrainsMono Nerd Font](docs/statusline.png)
 
-Left to right: model, context meter, cost, lines changed, rate limits, mode badges, folder, branch.
-Each segment starts with a Nerd Font icon, which GitHub cannot show in text, so the rest of this
-file names the icons instead.
+Left to right: model, context meter, cost, lines changed, rate limits, mode badges, folder, and the
+branch with its change counts. Each segment starts with a Nerd Font icon, which GitHub cannot show
+in text, so the rest of this file names the icons instead.
 
 ![Two-line powerline layout](docs/statusline-two-line.png)
 
@@ -31,9 +31,10 @@ how close you are to a rate limit, and which modes are on.
 - Rate limits for the 5-hour and 7-day windows, with a countdown to the next 5-hour reset.
 - Session cost and lines added or removed.
 - Badges for fast mode, extended thinking, effort level, and vim mode. They disappear when nothing is on.
-- Folder and git branch, with a home glyph on `main`, a pencil when the tree is dirty, `↑N` `↓N` for commits ahead of or behind the upstream, and `+N` `~N` `?N` for staged files, work tree changes and untracked entries. Conflicted files show as a red triangle with a count. Branch state comes from `git status` in the current directory.
+- Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory.
+- Counts beside the branch name: `↑N` `↓N` commits ahead of or behind the upstream, `+N` staged, `~N` changed, `?N` untracked, and a red triangle with a count when files are in conflict. See [Branch counts](#branch-counts).
 - One line or two, plain separators or powerline blocks, and any segment switched off, all from `statusline.json`.
-- Fits the terminal width. Long lines shorten the limits and context segments and drop the branch counts first, then drop segments from the right, so lines stop wrapping in normal use.
+- Fits the terminal width. A line that is too long first loses detail from the limits, context and branch segments, then loses whole segments from the right, so lines stop wrapping in normal use.
 - If a field is missing from the payload, the script drops that segment. If the payload will not parse, it still prints the model glyph.
 - Icons come from Unicode code points rather than pasted characters, so the file's own encoding cannot corrupt them.
 - No modules to install. PowerShell 7 and a Nerd Font are the whole dependency list.
@@ -122,10 +123,14 @@ Anything missing or invalid falls back to its default without a message, so a ty
 the status line. Delete the file to get the defaults back. `docs/statusline-two-line.json` is the
 config behind the second screenshot.
 
-Claude Code tells the script the terminal width. When a line is too long the script first drops
-the countdown and 7-day figure from the limits segment, the token counts from the context segment
-and every count from the branch segment, then removes whole segments from the
-right: lines, badges, cost, limits, folder, branch, context. The model segment always stays.
+Claude Code tells the script the terminal width. When a line is too long the script shortens it in
+two stages:
+
+1. Detail comes off three segments, in this order: the countdown and 7-day figure from limits, the
+   token counts from context, and every count from the branch.
+2. Whole segments go, from the right: lines, badges, cost, limits, folder, branch, context.
+
+The model segment always stays.
 
 ## What each segment shows
 
@@ -138,7 +143,7 @@ right: lines, badges, cost, limits, folder, branch, context. The model segment a
 | limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day` | `5h 24% (1h12m) 7d 41%`. Coloured by the worse of the two using the context thresholds. The countdown is omitted once the reset time has passed |
 | badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
 | folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.current_dir` | Blue, leaf directory name |
-| branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty, `↑N` ahead and `↓N` behind the upstream, `+N` staged, `~N` changed in the work tree (modified, deleted, type-changed or intent-to-add), `?N` untracked entries (git lists a new directory as one entry, so this counts entries, not files), `nf-fa-exclamation_triangle` with a count when files are in conflict | `git status` run in `workspace.current_dir`. Claude Code's payload carries no `git` object, so this is the normal path. If a payload does include `git.branch` and `git.status` (the test samples do), the script uses those instead, and a `git` object with an empty branch shows nothing | Magenta when clean. Yellow with the pencil when the tree has uncommitted or untracked changes. The counts are dim and sit between the name and the pencil in the order ahead, behind, staged, modified, untracked, then the conflict glyph in red; a count of zero is left out. Ahead and behind come only from the `git status` path; a branch with no upstream, or one whose upstream is gone, shows neither. The short form a narrow line falls back to is the icon, the name and the pencil. Shows `detached` on a detached HEAD |
+| branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git status --porcelain=v1 --branch` run in `workspace.current_dir` | Magenta when clean, yellow with the pencil when the tree has changes. The counts described below sit between the name and the pencil. Shows `detached` on a detached HEAD |
 | separator | <img src="docs/icons/chevron.svg" height="18" alt="chevron"> in `plain`, <img src="docs/icons/arrow.svg" height="18" alt="arrow"> in `powerline` | none | Dim chevron between segments, or a solid arrow coloured to blend the neighbouring blocks |
 
 A dim <img src="docs/icons/chevron.svg" height="14" alt="chevron"> separates the segments in plain
@@ -149,13 +154,39 @@ GitHub cannot render the font itself. Icon names are from the
 [Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet). Field names follow the
 [Claude Code status line reference](https://code.claude.com/docs/en/statusline).
 
+### Branch counts
+
+Claude Code's payload carries no git data, so the script runs one `git status` in the working
+directory and reads everything below from its output. A count of zero is left out, so a clean,
+synced branch shows only the icon and the name.
+
+| Marker | Meaning | Notes |
+|---|---|---|
+| `↑N` | Commits ahead of the upstream | Hidden when the branch has no upstream or the upstream is gone |
+| `↓N` | Commits behind the upstream | Same |
+| `+N` | Staged files | |
+| `~N` | Files changed in the work tree | Modified, deleted, type-changed, or added with `git add -N`. A file that is staged and then edited again counts in both `+N` and `~N` |
+| `?N` | Untracked entries | Git reports a new directory as one entry, however many files it holds |
+| `nf-fa-exclamation_triangle` `N` | Files in conflict | Red, so it stands out |
+
+The counts render dim, in that order, after the branch name and before the pencil. If the line is
+too wide for the terminal they are the third thing shed, after the limits and context detail and
+before any whole segment goes, leaving the icon, the name and the pencil.
+
+The `git status` call is the one the script already made for the pencil, so the counts cost no
+extra process. If a payload does include a `git` object with `branch` and `status`, as the test
+samples do, the script reads the branch and the four file counts from it instead and shows no
+arrows. A `git` object with an empty branch name shows nothing.
+
 ## Test without Claude Code
 
 `test.ps1` runs three groups. Unit checks call the script's helper functions directly (width
 measurement, config parsing, rendering, width fitting, the context meter, `git status` parsing, the
-branch segment). The git group runs the branch fallback against temporary repositories, including a
-fake `git` that fails and one that hangs. The render matrix pipes every payload in `samples/`
-through the script for each layout and style at each width:
+payload counts, the branch segment). The git group runs the branch fallback against temporary
+repositories: clean, dirty, unborn, detached, one commit ahead, one behind, a mixed tree with a
+staged, a modified and an untracked file, a fake `git` that fails and one that hangs. The render
+matrix pipes every payload in `samples/` through the script for each layout and style at each
+width:
 
 ```powershell
 .\test.ps1                                # full run, about a minute
@@ -165,11 +196,12 @@ through the script for each layout and style at each width:
 ```
 
 Every render must exit 0 with nothing on stderr, print the number of lines its layout allows, and fit
-the terminal width. At the unset width the matrix also checks content: each segment the sample and
-config enable must appear on its row with its glyph and value, disabled segments must not, and the
-separators must match the style. Those content checks only run when `-Columns` includes `0`, which
-the default does. The script exits non-zero if any check fails. Each render takes about 250 ms,
-nearly all of it `pwsh` start-up.
+the terminal width. At a set width the branch segment must be whole, shortened, or gone, never half
+shed. At the unset width the matrix also checks content: each segment the sample and config enable
+must appear on its row with its glyph and value, disabled segments must not, and the separators must
+match the style. Those content checks only run when `-Columns` includes `0`, which the default does.
+The script exits non-zero if any check fails. Each render takes about 250 ms, nearly all of it
+`pwsh` start-up.
 
 The tests never touch your own repositories. They point `GIT_CEILING_DIRECTORIES` at the temp
 folder and pass an empty global git config, so the results do not depend on the machine.
@@ -207,6 +239,12 @@ No branch segment: the script runs `git status` in the session's working directo
 `git` is on your `PATH` and that the directory is inside a repository. If `git status` takes longer
 than 1.5 seconds the segment is skipped for that refresh.
 
+No arrows after the branch name: the branch has no upstream, or the upstream branch was deleted.
+`git branch -u origin/<branch>` sets one.
+
+`?1` for a folder full of new files: git reports an untracked directory as a single entry. The
+count is of entries, not files.
+
 The line still wraps: the script measures width with a small approximation. Wide glyphs or emoji
 in a folder or branch name can be counted short on some terminals. At very narrow widths the model
 segment prints even when it does not fit.
@@ -227,8 +265,10 @@ The analyzer settings exclude the Write-Host rule, which a status line cannot av
 positional-parameters rule, because the script and its tests call their own small helpers
 positionally. If you add a segment or a sample, add a payload to `samples/` and give it a row in the
 `$sampleSegments` and `$sampleMarkers` tables in `test.ps1` (which segments it shows, and the glyph
-and value to look for). A sample without those rows fails the run by name. Then regenerate the
-screenshot at the top of this file with `pwsh docs/render-screenshot.ps1` and
+and value to look for). A sample without those rows fails the run by name. A sample whose branch
+segment carries counts also needs a row in `$sampleBranchForms`, the full and shortened text the
+matrix accepts at a set width. Then regenerate the screenshots at the top of this file with
+`pwsh docs/render-screenshot.ps1` and
 `pwsh docs/render-screenshot.ps1 -Config docs/statusline-two-line.json -Out docs/statusline-two-line.png`.
 
 Commits are scanned for secrets with [gitleaks](https://github.com/gitleaks/gitleaks), both in CI
@@ -241,10 +281,18 @@ git config core.hooksPath .githooks
 
 ## Roadmap
 
+Done so far:
+
 - [x] Query git directly for branch and dirty state
-- [x] Optional two-line layout
-- [ ] Light-theme palette
-- [ ] Prompt-cache and pull-request segments
+- [x] Optional two-line layout and powerline style
+- [x] Ahead and behind counts on the branch
+- [x] Staged, changed, untracked and conflict counts on the branch
+
+[Issues #2 to #28](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
+each with its own plan. In rough order: small additions to existing segments (a 1M-context marker,
+installer flags), then a segment registry so order, thresholds and glyphs move into
+`statusline.json`, then new segments (pull-request link, cache warmth, session clock), presets and
+per-project config, and finally an ASCII style that needs no Nerd Font and a light palette.
 
 ## License
 

@@ -23,7 +23,7 @@ $payload = [ordered]@{
     thinking       = @{ enabled = $true }
     effort         = @{ level = 'high' }
     workspace      = @{ current_dir = 'C:\Users\jim\src\my-project' }
-    git            = @{ branch = 'main'; status = 'clean' }
+    git            = @{ branch = 'main'; status = @{ staged = 1; modified = 2; untracked = 1 } }
 } | ConvertTo-Json -Depth 5
 
 $scriptArgs = @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', (Join-Path $Repo 'statusline.ps1'))
