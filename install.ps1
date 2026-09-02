@@ -21,10 +21,12 @@
 
 .PARAMETER RefreshInterval
   Seconds between timed re-renders, written as statusLine.refreshInterval. Must be 1 or more. Leave it
-  out and the key is not written, so Claude Code keeps its own behaviour.
+  out and the key is not written; a reinstall without the switch drops a previous value.
 
 .PARAMETER SettingsPath
-  The settings.json to edit. Defaults to ~/.claude/settings.json. The tests point this into a temp folder.
+  The settings.json to edit. Defaults to ~/.claude/settings.json. This changes only which settings file
+  is edited: the statusline.ps1 and statusline.json copies, and the delete on -Uninstall, still use
+  ~/.claude. It exists for the test suite.
 
 .EXAMPLE
   .\install.ps1 -InstallFont -ConfigureWindowsTerminal
@@ -37,15 +39,11 @@ param(
     [switch] $InstallFont,
     [switch] $ConfigureWindowsTerminal,
     [switch] $Uninstall,
-    [int] $RefreshInterval,
+    [ValidateRange(1, [int]::MaxValue)] [int] $RefreshInterval,
     [string] $SettingsPath
 )
 
 $ErrorActionPreference = 'Stop'
-if ($PSBoundParameters.ContainsKey('RefreshInterval') -and $RefreshInterval -lt 1) {
-    Write-Error "-RefreshInterval must be 1 or more (got $RefreshInterval)."
-    return
-}
 $claudeDir = Join-Path $env:USERPROFILE '.claude'
 $target = Join-Path $claudeDir 'statusline.ps1'
 $configTarget = Join-Path $claudeDir 'statusline.json'
@@ -53,16 +51,25 @@ $configTarget = Join-Path $claudeDir 'statusline.json'
 if (-not $SettingsPath) { $settingsPath = Join-Path $claudeDir 'settings.json' }
 $fontFace = 'JetBrainsMono NF'
 
+# -LiteralPath throughout: a settings path with [ or ] in it would otherwise read as missing, so its keys
+# would be dropped and the write would fail.
 function Read-UserSetting([string] $Path) {
-    if (Test-Path $Path) { return (Get-Content $Path -Raw | ConvertFrom-Json) }
+    if (Test-Path -LiteralPath $Path) {
+        $parsed = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+        # An empty file parses to nothing, and a bare value or array has no properties to add to; either
+        # would otherwise be written back as the literal text "null" or a broken document. The null check
+        # comes first because an empty pipeline result passes -is [pscustomobject], and the full type name
+        # is used because a bare string or number passes the short one.
+        if ($null -ne $parsed -and $parsed -is [System.Management.Automation.PSCustomObject]) { return $parsed }
+    }
     return [pscustomobject]@{}
 }
 
 function Write-UserSetting($obj, [string] $Path) {
     $dir = Split-Path $Path -Parent
-    if ($dir) { New-Item -ItemType Directory -Force $dir | Out-Null }
-    Copy-Item $Path "$Path.bak" -Force -ErrorAction SilentlyContinue
-    $obj | ConvertTo-Json -Depth 32 | Set-Content $Path -Encoding UTF8
+    if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    Copy-Item -LiteralPath $Path -Destination "$Path.bak" -Force -ErrorAction SilentlyContinue
+    $obj | ConvertTo-Json -Depth 32 | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
 if ($Uninstall) {
@@ -73,20 +80,20 @@ if ($Uninstall) {
         Write-UserSetting $s $settingsPath
         Write-Host "Removed statusLine ($keys) from $settingsPath"
     }
-    if (Test-Path $target) { Remove-Item $target -Force; Write-Host "Deleted $target" }
-    if (Test-Path $configTarget) { Write-Host "Kept $configTarget (delete it yourself if you no longer want it)" }
+    if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force; Write-Host "Deleted $target" }
+    if (Test-Path -LiteralPath $configTarget) { Write-Host "Kept $configTarget (delete it yourself if you no longer want it)" }
     return
 }
 
-New-Item -ItemType Directory -Force $claudeDir | Out-Null
-Copy-Item (Join-Path $PSScriptRoot 'statusline.ps1') $target -Force
+New-Item -ItemType Directory -Force -Path $claudeDir | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'statusline.ps1') -Destination $target -Force
 Write-Host "Installed $target"
-if (Test-Path $configTarget) {
+if (Test-Path -LiteralPath $configTarget) {
     Write-Host "Kept existing $configTarget"
 } else {
     $configSource = Join-Path $PSScriptRoot 'statusline.json'
-    if (Test-Path $configSource) {
-        Copy-Item $configSource $configTarget
+    if (Test-Path -LiteralPath $configSource) {
+        Copy-Item -LiteralPath $configSource -Destination $configTarget
         Write-Host "Installed $configTarget (edit it to change layout, style or segments)"
     } else {
         Write-Warning "statusline.json was not found beside the installer; the status line will use its built-in defaults."
@@ -100,10 +107,15 @@ $s = Read-UserSetting $settingsPath
 # indicator would be the same word twice on one bar. refreshInterval is written only when asked for, so
 # a reinstall without the switch leaves the key out rather than picking a rate for the user.
 $entry = [pscustomobject]@{ type = 'command'; command = $command; padding = 0; hideVimModeIndicator = $true }
-if ($PSBoundParameters.ContainsKey('RefreshInterval')) { $entry | Add-Member -NotePropertyName refreshInterval -NotePropertyValue $RefreshInterval }
-if ($s.PSObject.Properties['statusLine']) { $s.statusLine = $entry } else { $s | Add-Member -NotePropertyName statusLine -NotePropertyValue $entry }
+$wantRefresh = $PSBoundParameters.ContainsKey('RefreshInterval')
+if ($wantRefresh) { $entry | Add-Member -NotePropertyName refreshInterval -NotePropertyValue $RefreshInterval }
+$old = $s.PSObject.Properties['statusLine']
+if ($old -and -not $wantRefresh -and $old.Value.PSObject.Properties['refreshInterval']) {
+    Write-Warning "The existing statusLine.refreshInterval of $($old.Value.refreshInterval) is dropped; pass -RefreshInterval $($old.Value.refreshInterval) to keep it."
+}
+if ($old) { $s.statusLine = $entry } else { $s | Add-Member -NotePropertyName statusLine -NotePropertyValue $entry }
 Write-UserSetting $s $settingsPath
-Write-Host "Configured statusLine in $settingsPath (hideVimModeIndicator on$(if ($PSBoundParameters.ContainsKey('RefreshInterval')) { ", refreshInterval $RefreshInterval s" }))"
+Write-Host "Configured statusLine in $settingsPath (hideVimModeIndicator on$(if ($wantRefresh) { ", refreshInterval $RefreshInterval s" }))"
 
 if ($InstallFont) {
     Write-Host 'Installing JetBrainsMono Nerd Font (winget; expect an elevation prompt)...'

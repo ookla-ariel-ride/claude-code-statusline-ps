@@ -86,8 +86,9 @@ strips backslashes.
 between events. Nothing in the line needs it today, so the installer only writes it when asked. A
 reinstall without the switch writes an entry without the key. Pass the switch again to keep it.
 
-`-SettingsPath <file>` edits a different settings file instead of `~/.claude/settings.json`. The test
-suite uses it to run the installer against a temp folder.
+`-SettingsPath <file>` changes only which settings file is edited. The `statusline.ps1` and
+`statusline.json` copies, and the delete on `-Uninstall`, still use `~/.claude`. It exists for the
+test suite, which points it into a temp folder.
 
 ### Other terminals
 
@@ -131,6 +132,10 @@ The script reads `statusline.json` from its own folder, so after installing that
 | `layout` | `one`, `two` | `two` puts model, folder, branch and badges on the first line and context, limits, cost and lines on the second. |
 | `style` | `plain`, `powerline` | `plain` is coloured text with a dim chevron between segments. `powerline` is coloured blocks joined by solid arrows. |
 | `segments.<name>` | `true`, `false` | `false` hides that segment. |
+
+With `badges` off the vim mode is shown nowhere, because the installer sets `hideVimModeIndicator`
+and that hides Claude Code's own indicator. If that matters, remove `hideVimModeIndicator` from the
+`statusLine` entry in `settings.json` by hand.
 
 Anything missing or invalid falls back to its default without a message, so a typo cannot blank
 the status line. Delete the file to get the defaults back. `docs/statusline-two-line.json` is the
