@@ -28,6 +28,7 @@ $iconHome   = G 0xF015    # nf-fa-home  (on main/master)
 $iconDirty  = G 0xF040    # nf-fa-pencil (uncommitted changes)
 $iconAhead  = G 0x2191    # up arrow (commits ahead of upstream)
 $iconBehind = G 0x2193    # down arrow (commits behind upstream)
+$iconConflict = G 0xF071  # nf-fa-exclamation_triangle (merge conflicts)
 $iconLines  = G 0xF121    # nf-fa-code  (lines added/removed)
 $iconLimit  = G 0xF0E4    # nf-fa-tachometer (rate limits)
 $iconFast   = G 0xF0E7    # nf-fa-bolt  (fast mode)
@@ -176,7 +177,9 @@ function Get-FittedLine($Segments, [string] $Style, $Width) {
 
 # Parses `git status --porcelain=v1 --branch` output. $null when the header line is missing.
 # Ahead and Behind come from the header's bracket ([ahead 1], [behind 2], [ahead 1, behind 2]); no bracket
-# or [gone] means 0 and 0.
+# or [gone] means 0 and 0. Every later line starts with two status columns, XY, and is counted as
+# staged (X set and not a conflict), modified (Y set: M, D or T in the work tree), untracked (??) or a conflict (the unmerged
+# pairs). A file can be both staged and modified. Dirty is true when any count is above zero.
 function Read-PorcelainStatus([string] $Text) {
     if (-not $Text) { return $null }
     $lines = $Text -split "`r?`n"
@@ -191,8 +194,23 @@ function Read-PorcelainStatus([string] $Text) {
         if ($Matches[1]) { $ahead = [int] $Matches[1] }
         if ($Matches[2]) { $behind = [int] $Matches[2] }
     }
-    $dirty = @($lines | Select-Object -Skip 1 | Where-Object { $_.Trim() }).Count -gt 0
-    return @{ Branch = $branch; Dirty = $dirty; Ahead = $ahead; Behind = $behind }
+    $staged = 0
+    $modified = 0
+    $untracked = 0
+    $conflicts = 0
+    # Porcelain v1 keeps the leading space of " M file", so the columns are read from the raw line.
+    foreach ($line in ($lines | Select-Object -Skip 1)) {
+        if (-not $line.Trim() -or $line.Length -lt 2) { continue }
+        $xy = $line.Substring(0, 2)
+        if ($xy -eq '!!') { continue }
+        if ($xy -in @('DD', 'AA', 'AU', 'UA', 'UD', 'DU', 'UU')) { $conflicts++; continue }
+        if ($xy -eq '??') { $untracked++; continue }
+        if ($xy[0] -ne ' ') { $staged++ }
+        if ($xy[1] -ne ' ') { $modified++ }
+    }
+    $dirty = ($staged + $modified + $untracked + $conflicts) -gt 0
+    return @{ Branch = $branch; Dirty = $dirty; Ahead = $ahead; Behind = $behind
+              Staged = $staged; Modified = $modified; Untracked = $untracked; Conflicts = $conflicts }
 }
 
 # Runs git status in $Dir with a hard timeout. Any failure, or no git on PATH, returns $null.
@@ -352,15 +370,33 @@ function Test-PayloadDirty($status) {
     return $false
 }
 
+# File counts from a payload git.status object: the named properties staged, modified, untracked and
+# conflicts, each 0 when missing. A string status ("clean", "modified") or nothing gives four zeros.
+function Get-PayloadCount($status) {
+    $counts = @{ Staged = 0; Modified = 0; Untracked = 0; Conflicts = 0 }
+    if ($null -eq $status -or $status -is [string]) { return $counts }
+    foreach ($key in @($counts.Keys)) {
+        $v = $status.($key.ToLowerInvariant())
+        if ($null -ne $v) { $counts[$key] = [int] $v }
+    }
+    return $counts
+}
+
 # Branch from the payload's git object when present; otherwise from git status in current_dir.
 # A git object that carries no branch name means "no branch", not "go and look" - the segment is omitted.
-# Ahead/behind counts only exist on the git path and render dim between the name and the pencil; Short
-# is the same text without them, so a wide line sheds the counts before it sheds whole segments.
+# Ahead/behind counts only exist on the git path; the file counts come from either source. All of them
+# render dim between the name and the pencil, arrows first, then +staged ~modified ?untracked, then the
+# conflict glyph in red. Short is icon, name and pencil, so a wide line sheds the counts before it sheds
+# whole segments. Zero counts render nothing, so a clean tree is the same text as before.
 function Get-BranchSegment($d, $cfg) {
     $info = $null
     if ($null -ne $d.git) {
         if (-not $d.git.branch) { return $null }
-        $info = @{ Branch = "$($d.git.branch)"; Dirty = (Test-PayloadDirty $d.git.status); Ahead = 0; Behind = 0 }
+        $info = Get-PayloadCount $d.git.status
+        $info.Branch = "$($d.git.branch)"
+        $info.Dirty = Test-PayloadDirty $d.git.status
+        $info.Ahead = 0
+        $info.Behind = 0
     }
     else { $info = Get-GitBranch $d.workspace.current_dir $gitTimeoutMs }
     if (-not $info) { return $null }
@@ -371,6 +407,10 @@ function Get-BranchSegment($d, $cfg) {
     $counts = ''
     if ($info.Ahead -gt 0) { $counts += ' ' + (Format-Inline 'track' "$iconAhead$($info.Ahead)" $role $cfg.Style) }
     if ($info.Behind -gt 0) { $counts += ' ' + (Format-Inline 'track' "$iconBehind$($info.Behind)" $role $cfg.Style) }
+    if ($info.Staged -gt 0) { $counts += ' ' + (Format-Inline 'track' "+$($info.Staged)" $role $cfg.Style) }
+    if ($info.Modified -gt 0) { $counts += ' ' + (Format-Inline 'track' "~$($info.Modified)" $role $cfg.Style) }
+    if ($info.Untracked -gt 0) { $counts += ' ' + (Format-Inline 'track' "?$($info.Untracked)" $role $cfg.Style) }
+    if ($info.Conflicts -gt 0) { $counts += ' ' + (Format-Inline 'removed' "$iconConflict$($info.Conflicts)" $role $cfg.Style) }
     $pencil = if ($info.Dirty) { " $iconDirty" } else { '' }
     return @{ Name = 'branch'; Text = "$name$counts$pencil"; Short = "$name$pencil"; Role = $role; Bold = $false }
 }

@@ -53,7 +53,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | Limits | `rate_limits.five_hour`, `seven_day` | Coloured by the worse of the two |
 | Badges | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dim glyphs |
 | Folder | `workspace.current_dir` | Blue, leaf directory name |
-| Branch | `git status --porcelain=v1 --branch` in `workspace.current_dir`. The Claude Code payload has no `git` object, so this is the normal path; a payload that does carry `git.branch` and `git.status` (the test samples) is used as is | Home glyph on main/master, branch glyph otherwise. Yellow with pencil glyph when dirty, magenta when clean. Dim `↑N` and `↓N` between the name and the pencil for commits ahead of and behind the upstream, parsed from the porcelain header, so only the git path shows them. A line that is too wide sheds the counts before any segment is dropped |
+| Branch | `git status --porcelain=v1 --branch` in `workspace.current_dir`. The Claude Code payload has no `git` object, so this is the normal path; a payload that does carry `git.branch` and `git.status` (the test samples) is used as is | Home glyph on main/master, branch glyph otherwise. Yellow with pencil glyph when dirty, magenta when clean. Dim `↑N` and `↓N` between the name and the pencil for commits ahead of and behind the upstream, parsed from the porcelain header, so only the git path shows them. After the arrows, dim `+N` `~N` `?N` for staged, modified and untracked files, counted from the porcelain lines or read from a payload `git.status` object, then a red `nf-fa-exclamation_triangle` with the number of conflicted files. Zero counts are left out. A line that is too wide sheds the counts before any segment is dropped |
 
 ## Key design decisions
 

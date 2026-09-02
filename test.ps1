@@ -130,7 +130,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Test-PayloadDirty', 'Get-BranchSegment'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Test-PayloadDirty', 'Get-PayloadCount', 'Get-BranchSegment'))
 
 # Get-BranchSegment closes over these script-level names in statusline.ps1, so the test has to supply them.
 $gitTimeoutMs = 1500
@@ -139,6 +139,7 @@ $iconBranch = [char]::ConvertFromUtf32(0xE0A0)
 $iconDirty = [char]::ConvertFromUtf32(0xF040)
 $iconAhead = [char]::ConvertFromUtf32(0x2191)
 $iconBehind = [char]::ConvertFromUtf32(0x2193)
+$iconConflict = [char]::ConvertFromUtf32(0xF071)
 
 Write-Host '== unit: width' -ForegroundColor Cyan
 $widthTable = @(
@@ -341,8 +342,44 @@ Confirm-Equal $r.Ahead 0 'porcelain: no bracket gives ahead 0'
 Confirm-Equal $r.Behind 0 'porcelain: no bracket gives behind 0'
 $r = Read-PorcelainStatus "## main`n M file.txt`n"
 Confirm-Equal $r.Dirty $true 'porcelain: modified is dirty'
+Confirm-Equal $r.Modified 1 'porcelain: modified counts as modified'
+Confirm-Equal $r.Staged 0 'porcelain: modified is not staged'
 $r = Read-PorcelainStatus "## main`r`n?? new.txt`r`n"
 Confirm-Equal $r.Dirty $true 'porcelain: untracked is dirty (CRLF)'
+Confirm-Equal $r.Untracked 1 'porcelain: untracked counts as untracked (CRLF)'
+Confirm-Equal $r.Staged 0 'porcelain: untracked is not staged'
+$r = Read-PorcelainStatus "## main`n M a`nA  b`n?? c`n"
+Confirm-Equal $r.Staged 1 'porcelain: mixed block staged'
+Confirm-Equal $r.Modified 1 'porcelain: mixed block modified'
+Confirm-Equal $r.Untracked 1 'porcelain: mixed block untracked'
+Confirm-Equal $r.Conflicts 0 'porcelain: mixed block no conflicts'
+Confirm-Equal $r.Dirty $true 'porcelain: mixed block dirty'
+$r = Read-PorcelainStatus "## main`nUU a`n"
+Confirm-Equal $r.Conflicts 1 'porcelain: conflict counts as conflict'
+Confirm-Equal $r.Staged 0 'porcelain: conflict is not staged'
+Confirm-Equal $r.Modified 0 'porcelain: conflict is not modified'
+Confirm-Equal $r.Dirty $true 'porcelain: conflict is dirty'
+$r = Read-PorcelainStatus "## main`nMM a`n"
+Confirm-Equal $r.Staged 1 'porcelain: staged and modified counts as staged'
+Confirm-Equal $r.Modified 1 'porcelain: staged and modified counts as modified'
+$r = Read-PorcelainStatus "## main`n D gone.txt`n"
+Confirm-Equal $r.Modified 1 'porcelain: work tree deletion counts as modified'
+Confirm-Equal $r.Staged 0 'porcelain: work tree deletion is not staged'
+Confirm-Equal $r.Dirty $true 'porcelain: work tree deletion is dirty'
+$r = Read-PorcelainStatus "## main`n T mode.txt`n"
+Confirm-Equal $r.Modified 1 'porcelain: type change counts as modified'
+Confirm-Equal $r.Dirty $true 'porcelain: type change is dirty'
+$r = Read-PorcelainStatus "## main`nD  staged-gone.txt`n"
+Confirm-Equal $r.Staged 1 'porcelain: staged deletion counts as staged'
+Confirm-Equal $r.Modified 0 'porcelain: staged deletion is not modified'
+$r = Read-PorcelainStatus "## main`n"
+Confirm-Equal $r.Staged 0 'porcelain: clean gives staged 0'
+Confirm-Equal $r.Modified 0 'porcelain: clean gives modified 0'
+Confirm-Equal $r.Untracked 0 'porcelain: clean gives untracked 0'
+Confirm-Equal $r.Conflicts 0 'porcelain: clean gives conflicts 0'
+Confirm-Equal $r.Dirty $false 'porcelain: clean is not dirty'
+$r = Read-PorcelainStatus "## main`n`n   `n"
+Confirm-Equal $r.Dirty $false 'porcelain: blank and whitespace-only lines count as nothing'
 $r = Read-PorcelainStatus "## feature/x...origin/feature/x`n"
 Confirm-Equal $r.Branch 'feature/x' 'porcelain: feature branch'
 $r = Read-PorcelainStatus "## No commits yet on main`n"
@@ -358,6 +395,24 @@ Confirm-Equal $r.Branch 'detached' 'porcelain: detached'
 Confirm-Equal (Read-PorcelainStatus "fatal: not a git repository`n") $null 'porcelain: no header'
 Confirm-Equal (Read-PorcelainStatus '') $null 'porcelain: empty'
 
+Write-Host '== unit: payload counts' -ForegroundColor Cyan
+# ConvertFrom-Json hands the sample counts over as Int64, so the object cases go through it.
+$c = Get-PayloadCount ('{"staged":2,"modified":1,"untracked":3,"conflicts":1}' | ConvertFrom-Json)
+Confirm-Equal $c.Staged 2 'payload counts: staged'
+Confirm-Equal $c.Modified 1 'payload counts: modified'
+Confirm-Equal $c.Untracked 3 'payload counts: untracked'
+Confirm-Equal $c.Conflicts 1 'payload counts: conflicts'
+$c = Get-PayloadCount ('{"modified":2,"untracked":1}' | ConvertFrom-Json)
+Confirm-Equal $c.Staged 0 'payload counts: missing staged is 0'
+Confirm-Equal $c.Modified 2 'payload counts: two of four modified'
+Confirm-Equal $c.Untracked 1 'payload counts: two of four untracked'
+Confirm-Equal $c.Conflicts 0 'payload counts: missing conflicts is 0'
+foreach ($status in @('clean', 'modified', $null)) {
+    $c = Get-PayloadCount $status
+    $shown = if ($null -eq $status) { 'null' } else { "'$status'" }
+    Confirm-True (($c.Staged + $c.Modified + $c.Untracked + $c.Conflicts) -eq 0 -and $c.Staged -is [int]) "payload counts: $shown status gives four zeros"
+}
+
 Write-Host '== unit: branch segment' -ForegroundColor Cyan
 $seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'main'; status = 'clean' } })
 Confirm-True ($null -ne $seg -and $seg.Text.Contains('main')) "branch payload clean: text has the branch name, got '$($seg.Text)'"
@@ -365,9 +420,22 @@ Confirm-Equal $seg.Text "$iconHome main" 'branch payload clean: home icon, no pe
 Confirm-Equal $seg.Role 'branch' 'branch payload clean: role'
 
 $seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = @{ modified = 2 } } })
-Confirm-Equal $seg.Text "$iconBranch feature/x $iconDirty" 'branch payload dirty counts: branch icon and pencil'
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ~2 $iconDirty" 'branch payload dirty counts: branch icon, modified count, pencil'
 Confirm-Equal $seg.Role 'warn' 'branch payload dirty counts: role'
-Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch payload dirty counts: short is the same text'
+Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch payload dirty counts: short drops the count and keeps the pencil'
+
+$seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = @{ modified = 2; untracked = 1 } } }) @{ Style = 'plain' }
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ~2 ?1 $iconDirty" 'branch payload modified and untracked: tilde then question mark'
+Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m~2$esc[33m $esc[90m?1$esc[33m $iconDirty" 'branch payload modified and untracked: counts dim, warn colour restored'
+Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch payload modified and untracked: short has no counts'
+$seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = 'modified' } }) @{ Style = 'plain' }
+Confirm-Equal $seg.Text "$iconBranch feature/x $iconDirty" 'branch payload string status: pencil only, no counts'
+Confirm-Equal $seg.Role 'warn' 'branch payload string status: role'
+$seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = @{ conflicts = 1 } } }) @{ Style = 'plain' }
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ${iconConflict}1 $iconDirty" 'branch payload conflict: conflict glyph and count before the pencil'
+Confirm-Equal $seg.Text "$iconBranch feature/x $esc[31m${iconConflict}1$esc[33m $iconDirty" 'branch payload conflict: removed colour, warn colour restored'
+Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch payload conflict: short has no conflict glyph'
+Confirm-Equal $seg.Role 'warn' 'branch payload conflict: role'
 
 Confirm-True ($null -eq (Get-BranchSegment ([pscustomobject]@{ git = @{} }))) 'branch payload git object with no branch: segment omitted'
 Confirm-True ($null -eq (Get-BranchSegment ([pscustomobject]@{ git = @{ branch = '' } }))) 'branch payload empty branch: segment omitted'
@@ -400,6 +468,14 @@ Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ${iconAhead
 Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m${iconAhead}1$esc[33m $esc[90m${iconBehind}1$esc[33m $iconDirty" 'branch dirty with counts: arrows restore the warn colour'
 Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch dirty with counts: short keeps the pencil, drops the arrows'
 Confirm-Equal $seg.Role 'warn' 'branch dirty with counts: role'
+$script:mockGitBranch = @{ Branch = 'feature/x'; Dirty = $true; Ahead = 1; Behind = 2; Staged = 2; Modified = 1; Untracked = 3; Conflicts = 1 }
+$seg = Get-BranchSegment $probePayload @{ Style = 'plain' }
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ${iconAhead}1 ${iconBehind}2 +2 ~1 ?3 ${iconConflict}1 $iconDirty" 'branch everything: arrows, staged, modified, untracked, conflict, pencil'
+Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m${iconAhead}1$esc[33m $esc[90m${iconBehind}2$esc[33m $esc[90m+2$esc[33m $esc[90m~1$esc[33m $esc[90m?3$esc[33m $esc[31m${iconConflict}1$esc[33m $iconDirty" 'branch everything: counts dim, conflict red, warn colour restored after each'
+Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch everything: short is icon, name, pencil'
+$script:mockGitBranch = @{ Branch = 'main'; Dirty = $true; Ahead = 0; Behind = 0; Staged = 1; Modified = 2; Untracked = 0; Conflicts = 0 }
+$seg = Get-BranchSegment $probePayload @{ Style = 'plain' }
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconHome main +1 ~2 $iconDirty" 'branch file counts only: no arrows, zero counts omitted'
 . (Import-ScriptFunction $script @('Get-GitBranch'))
 
 # No git key at all falls through to Get-GitBranch. GIT_CEILING_DIRECTORIES (set above) stops the probe
@@ -457,6 +533,12 @@ if ($haveGit) {
     # The mirror image: main tracks a topic that is one commit further on.
     $behind = Initialize-TestRepo 'repo-behind'; Add-Commit $behind
     git -C $behind checkout -q -b topic; Add-Commit $behind 'topic'; git -C $behind checkout -q main; git -C $behind branch -q --set-upstream-to=topic
+    # One file in each of the three counted states: a new file added to the index, the committed file
+    # edited but not added, and a new file git has never seen.
+    $mixed = Initialize-TestRepo 'repo-mixed'; Add-Commit $mixed
+    Set-Content (Join-Path $mixed 'staged.txt') 'x'; git -C $mixed add staged.txt
+    Set-Content (Join-Path $mixed 'file.txt') 'changed'
+    Set-Content (Join-Path $mixed 'new.txt') 'y'
 
     # In-process checks of Get-GitBranch itself
     $g = Get-GitBranch $clean $gitTimeoutMs
@@ -472,6 +554,12 @@ if ($haveGit) {
     Confirm-Equal $g.Branch 'main' 'Get-GitBranch: behind fixture branch'
     Confirm-Equal $g.Ahead 0 'Get-GitBranch: behind fixture is not ahead'
     Confirm-Equal $g.Behind 1 'Get-GitBranch: one commit behind the tracked branch'
+    $g = Get-GitBranch $mixed $gitTimeoutMs
+    Confirm-Equal $g.Staged 1 'Get-GitBranch: mixed fixture has one staged file'
+    Confirm-Equal $g.Modified 1 'Get-GitBranch: mixed fixture has one modified file'
+    Confirm-Equal $g.Untracked 1 'Get-GitBranch: mixed fixture has one untracked file'
+    Confirm-Equal $g.Conflicts 0 'Get-GitBranch: mixed fixture has no conflicts'
+    Confirm-Equal $g.Dirty $true 'Get-GitBranch: mixed fixture is dirty'
     $g = Get-GitBranch $dirtyUntracked $gitTimeoutMs
     Confirm-Equal $g.Dirty $true 'Get-GitBranch: untracked dirty'
     Confirm-Equal (Get-GitBranch (Join-Path $tmp 'nowhere') $gitTimeoutMs) $null 'Get-GitBranch: missing dir'
@@ -498,8 +586,9 @@ if ($haveGit) {
     Confirm-Equal (Get-GitBranch $trapChild $gitTimeoutMs).Branch 'main' 'Get-GitBranch: the same directory finds the repo once the ceiling moves back'
 
     $gitCases.Add(@{ Name = 'clean';           Dir = $clean;          Has = "$iconHome main";              Not = $iconDirty })
-    $gitCases.Add(@{ Name = 'dirty tracked';   Dir = $dirtyTracked;   Has = "$iconHome main $iconDirty";  Raw = "$esc[33m" })
-    $gitCases.Add(@{ Name = 'dirty untracked'; Dir = $dirtyUntracked; Has = "$iconHome main $iconDirty" })
+    $gitCases.Add(@{ Name = 'dirty tracked';   Dir = $dirtyTracked;   Has = "$iconHome main ~1 $iconDirty";  Raw = "$esc[33m" })
+    $gitCases.Add(@{ Name = 'dirty untracked'; Dir = $dirtyUntracked; Has = "$iconHome main ?1 $iconDirty" })
+    $gitCases.Add(@{ Name = 'mixed';           Dir = $mixed;          Has = "$iconHome main +1 ~1 ?1 $iconDirty"; Not = $iconConflict; Raw = "$esc[90m+1$esc[33m $esc[90m~1$esc[33m $esc[90m?1$esc[33m" })
     $gitCases.Add(@{ Name = 'feature';         Dir = $feature;        Has = "$iconBranch feature/x" })
     $gitCases.Add(@{ Name = 'unborn';          Dir = $unborn;         Has = "$iconHome main";              Not = $iconDirty })
     $gitCases.Add(@{ Name = 'detached';        Dir = $detached;       Has = "$iconBranch detached" })
@@ -681,7 +770,7 @@ $sampleMarkers = @{
     }
     '02-feature-dirty-high.json'            = @{
         model  = "$iconModel Fable 5.1"; context = "$iconCtx 90%"; cost = "$iconCost `$$('{0:N2}' -f 12.5)"
-        folder = "$iconFolder repo"; branch = "$iconBranch feature/x $iconDirty"
+        folder = "$iconFolder repo"; branch = "$iconBranch feature/x ~2 ?1 $iconDirty"
     }
     '03-main-dirty-mid.json'                = @{
         model  = "$iconModel Opus 5"; context = "$iconCtx 65%"; cost = "$iconCost `$$('{0:N2}' -f 3.07)"
@@ -715,7 +804,7 @@ $segmentGlyphs = @{
     limits  = @($iconLimits)
     badges  = @($iconFast, $iconThink, $iconEffort, $iconVim)
     folder  = @($iconFolder)
-    branch  = @($iconHome, $iconBranch, $iconDirty, $iconAhead, $iconBehind)
+    branch  = @($iconHome, $iconBranch, $iconDirty, $iconAhead, $iconBehind, $iconConflict)
 }
 # The segment behind each row of the absence table, so a row can be skipped when its segment is off
 # (the per-segment absence assertions cover that case instead, for every glyph the segment owns).
