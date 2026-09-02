@@ -31,9 +31,9 @@ how close you are to a rate limit, and which modes are on.
 - Rate limits for the 5-hour and 7-day windows, with a countdown to the next 5-hour reset.
 - Session cost and lines added or removed.
 - Badges for fast mode, extended thinking, effort level, and vim mode. They disappear when nothing is on.
-- Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory.
+- Folder and git branch, with a home glyph on `main`, a pencil when the tree is dirty, and `↑N` `↓N` for commits ahead of or behind the upstream. Branch state comes from `git status` in the current directory.
 - One line or two, plain separators or powerline blocks, and any segment switched off, all from `statusline.json`.
-- Fits the terminal width. Long lines shorten the limits and context segments first, then drop segments from the right, so lines stop wrapping in normal use.
+- Fits the terminal width. Long lines shorten the limits and context segments and drop the branch counts first, then drop segments from the right, so lines stop wrapping in normal use.
 - If a field is missing from the payload, the script drops that segment. If the payload will not parse, it still prints the model glyph.
 - Icons come from Unicode code points rather than pasted characters, so the file's own encoding cannot corrupt them.
 - No modules to install. PowerShell 7 and a Nerd Font are the whole dependency list.
@@ -123,9 +123,9 @@ the status line. Delete the file to get the defaults back. `docs/statusline-two-
 config behind the second screenshot.
 
 Claude Code tells the script the terminal width. When a line is too long the script first drops
-the token counts from the context segment and the countdown and 7-day figure from the limits
-segment, then removes whole segments from the right: lines, badges, cost, limits, folder, branch,
-context. The model segment always stays.
+the countdown and 7-day figure from the limits segment, the token counts from the context segment
+and the ahead and behind counts from the branch segment, then removes whole segments from the
+right: lines, badges, cost, limits, folder, branch, context. The model segment always stays.
 
 ## What each segment shows
 
@@ -138,7 +138,7 @@ context. The model segment always stays.
 | limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day` | `5h 24% (1h12m) 7d 41%`. Coloured by the worse of the two using the context thresholds. The countdown is omitted once the reset time has passed |
 | badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
 | folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.current_dir` | Blue, leaf directory name |
-| branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git status` run in `workspace.current_dir`. Claude Code's payload carries no `git` object, so this is the normal path. If a payload does include `git.branch` and `git.status` (the test samples do), the script uses those instead, and a `git` object with an empty branch shows nothing | Magenta when clean. Yellow with the pencil when the tree has uncommitted or untracked changes. Shows `detached` on a detached HEAD |
+| branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty, `↑N` ahead and `↓N` behind the upstream | `git status` run in `workspace.current_dir`. Claude Code's payload carries no `git` object, so this is the normal path. If a payload does include `git.branch` and `git.status` (the test samples do), the script uses those instead, and a `git` object with an empty branch shows nothing | Magenta when clean. Yellow with the pencil when the tree has uncommitted or untracked changes. The ahead and behind counts are dim, sit between the name and the pencil, and come only from the `git status` path; a branch with no upstream, or one whose upstream is gone, shows neither. Shows `detached` on a detached HEAD |
 | separator | <img src="docs/icons/chevron.svg" height="18" alt="chevron"> in `plain`, <img src="docs/icons/arrow.svg" height="18" alt="arrow"> in `powerline` | none | Dim chevron between segments, or a solid arrow coloured to blend the neighbouring blocks |
 
 A dim <img src="docs/icons/chevron.svg" height="14" alt="chevron"> separates the segments in plain
