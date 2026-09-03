@@ -31,6 +31,7 @@ how close you are to a rate limit, and which modes are on.
 - Rate limits for the 5-hour and 7-day windows, with a countdown to the next 5-hour reset, and the spend limit when Claude Code reports one (accounts behind a Claude apps gateway with a spend limit).
 - Session cost and lines added or removed.
 - Badges for fast mode, extended thinking, effort level, and vim mode. They disappear when nothing is on.
+- The branch's pull request as `#12`, green when approved and red when changes are requested. Ctrl-click it in Windows Terminal to open the PR.
 - Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory.
 - Counts beside the branch name: `↑N` `↓N` commits ahead of or behind the upstream, `+N` staged, `~N` changed, `?N` untracked, and a red triangle with a count when files are in conflict. See [Branch counts](#branch-counts).
 - One line or two, plain separators or powerline blocks, and any segment switched off, all from `statusline.json`.
@@ -123,6 +124,7 @@ The script reads `statusline.json` from its own folder, so after installing that
     "lines": true,
     "limits": true,
     "badges": true,
+    "pr": true,
     "folder": true,
     "branch": true
   }
@@ -131,10 +133,10 @@ The script reads `statusline.json` from its own folder, so after installing that
 
 | Key | Values | What it does |
 |---|---|---|
-| `layout` | `one`, `two` | `two` puts model, folder, branch and badges on the first line and context, limits, cost and lines on the second. |
+| `layout` | `one`, `two` | `two` puts model, folder, branch, pr and badges on the first line and context, limits, cost and lines on the second. |
 | `style` | `plain`, `powerline` | `plain` is coloured text with a dim chevron between segments. `powerline` is coloured blocks joined by solid arrows. |
 | `folder` | `repo`, `leaf` | `repo` shows `owner/name` from `workspace.repo` when the payload has one, with the current directory's name after a `›` when it differs from the project root. `leaf` always shows the directory name alone. |
-| `segments.<name>` | `true`, `false` | `false` hides that segment. |
+| `segments.<name>` | `true`, `false` | `false` hides that segment. The names are the ones in the file above; `segments.pr` is the pull-request link. |
 | `state` | `true`, `false` | `false` stops the script writing a state file for the session. |
 
 With `badges` off the vim mode is shown nowhere, because the installer sets `hideVimModeIndicator`
@@ -162,7 +164,7 @@ two stages:
 1. Detail comes off four segments, in this order: the countdown, 7-day and spend figures from limits,
    the token counts from context, every count from the branch, and the owner and directory name from
    the folder, which keeps only the repository name.
-2. Whole segments go, from the right: lines, badges, cost, limits, folder, branch, context.
+2. Whole segments go, from the right: lines, badges, cost, limits, pr, folder, branch, context.
 
 The model segment always stays.
 
@@ -176,6 +178,7 @@ The model segment always stays.
 | lines | <img src="docs/icons/code.svg" height="18" alt="code"> `nf-fa-code` | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
 | limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day`, `spend_limit` | `5h 24% (1h12m) 7d 41% $ 62%`. Coloured by the worst of the figures, with the 60% and 85% bands whatever the window size. The countdown is omitted once the reset time has passed. The `$` figure is the spend limit. Claude Code sends it only behind a Claude apps gateway with a spend limit, and only from 2.1.251 on |
 | badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
+| pr | <img src="docs/icons/pull-request.svg" height="18" alt="pull request"> `nf-oct-git_pull_request` | `pr.number`, `pr.url`, `pr.review_state` | `#12`, wrapped in an [OSC 8 hyperlink](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda) to `pr.url` so ctrl-click in Windows Terminal opens it. Green when the review state is `approved`, red on `changes_requested`, dim otherwise. Hidden when the payload has no `pr` object or no whole, positive number in it; a `url` that is not `http` or `https` leaves the text unlinked |
 | folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.repo`, `workspace.project_dir`, `workspace.current_dir` | Blue. `owner/name` when the payload names the repository, then `›` and the directory name when it differs from the project root. Without a repository, the directory name alone. The short form is the repository name |
 | branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git status --porcelain=v1 --branch` run in `workspace.current_dir` | Magenta when clean, yellow with the pencil when the tree has changes. The counts described below sit between the name and the pencil. Shows `detached` on a detached HEAD |
 | separator | <img src="docs/icons/chevron.svg" height="18" alt="chevron"> in `plain`, <img src="docs/icons/arrow.svg" height="18" alt="arrow"> in `powerline` | none | Dim chevron between segments, or a solid arrow coloured to blend the neighbouring blocks |
@@ -326,11 +329,12 @@ Done so far:
 - [x] Ahead and behind counts on the branch
 - [x] Staged, changed, untracked and conflict counts on the branch
 - [x] `1M` marker and past-200k warning on the model segment, wider colour bands for a 1M window
+- [x] Pull-request segment with a clickable link
 
 [Issues #2 to #28](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
 each with its own plan. In rough order: small additions to existing segments (installer flags),
 then a segment registry so order, thresholds and glyphs move into
-`statusline.json`, then new segments (pull-request link, cache warmth, session clock), presets and
+`statusline.json`, then new segments (cache warmth, session clock), presets and
 per-project config, and finally an ASCII style that needs no Nerd Font and a light palette.
 
 ## License
