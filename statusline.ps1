@@ -67,31 +67,39 @@ function Get-VisibleWidth([string] $Text) {
 
 # The segment table: one record per segment, in layout-one order. It is the single source for the config
 # defaults, the shrink and drop order in Get-FittedLine, the build dispatch and the layout-two rows.
-# Build takes the payload and the config and returns the segment record or $null. Default seeds
-# Read-StatusConfig. ShrinkRank orders stage one of Get-FittedLine and is $null for a segment with no
+# Build names the builder function; the build loop calls it with the payload and the config, and a builder
+# that only takes the payload leaves the config in $args. It returns the segment record or $null. Default
+# seeds Read-StatusConfig. ShrinkRank orders stage one of Get-FittedLine and is $null for a segment with no
 # Short form; DropRank orders stage two, and the model record has none because it is never dropped.
 # Row is the layout-two line and RowRank the position on it, because a row is not in layout-one order.
+# The table is built once per run: a render asks for it several times, and this is on the startup path.
 function Get-SegmentRegistry {
-    # Every Build block takes the same two arguments so the build loop needs no per-segment case; most builders do not read $cfg.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'cfg')]
-    param()
-    return @(
-        @{ Name = 'model';   Build = { param($d, $cfg) Get-ModelSegment $d $cfg };   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-        @{ Name = 'context'; Build = { param($d, $cfg) Get-ContextSegment $d };      Default = $true; ShrinkRank = 2;     DropRank = 7;     Row = 2; RowRank = 1 }
-        @{ Name = 'cost';    Build = { param($d, $cfg) Get-CostSegment $d };         Default = $true; ShrinkRank = $null; DropRank = 3;     Row = 2; RowRank = 3 }
-        @{ Name = 'lines';   Build = { param($d, $cfg) Get-LinesSegment $d $cfg };   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
-        @{ Name = 'limits';  Build = { param($d, $cfg) Get-LimitsSegment $d };       Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
-        @{ Name = 'badges';  Build = { param($d, $cfg) Get-BadgesSegment $d };       Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 4 }
-        @{ Name = 'folder';  Build = { param($d, $cfg) Get-FolderSegment $d };       Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 2 }
-        @{ Name = 'branch';  Build = { param($d, $cfg) Get-BranchSegment $d $cfg };  Default = $true; ShrinkRank = 3;     DropRank = 6;     Row = 1; RowRank = 3 }
-    )
+    if (-not $script:segmentRegistry) {
+        $script:segmentRegistry = @(
+            @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
+            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 2;     DropRank = 7;     Row = 2; RowRank = 1 }
+            @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = $null; DropRank = 3;     Row = 2; RowRank = 3 }
+            @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
+            @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
+            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 4 }
+            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 2 }
+            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 3;     DropRank = 6;     Row = 1; RowRank = 3 }
+        )
+    }
+    return $script:segmentRegistry
 }
 
 # Segment names sorted by one of the registry's rank keys, skipping records where it is $null. A row
-# number limits the list to that layout-two row.
-function Get-SegmentOrder([string] $Rank, [int] $Row = 0) {
-    $picked = @(Get-SegmentRegistry | Where-Object { $null -ne $_[$Rank] -and ($Row -eq 0 -or $_.Row -eq $Row) })
-    return @($picked | Sort-Object { $_[$Rank] } | ForEach-Object { $_.Name })
+# number limits the list to that layout-two row. Ranks are dense, 1 to N within the list asked for, so
+# the names are dropped into slots by rank and read back in order: a plain loop over a hashtable, because
+# this runs before the first line is printed and a cold pipeline, generic list or [array]::Sort each cost
+# several milliseconds the first time.
+function Get-SegmentOrder([ValidateSet('ShrinkRank', 'DropRank', 'RowRank')] [string] $Rank, [int] $Row = 0) {
+    $slots = @{}
+    foreach ($rec in Get-SegmentRegistry) {
+        if ($null -ne $rec[$Rank] -and ($Row -eq 0 -or $rec.Row -eq $Row)) { $slots[$rec[$Rank]] = $rec.Name }
+    }
+    return @(for ($i = 1; $i -le $slots.Count; $i++) { $slots[$i] })
 }
 
 # Reads statusline.json. Anything missing or invalid silently falls back to its default.
@@ -175,10 +183,10 @@ function Format-Line($Segments, [string] $Style) {
 
 # Renders a line and, when a width is given, shrinks then drops segments until it fits.
 # Stage 1 swaps segments for their Short form in $ShrinkOrder (limits, context, then branch by default).
-# Stage 2 drops whole segments in $DropOrder. Both default to the registry's ranks; the model segment
-# is in neither, so it is never dropped and may overflow on its own. Returns $null when nothing is left.
-function Get-FittedLine($Segments, [string] $Style, $Width,
-                        [string[]] $ShrinkOrder = (Get-SegmentOrder 'ShrinkRank'), [string[]] $DropOrder = (Get-SegmentOrder 'DropRank')) {
+# Stage 2 drops whole segments in $DropOrder. Either order left $null comes from the registry's ranks; an
+# empty array skips that stage. The model segment is never dropped whatever the drop order says, so it may
+# overflow on its own. Returns $null when nothing is left.
+function Get-FittedLine($Segments, [string] $Style, $Width, [string[]] $ShrinkOrder = $null, [string[]] $DropOrder = $null) {
     $segs = [System.Collections.Generic.List[hashtable]]::new()
     foreach ($s in $Segments) { if ($s) { $segs.Add($s.Clone()) } }
     if ($segs.Count -eq 0) { return $null }
@@ -186,6 +194,8 @@ function Get-FittedLine($Segments, [string] $Style, $Width,
     if ($null -eq $Width) { return $line }
     $target = [int] $Width
     if ((Get-VisibleWidth $line) -le $target) { return $line }
+    if ($null -eq $ShrinkOrder) { $ShrinkOrder = Get-SegmentOrder 'ShrinkRank' }
+    if ($null -eq $DropOrder) { $DropOrder = Get-SegmentOrder 'DropRank' }
     foreach ($name in $ShrinkOrder) {
         for ($i = 0; $i -lt $segs.Count; $i++) {
             if ($segs[$i].Name -eq $name -and $segs[$i].Short) {
@@ -196,6 +206,7 @@ function Get-FittedLine($Segments, [string] $Style, $Width,
         }
     }
     foreach ($name in $DropOrder) {
+        if ($name -eq 'model') { continue }
         $at = -1
         for ($i = 0; $i -lt $segs.Count; $i++) { if ($segs[$i].Name -eq $name) { $at = $i } }
         if ($at -lt 0) { continue }
@@ -366,22 +377,27 @@ function TimeLeft([object] $epoch) {
     return ' ({0}h{1:00}m)' -f [int] [math]::Floor($left.TotalHours), $left.Minutes
 }
 
-# Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets.
+# Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets, and the spend limit when
+# the payload carries one (Claude Code sends it behind a Claude apps gateway with a spend limit). The spend
+# figure uses a literal dollar sign, not the cash glyph, so it does not read as a second cost; its resets_at
+# is not shown, one countdown is enough. Every figure that is present joins the worst-of colour.
 function Get-LimitsSegment($d) {
     $rl = $d.rate_limits
     if (-not $rl) { return $null }
-    $h5 = $rl.five_hour.used_percentage
-    $d7 = $rl.seven_day.used_percentage
-    if ($null -eq $h5 -and $null -eq $d7) { return $null }
     $bits = [System.Collections.Generic.List[string]]::new()
     $worst = 0
     $short = $null
-    if ($null -ne $h5) {
-        $h5 = [int] [math]::Round([double] $h5); $worst = [math]::Max($worst, $h5)
-        $bits.Add("5h $h5%$(TimeLeft $rl.five_hour.resets_at)")
-        $short = "$iconLimit 5h $h5%"
+    # Label, source object and whether the countdown follows, in render order.
+    foreach ($row in @(@('5h', $rl.five_hour, $true), @('7d', $rl.seven_day, $false), @('$', $rl.spend_limit, $false))) {
+        $pct = $row[1].used_percentage
+        if ($null -eq $pct) { continue }
+        $pct = [int] [math]::Round([double] $pct)
+        $worst = [math]::Max($worst, $pct)
+        $tail = if ($row[2]) { TimeLeft $row[1].resets_at } else { '' }
+        $bits.Add("$($row[0]) $pct%$tail")
+        if ($row[0] -eq '5h') { $short = "$iconLimit 5h $pct%" }
     }
-    if ($null -ne $d7) { $d7 = [int] [math]::Round([double] $d7); $worst = [math]::Max($worst, $d7); $bits.Add("7d $d7%") }
+    if ($bits.Count -eq 0) { return $null }
     $text = "$iconLimit $($bits -join ' ')"
     if ($short -eq $text) { $short = $null }
     return @{ Name = 'limits'; Text = $text; Short = $short; Role = (Get-ThresholdRole $worst); Bold = $false }
@@ -498,7 +514,7 @@ if ([int]::TryParse([string] $env:COLUMNS, [ref] $cols) -and $cols -gt 0) { $wid
 
 $lineSets = @(if ($cfg.Layout -eq 'two') {
     @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
-} else { , @(Get-SegmentRegistry | ForEach-Object { $_.Name }) })
+} else { , @((Get-SegmentRegistry).Name) })
 
 # A line that fits down to nothing is not printed. With model toggled off and a very narrow terminal
 # that can mean no output at all, which is what the user asked for.
