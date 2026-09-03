@@ -2,6 +2,7 @@
   "layout": "one",
   "style": "plain",
   "folder": "repo",
+  "state": true,
   "segments": {
     "model": true,
     "context": true,

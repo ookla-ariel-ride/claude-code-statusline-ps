@@ -82,6 +82,9 @@ if ($Uninstall) {
     }
     if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force; Write-Host "Deleted $target" }
     if (Test-Path -LiteralPath $configTarget) { Write-Host "Kept $configTarget (delete it yourself if you no longer want it)" }
+    # The status line writes one small JSON file per session outside ~/.claude, so say where they are.
+    $stateDir = if ($env:TEMP) { Join-Path $env:TEMP 'claude-statusline-state' } else { Join-Path $HOME '.claude' 'statusline-state' }
+    Write-Host "Session state files are in $stateDir (delete the folder yourself if you no longer want it)"
     return
 }
 
