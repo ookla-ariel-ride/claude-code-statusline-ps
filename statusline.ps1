@@ -38,7 +38,19 @@ $iconEffort = G 0xF04C5   # nf-md-speedometer (effort level)
 $iconVim    = G 0xE62B    # nf-custom-vim
 $defaultEffort = 'high'   # effort badge is hidden at this level
 
-$gitTimeoutMs = 1500      # how long the branch segment waits for `git status` before giving up
+# The git probe's settings when statusline.json has no git object: how long the branch segment waits
+# for `git status` before giving up, how long a probe result is reused for, and whether it is reused at
+# all. Read-StatusConfig starts from these and Get-BranchSegment falls back to them when it is handed a
+# config without them. A fresh table each call, so a caller can change its copy.
+function Get-DefaultGitConfig { return @{ TimeoutMs = 1500; CacheSeconds = 5; Cache = $true } }
+
+# A whole-number config value clamped to $Min..$Max, or $Default when it is not a whole number at all:
+# missing, a string, a boolean, a fraction. ConvertFrom-Json gives Int64 for a JSON integer, so a value
+# far outside Int32 still clamps rather than throws.
+function Get-ConfigInteger($v, [int] $Default, [int] $Min, [int] $Max) {
+    if (-not ($v -is [int] -or $v -is [long])) { return $Default }
+    return [int] [math]::Min([math]::Max([long] $v, [long] $Min), [long] $Max)
+}
 
 # Visible cell width of a rendered line: escapes stripped, combining marks 0, CJK and emoji 2, else 1.
 # A small wcwidth approximation; Nerd Font glyphs count as 1.
@@ -106,7 +118,7 @@ function Get-SegmentOrder([ValidateSet('ShrinkRank', 'DropRank', 'RowRank')] [st
 
 # Reads statusline.json. Anything missing or invalid silently falls back to its default.
 function Read-StatusConfig([string] $Path) {
-    $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Segments = @{} }
+    $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Segments = @{}; Git = Get-DefaultGitConfig }
     foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
     try {
         if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $cfg }
@@ -122,6 +134,15 @@ function Read-StatusConfig([string] $Path) {
                 $v = $segs.$n
                 if ($v -is [bool]) { $cfg.Segments[$n] = $v }
             }
+        }
+        # ---- git: probe timeout and cache ----
+        # Whole numbers are clamped to their range; a key of the wrong type keeps its default on its own,
+        # and a git value that is not an object keeps all three.
+        $g = $j.git
+        if ($g -is [System.Management.Automation.PSCustomObject]) {
+            $cfg.Git.TimeoutMs = Get-ConfigInteger $g.timeoutMs $cfg.Git.TimeoutMs 100 10000
+            $cfg.Git.CacheSeconds = Get-ConfigInteger $g.cacheSeconds $cfg.Git.CacheSeconds 0 300
+            if ($g.cache -is [bool]) { $cfg.Git.Cache = $g.cache }
         }
     } catch { return $cfg }
     return $cfg
@@ -311,6 +332,89 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
         # milliseconds later and the operating system reclaims them.
         if ($p -and $outTask -and $errTask -and $outTask.IsCompleted -and $errTask.IsCompleted) { $p.Dispose() }
     }
+}
+
+# ---- Git probe cache ----
+# Every render is a new process, so without help each one would shell out to git status and wait for
+# it. The branch segment instead keeps the last probe result per repository in a small JSON file and
+# reuses it while the repository's .git/index and .git/HEAD are unchanged and the entry is young. Both
+# files move on a commit, a checkout, an add or a reset; an edit or a new file in the work tree moves
+# neither, so those show up when the entry ages out. Every failure here is silent and ends in a probe.
+
+# The nearest directory at or above $Dir that holds a .git directory, with no trailing separator. $null
+# when $Dir is missing, when the walk reaches the file system root, and when the first .git found is a
+# file: a worktree or a submodule, whose real git directory sits elsewhere, so the caller probes. The
+# walk knows nothing of GIT_CEILING_DIRECTORIES, which is for git itself: a root found here is only a
+# place to look for an entry, and an entry is only written after git has answered.
+function Get-GitRepoRoot([string] $Dir) {
+    try {
+        if (-not $Dir -or -not [System.IO.Directory]::Exists($Dir)) { return $null }
+        $path = [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath($Dir))
+        while ($path) {
+            $dotGit = Join-Path $path '.git'
+            if ([System.IO.Directory]::Exists($dotGit)) { return $path }
+            if ([System.IO.File]::Exists($dotGit)) { return $null }
+            $path = [System.IO.Path]::GetDirectoryName($path)
+        }
+        return $null
+    } catch { return $null }
+}
+
+# Get-GitBranch with a cache in front of it. The entry for a repository is <hash>.json in $CacheDir,
+# where the hash is the first 16 hex characters of the SHA-256 of the lower-cased root path. It holds
+# v (1), root, indexMtime and headMtime (the UTC ticks of .git/index and .git/HEAD, 0 for a file that
+# is not there, as in a repository with no commits yet), writtenAt (Unix seconds) and result, the record
+# Get-GitBranch returned with whatever keys it had. The entry is used when it parses, names the same
+# root, both stamps match, and writtenAt is within $Ttl seconds of now either way, so a clock that went
+# backwards reads as stale rather than as fresh for years. Anything else - no entry, a stale one, a
+# corrupt one, a read that throws - is a miss: git runs, and a non-null answer is written back through
+# a sibling .tmp file and a move, so a reader never sees half an entry. A null answer is not cached; the
+# next render asks git again. With no root, no directory or a $Ttl of 0 this is a plain probe.
+# The stamps are read before git runs, so a change that lands during the probe invalidates the entry.
+# The directory is created only when there is something to write, and a failure to create it, or to
+# write, costs nothing but the cache.
+function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir, [int] $Ttl) {
+    $root = if ($CacheDir -and $Ttl -gt 0) { Get-GitRepoRoot $Dir } else { $null }
+    if (-not $root) { return Get-GitBranch $Dir $TimeoutMs }
+    $path = $null
+    $indexMtime = 0L
+    $headMtime = 0L
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { $digest = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($root.ToLowerInvariant())) } finally { $sha.Dispose() }
+        $path = Join-Path $CacheDir ([BitConverter]::ToString($digest, 0, 8).Replace('-', '').ToLowerInvariant() + '.json')
+        $index = Join-Path $root '.git' 'index'
+        $head = Join-Path $root '.git' 'HEAD'
+        if ([System.IO.File]::Exists($index)) { $indexMtime = [System.IO.File]::GetLastWriteTimeUtc($index).Ticks }
+        if ([System.IO.File]::Exists($head)) { $headMtime = [System.IO.File]::GetLastWriteTimeUtc($head).Ticks }
+        if ([System.IO.File]::Exists($path)) {
+            $j = [System.IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop
+            if ($j -is [System.Management.Automation.PSCustomObject] -and [long] $j.v -eq 1 -and
+                $j.root -is [string] -and $j.root -eq $root -and
+                [long] $j.indexMtime -eq $indexMtime -and [long] $j.headMtime -eq $headMtime -and
+                [math]::Abs($now - [long] $j.writtenAt) -lt $Ttl -and
+                $j.result -is [System.Management.Automation.PSCustomObject] -and $j.result.Branch -is [string] -and $j.result.Branch) {
+                $info = @{}
+                foreach ($prop in $j.result.PSObject.Properties) { $info[$prop.Name] = $prop.Value }
+                return $info
+            }
+        }
+    } catch { $null = $_ }
+    $info = Get-GitBranch $Dir $TimeoutMs
+    if (-not $info -or -not $path) { return $info }
+    $tmp = "$path.$PID.tmp"
+    try {
+        $entry = [ordered]@{ v = 1; root = $root; indexMtime = $indexMtime; headMtime = $headMtime; writtenAt = $now; result = $info }
+        $json = ConvertTo-Json -InputObject $entry -Depth 3 -Compress -ErrorAction Stop
+        if (-not $json) { return $info }
+        [void] [System.IO.Directory]::CreateDirectory($CacheDir)
+        [System.IO.File]::WriteAllText($tmp, $json, [System.Text.UTF8Encoding]::new($false))
+        [System.IO.File]::Move($tmp, $path, $true)
+    } catch {
+        try { if ([System.IO.File]::Exists($tmp)) { [System.IO.File]::Delete($tmp) } } catch { $null = $_ }
+    }
+    return $info
 }
 
 # A payload or state field as a finite double, or $null when it is not a number at all: missing, a
@@ -658,14 +762,20 @@ function Read-PayloadStatus($git) {
     return $info
 }
 
-# Branch from the payload's git object when present; otherwise from git status in current_dir. Either
-# way the record has the same keys. Ahead/behind counts only exist on the git path; the file counts come
-# from either source. All of them render dim between the name and the pencil, arrows first, then +staged
-# ~modified ?untracked, then the conflict glyph in red. Short is icon, name and pencil, so a wide line
-# sheds the counts before it sheds whole segments. Zero counts render nothing, so a clean tree is the
-# same text as before.
+# Branch from the payload's git object when present; otherwise from git status in current_dir, through
+# the probe cache unless the config turns it off or gives it no lifetime. Either way the record has the
+# same keys. Ahead/behind counts only exist on the git path; the file counts come from either source.
+# All of them render dim between the name and the pencil, arrows first, then +staged ~modified
+# ?untracked, then the conflict glyph in red. Short is icon, name and pencil, so a wide line sheds the
+# counts before it sheds whole segments. Zero counts render nothing, so a clean tree is the same text
+# as before. The cache lives in claude-statusline under TEMP; with no TEMP there is no cache.
 function Get-BranchSegment($d, $cfg) {
-    $info = if ($null -ne $d.git) { Read-PayloadStatus $d.git } else { Get-GitBranch $d.workspace.current_dir $gitTimeoutMs }
+    $info = if ($null -ne $d.git) { Read-PayloadStatus $d.git } else {
+        $git = if ($cfg.Git) { $cfg.Git } else { Get-DefaultGitConfig }
+        if ($git.Cache -and $git.CacheSeconds -gt 0 -and $env:TEMP) {
+            Get-CachedGitBranch $d.workspace.current_dir $git.TimeoutMs (Join-Path $env:TEMP 'claude-statusline') $git.CacheSeconds
+        } else { Get-GitBranch $d.workspace.current_dir $git.TimeoutMs }
+    }
     if (-not $info) { return $null }
     $isMain = $info.Branch -in @('main', 'master')
     $icon = if ($isMain) { $iconHome } else { $iconBranch }

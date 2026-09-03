@@ -3,6 +3,11 @@
   "style": "plain",
   "folder": "repo",
   "state": true,
+  "git": {
+    "timeoutMs": 1500,
+    "cacheSeconds": 5,
+    "cache": true
+  },
   "segments": {
     "model": true,
     "context": true,

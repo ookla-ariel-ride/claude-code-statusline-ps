@@ -135,11 +135,13 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment and Get-ModelSegment close over these
-# script-level names in statusline.ps1, so the test has to supply them.
-$gitTimeoutMs = 1500
+# script-level names in statusline.ps1, so the test has to supply them. The git timeout is not one of
+# them any more - the segment reads it from the config - so this is only the test's own shorthand for
+# the direct Get-GitBranch calls below, pinned to the script's default.
+$gitTimeoutMs = (Get-DefaultGitConfig).TimeoutMs
 $iconLimit = [char]::ConvertFromUtf32(0xF0E4)
 $iconModel = [char]::ConvertFromUtf32(0xF06A9)
 $iconFolder = [char]::ConvertFromUtf32(0xF07C)
@@ -264,6 +266,64 @@ Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-absent.json' '{ "layou
 Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-string.json' '{ "state": "false" }')).State $true 'config state string: on'
 Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-number.json' '{ "state": 0 }')).State $true 'config state number: on'
 
+# The git object: timeoutMs and cacheSeconds are whole numbers clamped to their ranges, cache is a
+# boolean. A key of the wrong type falls back on its own; a git value that is not an object falls
+# back for all three. The defaults come from Get-DefaultGitConfig, so the two cannot drift apart.
+$gitDefaults = Get-DefaultGitConfig
+Confirm-Equal $gitDefaults.TimeoutMs 1500 'git defaults: timeout 1500'
+Confirm-Equal $gitDefaults.CacheSeconds 5 'git defaults: cache 5 seconds'
+Confirm-Equal $gitDefaults.Cache $true 'git defaults: cache on'
+Confirm-True (-not [object]::ReferenceEquals((Get-DefaultGitConfig), (Get-DefaultGitConfig))) 'git defaults: a fresh table each call'
+$c = Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')
+Confirm-Equal $c.Git.TimeoutMs 1500 'config missing: git timeout 1500'
+Confirm-Equal $c.Git.CacheSeconds 5 'config missing: git cache 5 seconds'
+Confirm-Equal $c.Git.Cache $true 'config missing: git cache on'
+$c = Read-StatusConfig (Write-TempConfig 'git-absent.json' '{ "layout": "two" }')
+Confirm-Equal $c.Git.TimeoutMs 1500 'config git absent: timeout default'
+Confirm-Equal $c.Git.CacheSeconds 5 'config git absent: cache seconds default'
+Confirm-Equal $c.Git.Cache $true 'config git absent: cache on'
+$c = Read-StatusConfig (Write-TempConfig 'git-valid.json' '{ "git": { "timeoutMs": 3000, "cacheSeconds": 10, "cache": false } }')
+Confirm-Equal $c.Git.TimeoutMs 3000 'config git valid: timeout'
+Confirm-Equal $c.Git.CacheSeconds 10 'config git valid: cache seconds'
+Confirm-Equal $c.Git.Cache $false 'config git valid: cache off'
+Confirm-True ($c.Git.TimeoutMs -is [int] -and $c.Git.CacheSeconds -is [int]) 'config git valid: the integers are Int32, not the Int64 ConvertFrom-Json gives'
+$c = Read-StatusConfig (Write-TempConfig 'git-edges.json' '{ "git": { "timeoutMs": 100, "cacheSeconds": 300 } }')
+Confirm-Equal $c.Git.TimeoutMs 100 'config git timeout 100: the lower bound is allowed'
+Confirm-Equal $c.Git.CacheSeconds 300 'config git cache seconds 300: the upper bound is allowed'
+$c = Read-StatusConfig (Write-TempConfig 'git-wrong-types.json' '{ "git": { "timeoutMs": "3000", "cacheSeconds": 2.5, "cache": "yes" } }')
+Confirm-Equal $c.Git.TimeoutMs 1500 'config git string timeout: falls back to 1500'
+Confirm-Equal $c.Git.CacheSeconds 5 'config git fractional cache seconds: falls back to 5'
+Confirm-Equal $c.Git.Cache $true 'config git string cache: falls back to on'
+$c = Read-StatusConfig (Write-TempConfig 'git-bool-number.json' '{ "git": { "timeoutMs": true, "cacheSeconds": null, "cache": 1 } }')
+Confirm-Equal $c.Git.TimeoutMs 1500 'config git boolean timeout: falls back to 1500'
+Confirm-Equal $c.Git.CacheSeconds 5 'config git null cache seconds: falls back to 5'
+Confirm-Equal $c.Git.Cache $true 'config git numeric cache: falls back to on'
+$c = Read-StatusConfig (Write-TempConfig 'git-low.json' '{ "git": { "timeoutMs": 50, "cacheSeconds": -1 } }')
+Confirm-Equal $c.Git.TimeoutMs 100 'config git timeout 50: clamped to 100'
+Confirm-Equal $c.Git.CacheSeconds 0 'config git cache seconds -1: clamped to 0'
+$c = Read-StatusConfig (Write-TempConfig 'git-high.json' '{ "git": { "timeoutMs": 99999, "cacheSeconds": 999 } }')
+Confirm-Equal $c.Git.TimeoutMs 10000 'config git timeout 99999: clamped to 10000'
+Confirm-Equal $c.Git.CacheSeconds 300 'config git cache seconds 999: clamped to 300'
+$c = Read-StatusConfig (Write-TempConfig 'git-huge.json' '{ "git": { "timeoutMs": 99999999999, "cacheSeconds": -99999999999 } }')
+Confirm-Equal $c.Git.TimeoutMs 10000 'config git timeout beyond Int32: clamped to 10000'
+Confirm-Equal $c.Git.CacheSeconds 0 'config git cache seconds below Int32: clamped to 0'
+$c = Read-StatusConfig (Write-TempConfig 'git-zero.json' '{ "git": { "cacheSeconds": 0 } }')
+Confirm-Equal $c.Git.CacheSeconds 0 'config git cache seconds 0: kept, which disables the cache'
+Confirm-Equal $c.Git.TimeoutMs 1500 'config git cache seconds 0: timeout untouched'
+Confirm-Equal $c.Git.Cache $true 'config git cache seconds 0: cache flag untouched'
+foreach ($case in @(@{ Name = 'array'; Json = '{ "git": [1500] }' }, @{ Name = 'number'; Json = '{ "git": 1500 }' },
+                    @{ Name = 'string'; Json = '{ "git": "fast" }' }, @{ Name = 'null'; Json = '{ "git": null }' })) {
+    $c = Read-StatusConfig (Write-TempConfig "git-$($case.Name).json" $case.Json)
+    Confirm-Equal $c.Git.TimeoutMs 1500 "config git $($case.Name): timeout default"
+    Confirm-Equal $c.Git.CacheSeconds 5 "config git $($case.Name): cache seconds default"
+    Confirm-Equal $c.Git.Cache $true "config git $($case.Name): cache on"
+}
+# The git object does not touch the other keys, and the other keys do not touch it.
+$c = Read-StatusConfig (Write-TempConfig 'git-beside.json' '{ "layout": "two", "state": false, "git": { "timeoutMs": 200 } }')
+Confirm-Equal $c.Layout 'two' 'config git beside layout: layout kept'
+Confirm-Equal $c.State $false 'config git beside state: state kept'
+Confirm-Equal $c.Git.TimeoutMs 200 'config git beside others: timeout read'
+
 # The config that ships with the repo has to be valid JSON and to mean what the README says it means.
 $shippedConfig = Join-Path $PSScriptRoot 'statusline.json'
 $shippedJson = try { Get-Content -LiteralPath $shippedConfig -Raw | ConvertFrom-Json } catch { $null }
@@ -282,6 +342,14 @@ Confirm-Equal $shippedFileSegments.Count 8 'shipped config: the file itself list
 Confirm-True (@($shippedFileSegments | Where-Object { $_.Value -isnot [bool] -or $_.Value -ne $true }).Count -eq 0) 'shipped config: the file itself sets them all to the boolean true'
 Confirm-Equal $c.State $true 'shipped config: state on'
 Confirm-True ($shippedJson.state -is [bool] -and $shippedJson.state) 'shipped config: the file itself sets state to the boolean true'
+Confirm-Equal $c.Git.TimeoutMs 1500 'shipped config: git timeout 1500'
+Confirm-Equal $c.Git.CacheSeconds 5 'shipped config: git cache 5 seconds'
+Confirm-Equal $c.Git.Cache $true 'shipped config: git cache on'
+Confirm-True ($shippedJson.git -is [System.Management.Automation.PSCustomObject]) 'shipped config: the file itself has a git object'
+Confirm-Equal @($shippedJson.git.PSObject.Properties).Count 3 'shipped config: the git object lists three keys'
+Confirm-True ($shippedJson.git.timeoutMs -is [long] -and $shippedJson.git.timeoutMs -eq 1500) 'shipped config: the file itself says timeoutMs 1500 as a number'
+Confirm-True ($shippedJson.git.cacheSeconds -is [long] -and $shippedJson.git.cacheSeconds -eq 5) 'shipped config: the file itself says cacheSeconds 5 as a number'
+Confirm-True ($shippedJson.git.cache -is [bool] -and $shippedJson.git.cache) 'shipped config: the file itself sets cache to the boolean true'
 
 Write-Host '== unit: state' -ForegroundColor Cyan
 # The state helpers derive their directory from TEMP, so point it at a folder under $tmp for these cases
@@ -1045,6 +1113,308 @@ Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch everything: 
 $script:mockGitBranch = Get-BranchRecord 'main' $true -Staged 1 -Modified 2
 $seg = Get-BranchSegment $probePayload @{ Style = 'plain' }
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconHome main +1 ~2 $iconDirty" 'branch file counts only: no arrows, zero counts omitted'
+
+Write-Host '== unit: git cache' -ForegroundColor Cyan
+# The cache in front of the probe, with a stand-in Get-GitBranch that counts its calls and answers with
+# $script:cacheProbe, so a count that stays put is proof the probe was skipped. Each repository is a
+# hand-made .git directory holding HEAD and index files: the cache reads only their stamps, and no git
+# runs anywhere in this group. The cache directory is passed in, so nothing here goes near the
+# machine's TEMP until the Get-BranchSegment cases at the end, which point TEMP into $tmp first.
+$script:probeCalls = 0
+$script:lastProbeTimeout = -1
+$script:cacheProbe = Get-BranchRecord 'main' $false
+function Get-GitBranch([string] $Dir, [int] $TimeoutMs) { $script:probeCalls++; $script:lastProbeTimeout = $TimeoutMs; return $script:cacheProbe }
+function Write-FakeRepo([string] $Name, [bool] $WithIndex = $true) {
+    $p = Join-Path $tmp $Name
+    New-Item -ItemType Directory -Force (Join-Path $p '.git') | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $p '.git' 'HEAD'), "ref: refs/heads/main`n")
+    if ($WithIndex) { [System.IO.File]::WriteAllBytes((Join-Path $p '.git' 'index'), [byte[]] @(68, 73, 82, 67)) }
+    return $p
+}
+# The test's own spelling of the entry name, so the script's cannot agree with itself.
+function Get-CacheEntryName([string] $Root) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Root.ToLowerInvariant())) } finally { $sha.Dispose() }
+    return ([BitConverter]::ToString($bytes, 0, 8).Replace('-', '').ToLowerInvariant() + '.json')
+}
+function Get-CacheFileCount([string] $Dir) { return @(Get-ChildItem -LiteralPath $Dir -File -ErrorAction SilentlyContinue).Count }
+function Edit-CacheEntry([string] $Path, [scriptblock] $Change) {
+    $j = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    & $Change $j
+    [System.IO.File]::WriteAllText($Path, ($j | ConvertTo-Json -Depth 4 -Compress), [System.Text.UTF8Encoding]::new($false))
+}
+$cacheRepo = Write-FakeRepo 'cache-repo'
+$cacheSub = Join-Path $cacheRepo 'src' 'deep'
+New-Item -ItemType Directory -Force $cacheSub | Out-Null
+$cacheDir = Join-Path $tmp 'cache-unit'
+$cacheHead = Join-Path $cacheRepo '.git' 'HEAD'
+$cacheIndex = Join-Path $cacheRepo '.git' 'index'
+$cacheEntry = Join-Path $cacheDir (Get-CacheEntryName $cacheRepo)
+
+# Get-GitRepoRoot: the walk up to the first .git entry.
+Confirm-Equal (Get-GitRepoRoot $cacheRepo) $cacheRepo 'repo root: the repository itself'
+Confirm-Equal (Get-GitRepoRoot $cacheSub) $cacheRepo 'repo root: two levels down finds the same root'
+Confirm-Equal (Get-GitRepoRoot ($cacheRepo + [System.IO.Path]::DirectorySeparatorChar)) $cacheRepo 'repo root: a trailing separator is dropped'
+Confirm-Equal (Get-GitRepoRoot (Join-Path $cacheSub '..' '..')) $cacheRepo 'repo root: dot-dot segments are resolved'
+Confirm-Equal (Get-GitRepoRoot (Join-Path $tmp 'cache-not-there')) $null 'repo root: a missing directory is null'
+Confirm-Equal (Get-GitRepoRoot '') $null 'repo root: an empty path is null'
+Confirm-Equal (Get-GitRepoRoot $cacheHead) $null 'repo root: a file path is null'
+# A plain directory under the temp root. The walk does not stop at GIT_CEILING_DIRECTORIES, so on a
+# machine whose temp folder sits inside a repository it would find that; what it must not find is
+# anything inside $tmp.
+$cachePlain = Join-Path $tmp 'cache-plain'
+New-Item -ItemType Directory -Force $cachePlain | Out-Null
+$plainRoot = Get-GitRepoRoot $cachePlain
+Confirm-True ($null -eq $plainRoot -or -not $plainRoot.StartsWith($tmp, [System.StringComparison]::OrdinalIgnoreCase)) "repo root: a plain directory finds nothing in the temp tree, got '$plainRoot'"
+$cacheWorktree = Join-Path $tmp 'cache-worktree'
+New-Item -ItemType Directory -Force (Join-Path $cacheWorktree 'below') | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $cacheWorktree '.git'), "gitdir: $cacheRepo/.git/worktrees/x`n")
+Confirm-Equal (Get-GitRepoRoot $cacheWorktree) $null 'repo root: a .git file (worktree or submodule) is null'
+Confirm-Equal (Get-GitRepoRoot (Join-Path $cacheWorktree 'below')) $null 'repo root: below a .git file is null too, the walk stops there'
+$cacheNestedFile = Join-Path $cacheRepo 'nested-wt'
+New-Item -ItemType Directory -Force $cacheNestedFile | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $cacheNestedFile '.git'), "gitdir: elsewhere`n")
+Confirm-Equal (Get-GitRepoRoot $cacheNestedFile) $null 'repo root: a .git file inside a repository still wins, the walk does not carry on to the directory above'
+
+# A miss probes and writes; a hit answers from the file and does not.
+$now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+Confirm-Equal $g.Branch 'main' 'cache miss: the probe result comes back'
+Confirm-Equal $script:probeCalls 1 'cache miss: the probe ran once'
+Confirm-Equal $script:lastProbeTimeout 1500 'cache miss: the timeout reaches the probe'
+Confirm-Equal (Get-CacheFileCount $cacheDir) 1 'cache miss: one file written'
+Confirm-True (Test-Path -LiteralPath $cacheEntry) 'cache file: named by the first 16 hex characters of the SHA-256 of the lower-cased root'
+Confirm-True (-not (Test-Path (Join-Path $cacheDir '*.tmp'))) 'cache file: no .tmp left behind'
+$bytes = [System.IO.File]::ReadAllBytes($cacheEntry)
+Confirm-True ($bytes.Count -gt 3 -and -not ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) 'cache file: UTF-8 without a BOM'
+Confirm-True (-not [System.Text.Encoding]::UTF8.GetString($bytes).Contains("`n")) 'cache file: one compact line'
+$entry = Get-Content -LiteralPath $cacheEntry -Raw | ConvertFrom-Json
+Confirm-Equal $entry.v 1 'cache file: version 1'
+Confirm-Equal $entry.root $cacheRepo 'cache file: root is the repository root'
+Confirm-Equal $entry.indexMtime ([System.IO.File]::GetLastWriteTimeUtc($cacheIndex).Ticks) 'cache file: indexMtime is the UTC ticks of .git/index'
+Confirm-Equal $entry.headMtime ([System.IO.File]::GetLastWriteTimeUtc($cacheHead).Ticks) 'cache file: headMtime is the UTC ticks of .git/HEAD'
+Confirm-True ([math]::Abs($entry.writtenAt - $now) -le 5) 'cache file: writtenAt is now, in Unix seconds'
+Confirm-Equal (@($entry.PSObject.Properties.Name) -join ',') 'v,root,indexMtime,headMtime,writtenAt,result' 'cache file: keys in schema order'
+Confirm-Equal $entry.result.Branch 'main' 'cache file: result holds the branch'
+Confirm-Equal @($entry.result.PSObject.Properties).Count 8 'cache file: result holds every key of the record'
+$g = Get-CachedGitBranch $cacheSub 1500 $cacheDir 5
+Confirm-Equal $g.Branch 'main' 'cache hit: the branch comes from the file'
+Confirm-Equal $script:probeCalls 1 'cache hit: the probe did not run'
+Confirm-True ($g -is [hashtable]) 'cache hit: the record is a hashtable, as the probe returns'
+foreach ($key in @('Branch', 'Dirty', 'Ahead', 'Behind', 'Staged', 'Modified', 'Untracked', 'Conflicts')) {
+    Confirm-True ($g.ContainsKey($key)) "cache hit: the record has $key"
+}
+Confirm-True ($g.Dirty -is [bool] -and -not $g.Dirty) 'cache hit: Dirty is the boolean false'
+Confirm-True ($g.Ahead -eq 0 -and -not ($g.Ahead -gt 0)) 'cache hit: a zero count compares as zero'
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls 1 'cache hit: a third call is still a hit'
+
+# A dirty record with every count set round-trips whole, so the segment reads the same either way.
+$script:cacheProbe = Get-BranchRecord 'feature/x' $true -Ahead 1 -Behind 2 -Staged 3 -Modified 4 -Untracked 5 -Conflicts 6
+$cacheRepo2 = Write-FakeRepo 'cache-repo-2'
+$fromProbe = Get-CachedGitBranch $cacheRepo2 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls 2 'second repository: its first call probes'
+Confirm-Equal (Get-CacheFileCount $cacheDir) 2 'second repository: its own file'
+$fromCache = Get-CachedGitBranch $cacheRepo2 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls 2 'second repository: its second call hits'
+foreach ($key in @('Branch', 'Dirty', 'Ahead', 'Behind', 'Staged', 'Modified', 'Untracked', 'Conflicts')) {
+    Confirm-Equal $fromCache[$key] $fromProbe[$key] "round trip: $key survives the file"
+}
+Confirm-True ($fromCache.Dirty -is [bool] -and $fromCache.Dirty) 'round trip: Dirty is the boolean true'
+Confirm-Equal (ConvertTo-PlainText (Get-BranchSegment ([pscustomobject]@{ git = @{ branch = $fromCache.Branch; status = [pscustomobject]@{ staged = $fromCache.Staged; modified = $fromCache.Modified; untracked = $fromCache.Untracked; conflicts = $fromCache.Conflicts } } })).Text) "$iconBranch feature/x +3 ~4 ?5 ${iconConflict}6 $iconDirty" 'round trip: the counts render'
+$script:cacheProbe = Get-BranchRecord 'main' $false
+
+# Invalidation: a touched HEAD or index is a miss, and the rewritten entry hits again.
+[System.IO.File]::SetLastWriteTimeUtc($cacheHead, [DateTime]::UtcNow.AddSeconds(30))
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls 3 'touched HEAD: a miss, the probe ran'
+Confirm-Equal (Get-Content -LiteralPath $cacheEntry -Raw | ConvertFrom-Json).headMtime ([System.IO.File]::GetLastWriteTimeUtc($cacheHead).Ticks) 'touched HEAD: the entry carries the new stamp'
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls 3 'touched HEAD: the rewritten entry hits'
+[System.IO.File]::SetLastWriteTimeUtc($cacheIndex, [DateTime]::UtcNow.AddSeconds(-30))
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls 4 'touched index: a miss, the probe ran'
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls 4 'touched index: the rewritten entry hits'
+# No index at all - a repository with no commits yet - stamps as 0 rather than failing.
+Remove-Item -LiteralPath $cacheIndex -Force
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls 5 'index removed: a miss'
+Confirm-Equal (Get-Content -LiteralPath $cacheEntry -Raw | ConvertFrom-Json).indexMtime 0 'index removed: indexMtime is the sentinel 0'
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+Confirm-Equal $g.Branch 'main' 'index removed: the entry with the sentinel hits'
+Confirm-Equal $script:probeCalls 5 'index removed: no probe on the hit'
+[System.IO.File]::WriteAllBytes($cacheIndex, [byte[]] @(68, 73, 82, 67))
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls 6 'index back: a miss'
+$cacheRepoUnborn = Write-FakeRepo 'cache-repo-unborn' $false
+$g = Get-CachedGitBranch $cacheRepoUnborn 1500 $cacheDir 5
+$g = Get-CachedGitBranch $cacheRepoUnborn 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls 7 'repository without an index: one probe, then a hit'
+
+# Age: writtenAt outside the lifetime is a miss either way, inside it is a hit.
+foreach ($case in @(@{ Name = 'aged out'; Offset = -10 }, @{ Name = 'dated in the future'; Offset = 10 }, @{ Name = 'exactly the lifetime old'; Offset = -5 })) {
+    $offset = $case.Offset
+    Edit-CacheEntry $cacheEntry { param($j) $j.writtenAt = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + $offset }
+    $before = $script:probeCalls
+    $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+    Confirm-Equal $script:probeCalls ($before + 1) "entry $($case.Name): a miss"
+    Confirm-True ([math]::Abs((Get-Content -LiteralPath $cacheEntry -Raw | ConvertFrom-Json).writtenAt - [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) -le 5) "entry $($case.Name): rewritten with the time now"
+}
+Edit-CacheEntry $cacheEntry { param($j) $j.writtenAt = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 3 }
+$before = $script:probeCalls
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls $before 'entry three seconds old: a hit with a lifetime of five'
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 300
+Confirm-Equal $script:probeCalls $before 'entry three seconds old: a hit with a lifetime of 300'
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 2
+Confirm-Equal $script:probeCalls ($before + 1) 'entry three seconds old: a miss with a lifetime of two'
+
+# A lifetime of 0 always probes and never writes.
+$stamp = (Get-Item -LiteralPath $cacheEntry).LastWriteTimeUtc
+$before = $script:probeCalls
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 0
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 0
+Confirm-Equal $script:probeCalls ($before + 2) 'lifetime 0: every call probes'
+Confirm-Equal $g.Branch 'main' 'lifetime 0: the probe result comes back'
+Confirm-Equal (Get-Item -LiteralPath $cacheEntry).LastWriteTimeUtc $stamp 'lifetime 0: the entry is not rewritten'
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir -1
+Confirm-Equal $script:probeCalls ($before + 3) 'lifetime below 0: probes'
+$g = Get-CachedGitBranch $cacheRepo 1500 '' 5
+Confirm-Equal $script:probeCalls ($before + 4) 'no cache directory given: probes'
+
+# A cache directory that is missing, or cannot be made, gives the same answer as a direct call.
+$cacheMissing = Join-Path $tmp 'cache-missing'
+$before = $script:probeCalls
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheMissing 5
+Confirm-Equal $g.Branch 'main' 'missing cache directory: the probe answers'
+Confirm-Equal $script:probeCalls ($before + 1) 'missing cache directory: the probe ran'
+Confirm-True (Test-Path -LiteralPath (Join-Path $cacheMissing (Get-CacheEntryName $cacheRepo))) 'missing cache directory: created and the entry written'
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheMissing 5
+Confirm-Equal $script:probeCalls ($before + 1) 'missing cache directory: the next call hits'
+$cacheBlocked = Join-Path $tmp 'cache-blocked'
+[System.IO.File]::WriteAllText($cacheBlocked, 'in the way')
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheBlocked 5
+Confirm-Equal $g.Branch 'main' 'cache directory blocked by a file: the probe answers'
+Confirm-Equal $script:probeCalls ($before + 2) 'cache directory blocked by a file: the probe ran'
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheBlocked 5
+Confirm-Equal $script:probeCalls ($before + 3) 'cache directory blocked by a file: every call probes'
+Confirm-Equal (Get-Content -LiteralPath $cacheBlocked -Raw) 'in the way' 'cache directory blocked by a file: the file is untouched'
+
+# A null probe result is not cached: the next call asks again rather than reading a null back.
+$script:cacheProbe = $null
+$cacheRepoNull = Write-FakeRepo 'cache-repo-null'
+$before = $script:probeCalls
+$files = Get-CacheFileCount $cacheDir
+Confirm-Equal (Get-CachedGitBranch $cacheRepoNull 1500 $cacheDir 5) $null 'null probe: null comes back'
+Confirm-Equal (Get-CachedGitBranch $cacheRepoNull 1500 $cacheDir 5) $null 'null probe: null again'
+Confirm-Equal $script:probeCalls ($before + 2) 'null probe: both calls probed'
+Confirm-Equal (Get-CacheFileCount $cacheDir) $files 'null probe: nothing written'
+$script:cacheProbe = Get-BranchRecord 'main' $false
+
+# A bad entry is a miss and is replaced: corrupt JSON, an empty file, the wrong root, the wrong
+# version, no result, a result without a branch, stamps of the wrong type.
+$badEntries = @(
+    @{ Name = 'corrupt json';         Text = '{ "v": 1, "root' }
+    @{ Name = 'empty file';           Text = '' }
+    @{ Name = 'a json array';         Text = '[1, 2]' }
+    @{ Name = 'a json string';        Text = '"main"' }
+    @{ Name = 'another root';         Change = { param($j) $j.root = Join-Path $tmp 'cache-repo-2' } }
+    @{ Name = 'root missing';         Change = { param($j) $j.PSObject.Properties.Remove('root') } }
+    @{ Name = 'version 2';            Change = { param($j) $j.v = 2 } }
+    @{ Name = 'version missing';      Change = { param($j) $j.PSObject.Properties.Remove('v') } }
+    @{ Name = 'no result';            Change = { param($j) $j.PSObject.Properties.Remove('result') } }
+    @{ Name = 'result a string';      Change = { param($j) $j.result = 'main' } }
+    @{ Name = 'result without branch'; Change = { param($j) $j.result.PSObject.Properties.Remove('Branch') } }
+    @{ Name = 'empty branch';         Change = { param($j) $j.result.Branch = '' } }
+    @{ Name = 'branch a number';      Change = { param($j) $j.result.Branch = 7 } }
+    @{ Name = 'string index stamp';   Change = { param($j) $j.indexMtime = 'later' } }
+    @{ Name = 'null head stamp';      Change = { param($j) $j.headMtime = $null } }
+    @{ Name = 'string writtenAt';     Change = { param($j) $j.writtenAt = 'now' } }
+    @{ Name = 'writtenAt missing';    Change = { param($j) $j.PSObject.Properties.Remove('writtenAt') } }
+)
+foreach ($case in $badEntries) {
+    $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+    $before = $script:probeCalls
+    if ($case.ContainsKey('Text')) { [System.IO.File]::WriteAllText($cacheEntry, $case.Text) } else { Edit-CacheEntry $cacheEntry $case.Change }
+    $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+    Confirm-Equal $g.Branch 'main' "bad entry, $($case.Name): the probe answers"
+    Confirm-Equal $script:probeCalls ($before + 1) "bad entry, $($case.Name): a miss"
+    $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+    Confirm-Equal $script:probeCalls ($before + 1) "bad entry, $($case.Name): replaced by a good one"
+}
+# An entry whose root differs only in case is the same file and the same repository on Windows.
+Edit-CacheEntry $cacheEntry { param($j) $j.root = $j.root.ToUpperInvariant() }
+$before = $script:probeCalls
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls $before 'entry root in another case: a hit'
+# Extra keys in the entry are ignored, and extra keys in the result come back with it.
+Edit-CacheEntry $cacheEntry { param($j) $j | Add-Member -NotePropertyName 'note' -NotePropertyValue 'x'; $j.result | Add-Member -NotePropertyName 'Stash' -NotePropertyValue 2 }
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls $before 'entry with extra keys: a hit'
+Confirm-Equal $g.Stash 2 'entry with extra keys: a key the probe may grow later is read back as is'
+
+# A .git file, and a directory that is not a repository, bypass the cache: every call probes and
+# nothing is written.
+$before = $script:probeCalls
+$files = Get-CacheFileCount $cacheDir
+$g = Get-CachedGitBranch $cacheWorktree 1500 $cacheDir 5
+$g = Get-CachedGitBranch $cacheWorktree 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls ($before + 2) 'worktree-style .git file: every call probes'
+Confirm-Equal $g.Branch 'main' 'worktree-style .git file: the probe answers'
+Confirm-Equal (Get-CacheFileCount $cacheDir) $files 'worktree-style .git file: nothing written'
+$g = Get-CachedGitBranch $cachePlain 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls ($before + 3) 'not a repository: probes'
+Confirm-True ((Get-CacheFileCount $cacheDir) -eq $files -or $null -ne $plainRoot) 'not a repository: nothing written'
+$g = Get-CachedGitBranch (Join-Path $tmp 'cache-not-there') 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls ($before + 4) 'missing directory: handed to the probe'
+$g = Get-CachedGitBranch '' 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls ($before + 5) 'empty directory: handed to the probe'
+Confirm-Equal (Get-CacheFileCount $cacheDir) $files 'missing and empty directory: nothing written'
+
+# Get-BranchSegment routes through the cache under TEMP\claude-statusline with the config's values,
+# and goes straight to the probe when the cache is off, has no lifetime, or there is no TEMP.
+$oldTemp = $env:TEMP
+$segTemp = Join-Path $tmp 'temp-cache-unit'
+New-Item -ItemType Directory -Force $segTemp | Out-Null
+$env:TEMP = $segTemp
+try {
+    $segCacheDir = Join-Path $segTemp 'claude-statusline'
+    $segPayload = [pscustomobject]@{ workspace = @{ current_dir = $cacheSub } }
+    $before = $script:probeCalls
+    $seg = Get-BranchSegment $segPayload @{ Style = 'plain'; Git = (Get-DefaultGitConfig) }
+    Confirm-Equal $seg.Text "$iconHome main" 'branch segment via cache: the first render probes and prints'
+    Confirm-Equal $script:probeCalls ($before + 1) 'branch segment via cache: the first render probed'
+    Confirm-Equal $script:lastProbeTimeout 1500 'branch segment via cache: the default timeout reaches the probe'
+    Confirm-True (Test-Path -LiteralPath (Join-Path $segCacheDir (Get-CacheEntryName $cacheRepo))) 'branch segment via cache: the entry sits in claude-statusline under TEMP'
+    $seg = Get-BranchSegment $segPayload @{ Style = 'plain'; Git = (Get-DefaultGitConfig) }
+    Confirm-Equal $seg.Text "$iconHome main" 'branch segment via cache: the second render prints the same'
+    Confirm-Equal $script:probeCalls ($before + 1) 'branch segment via cache: the second render did not probe'
+    $seg = Get-BranchSegment $segPayload @{ Style = 'plain' }
+    Confirm-Equal $seg.Text "$iconHome main" 'branch segment, config without a git object: prints'
+    Confirm-Equal $script:probeCalls ($before + 1) 'branch segment, config without a git object: the defaults, so a hit'
+    $seg = Get-BranchSegment $segPayload
+    Confirm-Equal $script:probeCalls ($before + 1) 'branch segment, no config at all: the defaults, so a hit'
+    $seg = Get-BranchSegment $segPayload @{ Style = 'plain'; Git = @{ TimeoutMs = 700; CacheSeconds = 5; Cache = $false } }
+    Confirm-Equal $seg.Text "$iconHome main" 'branch segment, cache off: prints'
+    Confirm-Equal $script:probeCalls ($before + 2) 'branch segment, cache off: probes'
+    Confirm-Equal $script:lastProbeTimeout 700 'branch segment, cache off: the configured timeout reaches the probe'
+    $seg = Get-BranchSegment $segPayload @{ Style = 'plain'; Git = @{ TimeoutMs = 800; CacheSeconds = 0; Cache = $true } }
+    Confirm-Equal $script:probeCalls ($before + 3) 'branch segment, cacheSeconds 0: probes'
+    Confirm-Equal $script:lastProbeTimeout 800 'branch segment, cacheSeconds 0: the configured timeout reaches the probe'
+    $seg = Get-BranchSegment $segPayload @{ Style = 'plain'; Git = @{ TimeoutMs = 900; CacheSeconds = 5; Cache = $true } }
+    Confirm-Equal $script:probeCalls ($before + 3) 'branch segment, cache on again: a hit'
+    $seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'topic'; status = 'clean' }; workspace = @{ current_dir = $cacheSub } }) @{ Style = 'plain'; Git = (Get-DefaultGitConfig) }
+    Confirm-Equal $seg.Text "$iconBranch topic" 'branch segment, payload with a git object: the payload wins'
+    Confirm-Equal $script:probeCalls ($before + 3) 'branch segment, payload with a git object: neither cache nor probe'
+    Remove-Item Env:TEMP
+    $seg = Get-BranchSegment $segPayload @{ Style = 'plain'; Git = (Get-DefaultGitConfig) }
+    Confirm-Equal $seg.Text "$iconHome main" 'branch segment, no TEMP: prints'
+    Confirm-Equal $script:probeCalls ($before + 4) 'branch segment, no TEMP: probes'
+    Confirm-Equal (Get-CacheFileCount $segCacheDir) 1 'branch segment: only the one entry was ever written'
+} finally {
+    if ($null -ne $oldTemp) { $env:TEMP = $oldTemp } else { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }
+}
 . (Import-ScriptFunction $script @('Get-GitBranch'))
 
 # No git key at all falls through to Get-GitBranch. GIT_CEILING_DIRECTORIES (set above) stops the probe
@@ -1055,6 +1425,14 @@ Confirm-True ($null -eq (Get-BranchSegment ([pscustomobject]@{ workspace = @{ cu
 Confirm-True ($null -eq (Get-BranchSegment ([pscustomobject]@{}))) 'branch no git key and no dir: segment omitted'
 
 Write-Host '== git' -ForegroundColor Cyan
+# The renders here probe real repositories, and the probe cache lives under TEMP, so the child pwsh
+# gets a TEMP under $tmp for the group and the entries land there rather than in the machine's own
+# temp folder. The in-process cache cases pass a directory of their own.
+$oldTemp = $env:TEMP
+$gitTemp = Join-Path $tmp 'temp-git'
+New-Item -ItemType Directory -Force $gitTemp | Out-Null
+$env:TEMP = $gitTemp
+$gitRenderCacheDir = Join-Path $gitTemp 'claude-statusline'
 $gitConfigEmpty = Join-Path $tmp 'gitconfig-empty'
 [System.IO.File]::WriteAllText($gitConfigEmpty, '', [System.Text.UTF8Encoding]::new($false))
 $oldGitConfigGlobal = $env:GIT_CONFIG_GLOBAL
@@ -1178,13 +1556,25 @@ $gitCases.Add(@{ Name = 'git fails'; Dir = $notRepo; NoBranch = $true; NoStderr 
                  PathPrefix = $fakeFail })
 $gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 1500; MaxMs = 4000; Marker = (Join-Path $fakeHang 'fake.ran'); NoPing = $true
                  PathPrefix = $fakeHang })
+# git.timeoutMs moves the wait. The hang fake pings for ten seconds, so 3000 still kills it, and with
+# 100 the render is back long before the default 1500 would have let it go. Each gets its own copy of
+# the fake so the marker is proof for that case alone. Neither directory is a repository, so the cache
+# is never consulted and every render really waits.
+$fakeHang3000 = Write-FakeGit 'fake-hang-3000' "echo ran > `"%~dp0fake.ran`"`r`nping -n 11 -w $pingTag 127.0.0.1 > nul`r`nexit 0"
+$fakeHang100 = Write-FakeGit 'fake-hang-100' "echo ran > `"%~dp0fake.ran`"`r`nping -n 11 -w $pingTag 127.0.0.1 > nul`r`nexit 0"
+$gitTimeout3000 = Write-TempConfig 'git-timeout-3000.json' '{ "git": { "timeoutMs": 3000 } }'
+$gitTimeout100 = Write-TempConfig 'git-timeout-100.json' '{ "git": { "timeoutMs": 100 } }'
+$gitCases.Add(@{ Name = 'git hangs, timeoutMs 3000'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 3000; MaxMs = 6000; Marker = (Join-Path $fakeHang3000 'fake.ran'); NoPing = $true
+                 PathPrefix = $fakeHang3000; Config = $gitTimeout3000 })
+$gitCases.Add(@{ Name = 'git hangs, timeoutMs 100'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 100; MaxMs = 1500; Marker = (Join-Path $fakeHang100 'fake.ran'); NoPing = $true
+                 PathPrefix = $fakeHang100; Config = $gitTimeout100 })
 
 function Get-FakePingCount([string] $Tag) {
     return @(Get-CimInstance Win32_Process -Filter "Name='PING.EXE'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match "-n 11 -w $Tag " }).Count
 }
 
 foreach ($case in $gitCases) {
-    $r = Invoke-StatusLine (Get-GitPayload $case.Dir) $null 0 $case.PathPrefix
+    $r = Invoke-StatusLine (Get-GitPayload $case.Dir) $case.Config 0 $case.PathPrefix
     $rawOut = $r.Lines -join "`n"
     $text = ConvertTo-PlainText $rawOut
     $label = "git $($case.Name)"
@@ -1199,6 +1589,85 @@ foreach ($case in $gitCases) {
     if ($case.MaxMs) { Confirm-True ($r.Ms -lt $case.MaxMs) "${label}: finished in $($r.Ms) ms (limit $($case.MaxMs))" }
     if ($case.NoPing) { Start-Sleep -Milliseconds 300; Confirm-True ((Get-FakePingCount $pingTag) -eq 0) "${label}: ping child killed with the tree" }
     Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f $case.Name, $r.Ms, $text)
+}
+
+# Every render of a real repository left one entry in the redirected TEMP, and the renders of the plain
+# directory, with real git, the failing fake and the hanging fakes, left none: those never reach the
+# cache. Each entry is named for its repository root.
+$gitRepoCases = @($gitCases | Where-Object { -not $_.NoBranch })
+Confirm-Equal (Get-CacheFileCount $gitRenderCacheDir) $gitRepoCases.Count "git renders: one cache entry per repository rendered ($($gitRepoCases.Count))"
+foreach ($case in $gitRepoCases) {
+    Confirm-True (Test-Path -LiteralPath (Join-Path $gitRenderCacheDir (Get-CacheEntryName $case.Dir))) "git renders: entry for $($case.Name) is named for its root"
+}
+Confirm-True (-not (Test-Path (Join-Path $gitRenderCacheDir '*.tmp'))) 'git renders: no .tmp left behind'
+
+if ($haveGit) {
+    # The success criterion for the cache, end to end: a second render of the same clean repository
+    # within the lifetime starts no git process. The first render fills the entry with real git; the
+    # second runs with a git on PATH that only writes a marker and fails, and still prints the branch.
+    $fakeFailCached = Write-FakeGit 'fake-fail-cached' "echo ran > `"%~dp0fake.ran`"`r`necho fatal: not a git repository 1>&2`r`nexit 128"
+    $cachedMarker = Join-Path $fakeFailCached 'fake.ran'
+    $r1 = Invoke-StatusLine (Get-GitPayload $clean) $null 0
+    $r2 = Invoke-StatusLine (Get-GitPayload $clean) $null 0 $fakeFailCached
+    $text1 = ConvertTo-PlainText ($r1.Lines -join "`n")
+    $text2 = ConvertTo-PlainText ($r2.Lines -join "`n")
+    Confirm-True ($text1.Contains("$iconHome main")) "git clean, first render: branch printed, got '$text1'"
+    Confirm-True ($text2.Contains("$iconHome main")) "git clean, second render with a failing git: branch still printed, got '$text2'"
+    Confirm-Equal ($r2.Lines -join "`n") ($r1.Lines -join "`n") 'git clean, second render with a failing git: the same bytes as the first'
+    Confirm-True (-not (Test-Path $cachedMarker)) 'git clean, second render with a failing git: no git process was started'
+    Confirm-True ($r2.Err.Count -eq 0) "git clean, second render with a failing git: nothing on stderr, got '$($r2.Err -join ' | ')'"
+    Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f 'clean, cached', $r2.Ms, $text2)
+    # The same second render with the cache off in the config reaches the failing fake and loses the
+    # branch: the control that the marker really is the proof above.
+    $gitCacheOff = Write-TempConfig 'git-cache-off.json' '{ "git": { "cache": false } }'
+    $r3 = Invoke-StatusLine (Get-GitPayload $clean) $gitCacheOff 0 $fakeFailCached
+    $text3 = ConvertTo-PlainText ($r3.Lines -join "`n")
+    Confirm-True (-not $text3.Contains($iconHome)) "git clean, cache off, failing git: no branch, got '$text3'"
+    Confirm-True (Test-Path $cachedMarker) 'git clean, cache off, failing git: the fake was started'
+    Remove-Item -LiteralPath $cachedMarker -Force
+    $gitCacheZero = Write-TempConfig 'git-cache-zero.json' '{ "git": { "cacheSeconds": 0 } }'
+    $r4 = Invoke-StatusLine (Get-GitPayload $clean) $gitCacheZero 0 $fakeFailCached
+    Confirm-True (-not (ConvertTo-PlainText ($r4.Lines -join "`n")).Contains($iconHome)) 'git clean, cacheSeconds 0, failing git: no branch'
+    Confirm-True (Test-Path $cachedMarker) 'git clean, cacheSeconds 0, failing git: the fake was started'
+    Remove-Item -LiteralPath $cachedMarker -Force
+    # The dirty fixture round-trips its counts through a render's entry.
+    $r5 = Invoke-StatusLine (Get-GitPayload $mixed) $null 0
+    $r6 = Invoke-StatusLine (Get-GitPayload $mixed) $null 0 $fakeFailCached
+    Confirm-Equal (ConvertTo-PlainText ($r6.Lines -join "`n")) (ConvertTo-PlainText ($r5.Lines -join "`n")) 'git mixed, second render with a failing git: the same counts'
+    Confirm-True ((ConvertTo-PlainText ($r6.Lines -join "`n")).Contains("$iconHome main +1 ~1 ?1 $iconDirty")) 'git mixed, second render with a failing git: the counts come from the entry'
+    Confirm-True (-not (Test-Path $cachedMarker)) 'git mixed, second render with a failing git: no git process was started'
+
+    # In process, with a cache directory of its own: the entry answers while git fails, and a checkout
+    # moves HEAD so the next call probes again and sees the new branch.
+    $realCache = Join-Path $tmp 'cache-real'
+    $cacheRepoReal = Initialize-TestRepo 'repo-cache'; Add-Commit $cacheRepoReal
+    $g = Get-CachedGitBranch $cacheRepoReal $gitTimeoutMs $realCache 5
+    Confirm-Equal $g.Branch 'main' 'cached probe: the first call answers from git'
+    Confirm-Equal $g.Dirty $false 'cached probe: clean'
+    Confirm-Equal (Get-CacheFileCount $realCache) 1 'cached probe: one entry written'
+    $oldPath = $env:PATH
+    try {
+        $env:PATH = $fakeFailCached + [System.IO.Path]::PathSeparator + $env:PATH
+        Confirm-Equal (Get-GitBranch $cacheRepoReal $gitTimeoutMs) $null 'failing git on PATH: a direct probe gets nothing (control)'
+        Confirm-True (Test-Path $cachedMarker) 'failing git on PATH: the fake ran for the direct probe (control)'
+        Remove-Item -LiteralPath $cachedMarker -Force
+        $g = Get-CachedGitBranch $cacheRepoReal $gitTimeoutMs $realCache 5
+        Confirm-Equal $g.Branch 'main' 'cached probe with a failing git: answers from the entry'
+        Confirm-True (-not (Test-Path $cachedMarker)) 'cached probe with a failing git: git was never started'
+        Confirm-Equal (Get-CachedGitBranch $cacheRepoReal $gitTimeoutMs $realCache 0) $null 'cached probe with a failing git and lifetime 0: the probe runs and fails'
+        Confirm-True (Test-Path $cachedMarker) 'cached probe with a failing git and lifetime 0: the fake ran'
+        Remove-Item -LiteralPath $cachedMarker -Force
+    } finally { $env:PATH = $oldPath }
+    git -C $cacheRepoReal checkout -q -b topic
+    $g = Get-CachedGitBranch $cacheRepoReal $gitTimeoutMs $realCache 5
+    Confirm-Equal $g.Branch 'topic' 'cached probe after a checkout: HEAD moved, so git was asked and the new branch shows'
+    Set-Content (Join-Path $cacheRepoReal 'new.txt') 'x'
+    $g = Get-CachedGitBranch $cacheRepoReal $gitTimeoutMs $realCache 5
+    Confirm-Equal $g.Untracked 0 'cached probe after a new file: neither stamp moved, so the entry still says clean until it ages out'
+    git -C $cacheRepoReal add new.txt
+    $g = Get-CachedGitBranch $cacheRepoReal $gitTimeoutMs $realCache 5
+    Confirm-Equal $g.Staged 1 'cached probe after git add: the index moved, so git was asked and the staged file shows'
+    Confirm-Equal $g.Branch 'topic' 'cached probe after git add: still on topic'
 }
 
 # Positive control for the hang case's "no ping is left behind": that assertion would also pass if the
@@ -1232,6 +1701,7 @@ Write-Host ("{0,-40} {1,5:N0} ms  {2} ping(s) at {3} ms, 0 after" -f 'git hangs 
 } finally {
     if ($null -ne $oldGitConfigGlobal) { $env:GIT_CONFIG_GLOBAL = $oldGitConfigGlobal } else { Remove-Item Env:GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue }
     if ($null -ne $oldGitConfigNoSystem) { $env:GIT_CONFIG_NOSYSTEM = $oldGitConfigNoSystem } else { Remove-Item Env:GIT_CONFIG_NOSYSTEM -ErrorAction SilentlyContinue }
+    if ($null -ne $oldTemp) { $env:TEMP = $oldTemp } else { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }
 }
 
 Write-Host '== state' -ForegroundColor Cyan
