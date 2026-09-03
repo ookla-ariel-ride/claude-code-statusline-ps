@@ -26,6 +26,10 @@ $PSNativeCommandUseErrorActionPreference = $false
 $PSStyle.OutputRendering = 'Ansi'
 $script = Join-Path $PSScriptRoot 'statusline.ps1'
 $esc = [char]27
+# The escapes a rendered line can carry and a terminal does not show: an OSC 8 hyperlink wrapper with
+# either terminator (ESC \ or BEL), or an SGR colour code. The one pattern behind ConvertTo-PlainText
+# and Measure-VisibleWidth, so the two cannot drift apart.
+$ansiPattern = "$esc\]8;[^\a$esc]*(?:\a|$esc\\)|$esc\[[0-9;]*m"
 $script:passed = 0
 $script:failed = 0
 
@@ -43,7 +47,9 @@ function Confirm-True([bool] $Condition, [string] $Label) {
     Write-Host "FAIL $Label" -ForegroundColor Red
 }
 
-function ConvertTo-PlainText([string] $Text) { $Text -replace "$esc\[[0-9;]*m", '' }
+# Strips the OSC 8 hyperlink wrappers and the SGR colour codes, so a marker check searches the text a
+# terminal would show and a URL can never satisfy or spoil one.
+function ConvertTo-PlainText([string] $Text) { $Text -replace $ansiPattern, '' }
 
 # Pulls named function definitions out of a script by parsing it, so pure functions can be tested
 # without running the script (which reads stdin and prints).
@@ -61,7 +67,7 @@ function Import-ScriptFunction([string] $Path, [string[]] $Name) {
 # in one does not agree with itself in the other.
 function Measure-VisibleWidth([string] $Text) {
     if (-not $Text) { return 0 }
-    $plain = [regex]::Replace($Text, "$esc\[[0-9;]*m", '')
+    $plain = [regex]::Replace($Text, $ansiPattern, '')
     $width = 0
     $en = [System.Globalization.StringInfo]::GetTextElementEnumerator($plain)
     while ($en.MoveNext()) {
@@ -135,12 +141,12 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir'))
 
-# Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment and Get-ModelSegment close over these
-# script-level names in statusline.ps1, so the test has to supply them. The git timeout is not one of
-# them any more - the segment reads it from the config - so this is only the test's own shorthand for
-# the direct Get-GitBranch calls below, pinned to the script's default.
+# Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
+# these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
+# one of them any more - the segment reads it from the config - so this is only the test's own
+# shorthand for the direct Get-GitBranch calls below, pinned to the script's default.
 $gitTimeoutMs = (Get-DefaultGitConfig).TimeoutMs
 $iconLimit = [char]::ConvertFromUtf32(0xF0E4)
 $iconModel = [char]::ConvertFromUtf32(0xF06A9)
@@ -152,6 +158,14 @@ $iconDirty = [char]::ConvertFromUtf32(0xF040)
 $iconAhead = [char]::ConvertFromUtf32(0x2191)
 $iconBehind = [char]::ConvertFromUtf32(0x2193)
 $iconConflict = [char]::ConvertFromUtf32(0xF071)
+$iconPr = [char]::ConvertFromUtf32(0xF407)
+
+# A payload with one top-level key whose value is the given JSON. It goes through ConvertFrom-Json so
+# a null is a real null property, the way Claude Code sends it, and counts arrive as Int64, the way
+# they do from a real payload; a hashtable would not give either.
+function Get-JsonPayload([string] $Key, [string] $Json) {
+    return ('{"' + $Key + '":' + $Json + '}') | ConvertFrom-Json
+}
 
 Write-Host '== unit: width' -ForegroundColor Cyan
 $widthTable = @(
@@ -166,6 +180,10 @@ $widthTable = @(
     @{ Text = [string][char]0x0301; Width = 0 }                                         # lone combining mark
     @{ Text = "$esc[1;36mab$esc[0m $esc[90mc$esc[0m"; Width = 4 }                     # escapes stripped
     @{ Text = "${iconAhead}1 ${iconBehind}2"; Width = 5 }                              # ahead/behind arrows are narrow
+    @{ Text = "$esc]8;;https://example.com/pull/12$esc\abc$esc]8;;$esc\"; Width = 3 } # OSC 8 link: the URL is not visible
+    @{ Text = "$esc]8;;https://example.com$esc\$esc[32mab$esc[0m$esc]8;;$esc\"; Width = 2 }  # link around coloured text
+    @{ Text = "$esc]8;;$esc\"; Width = 0 }                                              # a bare link terminator
+    @{ Text = "$esc]8;;https://example.com`aabcd$esc]8;;`a"; Width = 4 }               # BEL-terminated link
 )
 foreach ($row in $widthTable) {
     $shown = $row.Text -replace $esc, '<ESC>'
@@ -179,16 +197,17 @@ Write-Host '== unit: registry' -ForegroundColor Cyan
 # out by hand, so a change there is a deliberate one. Array order is layout one.
 $registryTable = @(
     @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 2;     DropRank = 7;     Row = 2; RowRank = 1 }
+    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 2;     DropRank = 8;     Row = 2; RowRank = 1 }
     @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = $null; DropRank = 3;     Row = 2; RowRank = 3 }
     @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
     @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
-    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 4 }
-    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 4;     DropRank = 5;     Row = 1; RowRank = 2 }
-    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 3;     DropRank = 6;     Row = 1; RowRank = 3 }
+    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 5 }
+    @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 4 }
+    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 4;     DropRank = 6;     Row = 1; RowRank = 2 }
+    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 3;     DropRank = 7;     Row = 1; RowRank = 3 }
 )
 $registry = @(Get-SegmentRegistry)
-Confirm-Equal $registry.Count $registryTable.Count 'registry: eight records'
+Confirm-Equal $registry.Count $registryTable.Count 'registry: nine records'
 for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
     $want = $registryTable[$i]
     $got = $registry[$i]
@@ -199,8 +218,8 @@ for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
     }
 }
 Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'limits,context,branch,folder' 'registry: shrink order'
-Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,badges,cost,limits,folder,branch,context' 'registry: drop order'
-Confirm-Equal ((Get-SegmentOrder 'RowRank' 1) -join ',') 'model,folder,branch,badges' 'registry: layout two row 1'
+Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,badges,cost,limits,pr,folder,branch,context' 'registry: drop order'
+Confirm-Equal ((Get-SegmentOrder 'RowRank' 1) -join ',') 'model,folder,branch,pr,badges' 'registry: layout two row 1'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 2) -join ',') 'context,limits,cost,lines' 'registry: layout two row 2'
 
 Write-Host '== unit: config' -ForegroundColor Cyan
@@ -331,6 +350,109 @@ Confirm-Equal $c.Layout 'two' 'config git beside layout: layout kept'
 Confirm-Equal $c.State $false 'config git beside state: state kept'
 Confirm-Equal $c.Git.TimeoutMs 200 'config git beside others: timeout read'
 
+# The order key: the segment names of layout one. An unknown name is skipped, a name left out is not
+# shown, a repeat keeps its first place and case does not matter. An empty array, an array naming no
+# segment, or anything that is not an array falls back to the registry order.
+$registryOrder = $allSegments -join ','
+Confirm-Equal ((Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')).Order -join ',') $registryOrder 'config missing: order is the registry order'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-three.json' '{ "order": ["model", "branch", "context"] }')).Order -join ',') 'model,branch,context' 'config order: three names in the given order'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-unknown.json' '{ "order": ["model", "nonsense"] }')).Order -join ',') 'model' 'config order: unknown name skipped, model alone'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-case.json' '{ "order": ["Branch", "MODEL", "branch"] }')).Order -join ',') 'branch,model' 'config order: case folded, a repeat keeps its first place'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-mixed.json' '{ "order": ["cost", 3, null, true, ["model"], "folder"] }')).Order -join ',') 'cost,folder' 'config order: entries that are not strings are skipped'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-empty.json' '{ "order": [] }')).Order -join ',') $registryOrder 'config order: empty array falls back'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-none.json' '{ "order": ["nonsense"] }')).Order -join ',') $registryOrder 'config order: no known name falls back'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-string.json' '{ "order": "model" }')).Order -join ',') $registryOrder 'config order: string falls back'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-object.json' '{ "order": { "model": 1 } }')).Order -join ',') $registryOrder 'config order: object falls back'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-null.json' '{ "order": null }')).Order -join ',') $registryOrder 'config order: null falls back'
+$c = Read-StatusConfig (Write-TempConfig 'order-toggle.json' '{ "order": ["branch", "model"], "segments": { "branch": false } }')
+Confirm-Equal ($c.Order -join ',') 'branch,model' 'config order: a toggled-off name stays in the order'
+Confirm-Equal $c.Segments.branch $false 'config order: the toggle still applies'
+$c = Read-StatusConfig (Write-TempConfig 'order-good-layout-bad.json' '{ "order": ["model"], "layout": "three" }')
+Confirm-Equal ($c.Order -join ',') 'model' 'config order: kept when another key is invalid'
+Confirm-Equal $c.Layout 'one' 'config order: the invalid key still falls back on its own'
+
+# The rows key: two arrays of names for layout two, the same rules per row, and a name the first row
+# took is skipped on the second. A row may be empty. Anything but an array of exactly two arrays, or
+# two rows that between them name no segment, falls back to the registry rows whole.
+$registryRows = "$((Get-SegmentOrder 'RowRank' 1) -join ',')|$((Get-SegmentOrder 'RowRank' 2) -join ',')"
+function Get-RowText($c) { return "$($c.Rows[0] -join ',')|$($c.Rows[1] -join ',')" }
+$c = Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')
+Confirm-Equal $c.Rows.Count 2 'config missing: two rows'
+Confirm-Equal (Get-RowText $c) $registryRows 'config missing: rows are the registry rows'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-swapped.json' '{ "rows": [["context", "cost"], ["model", "branch"]] }'))) 'context,cost|model,branch' 'config rows: two rows as given'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-unknown.json' '{ "rows": [["model", "nonsense"], ["Context", 7]] }'))) 'model|context' 'config rows: unknown and non-string entries skipped, case folded'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-repeat.json' '{ "rows": [["model", "branch"], ["branch", "cost"]] }'))) 'model,branch|cost' 'config rows: a name on the first row is skipped on the second'
+$c = Read-StatusConfig (Write-TempConfig 'rows-empty-first.json' '{ "rows": [[], ["model"]] }')
+Confirm-Equal $c.Rows.Count 2 'config rows: an empty first row is still a row'
+Confirm-Equal (Get-RowText $c) '|model' 'config rows: an empty first row is kept'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-empty-both.json' '{ "rows": [[], []] }'))) $registryRows 'config rows: both rows empty falls back'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-none.json' '{ "rows": [["nonsense"], ["bogus"]] }'))) $registryRows 'config rows: no known name falls back'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-one.json' '{ "rows": [["model"]] }'))) $registryRows 'config rows: one row falls back'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-three.json' '{ "rows": [["model"], ["cost"], ["branch"]] }'))) $registryRows 'config rows: three rows fall back'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-flat.json' '{ "rows": ["model", "cost"] }'))) $registryRows 'config rows: a flat array of names falls back'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-half.json' '{ "rows": [["model"], "cost"] }'))) $registryRows 'config rows: a row that is not an array falls back whole'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-object.json' '{ "rows": { "one": ["model"], "two": ["cost"] } }'))) $registryRows 'config rows: object falls back'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-string.json' '{ "rows": "model" }'))) $registryRows 'config rows: string falls back'
+$c = Read-StatusConfig (Write-TempConfig 'rows-good-order-bad.json' '{ "rows": [["model"], ["cost"]], "order": 5 }')
+Confirm-Equal (Get-RowText $c) 'model|cost' 'config rows: kept when order is invalid'
+Confirm-Equal ($c.Order -join ',') $registryOrder 'config rows: the invalid order falls back on its own'
+
+# The thresholds key: warn and bad, whole numbers 0 to 100 with warn at or below bad. Either value
+# missing, not a whole number, out of range, or warn above bad falls back to 60 and 85 for both.
+function Get-ThresholdText($c) { return "$($c.Thresholds.Warn)/$($c.Thresholds.Bad)" }
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Join-Path $tmp 'does-not-exist.json'))) '60/85' 'config missing: thresholds 60 and 85'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-low.json' '{ "thresholds": { "warn": 20, "bad": 40 } }'))) '20/40' 'config thresholds: 20 and 40'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-crossed.json' '{ "thresholds": { "warn": 90, "bad": 10 } }'))) '60/85' 'config thresholds: warn above bad falls back for both'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-equal.json' '{ "thresholds": { "warn": 50, "bad": 50 } }'))) '50/50' 'config thresholds: equal is allowed'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-edges.json' '{ "thresholds": { "warn": 0, "bad": 100 } }'))) '0/100' 'config thresholds: 0 and 100 are allowed'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-warn-only.json' '{ "thresholds": { "warn": 20 } }'))) '60/85' 'config thresholds: one value alone falls back for both'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-over.json' '{ "thresholds": { "warn": 20, "bad": 101 } }'))) '60/85' 'config thresholds: above 100 falls back for both'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-under.json' '{ "thresholds": { "warn": -1, "bad": 40 } }'))) '60/85' 'config thresholds: below 0 falls back for both'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-fraction.json' '{ "thresholds": { "warn": 20.5, "bad": 40 } }'))) '60/85' 'config thresholds: a fraction falls back for both'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-double.json' '{ "thresholds": { "warn": 20.0, "bad": 40.0 } }'))) '20/40' 'config thresholds: whole numbers written as doubles are accepted'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-exponent.json' '{ "thresholds": { "warn": 2e1, "bad": 4E1 } }'))) '20/40' 'config thresholds: whole numbers in exponent form are accepted'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-string.json' '{ "thresholds": { "warn": "20", "bad": 40 } }'))) '60/85' 'config thresholds: a string falls back for both'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-bool.json' '{ "thresholds": { "warn": true, "bad": 40 } }'))) '60/85' 'config thresholds: a boolean falls back for both'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-array.json' '{ "thresholds": [20, 40] }'))) '60/85' 'config thresholds: array falls back'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-number.json' '{ "thresholds": 20 }'))) '60/85' 'config thresholds: number falls back'
+$c = Read-StatusConfig (Write-TempConfig 'thresholds-good-order-bad.json' '{ "thresholds": { "warn": 20, "bad": 40 }, "order": 5 }')
+Confirm-Equal (Get-ThresholdText $c) '20/40' 'config thresholds: kept when order is invalid'
+Confirm-Equal ($c.Order -join ',') $registryOrder 'config thresholds: the invalid order falls back on its own'
+$c = Read-StatusConfig (Write-TempConfig 'thresholds-bad-order-good.json' '{ "thresholds": { "warn": 90, "bad": 10 }, "order": ["model"] }')
+Confirm-Equal (Get-ThresholdText $c) '60/85' 'config thresholds: crossed values fall back beside a valid order'
+Confirm-Equal ($c.Order -join ',') 'model' 'config thresholds: the valid order is kept'
+
+# The icons key: icon name to a hex code point string, with U+ or 0x allowed in front. A name no icon
+# has, or a value that is not a string, not hex, above 10FFFF or a surrogate, is skipped and the built-in
+# glyph stays. The parsed table holds the valid overrides only, as name to integer.
+Confirm-Equal (Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')).Icons.Count 0 'config missing: no icon overrides'
+$c = Read-StatusConfig (Write-TempConfig 'icons-four.json' '{ "icons": { "model": "F0E7", "dirty": "U+F040", "context": "0x2588", "Branch": "e0a0", "limits": "0000F0E4" } }')
+Confirm-Equal $c.Icons.Count 5 'config icons: five overrides'
+Confirm-Equal $c.Icons.model 0xF0E7 'config icons: bare hex'
+Confirm-Equal $c.Icons.dirty 0xF040 'config icons: U+ prefix'
+Confirm-Equal $c.Icons.context 0x2588 'config icons: 0x prefix'
+Confirm-Equal $c.Icons.branch 0xE0A0 'config icons: name case folded, lower-case hex'
+Confirm-Equal $c.Icons.limits 0xF0E4 'config icons: leading zeros'
+# The two names the constants shorten are accepted in either spelling, and land under the long one.
+$c = Read-StatusConfig (Write-TempConfig 'icons-alias.json' '{ "icons": { "ctx": "2588", "limit": "2591" } }')
+Confirm-Equal $c.Icons.Count 2 'config icons: ctx and limit are aliases'
+Confirm-Equal $c.Icons.context 0x2588 'config icons: ctx lands under context'
+Confirm-Equal $c.Icons.limits 0x2591 'config icons: limit lands under limits'
+Confirm-True (-not $c.Icons.ContainsKey('ctx') -and -not $c.Icons.ContainsKey('limit')) 'config icons: the short spellings are not keys of their own'
+$c = Read-StatusConfig (Write-TempConfig 'icons-unknown.json' '{ "icons": { "model": "F0E7", "bogus": "F0E7" } }')
+Confirm-Equal $c.Icons.Count 1 'config icons: unknown name skipped'
+Confirm-Equal $c.Icons.model 0xF0E7 'config icons: the known name beside it is kept'
+$c = Read-StatusConfig (Write-TempConfig 'icons-invalid.json' '{ "icons": { "model": "zz", "cost": 61671, "folder": "", "lines": "110000", "limits": "D800", "fast": "DFFF", "think": "-1", "effort": "F0 E7", "vim": null, "home": ["F0E7"], "ahead": true, "behind": "1B", "conflict": "A", "chevron": "0" } }')
+Confirm-Equal $c.Icons.Count 0 'config icons: every invalid value is skipped'
+$c = Read-StatusConfig (Write-TempConfig 'icons-edges.json' '{ "icons": { "model": "10FFFF", "dirty": "E000", "ahead": "D7FF", "behind": "41" } }')
+Confirm-Equal $c.Icons.Count 4 'config icons: the edges of the range are allowed'
+Confirm-Equal $c.Icons.model 0x10FFFF 'config icons: 10FFFF'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'icons-array.json' '{ "icons": ["F0E7"] }')).Icons.Count 0 'config icons: array falls back'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'icons-string.json' '{ "icons": "F0E7" }')).Icons.Count 0 'config icons: string falls back'
+$c = Read-StatusConfig (Write-TempConfig 'icons-good-thresholds-bad.json' '{ "icons": { "model": "F0E7" }, "thresholds": 5 }')
+Confirm-Equal $c.Icons.model 0xF0E7 'config icons: kept when thresholds is invalid'
+Confirm-Equal (Get-ThresholdText $c) '60/85' 'config icons: the invalid thresholds fall back on their own'
+
 # The config that ships with the repo has to be valid JSON and to mean what the README says it means.
 $shippedConfig = Join-Path $PSScriptRoot 'statusline.json'
 $shippedJson = try { Get-Content -LiteralPath $shippedConfig -Raw | ConvertFrom-Json } catch { $null }
@@ -341,10 +463,10 @@ Confirm-Equal $c.Style 'plain' 'shipped config: style plain'
 Confirm-Equal $c.Folder 'repo' 'shipped config: folder repo'
 Confirm-Equal $shippedJson.folder 'repo' 'shipped config: the file itself says folder repo'
 $shippedSegments = @($c.Segments.Keys)
-Confirm-Equal $shippedSegments.Count 8 'shipped config: eight segments'
+Confirm-Equal $shippedSegments.Count 9 'shipped config: nine segments'
 Confirm-True (@($shippedSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'shipped config: every segment on'
 $shippedFileSegments = @($shippedJson.segments.PSObject.Properties)
-Confirm-Equal $shippedFileSegments.Count 8 'shipped config: the file itself lists eight segments'
+Confirm-Equal $shippedFileSegments.Count 9 'shipped config: the file itself lists nine segments'
 # -ne coerces its right side to the left side's type, so 'true' -ne $true is False; test the type too.
 Confirm-True (@($shippedFileSegments | Where-Object { $_.Value -isnot [bool] -or $_.Value -ne $true }).Count -eq 0) 'shipped config: the file itself sets them all to the boolean true'
 Confirm-Equal $c.State $true 'shipped config: state on'
@@ -357,6 +479,51 @@ Confirm-Equal @($shippedJson.git.PSObject.Properties).Count 3 'shipped config: t
 Confirm-True ($shippedJson.git.timeoutMs -is [long] -and $shippedJson.git.timeoutMs -eq 1500) 'shipped config: the file itself says timeoutMs 1500 as a number'
 Confirm-True ($shippedJson.git.cacheSeconds -is [long] -and $shippedJson.git.cacheSeconds -eq 5) 'shipped config: the file itself says cacheSeconds 5 as a number'
 Confirm-True ($shippedJson.git.cache -is [bool] -and $shippedJson.git.cache) 'shipped config: the file itself sets cache to the boolean true'
+# thresholds and icons ship at their defaults, spelled out. order and rows are left out on purpose: the
+# installer keeps an existing config, so a file that listed every segment by name would pin the set and
+# a segment added by a later release would never appear for anyone who installed this one.
+Confirm-Equal ($c.Order -join ',') $registryOrder 'shipped config: order is the registry order'
+Confirm-True ($null -eq $shippedJson.PSObject.Properties['order']) 'shipped config: the file itself has no order key, so a new segment appears on its own'
+Confirm-Equal (Get-RowText $c) $registryRows 'shipped config: rows are the registry rows'
+Confirm-True ($null -eq $shippedJson.PSObject.Properties['rows']) 'shipped config: the file itself has no rows key'
+Confirm-Equal (Get-ThresholdText $c) '60/85' 'shipped config: thresholds 60 and 85'
+Confirm-True ($shippedJson.thresholds.warn -eq 60 -and $shippedJson.thresholds.bad -eq 85) 'shipped config: the file itself says 60 and 85'
+Confirm-Equal $c.Icons.Count 0 'shipped config: no icon overrides'
+Confirm-True ($shippedJson.icons -is [System.Management.Automation.PSCustomObject] -and @($shippedJson.icons.PSObject.Properties).Count -eq 0) 'shipped config: the file itself has an empty icons object'
+
+Write-Host '== unit: icons' -ForegroundColor Cyan
+# Get-IconSet turns the built-in table and the config's overrides into one glyph per name, and the
+# script assigns its $icon* constants from that set.
+$defaultIcons = Get-IconDefault
+Confirm-Equal $defaultIcons.Count 18 'icons: eighteen built-in glyphs'
+Confirm-Equal $defaultIcons.pr 0xF407 'icons: pr is the pull-request glyph'
+Confirm-Equal $defaultIcons.model 0xF06A9 'icons: model is the robot'
+$set = Get-IconSet @{ Icons = @{} }
+Confirm-Equal $set.Count 18 'icons: one glyph per name'
+Confirm-Equal $set.pr $iconPr 'icons: no override gives the built-in pr glyph'
+Confirm-Equal $set.model $iconModel 'icons: no override gives the built-in model glyph'
+Confirm-Equal $set.dirty $iconDirty 'icons: no override gives the built-in pencil'
+$set = Get-IconSet @{ Icons = @{ model = 0xF0E7; dirty = 0x2588 } }
+Confirm-Equal $set.model ([char]::ConvertFromUtf32(0xF0E7)) 'icons: model override is the bolt'
+Confirm-Equal $set.dirty ([char]::ConvertFromUtf32(0x2588)) 'icons: dirty override is the block'
+Confirm-Equal $set.context ([char]::ConvertFromUtf32(0xF035B)) 'icons: an unmentioned name keeps its glyph'
+Confirm-Equal $set.limits $iconLimit 'icons: limits is the tachometer'
+Confirm-Equal (Get-IconSet @{}).model $iconModel 'icons: a config without an Icons table gives the built-ins'
+$set = Get-IconSet (Read-StatusConfig (Write-TempConfig 'icons-bolt.json' '{ "icons": { "model": "F0E7" } }'))
+Confirm-Equal $set.model ([char]::ConvertFromUtf32(0xF0E7)) 'icons: the bolt in the config reaches the set'
+Confirm-Equal $set.fast ([char]::ConvertFromUtf32(0xF0E7)) 'icons: the fast badge keeps its own bolt'
+# Every form Read-CodePoint accepts, and a sample of what it refuses. Leading zeros are dropped before
+# the six-digit cap, so a zero-padded form reads. A control character (00 to 1F, 7F to 9F) is refused:
+# A is a newline and 1B a bare escape, either of which would break the line.
+foreach ($row in @(@('F0E7', 0xF0E7), @('f0e7', 0xF0E7), @('U+F0E7', 0xF0E7), @('u+f0e7', 0xF0E7), @('0xF0E7', 0xF0E7), @('0XF0E7', 0xF0E7),
+        @(' F0E7 ', 0xF0E7), @('10FFFF', 0x10FFFF), @('41', 0x41), @('0000F0E7', 0xF0E7), @('U+0000F0E7', 0xF0E7), @('0x0000F0E7', 0xF0E7),
+        @('000000000041', 0x41), @('20', 0x20), @('A0', 0xA0), @('7E', 0x7E))) {
+    Confirm-Equal (Read-CodePoint $row[0]) $row[1] "code point: '$($row[0])' reads as $($row[1])"
+}
+foreach ($bad in @('', ' ', 'zz', '110000', 'D800', 'DBFF', 'DC00', 'DFFF', '-1', 'F0 E7', '+F0E7', 'U+', '0x', '1234567', 'U+0xF0E7',
+        '0', '0000', 'U+0000', 'A', '1B', '1F', '7F', '9B', '9F', '0x0A', $null, 61671, $true, @('F0E7'))) {
+    Confirm-Equal (Read-CodePoint $bad) $null "code point: '$bad' is refused"
+}
 
 Write-Host '== unit: state' -ForegroundColor Cyan
 # The state helpers derive their directory from TEMP, so point it at a folder under $tmp for these cases
@@ -814,6 +981,113 @@ $line = Get-FittedLine $fit 'plain' 10 -DropOrder @('model')
 Confirm-True ($line.Contains('M') -and $line.Contains('CCC')) 'fit: drop order naming model leaves it in place'
 Confirm-Equal (Get-VisibleWidth $line) 38 'fit: drop order naming model drops nothing'
 
+Write-Host '== unit: pr' -ForegroundColor Cyan
+# The link helper: OSC 8 open, the text, OSC 8 close, with ESC \ as the terminator. Anything that is not
+# an http or https URL leaves the text alone, so a bad payload can never put a stray escape on the line.
+$prUrl = 'https://github.com/octo/demo/pull/12'
+$linkOpen = "$esc]8;;$prUrl$esc\"
+$linkClose = "$esc]8;;$esc\"
+Confirm-Equal (Format-Link $prUrl 'abc') "${linkOpen}abc${linkClose}" 'link: exact bytes'
+Confirm-Equal (Format-Link '' 'abc') 'abc' 'link: empty url leaves the text alone'
+Confirm-Equal (Format-Link $null 'abc') 'abc' 'link: null url leaves the text alone'
+Confirm-Equal (Format-Link 'ftp://example.com/x' 'abc') 'abc' 'link: ftp url leaves the text alone'
+Confirm-Equal (Format-Link 'javascript:alert(1)' 'abc') 'abc' 'link: javascript url leaves the text alone'
+Confirm-Equal (Format-Link "https://example.com/$esc\x" 'abc') 'abc' 'link: a control character in the url leaves the text alone'
+Confirm-Equal (Format-Link "https://example.com/`ax" 'abc') 'abc' 'link: a BEL in the url leaves the text alone'
+# The C1 controls are the 8-bit forms of CSI, ST and OSC; a terminal that honours them would end the
+# link early, so they are refused like the C0 range.
+Confirm-Equal (Format-Link "https://example.com/$([char]0x9B)x" 'abc') 'abc' 'link: a C1 CSI (U+009B) in the url leaves the text alone'
+Confirm-Equal (Format-Link "https://example.com/$([char]0x9C)x" 'abc') 'abc' 'link: a C1 ST (U+009C) in the url leaves the text alone'
+Confirm-Equal (Format-Link "https://example.com/$([char]0x9D)x" 'abc') 'abc' 'link: a C1 OSC (U+009D) in the url leaves the text alone'
+Confirm-Equal (Format-Link "https://example.com/$([char]0x80)x" 'abc') 'abc' 'link: a C1 control (U+0080) in the url leaves the text alone'
+Confirm-Equal (Format-Link "https://example.com/$([char]0x7F)x" 'abc') 'abc' 'link: DEL in the url leaves the text alone'
+Confirm-Equal (Format-Link "https://example.com/$([char]0xE9)x" 'abc') "$esc]8;;https://example.com/$([char]0xE9)x$esc\abc${linkClose}" 'link: a non-control non-ASCII character in the url is still linked'
+Confirm-Equal (Format-Link 'HTTPS://EXAMPLE.COM/x' 'abc') "$esc]8;;HTTPS://EXAMPLE.COM/x$esc\abc${linkClose}" 'link: scheme is matched case-insensitively'
+Confirm-Equal (Format-Link 'http://example.com/x' 'abc') "$esc]8;;http://example.com/x$esc\abc${linkClose}" 'link: plain http is linked too'
+Confirm-Equal (Get-VisibleWidth (Format-Link $prUrl 'abc')) 3 'link: the url has no width'
+# The helper owns the type gate: an array cast to [string] would join to "https://a b" and pass a scheme
+# check, so the raw value is tested and anything but a string comes back unlinked.
+Confirm-Equal (Format-Link @('https://example.com/a', 'b') 'abc') 'abc' 'link: an array url leaves the text alone'
+Confirm-Equal (Format-Link 7 'abc') 'abc' 'link: a numeric url leaves the text alone'
+Confirm-Equal (Format-Link 'https://example.com/a b' 'abc') 'abc' 'link: an embedded space leaves the text alone'
+Confirm-Equal (Format-Link 'https://a b' 'abc') 'abc' 'link: a space in the host leaves the text alone'
+Confirm-Equal (Format-Link 'https:example.com' 'abc') 'abc' 'link: a url that is not absolute leaves the text alone'
+Confirm-Equal (Format-Link 'https://' 'abc') 'abc' 'link: a scheme with no host leaves the text alone'
+$url2083 = 'https://example.com/' + ('x' * 2063)
+Confirm-Equal $url2083.Length 2083 'link: cap fixture is 2083 characters'
+Confirm-Equal (Format-Link $url2083 'abc') "$esc]8;;$url2083$esc\abc${linkClose}" 'link: 2083 characters is linked'
+Confirm-Equal (Format-Link ($url2083 + 'x') 'abc') 'abc' 'link: 2084 characters leaves the text alone'
+
+# The segment: glyph, space, #number, the whole text wrapped in the link, coloured by the review state.
+$seg = Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"approved","kind":"pull_request"}'))
+Confirm-Equal $seg.Name 'pr' 'pr approved: name'
+Confirm-Equal $seg.Text "${linkOpen}$iconPr #12${linkClose}" 'pr approved: linked glyph and number'
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconPr #12" 'pr approved: plain text is the glyph and the number'
+Confirm-Equal $seg.Role 'ok' 'pr approved: role ok'
+Confirm-Equal $seg.Short $null 'pr approved: no short form'
+Confirm-Equal $seg.Bold $false 'pr approved: not bold'
+Confirm-Equal (Get-VisibleWidth $seg.Text) (Get-VisibleWidth "$iconPr #12") 'pr approved: the link adds no width'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"changes requested"}'))).Role 'bad' 'pr changes requested: role bad'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"CHANGES_REQUESTED"}'))).Role 'bad' 'pr CHANGES_REQUESTED: underscore and case folded, role bad'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"Approved"}'))).Role 'ok' 'pr Approved: case folded, role ok'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"review_required"}'))).Role 'dim' 'pr unknown state: role dim'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":null}'))).Role 'dim' 'pr null state: role dim'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '"}'))).Role 'dim' 'pr missing state: role dim'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":["approved"]}'))).Role 'dim' 'pr array state: role dim'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":7}'))).Role 'dim' 'pr numeric state: role dim'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":{"state":"approved"}}'))).Role 'dim' 'pr object state: role dim'
+$seg = Get-PrSegment (Get-JsonPayload 'pr' '{"number":12,"review_state":"approved"}')
+Confirm-Equal $seg.Text "$iconPr #12" 'pr missing url: text unlinked'
+Confirm-Equal $seg.Role 'ok' 'pr missing url: still coloured by the state'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' '{"number":12,"url":"ftp://example.com/12"}')).Text "$iconPr #12" 'pr ftp url: text unlinked'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' '{"number":12,"url":7}')).Text "$iconPr #12" 'pr numeric url: text unlinked'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' '{"number":12,"url":["https://example.com/a","b"]}')).Text "$iconPr #12" 'pr array url: text unlinked'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' '{"number":345,"url":"HTTPS://github.com/octo/demo/pull/345"}')).Text "$esc]8;;HTTPS://github.com/octo/demo/pull/345$esc\$iconPr #345${linkClose}" 'pr upper-case scheme: linked'
+Confirm-Equal (Get-PrSegment ([pscustomobject]@{ model = @{ display_name = 'M' } })) $null 'pr missing object: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' 'null')) $null 'pr null object: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' '"open"')) $null 'pr object is a string: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('[{"number":12,"url":"' + $prUrl + '"}]'))) $null 'pr object is an array: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' '12')) $null 'pr object is a number: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"url":"' + $prUrl + '","review_state":"approved"}'))) $null 'pr missing number: null even with a url'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":"12","url":"' + $prUrl + '"}'))) $null 'pr string number: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12.5,"url":"' + $prUrl + '"}'))) $null 'pr float number: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":0,"url":"' + $prUrl + '"}'))) $null 'pr zero number: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":-3,"url":"' + $prUrl + '"}'))) $null 'pr negative number: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":2147483648,"url":"' + $prUrl + '"}'))) $null 'pr number above Int32: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12.0,"url":"' + $prUrl + '"}'))).Text "${linkOpen}$iconPr #12${linkClose}" 'pr whole float number: rendered as 12'
+
+# The renderer wraps the link in the segment's colour codes in both styles, so the link sits inside the
+# colour and the terminal keeps the background through it.
+$segPr = Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"approved"}'))
+Confirm-Equal (Format-Line @($segPr) 'plain') "$esc[32m${linkOpen}$iconPr #12${linkClose}$esc[0m" 'pr plain: colour outside the link'
+Confirm-Equal (Format-Line @($segPr) 'powerline') "$esc[0;48;5;28;38;5;231m ${linkOpen}$iconPr #12${linkClose} $esc[0m$esc[38;5;28m$arrow$esc[0m" 'pr powerline: block colour outside the link'
+
+# The URL never counts towards the width, so a long one fits where a short one does and is shed in the
+# same place. The fit set is 44 wide; the pr segment adds five cells and a separator, 52, and 49 needs
+# only the limits short form, so at both widths the pr segment must survive whatever the URL length.
+$longUrl = 'https://github.com/octo/demo/pull/12?' + ('x' * 263)
+Confirm-Equal $longUrl.Length 300 'pr long url: 300 characters'
+$fitShort = @(Get-FitSegmentSet) + @(Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"approved"}')))
+$fitLong = @(Get-FitSegmentSet) + @(Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $longUrl + '","review_state":"approved"}')))
+Confirm-Equal (Get-VisibleWidth (Format-Line $fitLong 'plain')) 52 'pr long url: full line is 52 wide'
+foreach ($w in @(60, 49)) {
+    $shortLine = Get-FittedLine $fitShort 'plain' $w
+    $longLine = Get-FittedLine $fitLong 'plain' $w
+    Confirm-Equal (ConvertTo-PlainText $longLine) (ConvertTo-PlainText $shortLine) "pr long url at ${w}: same visible text as the short url"
+    Confirm-Equal (Get-VisibleWidth $longLine) (Get-VisibleWidth $shortLine) "pr long url at ${w}: same width as the short url"
+    Confirm-True ((Get-VisibleWidth $longLine) -le $w) "pr long url at ${w}: fits"
+    Confirm-True ($longLine.Contains("$iconPr #12") -and $longLine.Contains($longUrl)) "pr long url at ${w}: pr segment kept with its link"
+}
+$line = Get-FittedLine $fitLong 'plain' 49
+Confirm-True ($line.Contains('III') -and -not $line.Contains('IIIIII') -and $line.Contains('CCCCCC')) 'pr long url at 49: limits shortened, nothing dropped'
+# In the drop order pr goes after limits and before folder. Both short forms take 52 to 46; dropping
+# lines (41), badges (36), cost (31) and limits (25) leaves pr on a 25-cell line, and 24 drops pr next,
+# keeping folder and branch. The pr record sits last in this set, so it renders after BB here.
+$line = Get-FittedLine $fitLong 'plain' 25
+Confirm-Equal (ConvertTo-PlainText $line) "M $chevron CCC $chevron FF $chevron BB $chevron $iconPr #12" 'pr drop order: at 25 pr is still on the line'
+$line = Get-FittedLine $fitLong 'plain' 24
+Confirm-Equal (ConvertTo-PlainText $line) "M $chevron CCC $chevron FF $chevron BB" 'pr drop order: at 24 pr goes before folder and branch'
+
 Write-Host '== unit: context' -ForegroundColor Cyan
 $iconCtx = [char]::ConvertFromUtf32(0xF035B)
 $blockFull = [char]::ConvertFromUtf32(0x2588)
@@ -821,48 +1095,63 @@ $blockLight = [char]::ConvertFromUtf32(0x2591)
 function Get-ContextPayload([double] $Pct) {
     return [pscustomobject]@{ context_window = [pscustomobject]@{ used_percentage = $Pct; total_input_tokens = 1000; total_output_tokens = 0; context_window_size = 200000 } }
 }
+# The builders read the colour bands from the config; this is the default pair, and $lowCfg a custom one.
+$bandCfg = @{ Thresholds = @{ Warn = 60; Bad = 85 } }
+$lowCfg = @{ Thresholds = @{ Warn = 20; Bad = 40 } }
 
-$seg = Get-ContextSegment (Get-ContextPayload 32)
+$seg = Get-ContextSegment (Get-ContextPayload 32) $bandCfg
 $bar32 = ($blockFull * 3) + ($blockLight * 7)
 Confirm-True $seg.Text.StartsWith("$iconCtx 32% ") 'context 32: text prefix'
 Confirm-True $seg.Text.Contains($bar32) 'context 32: bar is 3 full + 7 light'
 Confirm-Equal $seg.Role 'ok' 'context 32: role'
 Confirm-Equal $seg.Short "$iconCtx 32% $bar32" 'context 32: short'
 
-$seg = Get-ContextSegment (Get-ContextPayload 110)
+$seg = Get-ContextSegment (Get-ContextPayload 110) $bandCfg
 $bar100 = $blockFull * 10
 Confirm-True $seg.Text.StartsWith("$iconCtx 100% ") 'context 110: clamped text prefix'
 Confirm-True $seg.Text.Contains($bar100) 'context 110: bar is 10 full blocks'
 Confirm-Equal $seg.Role 'bad' 'context 110: role'
 
-$seg = Get-ContextSegment (Get-ContextPayload -5)
+$seg = Get-ContextSegment (Get-ContextPayload -5) $bandCfg
 $bar0 = $blockLight * 10
 Confirm-True $seg.Text.StartsWith("$iconCtx 0% ") 'context -5: clamped text prefix'
 Confirm-True $seg.Text.Contains($bar0) 'context -5: bar is 10 light blocks'
 Confirm-Equal $seg.Role 'ok' 'context -5: role'
 
-Confirm-Equal (Get-ContextSegment (Get-ContextPayload 64)).Role 'warn' 'context 64: role'
-Confirm-Equal (Get-ContextSegment (Get-ContextPayload 85)).Role 'bad' 'context 85: role'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 64) $bandCfg).Role 'warn' 'context 64: role'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 85) $bandCfg).Role 'bad' 'context 85: role'
 
-Confirm-Equal (Get-ContextSegment ([pscustomobject]@{})) $null 'context: missing context_window'
+Confirm-Equal (Get-ContextSegment ([pscustomobject]@{}) $bandCfg) $null 'context: missing context_window'
 
 # A 1M window moves the colour bands to 70 and 90, so the same percentage is a different colour there.
 function Get-WideContextPayload([double] $Pct) {
     return [pscustomobject]@{ context_window = [pscustomobject]@{ used_percentage = $Pct; total_input_tokens = 650000; total_output_tokens = 0; context_window_size = 1000000 } }
 }
-Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 65)).Role 'ok' 'context 1M 65: role ok, not warn'
-Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 75)).Role 'warn' 'context 1M 75: role warn'
-Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 92)).Role 'bad' 'context 1M 92: role bad'
-Confirm-Equal (Get-ContextSegment (Get-ContextPayload 65)).Role 'warn' 'context 200k 65: role stays warn'
-Confirm-True (Get-ContextSegment (Get-WideContextPayload 65)).Text.Contains("650k/$(K 1000000)") 'context 1M 65: counts'
+Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 65) $bandCfg).Role 'ok' 'context 1M 65: role ok, not warn'
+Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 75) $bandCfg).Role 'warn' 'context 1M 75: role warn'
+Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 92) $bandCfg).Role 'bad' 'context 1M 92: role bad'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 65) $bandCfg).Role 'warn' 'context 200k 65: role stays warn'
+Confirm-True (Get-ContextSegment (Get-WideContextPayload 65) $bandCfg).Text.Contains("650k/$(K 1000000)") 'context 1M 65: counts'
+
+# Custom thresholds move the bands on the standard window. The 1M window keeps its own 70 and 90:
+# those bands come from the window size, not from the user's taste for a 200k one.
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 32) $lowCfg).Role 'warn' 'context 32 at 20/40: warn'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 45) $lowCfg).Role 'bad' 'context 45 at 20/40: bad'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 10) $lowCfg).Role 'ok' 'context 10 at 20/40: ok'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 20) $lowCfg).Role 'warn' 'context 20 at 20/40: warn at the edge'
+Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 65) $lowCfg).Role 'ok' 'context 1M 65 at 20/40: the 1M bands stay 70 and 90'
 
 Write-Host '== unit: threshold' -ForegroundColor Cyan
-Confirm-Equal (Get-ThresholdRole 65) 'warn' 'threshold 65: default bands warn'
+# Both bands are always passed; the function has no defaults, so a caller without a config is a bug
+# the tests would see as everything red, not as a quiet 60/85.
+Confirm-Equal (Get-ThresholdRole 65 60 85) 'warn' 'threshold 65 at 60/85: warn'
 Confirm-Equal (Get-ThresholdRole 65 70 90) 'ok' 'threshold 65 at 70/90: ok'
 Confirm-Equal (Get-ThresholdRole 70 70 90) 'warn' 'threshold 70 at 70/90: warn'
 Confirm-Equal (Get-ThresholdRole 89 70 90) 'warn' 'threshold 89 at 70/90: warn'
 Confirm-Equal (Get-ThresholdRole 92 70 90) 'bad' 'threshold 92 at 70/90: bad'
-Confirm-Equal (Get-ThresholdRole 85) 'bad' 'threshold 85: default bands bad'
+Confirm-Equal (Get-ThresholdRole 85 60 85) 'bad' 'threshold 85 at 60/85: bad'
+Confirm-Equal (Get-ThresholdRole 59 60 85) 'ok' 'threshold 59 at 60/85: ok'
+Confirm-Equal (Get-ThresholdRole 50 50 50) 'bad' 'threshold 50 at 50/50: bad, the warn band is empty'
 Confirm-True (Test-WideWindow 1000000) 'wide window: 1000000'
 Confirm-True (-not (Test-WideWindow 200000) -and -not (Test-WideWindow 1048576) -and -not (Test-WideWindow $null)) 'wide window: 200000, 1048576 and null are not'
 
@@ -898,27 +1187,23 @@ foreach ($odd in @(@{ Label = 'string true'; Value = 'true' }, @{ Label = 'numbe
 }
 Confirm-Equal (Get-ModelSegment ([pscustomobject]@{ model = [pscustomobject]@{ display_name = '' } }) $plainCfg) $null 'model: empty name omits the segment'
 Write-Host '== unit: limits' -ForegroundColor Cyan
-# Resets in the past keep TimeLeft empty, so the text is deterministic. Payloads go through ConvertFrom-Json
-# so a null used_percentage is a real null property, the way Claude Code sends it.
-function Get-LimitsPayload([string] $RateLimits) {
-    return ('{"rate_limits":' + $RateLimits + '}') | ConvertFrom-Json
-}
-
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":24,"resets_at":1700000000},"seven_day":{"used_percentage":41,"resets_at":1700000000},"spend_limit":{"used_percentage":62,"resets_at":1700000000}}')
+# Resets in the past keep TimeLeft empty, so the text is deterministic. Every call passes a config,
+# because the builder reads its colour bands from it.
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":24,"resets_at":1700000000},"seven_day":{"used_percentage":41,"resets_at":1700000000},"spend_limit":{"used_percentage":62,"resets_at":1700000000}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 24% 7d 41% `$ 62%" 'limits all three: 5h, 7d, then spend'
 Confirm-Equal $seg.Short "$iconLimit `$ 62%" 'limits all three: short keeps the spend figure that drives the colour'
 Confirm-Equal $seg.Role 'warn' 'limits all three: role from the worst figure'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"spend_limit":{"used_percentage":62,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"spend_limit":{"used_percentage":62,"resets_at":1700000000}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit `$ 62%" 'limits spend alone: one figure, no 5h'
 Confirm-True ($null -eq $seg.Short) 'limits spend alone: no short form'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"spend_limit":{"used_percentage":92,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"spend_limit":{"used_percentage":92,"resets_at":1700000000}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 10% `$ 92%" 'limits spend 92 with 5h 10: text'
 Confirm-Equal $seg.Role 'bad' 'limits spend 92 with 5h 10: spend drives the colour'
 Confirm-Equal $seg.Short "$iconLimit `$ 92%" 'limits spend 92 with 5h 10: short keeps the spend figure, not the 5h one'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit absent: unchanged text'
 Confirm-Equal $seg.Role 'warn' 'limits spend_limit absent: role'
 Confirm-Equal $seg.Short "$iconLimit 5h 61%" 'limits spend_limit absent: short keeps the 5h figure when it is the worst'
@@ -926,51 +1211,63 @@ Confirm-Equal $seg.Short "$iconLimit 5h 61%" 'limits spend_limit absent: short k
 # The Short form keeps whichever figure drives the colour, so a fitted line never shows a red segment
 # with a calm number on it. Below the warn line nothing drives the colour, and the first present figure
 # stands in; a tie keeps render order (5h, 7d, then spend); the countdown never follows.
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"seven_day":{"used_percentage":88,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"seven_day":{"used_percentage":88,"resets_at":1700000000}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 10% 7d 88%" 'limits 7d worst: text'
 Confirm-Equal $seg.Short "$iconLimit 7d 88%" 'limits 7d worst: short keeps the 7d figure'
 Confirm-Equal $seg.Role 'bad' 'limits 7d worst: role'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"seven_day":{"used_percentage":41,"resets_at":1700000000},"spend_limit":{"used_percentage":30,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"seven_day":{"used_percentage":41,"resets_at":1700000000},"spend_limit":{"used_percentage":30,"resets_at":1700000000}}') $bandCfg
 Confirm-Equal $seg.Short "$iconLimit 5h 10%" 'limits all below warn: short is the first figure, not the largest'
 Confirm-Equal $seg.Role 'ok' 'limits all below warn: role'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"seven_day":{"used_percentage":92,"resets_at":1700000000},"spend_limit":{"used_percentage":10,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"seven_day":{"used_percentage":92,"resets_at":1700000000},"spend_limit":{"used_percentage":10,"resets_at":1700000000}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 7d 92% `$ 10%" 'limits no 5h, 7d red: text'
 Confirm-Equal $seg.Short "$iconLimit 7d 92%" 'limits no 5h, 7d red: short exists and keeps the 7d figure'
 Confirm-Equal $seg.Role 'bad' 'limits no 5h, 7d red: role'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"seven_day":{"used_percentage":20,"resets_at":1700000000},"spend_limit":{"used_percentage":30,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"seven_day":{"used_percentage":20,"resets_at":1700000000},"spend_limit":{"used_percentage":30,"resets_at":1700000000}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 7d 20% `$ 30%" 'limits no 5h, all below warn: text'
 Confirm-Equal $seg.Short "$iconLimit 7d 20%" 'limits no 5h, all below warn: short is the first present figure'
 Confirm-Equal $seg.Role 'ok' 'limits no 5h, all below warn: role'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":70,"resets_at":1700000000},"seven_day":{"used_percentage":70,"resets_at":1700000000},"spend_limit":{"used_percentage":70,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":70,"resets_at":1700000000},"seven_day":{"used_percentage":70,"resets_at":1700000000},"spend_limit":{"used_percentage":70,"resets_at":1700000000}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 70% 7d 70% `$ 70%" 'limits three-way tie: text'
 Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits three-way tie: 5h wins by render order'
 Confirm-Equal $seg.Role 'warn' 'limits three-way tie: role'
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"seven_day":{"used_percentage":70,"resets_at":1700000000},"spend_limit":{"used_percentage":70,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"seven_day":{"used_percentage":70,"resets_at":1700000000},"spend_limit":{"used_percentage":70,"resets_at":1700000000}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 7d 70% `$ 70%" 'limits 7d and spend tie: text'
 Confirm-Equal $seg.Short "$iconLimit 7d 70%" 'limits 7d and spend tie: 7d wins by render order'
 Confirm-Equal $seg.Role 'warn' 'limits 7d and spend tie: role'
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":69.6,"resets_at":1700000000},"seven_day":{"used_percentage":70.4,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":69.6,"resets_at":1700000000},"seven_day":{"used_percentage":70.4,"resets_at":1700000000}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 70% 7d 70%" 'limits tie after rounding: text rounds both to 70'
 Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits tie after rounding: 5h wins by render order'
 Confirm-Equal $seg.Role 'warn' 'limits tie after rounding: role'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"seven_day":{"used_percentage":92,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"seven_day":{"used_percentage":92,"resets_at":1700000000}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 7d 92%" 'limits 7d alone: text'
 Confirm-True ($null -eq $seg.Short) 'limits 7d alone: short would equal text, so none'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":70,"resets_at":4102444800},"seven_day":{"used_percentage":12,"resets_at":4102444800}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":70,"resets_at":4102444800},"seven_day":{"used_percentage":12,"resets_at":4102444800}}') $bandCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 70% (") -and $seg.Text.EndsWith(') 7d 12%')) 'limits 5h worst with a live reset: text carries the countdown'
 Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits 5h worst with a live reset: short drops the countdown'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000},"spend_limit":{"used_percentage":null,"resets_at":null}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000},"spend_limit":{"used_percentage":null,"resets_at":null}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit null percentage: unchanged text'
 
-Confirm-True ($null -eq (Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":null},"seven_day":{"used_percentage":null},"spend_limit":{"used_percentage":null}}'))) 'limits all null: segment omitted'
-Confirm-True ($null -eq (Get-LimitsSegment ([pscustomobject]@{}))) 'limits: missing rate_limits'
+Confirm-True ($null -eq (Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":null},"seven_day":{"used_percentage":null},"spend_limit":{"used_percentage":null}}') $bandCfg)) 'limits all null: segment omitted'
+Confirm-True ($null -eq (Get-LimitsSegment ([pscustomobject]@{}) $bandCfg)) 'limits: missing rate_limits'
+
+# The config's thresholds colour the rate limits too, whatever the window size, and the Short form
+# follows the colour they give: 24 is the worst figure and above a warn of 20, so it stays.
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":24,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000}}') $lowCfg
+Confirm-Equal $seg.Role 'warn' 'limits 5h 24 at 20/40: warn'
+Confirm-Equal $seg.Text "$iconLimit 5h 24% 7d 12%" 'limits 5h 24 at 20/40: text unchanged'
+Confirm-Equal $seg.Short "$iconLimit 5h 24%" 'limits 5h 24 at 20/40: short keeps the figure behind the colour'
+Confirm-Equal (Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":45,"resets_at":1700000000}}') $lowCfg).Role 'bad' 'limits 5h 45 at 20/40: bad'
+# Below the custom warn line nothing drives the colour, and the first present figure stands in.
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"seven_day":{"used_percentage":15,"resets_at":1700000000}}') $lowCfg
+Confirm-Equal $seg.Role 'ok' 'limits 10 and 15 at 20/40: ok'
+Confirm-Equal $seg.Short "$iconLimit 5h 10%" 'limits 10 and 15 at 20/40: short is the first figure'
 
 Write-Host '== unit: porcelain' -ForegroundColor Cyan
 $r = Read-PorcelainStatus "## main...origin/main [ahead 1]`n"
@@ -1040,6 +1337,11 @@ Confirm-Equal (Test-PayloadText '') $false 'payload text: empty string is not'
 Confirm-Equal (Test-PayloadText $null) $false 'payload text: null is not'
 Confirm-Equal (Test-PayloadText 7) $false 'payload text: a number is not'
 Confirm-Equal (Test-PayloadText @('octo')) $false 'payload text: an array is not'
+# A control character in the text would carry an escape sequence onto the line through the folder
+# segment's owner and name, so such a string is not text either.
+Confirm-Equal (Test-PayloadText "oc${esc}[31mto") $false 'payload text: a string with ESC inside is not'
+Confirm-Equal (Test-PayloadText "octo$([char]0x9B)") $false 'payload text: a string with a C1 control is not'
+Confirm-Equal (Test-PayloadText "oct$([char]0xE9)") $true 'payload text: a non-control non-ASCII character is still text'
 
 Write-Host '== unit: payload counts' -ForegroundColor Cyan
 # ConvertFrom-Json hands the sample counts over as Int64, so the object cases go through it.
@@ -1306,16 +1608,20 @@ $manyStamp = Get-GitStamp (Join-Path $cacheRepoMany '.git')
 Confirm-True ($manyStamp.StartsWith('over-cap:')) "git stamp: over 256 ref directories gives the over-cap marker, got '$manyStamp'"
 Confirm-True ($manyStamp -cne (Get-GitStamp (Join-Path $cacheRepoMany '.git'))) 'git stamp: the over-cap stamp never matches itself'
 Confirm-Equal ((Get-GitStamp (Join-Path $cacheRepoSome '.git')) -split ',').Count (10 + 1 + 2 + 1 + 200) 'git stamp: 200 ref directories are all stamped (refs, heads, tags, pull and 200 below it)'
+# A cache directory of its own, and the probe count is reset afterwards, because the miss and hit cases
+# below count from zero.
+$cacheCapDir = Join-Path $tmp 'cache-unit-cap'
 $before = $script:probeCalls
-$files = Get-CacheFileCount $cacheDir
-$g = Get-CachedGitBranch $cacheRepoMany 1500 $cacheDir 5
-$g = Get-CachedGitBranch $cacheRepoMany 1500 $cacheDir 5
+$g = Get-CachedGitBranch $cacheRepoMany 1500 $cacheCapDir 5
+$g = Get-CachedGitBranch $cacheRepoMany 1500 $cacheCapDir 5
 Confirm-Equal $script:probeCalls ($before + 2) 'over the ref cap: both calls probe'
 Confirm-Equal $g.Branch 'main' 'over the ref cap: the probe answers'
-Confirm-Equal (Get-CacheFileCount $cacheDir) $files 'over the ref cap: nothing written'
-$g = Get-CachedGitBranch $cacheRepoSome 1500 $cacheDir 5
-$g = Get-CachedGitBranch $cacheRepoSome 1500 $cacheDir 5
+Confirm-True (-not (Test-Path -LiteralPath $cacheCapDir)) 'over the ref cap: nothing written, not even the directory'
+$g = Get-CachedGitBranch $cacheRepoSome 1500 $cacheCapDir 5
+$g = Get-CachedGitBranch $cacheRepoSome 1500 $cacheCapDir 5
 Confirm-Equal $script:probeCalls ($before + 3) 'under the ref cap: one probe, then a hit'
+Confirm-True (Test-Path -LiteralPath (Join-Path $cacheCapDir (Get-CacheEntryName $cacheRepoSome))) 'under the ref cap: the entry is written'
+$script:probeCalls = 0
 $cacheWtGitDirMany = Join-Path $cacheRepoMany '.git' 'worktrees' 'wt'
 New-Item -ItemType Directory -Force $cacheWtGitDirMany | Out-Null
 [System.IO.File]::WriteAllText((Join-Path $cacheWtGitDirMany 'HEAD'), "ref: refs/heads/wt`n")
@@ -2012,6 +2318,30 @@ if ($haveGit) {
     Confirm-Equal (Get-GitRepoRoot $wtStray).WorkTree $wtMain 'worktree main: an empty .git folder in a subdirectory is walked past'
 }
 
+# The config gates the probe. A segment the active layout's list leaves out is never built, so an order
+# without branch never launches git at all, which a marker-writing fake on PATH proves; the same fake
+# with branch listed is launched and renders. The toggle is checked the same way, and the payload has no
+# git object, so the fake is the only source of a branch.
+$fakeMark = Write-FakeGit 'fake-mark' "echo ran > `"%~dp0fake.ran`"`r`necho ## main`r`nexit 0"
+$markerPath = Join-Path $fakeMark 'fake.ran'
+foreach ($case in @(
+        @{ Name = 'order without branch';  Json = '{ "order": ["model", "folder"] }'; Ran = $false }
+        @{ Name = 'order with branch';     Json = '{ "order": ["model", "branch"] }'; Ran = $true }
+        @{ Name = 'rows without branch';   Json = '{ "layout": "two", "rows": [["model"], ["folder"]] }'; Ran = $false }
+        @{ Name = 'rows with branch';      Json = '{ "layout": "two", "rows": [["model"], ["branch"]] }'; Ran = $true }
+        @{ Name = 'order ignored by two';  Json = '{ "layout": "two", "order": ["model"] }'; Ran = $true }
+        @{ Name = 'branch toggled off';    Json = '{ "order": ["model", "branch"], "segments": { "branch": false } }'; Ran = $false })) {
+    Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+    $r = Invoke-StatusLine (Get-GitPayload $notRepo) (Write-TempConfig "git-gate-$($case.Name -replace ' ', '-').json" $case.Json) 0 $fakeMark
+    $text = ConvertTo-PlainText ($r.Lines -join "`n")
+    $label = "git gate $($case.Name)"
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) "${label}: exit code 0, stderr empty"
+    Confirm-Equal (Test-Path -LiteralPath $markerPath) $case.Ran "${label}: fake git launched is $($case.Ran)"
+    if ($case.Ran) { Confirm-True ($text.Contains("$iconHome main")) "${label}: the branch the fake reports is on the line" }
+    else { Confirm-True (-not $text.Contains($iconHome) -and -not $text.Contains($iconBranch)) "${label}: no branch on the line, got '$text'" }
+    Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f $label, $r.Ms, $text)
+}
+
 # Positive control for the hang case's "no ping is left behind": that assertion would also pass if the
 # fake had never started a ping. Run the same fake once more without waiting for the render, and watch
 # the ping from outside - it has to be running while the render is still blocked, and gone once the
@@ -2415,6 +2745,13 @@ $absentGlyphs = @{
         @{ Icon = $iconLines; Name = 'lines' }
         @{ Icon = $iconLimit; Name = 'limits' }
     )
+    '10-pr.json'                            = @(
+        @{ Icon = $iconHome; Name = 'home' }
+        @{ Icon = $iconDirty; Name = 'pencil' }
+        @{ Icon = $iconLines; Name = 'lines' }
+        @{ Icon = $iconLimit; Name = 'limits' }
+        @{ Icon = $iconConflict; Name = 'warn' }
+    )
 }
 # What each sample renders when every segment is enabled and nothing is fitted away: 04 carries nothing
 # but a model, 05, 07 and 08 have no git object and their probe directory is not a repository, and 07's
@@ -2430,6 +2767,7 @@ $sampleSegments = @{
     '07-limits-expired-default-effort.json' = @('model', 'context', 'cost', 'lines', 'limits', 'folder')
     '08-repo-identity.json'                 = @('model', 'context', 'cost', 'folder')
     '09-1m-context.json'                    = @('model', 'context', 'cost', 'folder', 'branch')
+    '10-pr.json'                            = @('model', 'context', 'cost', 'pr', 'folder', 'branch')
 }
 # One marker per segment per sample: the segment's glyph plus the value this payload gives it, spelled
 # the way it reaches the line once the escapes are stripped. Every visible segment has to put its marker
@@ -2496,6 +2834,10 @@ $sampleMarkers = @{
         model  = "$iconModel Fable 5.1 1M $iconConflict"; context = "$iconCtx 65%"; cost = "$iconCost `$$('{0:N2}' -f 4.21)"
         folder = "$iconFolder my-project"; branch = "$iconHome main"
     }
+    '10-pr.json'                            = @{
+        model  = "$iconModel Fable 5.1"; context = "$iconCtx 8%"; cost = "$iconCost `$$('{0:N2}' -f 0.4312)"
+        pr     = "$iconPr #12"; folder = "$iconFolder my-project"; branch = "$iconBranch feature/x"
+    }
 }
 # Every glyph a segment can put on the line: a segment the config turns off must show none of them, and
 # the two-line checks use them to say which row a segment landed on.
@@ -2506,6 +2848,7 @@ $segmentGlyphs = @{
     lines   = @($iconLines)
     limits  = @($iconLimit)
     badges  = @($iconFast, $iconThink, $iconEffort, $iconVim)
+    pr      = @($iconPr)
     folder  = @($iconFolder)
     branch  = @($iconHome, $iconBranch, $iconDirty, $iconAhead, $iconBehind, $iconConflict)
 }
@@ -2516,10 +2859,17 @@ $glyphSegment = @{
     home = 'branch'; pencil = 'branch'; branch = 'branch'
     fast = 'badges'; think = 'badges'; effort = 'badges'; vim = 'badges'
 }
-# statusline.ps1's own line sets, derived from the registry so the test knows which segments share a line.
-$layoutRows = @{
-    one = @(, $allSegments)
-    two = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
+# A config record for the matrix. Rows is what the script prints from this config, read the way the
+# script reads it: the order key for layout one, the two rows for layout two. Enabled is the segments
+# the script will build, toggled on and listed on a row, so a segment the order leaves out is checked
+# for absence like one toggled off. Widths is the column list the config renders at, every width in
+# -Columns unless the config asks for fewer.
+function Get-ConfigRecord([string] $Name, [string] $Path, $Parsed, [int[]] $Widths = $Columns) {
+    $rows = @(if ($Parsed.Layout -eq 'two') { $Parsed.Rows } else { , $Parsed.Order })
+    $listed = @($rows | ForEach-Object { $_ })
+    $enabled = @{}
+    foreach ($n in $allSegments) { $enabled[$n] = [bool] ($Parsed.Segments[$n] -and $n -in $listed) }
+    return @{ Name = $Name; Path = $Path; Layout = $Parsed.Layout; Style = $Parsed.Style; Folder = $Parsed.Folder; Enabled = $enabled; Rows = $rows; Widths = $Widths }
 }
 # The oracle turns off every registry segment but model, so a new segment is off here without an edit.
 $modelOnlySegments = @($allSegments | Where-Object { $_ -ne 'model' } | ForEach-Object { '"' + $_ + '": false' }) -join ', '
@@ -2537,20 +2887,36 @@ if ($Config) {
     $parsed = Read-StatusConfig $resolved
     $off = @($allSegments | Where-Object { -not $parsed.Segments[$_] })
     if ($off.Count -gt 0) { Write-Host "note: $(Split-Path $resolved -Leaf) turns off $($off -join ', '); those segments are checked for absence instead" -ForegroundColor Yellow }
-    $configSet.Add(@{ Name = (Split-Path $resolved -Leaf); Path = $resolved; Layout = $parsed.Layout; Style = $parsed.Style; Folder = $parsed.Folder; Enabled = $parsed.Segments })
+    $configSet.Add((Get-ConfigRecord (Split-Path $resolved -Leaf) $resolved $parsed))
 } else {
     foreach ($layout in @('one', 'two')) {
         foreach ($style in @('plain', 'powerline')) {
             $path = Write-TempConfig "$layout-$style.json" ('{ "layout": "' + $layout + '", "style": "' + $style + '" }')
-            $parsed = Read-StatusConfig $path
-            $configSet.Add(@{ Name = "$layout-$style"; Path = $path; Layout = $layout; Style = $style; Folder = $parsed.Folder; Enabled = $parsed.Segments })
+            $configSet.Add((Get-ConfigRecord "$layout-$style" $path (Read-StatusConfig $path)))
         }
     }
     # Leaf mode through the whole script, so the registry's wiring of the config into Get-FolderSegment
     # is covered by a real render and not only by the unit call.
     $path = Write-TempConfig 'folder-leaf.json' '{ "folder": "leaf" }'
-    $parsed = Read-StatusConfig $path
-    $configSet.Add(@{ Name = 'folder-leaf'; Path = $path; Layout = $parsed.Layout; Style = $parsed.Style; Folder = $parsed.Folder; Enabled = $parsed.Segments })
+    $configSet.Add((Get-ConfigRecord 'folder-leaf' $path (Read-StatusConfig $path)))
+    # The order and rows keys through the whole script: layout one in the registry order reversed with
+    # cost left out, and layout two with the rows swapped and each reversed. The row checks below then
+    # prove every marker lands on the row, and at the place on it, that the config asks for, and that
+    # the segment left out is not on the line at all. Those checks run at the unset width, so the two
+    # render there and at one narrow width, which keeps the fitting path covered without another 72
+    # child renders.
+    $keyWidths = @($Columns | Where-Object { $_ -in @(0, 60) })
+    $reversed = @($allSegments | Where-Object { $_ -ne 'cost' })
+    [array]::Reverse($reversed)
+    $path = Write-TempConfig 'order-reversed.json' ('{ "layout": "one", "style": "plain", "order": ' + (ConvertTo-Json -InputObject $reversed -Compress) + ' }')
+    $configSet.Add((Get-ConfigRecord 'order-reversed' $path (Read-StatusConfig $path) $keyWidths))
+    $swappedRows = @(@(Get-SegmentOrder 'RowRank' 2), @(Get-SegmentOrder 'RowRank' 1))
+    foreach ($row in $swappedRows) { [array]::Reverse($row) }
+    $path = Write-TempConfig 'rows-swapped.json' ('{ "layout": "two", "style": "powerline", "rows": ' + (ConvertTo-Json -InputObject $swappedRows -Compress) + ' }')
+    $configSet.Add((Get-ConfigRecord 'rows-swapped' $path (Read-StatusConfig $path) $keyWidths))
+    Confirm-Equal ($configSet[$configSet.Count - 1].Rows[0] -join ',') 'lines,cost,limits,context' 'rows-swapped config: first row is the registry second row reversed'
+    Confirm-Equal ($configSet[$configSet.Count - 1].Rows[1] -join ',') 'badges,pr,branch,folder,model' 'rows-swapped config: second row is the registry first row reversed'
+    Confirm-Equal ($configSet[$configSet.Count - 2].Rows[0] -join ',') 'branch,folder,pr,badges,limits,lines,context,model' 'order-reversed config: one row, reversed, without cost'
 }
 
 # No sample carries a session_id, so no render in the matrix may write state. The child renders get a
@@ -2561,7 +2927,7 @@ New-Item -ItemType Directory -Force $matrixTemp | Out-Null
 $env:TEMP = $matrixTemp
 try {
 foreach ($cfg in $configSet) {
-    foreach ($c in $Columns) {
+    foreach ($c in $cfg.Widths) {
         Write-Host ''
         Write-Host ("== render {0}  COLUMNS={1}" -f $cfg.Name, $(if ($c -gt 0) { $c } else { 'unset' })) -ForegroundColor Cyan
         $maxLines = if ($cfg.Layout -eq 'two') { 2 } else { 1 }
@@ -2624,7 +2990,7 @@ foreach ($cfg in $configSet) {
                 $marks = $sampleMarkers[$sample.Name]
                 $visible = @($allSegments | Where-Object { $cfg.Enabled[$_] -and $_ -in $known })
                 $rowVisible = [System.Collections.Generic.List[object]]::new()
-                foreach ($row in $layoutRows[$cfg.Layout]) { $rowVisible.Add(@($row | Where-Object { $_ -in $visible })) }
+                foreach ($row in $cfg.Rows) { $rowVisible.Add(@($row | Where-Object { $_ -in $visible })) }
                 if ($visible.Count -eq 0) {
                     # The config turns off everything this sample could show. statusline.ps1 builds no
                     # segments at all then and prints its fallback, the model glyph and the word claude.
@@ -2638,23 +3004,40 @@ foreach ($cfg in $configSet) {
                         $seen = @($segmentGlyphs[$name] | Where-Object { $_ -notin $shared -and $text.Contains($_) })
                         Confirm-True ($seen.Count -eq 0) "${label}: $name is off, none of its glyphs appear"
                     }
-                    # The rows this render should print, in order. Layout one is a single row; layout two
-                    # drops a row that has nothing visible left on it, because Get-FittedLine returns
-                    # $null for an empty set and the print loop skips it.
-                    if ($cfg.Layout -eq 'two') { $rows = @($rowVisible | Where-Object { $_.Count -gt 0 }) } else { $rows = @(, $visible) }
+                    # A segment the config leaves on but the sample gives no data for has to stay off the
+                    # line too, under the same one-owner rule: a glyph that a listed, enabled segment also
+                    # owns proves nothing. This is what catches a builder that starts rendering from a
+                    # payload that should give it nothing, for every sample rather than the few the
+                    # absence table names.
+                    foreach ($name in $allSegments) {
+                        if (-not $cfg.Enabled[$name] -or $name -in $known) { continue }
+                        $shared = @($allSegments | Where-Object { $_ -ne $name -and $cfg.Enabled[$_] -and $_ -in $known } | ForEach-Object { $segmentGlyphs[$_] })
+                        $seen = @($segmentGlyphs[$name] | Where-Object { $_ -notin $shared -and $text.Contains($_) })
+                        Confirm-True ($seen.Count -eq 0) "${label}: $name has no data in this sample, none of its glyphs appear"
+                    }
+                    # The rows this render should print, in order: the config's rows with the segments
+                    # this sample shows, minus a row that has nothing visible left on it, because
+                    # Get-FittedLine returns $null for an empty set and the print loop skips it.
+                    $rows = @($rowVisible | Where-Object { $_.Count -gt 0 })
                     Confirm-Equal $lines.Count $rows.Count "${label}: renders $($rows.Count) line(s)"
                     if ($lines.Count -eq $rows.Count) {
                         for ($ri = 0; $ri -lt $rows.Count; $ri++) {
                             $rowText = ConvertTo-PlainText $lines[$ri]
                             $mine = @($rows[$ri])
                             # Every visible segment has to prove it rendered, by its own marker, on its
-                            # own row. This is the check that a dropped segment cannot slip past: the
-                            # absence table names only a few glyphs per sample.
+                            # own row, and after the segment the config puts before it. This is the
+                            # check that a dropped or misplaced segment cannot slip past: the absence
+                            # table names only a few glyphs per sample.
+                            $lastAt = -1
                             foreach ($name in $mine) {
                                 $marker = $marks[$name]
                                 if ($marker -is [hashtable]) { $marker = $marker[$cfg.Folder] }
                                 if (-not $marker) { Confirm-True $false "${label}: no marker for $name in the marker table"; continue }
-                                Confirm-True ($rowText.Contains($marker)) "${label}: line $($ri + 1) shows $name as '$marker'"
+                                $at = $rowText.IndexOf($marker)
+                                Confirm-True ($at -ge 0) "${label}: line $($ri + 1) shows $name as '$marker'"
+                                if ($at -lt 0) { continue }
+                                Confirm-True ($at -gt $lastAt) "${label}: line $($ri + 1) has $name after the segment listed before it"
+                                $lastAt = $at
                             }
                             $other = @($visible | Where-Object { $_ -notin $mine })
                             if ($other.Count -gt 0) {
@@ -2715,6 +3098,37 @@ foreach ($cfg in $configSet) {
         }
     }
 }
+
+# The thresholds and icons keys through the whole script, one sample each at the unset width: 06 has a
+# 32% context meter, green at 60/85 and yellow at 20/40, and 01 renders the model glyph, which the
+# config swaps for the bolt. Plain style, so a segment's colour is the SGR code in front of its text.
+Write-Host ''
+Write-Host '== render: thresholds and icons' -ForegroundColor Cyan
+$payload06 = $samplePayloads[$sample06.Name]
+foreach ($case in @(
+        @{ Name = 'thresholds-default'; Json = '{}'; Sgr = '32'; Label = 'default 60/85 leaves the 32% meter green' }
+        @{ Name = 'thresholds-low'; Json = '{ "thresholds": { "warn": 20, "bad": 40 } }'; Sgr = '33'; Label = '20/40 turns the 32% meter yellow' }
+        @{ Name = 'thresholds-high'; Json = '{ "thresholds": { "warn": 33, "bad": 34 } }'; Sgr = '32'; Label = '33/34 leaves the 32% meter green' }
+        @{ Name = 'thresholds-crossed'; Json = '{ "thresholds": { "warn": 90, "bad": 10 } }'; Sgr = '32'; Label = '90/10 falls back to 60/85, the meter is green' }
+        @{ Name = 'thresholds-fraction'; Json = '{ "thresholds": { "warn": 20.5, "bad": 40 } }'; Sgr = '32'; Label = 'a fraction falls back to 60/85, the meter is green' })) {
+    $r = Invoke-StatusLine $payload06 (Write-TempConfig "render-$($case.Name).json" $case.Json) 0
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) "render $($case.Name): exit code 0, stderr empty"
+    Confirm-True (($r.Lines -join "`n").Contains("$esc[$($case.Sgr)m$iconCtx 32%")) "render $($case.Name): $($case.Label)"
+}
+$bolt = [char]::ConvertFromUtf32(0xF0E7)
+$payload01 = $samplePayloads['01-main-clean.json']
+$r = Invoke-StatusLine $payload01 (Write-TempConfig 'render-icons-bolt.json' '{ "icons": { "model": "F0E7", "home": "U+2302", "cost": "zz" } }') 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render icons: exit code 0, stderr empty'
+$text = ConvertTo-PlainText ($r.Lines -join "`n")
+Confirm-True ($text.Contains("$bolt Fable 5.1")) 'render icons: the model segment carries the bolt'
+Confirm-True (-not $text.Contains($iconModel)) 'render icons: the robot is gone'
+Confirm-True ($text.Contains("$([char]::ConvertFromUtf32(0x2302)) main")) 'render icons: the home glyph takes a U+ form'
+Confirm-True ($text.Contains("$iconCost `$")) 'render icons: an invalid value keeps the built-in cash glyph'
+Confirm-True ($text.Contains("$iconFolder my-project")) 'render icons: an icon not mentioned keeps its glyph'
+$r = Invoke-StatusLine $payload01 (Write-TempConfig 'render-icons-surrogate.json' '{ "icons": { "model": "D800" } }') 0
+Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains("$iconModel Fable 5.1")) 'render icons: a surrogate falls back to the robot'
+$r = Invoke-StatusLine 'not json' (Write-TempConfig 'render-icons-bolt.json' '{ "icons": { "model": "F0E7" } }') 0
+Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) "$bolt claude" 'render icons: the bad-payload fallback line carries the override too'
 Confirm-True (@(Get-ChildItem -LiteralPath $matrixTemp -Recurse -Force -File).Count -eq 0) 'render matrix: no state written for payloads without a session_id'
 } finally {
     if ($null -ne $oldTemp) { $env:TEMP = $oldTemp } else { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }

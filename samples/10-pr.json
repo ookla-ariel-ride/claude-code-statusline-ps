@@ -1,0 +1,18 @@
+{
+  "model": { "display_name": "Fable 5.1" },
+  "context_window": {
+    "total_input_tokens": 15500,
+    "total_output_tokens": 1200,
+    "context_window_size": 200000,
+    "used_percentage": 8
+  },
+  "cost": { "total_cost_usd": 0.4312 },
+  "workspace": { "current_dir": "C:\\Users\\jim\\src\\my-project" },
+  "git": { "branch": "feature/x", "status": "clean" },
+  "pr": {
+    "number": 12,
+    "url": "https://github.com/octo/demo/pull/12",
+    "review_state": "approved",
+    "kind": "pull_request"
+  }
+}

@@ -3,6 +3,8 @@
   "style": "plain",
   "folder": "repo",
   "state": true,
+  "thresholds": { "warn": 60, "bad": 85 },
+  "icons": {},
   "git": {
     "timeoutMs": 1500,
     "cacheSeconds": 5,
@@ -15,6 +17,7 @@
     "lines": true,
     "limits": true,
     "badges": true,
+    "pr": true,
     "folder": true,
     "branch": true
   }
