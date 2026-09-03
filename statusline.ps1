@@ -3,7 +3,8 @@
 # Requires a Nerd Font in the terminal (install.ps1 can set up JetBrainsMono Nerd Font).
 # Reads the JSON Claude Code pipes on stdin and prints one or two lines, e.g.
 #   󰚩 Fable 5.1  󰍛 37% ████░░░░░░   $0.43   my-project   main
-# Layout, separator style and segment toggles come from statusline.json next to this script.
+# Layout, separator style, segment toggles and order, colour bands and glyph overrides come from
+# statusline.json next to this script.
 # Glyphs are emitted from code points so the file's own encoding never matters.
 [CmdletBinding()]
 param(
@@ -19,24 +20,60 @@ function G([int] $cp) { [char]::ConvertFromUtf32($cp) }
 $e = [char]27
 function C([string] $code, [string] $text) { "$e[${code}m$text$e[0m" }
 
-$iconModel  = G 0xF06A9   # nf-md-robot
-$iconCtx    = G 0xF035B   # nf-md-memory
-$iconCost   = G 0xF0155   # nf-md-cash
-$iconFolder = G 0xF07C    # nf-fa-folder_open
-$iconChevron = G 0x203A   # single right-pointing angle quotation mark (between owner/name and the leaf)
-$iconBranch = G 0xE0A0    # powerline branch
-$iconHome   = G 0xF015    # nf-fa-home  (on main/master)
-$iconDirty  = G 0xF040    # nf-fa-pencil (uncommitted changes)
-$iconAhead  = G 0x2191    # up arrow (commits ahead of upstream)
-$iconBehind = G 0x2193    # down arrow (commits behind upstream)
-$iconConflict = G 0xF071  # nf-fa-exclamation_triangle (merge conflicts)
-$iconPr     = G 0xF407    # nf-oct-git_pull_request
-$iconLines  = G 0xF121    # nf-fa-code  (lines added/removed)
-$iconLimit  = G 0xF0E4    # nf-fa-tachometer (rate limits)
-$iconFast   = G 0xF0E7    # nf-fa-bolt  (fast mode)
-$iconThink  = G 0xF09D0   # nf-md-brain (extended thinking)
-$iconEffort = G 0xF04C5   # nf-md-speedometer (effort level)
-$iconVim    = G 0xE62B    # nf-custom-vim
+# The built-in code point of every glyph the segments use, keyed by the name the icons key of
+# statusline.json takes: the $icon* constant minus its prefix, lower-cased. The constants themselves
+# are assigned from Get-IconSet once the config is read, so an override is in place before any builder runs.
+function Get-IconDefault {
+    return @{
+        model    = 0xF06A9   # nf-md-robot
+        context  = 0xF035B   # nf-md-memory
+        cost     = 0xF0155   # nf-md-cash
+        folder   = 0xF07C    # nf-fa-folder_open
+        chevron  = 0x203A    # single right-pointing angle quotation mark (between owner/name and the leaf)
+        branch   = 0xE0A0    # powerline branch
+        home     = 0xF015    # nf-fa-home  (on main/master)
+        dirty    = 0xF040    # nf-fa-pencil (uncommitted changes)
+        ahead    = 0x2191    # up arrow (commits ahead of upstream)
+        behind   = 0x2193    # down arrow (commits behind upstream)
+        conflict = 0xF071    # nf-fa-exclamation_triangle (merge conflicts)
+        pr       = 0xF407    # nf-oct-git_pull_request
+        lines    = 0xF121    # nf-fa-code  (lines added/removed)
+        limits   = 0xF0E4    # nf-fa-tachometer (rate limits)
+        fast     = 0xF0E7    # nf-fa-bolt  (fast mode)
+        think    = 0xF09D0   # nf-md-brain (extended thinking)
+        effort   = 0xF04C5   # nf-md-speedometer (effort level)
+        vim      = 0xE62B    # nf-custom-vim
+    }
+}
+
+# A code point from a config value: a string of hex digits, with U+ or 0x allowed in front, space around
+# it and leading zeros, at most six digits once those are gone, up to 10FFFF, not a surrogate and not a
+# control character (00 to 1F and 7F to 9F, which would put a raw newline or a bare escape on the line).
+# $null for anything else, so the caller keeps the built-in glyph.
+function Read-CodePoint($Value) {
+    if ($Value -isnot [string]) { return $null }
+    $hex = $Value.Trim()
+    if ($hex.StartsWith('U+', [StringComparison]::OrdinalIgnoreCase) -or $hex.StartsWith('0x', [StringComparison]::OrdinalIgnoreCase)) { $hex = $hex.Substring(2) }
+    $hex = $hex.TrimStart('0')
+    if ($hex.Length -lt 1 -or $hex.Length -gt 6) { return $null }
+    $cp = 0
+    if (-not [int]::TryParse($hex, [System.Globalization.NumberStyles]::AllowHexSpecifier, [cultureinfo]::InvariantCulture, [ref] $cp)) { return $null }
+    if ($cp -gt 0x10FFFF -or ($cp -ge 0xD800 -and $cp -le 0xDFFF) -or $cp -le 0x1F -or ($cp -ge 0x7F -and $cp -le 0x9F)) { return $null }
+    return $cp
+}
+
+# One glyph per icon name: the built-in code point, or the config's override where its Icons table has
+# one. A plain loop over the table, because this runs before the first line is printed.
+function Get-IconSet($cfg) {
+    $set = @{}
+    foreach ($e in (Get-IconDefault).GetEnumerator()) {
+        $cp = $e.Value
+        if ($cfg.Icons -and $cfg.Icons.ContainsKey($e.Key)) { $cp = $cfg.Icons[$e.Key] }
+        $set[$e.Key] = G $cp
+    }
+    return $set
+}
+
 $defaultEffort = 'high'   # effort badge is hidden at this level
 
 $gitTimeoutMs = 1500      # how long the branch segment waits for `git status` before giving up
@@ -108,10 +145,33 @@ function Get-SegmentOrder([ValidateSet('ShrinkRank', 'DropRank', 'RowRank')] [st
     return @(for ($i = 1; $i -le $slots.Count; $i++) { $slots[$i] })
 }
 
-# Reads statusline.json. Anything missing or invalid silently falls back to its default.
+# The segment names in a config array, lower-cased and known to the registry, each at its first place:
+# a repeat, an entry that is not a string and a name no segment has are skipped. $Seen carries the names
+# already taken and is updated, so the second row of layout two cannot list a segment the first row has.
+# $null when the value is not an array at all, which the caller tells from an empty list. A plain loop
+# and array rather than a pipeline, because this runs on the startup path for every render.
+function Read-SegmentNameList($Value, [hashtable] $Known, [hashtable] $Seen) {
+    if ($Value -isnot [array]) { return $null }
+    $names = @()
+    foreach ($v in $Value) {
+        if ($v -isnot [string]) { continue }
+        $n = $v.ToLowerInvariant()
+        if (-not $Known.ContainsKey($n) -or $Seen.ContainsKey($n)) { continue }
+        $Seen[$n] = $true
+        $names += $n
+    }
+    return , $names
+}
+
+# Reads statusline.json. Anything missing or invalid silently falls back to its default, and each key
+# falls back on its own: a valid order beside a broken thresholds keeps the order.
 function Read-StatusConfig([string] $Path) {
     $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Segments = @{} }
     foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
+    $cfg.Order = @((Get-SegmentRegistry).Name)
+    $cfg.Rows = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
+    $cfg.Thresholds = @{ Warn = 60; Bad = 85 }
+    $cfg.Icons = @{}
     try {
         if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $cfg }
         $j = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
@@ -125,6 +185,44 @@ function Read-StatusConfig([string] $Path) {
             foreach ($n in @($cfg.Segments.Keys)) {
                 $v = $segs.$n
                 if ($v -is [bool]) { $cfg.Segments[$n] = $v }
+            }
+        }
+        # order: the segment names of layout one. Empty, or naming no segment, keeps the registry order.
+        $order = Read-SegmentNameList $j.order $cfg.Segments @{}
+        if ($null -ne $order -and $order.Count -gt 0) { $cfg.Order = $order }
+        # rows: two arrays of names for layout two, read against one seen set so a segment sits on one
+        # row only. Anything but exactly two arrays, or two rows naming nothing, keeps the registry rows.
+        $rows = $j.rows
+        if ($rows -is [array] -and $rows.Count -eq 2) {
+            $seen = @{}
+            $row1 = Read-SegmentNameList $rows[0] $cfg.Segments $seen
+            $row2 = Read-SegmentNameList $rows[1] $cfg.Segments $seen
+            if ($null -ne $row1 -and $null -ne $row2 -and ($row1.Count + $row2.Count) -gt 0) { $cfg.Rows = @($row1, $row2) }
+        }
+        # thresholds: warn and bad, whole numbers 0 to 100 with warn at or below bad, for the context
+        # meter on a standard window and for the rate limits. A whole number written as 20.0 counts, the
+        # way Get-PayloadNumber reads a count, since a config written by another tool can spell it so.
+        # Either value wrong keeps 60 and 85 for both.
+        $t = $j.thresholds
+        if ($t -is [System.Management.Automation.PSCustomObject]) {
+            $w = Get-FiniteNumber $t.warn
+            $b = Get-FiniteNumber $t.bad
+            if ($null -ne $w -and $null -ne $b -and $w -eq [math]::Floor($w) -and $b -eq [math]::Floor($b) -and $w -ge 0 -and $b -le 100 -and $w -le $b) {
+                $cfg.Thresholds = @{ Warn = [int] $w; Bad = [int] $b }
+            }
+        }
+        # icons: icon name to a hex code point string. Only a known name with a code point Read-CodePoint
+        # accepts is kept, as name to integer; every other entry leaves the built-in glyph alone. The two
+        # names the constants shorten are accepted in either spelling.
+        $ic = $j.icons
+        if ($ic -is [System.Management.Automation.PSCustomObject]) {
+            $known = Get-IconDefault
+            $alias = @{ ctx = 'context'; limit = 'limits' }
+            foreach ($p in $ic.PSObject.Properties) {
+                $n = $p.Name.ToLowerInvariant()
+                if ($alias.ContainsKey($n)) { $n = $alias[$n] }
+                $cp = Read-CodePoint $p.Value
+                if ($known.ContainsKey($n) -and $null -ne $cp) { $cfg.Icons[$n] = $cp }
             }
         }
     } catch { return $cfg }
@@ -494,17 +592,41 @@ function Write-SessionState([string] $SessionId, $State) {
     } catch { $null = $_ }
 }
 
-$raw = [Console]::In.ReadToEnd()
-try { $d = $raw | ConvertFrom-Json } catch { Write-Host (C '36' "$iconModel claude"); exit 0 }
-
 $configPath = if ($Config) { $Config } else { Join-Path $PSScriptRoot 'statusline.json' }
 $cfg = Read-StatusConfig $configPath
 
+# The glyphs the builders and the fallback line use, with the config's icons overrides applied. The config
+# is read before the payload so these are settled before anything is printed.
+$icons = Get-IconSet $cfg
+$iconModel = $icons.model
+$iconCtx = $icons.context
+$iconCost = $icons.cost
+$iconFolder = $icons.folder
+$iconChevron = $icons.chevron
+$iconBranch = $icons.branch
+$iconHome = $icons.home
+$iconDirty = $icons.dirty
+$iconAhead = $icons.ahead
+$iconBehind = $icons.behind
+$iconConflict = $icons.conflict
+$iconPr = $icons.pr
+$iconLines = $icons.lines
+$iconLimit = $icons.limits
+$iconFast = $icons.fast
+$iconThink = $icons.think
+$iconEffort = $icons.effort
+$iconVim = $icons.vim
+
+$raw = [Console]::In.ReadToEnd()
+try { $d = $raw | ConvertFrom-Json } catch { Write-Host (C '36' "$iconModel claude"); exit 0 }
+
 # ---- Segment builders. Each returns $null (segment omitted) or @{ Name; Text; Short; Role; Bold }. ----
 
-# Colour bands for a percentage. The defaults suit a 200k window; a 1M window passes wider bands, because
-# 85% of 1M still leaves 150k tokens, more than a whole fresh 200k session.
-function Get-ThresholdRole([int] $pct, [int] $Warn = 60, [int] $Bad = 85) { if ($pct -ge $Bad) { 'bad' } elseif ($pct -ge $Warn) { 'warn' } else { 'ok' } }
+# Colour bands for a percentage. Every caller passes both bands: the config's thresholds, 60 and 85 unless
+# statusline.json moves them, which suit a 200k window, or the fixed 70 and 90 of a 1M window, because 85%
+# of 1M still leaves 150k tokens, more than a whole fresh 200k session, so the config does not reach them.
+# No defaults here: a caller that forgot the config would bind 0 and 0 and colour everything red.
+function Get-ThresholdRole([int] $pct, [int] $Warn, [int] $Bad) { if ($pct -ge $Bad) { 'bad' } elseif ($pct -ge $Warn) { 'warn' } else { 'ok' } }
 
 # The one window size that gets the 1M marker and the wider bands. Claude Code reports it as exactly 1000000.
 function Test-WideWindow($size) { return $size -eq 1000000 }
@@ -523,7 +645,7 @@ function Get-ModelSegment($d, $cfg) {
     return @{ Name = 'model'; Text = $text; Short = $null; Role = 'model'; Bold = $true }
 }
 
-function Get-ContextSegment($d) {
+function Get-ContextSegment($d, $cfg) {
     $pct = $d.context_window.used_percentage
     if ($null -eq $pct) { return $null }
     $pct = [int] $pct
@@ -534,7 +656,7 @@ function Get-ContextSegment($d) {
     $size = $d.context_window.context_window_size
     $counts = if ($used -gt 0 -and $size) { " $(K $used)/$(K $size)" } elseif ($used -gt 0) { " $(K $used)" } else { '' }
     $short = "$iconCtx $pct% $bar"
-    $role = if (Test-WideWindow $size) { Get-ThresholdRole $pct 70 90 } else { Get-ThresholdRole $pct }
+    $role = if (Test-WideWindow $size) { Get-ThresholdRole $pct 70 90 } else { Get-ThresholdRole $pct $cfg.Thresholds.Warn $cfg.Thresholds.Bad }
     return @{ Name = 'context'; Text = "$short$counts"; Short = $(if ($counts) { $short } else { $null }); Role = $role; Bold = $false }
 }
 
@@ -565,10 +687,11 @@ function TimeLeft([object] $epoch) {
 # Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets, and the spend limit when
 # the payload carries one (Claude Code sends it behind a Claude apps gateway with a spend limit). The spend
 # figure uses a literal dollar sign, not the cash glyph, so it does not read as a second cost; its resets_at
-# is not shown, one countdown is enough. Every figure that is present joins the worst-of colour, and the
-# Short form a narrow terminal falls back to keeps the figure behind that colour: the worst one, or the
-# first present one when nothing is above the warn line. Either way it carries no countdown.
-function Get-LimitsSegment($d) {
+# is not shown, one countdown is enough. Every figure that is present joins the worst-of colour, banded by
+# the config's thresholds whatever the window size, and the Short form a narrow terminal falls back to
+# keeps the figure behind that colour: the worst one, or the first present one when nothing is above the
+# warn line. Either way it carries no countdown.
+function Get-LimitsSegment($d, $cfg) {
     $rl = $d.rate_limits
     if (-not $rl) { return $null }
     $bits = [System.Collections.Generic.List[string]]::new()
@@ -589,7 +712,7 @@ function Get-LimitsSegment($d) {
     }
     if ($bits.Count -eq 0) { return $null }
     $text = "$iconLimit $($bits -join ' ')"
-    $role = Get-ThresholdRole $worst
+    $role = Get-ThresholdRole $worst $cfg.Thresholds.Warn $cfg.Thresholds.Bad
     $short = "$iconLimit " + $(if ($role -eq 'ok') { $first } else { $top })
     if ($short -eq $text) { $short = $null }
     return @{ Name = 'limits'; Text = $text; Short = $short; Role = $role; Bold = $false }
@@ -732,9 +855,16 @@ function Get-BranchSegment($d, $cfg) {
 
 # ---- Build, lay out, fit, print ----
 
+# The names on each printed line: the config's order for layout one, the two rows for layout two. A
+# segment that is toggled off, or that no line lists, is not built at all, so an order without branch
+# never runs the git probe.
+$lineSets = @(if ($cfg.Layout -eq 'two') { $cfg.Rows } else { , $cfg.Order })
+$listed = @{}
+foreach ($names in $lineSets) { foreach ($n in $names) { $listed[$n] = $true } }
+
 $segments = [System.Collections.Generic.List[hashtable]]::new()
 foreach ($rec in Get-SegmentRegistry) {
-    if (-not $cfg.Segments[$rec.Name]) { continue }
+    if (-not $cfg.Segments[$rec.Name] -or -not $listed[$rec.Name]) { continue }
     $seg = & $rec.Build $d $cfg
     if ($seg) { $segments.Add($seg) }
 }
@@ -744,10 +874,6 @@ if ($segments.Count -eq 0) { Write-Host (C '36' "$iconModel claude"); exit 0 }
 $width = $null
 $cols = 0
 if ([int]::TryParse([string] $env:COLUMNS, [ref] $cols) -and $cols -gt 0) { $width = $cols - 1 }
-
-$lineSets = @(if ($cfg.Layout -eq 'two') {
-    @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
-} else { , @((Get-SegmentRegistry).Name) })
 
 # A line that fits down to nothing is not printed. With model toggled off and a very narrow terminal
 # that can mean no output at all, which is what the user asked for.
