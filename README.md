@@ -174,9 +174,10 @@ submodule, where `.git` is a file, is never cached.
 Claude Code tells the script the terminal width. When a line is too long the script shortens it in
 two stages:
 
-1. Detail comes off four segments, in this order: the countdown, 7-day and spend figures from limits,
-   the token counts from context, every count from the branch, and the owner and directory name from
-   the folder, which keeps only the repository name.
+1. Detail comes off four segments, in this order: from limits, every figure but the one that drives
+   its colour (the worst one when the segment is yellow or red, otherwise the first one present) plus
+   the countdown; the token counts from context; every count from the branch; and the owner and
+   directory name from the folder, which keeps only the repository name.
 2. Whole segments go, from the right: lines, badges, cost, limits, folder, branch, context.
 
 The model segment always stays.
@@ -326,8 +327,9 @@ positionally. If you add a segment or a sample, add a payload to `samples/` and 
 `$sampleSegments` and `$sampleMarkers` tables in `test.ps1` (which segments it shows, and the glyph
 and value to look for). A sample without those rows fails the run by name. A sample with a segment
 that has a short form, such as a branch with counts or a folder with a repository, also needs an
-entry in `$sampleShortForms`, the full and shortened text the matrix accepts at a set width. Then
-regenerate the screenshots at the top of this file with
+entry in `$sampleShortForms`, the full and shortened text the matrix accepts at a set width, unless
+its full text carries a live countdown or cannot fit at 120 columns, as sample 06's limits line does.
+Then regenerate the screenshots at the top of this file with
 `pwsh docs/render-screenshot.ps1` and
 `pwsh docs/render-screenshot.ps1 -Config docs/statusline-two-line.json -Out docs/statusline-two-line.png`.
 
