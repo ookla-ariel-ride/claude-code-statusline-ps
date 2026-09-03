@@ -116,6 +116,13 @@ The script reads `statusline.json` from its own folder, so after installing that
   "style": "plain",
   "folder": "repo",
   "state": true,
+  "order": ["model", "context", "cost", "lines", "limits", "badges", "folder", "branch"],
+  "rows": [
+    ["model", "folder", "branch", "badges"],
+    ["context", "limits", "cost", "lines"]
+  ],
+  "thresholds": { "warn": 60, "bad": 85 },
+  "icons": {},
   "segments": {
     "model": true,
     "context": true,
@@ -131,11 +138,30 @@ The script reads `statusline.json` from its own folder, so after installing that
 
 | Key | Values | What it does |
 |---|---|---|
-| `layout` | `one`, `two` | `two` puts model, folder, branch and badges on the first line and context, limits, cost and lines on the second. |
+| `layout` | `one`, `two` | `two` puts model, folder, branch and badges on the first line and context, limits, cost and lines on the second, unless `rows` says otherwise. |
 | `style` | `plain`, `powerline` | `plain` is coloured text with a dim chevron between segments. `powerline` is coloured blocks joined by solid arrows. |
 | `folder` | `repo`, `leaf` | `repo` shows `owner/name` from `workspace.repo` when the payload has one, with the current directory's name after a `›` when it differs from the project root. `leaf` always shows the directory name alone. |
 | `segments.<name>` | `true`, `false` | `false` hides that segment. |
 | `state` | `true`, `false` | `false` stops the script writing a state file for the session. |
+| `order` | `["model", "branch", "context"]` | The segments of layout `one`, left to right. A segment left out is not shown, an unknown name is skipped, a repeat keeps its first place. An empty list, a list naming no segment, or anything that is not a list keeps the order above. |
+| `rows` | `[["model", "branch"], ["context", "cost"]]` | The two lines of layout `two`, with the same rules per row. A segment named on the first row is not repeated on the second, and a row may be empty. Anything but exactly two lists, or two lists naming no segment, keeps the rows above. |
+| `thresholds` | `{ "warn": 20, "bad": 40 }` | Where the context meter and the rate limits turn yellow and red: whole numbers from 0 to 100, `warn` no higher than `bad`. Either value wrong keeps 60 and 85 for both. A 1M window keeps its own 70 and 90. |
+| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` allowed in front. Names: `model`, `ctx`, `cost`, `folder`, `chevron`, `branch`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `lines`, `limit`, `fast`, `think`, `effort`, `vim`. A name the list does not have, or a value that is not a code point (not hex, above `10FFFF`, or a surrogate), keeps the built-in glyph. |
+
+A config only needs the keys it changes. This one puts the branch beside the model, colours the
+meter early and uses a house glyph on `main`:
+
+```json
+{
+  "layout": "two",
+  "rows": [["model", "branch"], ["context", "limits", "cost"]],
+  "thresholds": { "warn": 40, "bad": 70 },
+  "icons": { "home": "U+2302" }
+}
+```
+
+A segment that is toggled off, or that neither `order` nor the active layout's `rows` names, is
+not built at all: leave `branch` out and the script never runs `git status`.
 
 With `badges` off the vim mode is shown nowhere, because the installer sets `hideVimModeIndicator`
 and that hides Claude Code's own indicator. If that matters, remove `hideVimModeIndicator` from the
@@ -171,10 +197,10 @@ The model segment always stays.
 | Segment | Icon | Data | Rendering |
 |---|---|---|---|
 | model | <img src="docs/icons/robot.svg" height="18" alt="robot"> `nf-md-robot` | `model.display_name`, `context_window.context_window_size`, `exceeds_200k_tokens` | Bold cyan. On a 1M window `1M` follows the name in a lighter cyan, then a warning triangle when Claude Code reports `exceeds_200k_tokens` as true |
-| context | <img src="docs/icons/memory.svg" height="18" alt="memory"> `nf-md-memory` | `context_window.*` | Percent, ten-block bar, used/total tokens. Green below 60%, yellow below 85%, red above. On a 1M window the cut-offs are 70% and 90%, so red still means about 100k tokens left |
+| context | <img src="docs/icons/memory.svg" height="18" alt="memory"> `nf-md-memory` | `context_window.*` | Percent, ten-block bar, used/total tokens. Green below 60%, yellow below 85%, red above, or the `thresholds` from the config. On a 1M window the cut-offs are 70% and 90% whatever the config says, so red still means about 100k tokens left |
 | cost | <img src="docs/icons/cash.svg" height="18" alt="cash"> `nf-md-cash` | `cost.total_cost_usd` | Dimmed, two decimals |
 | lines | <img src="docs/icons/code.svg" height="18" alt="code"> `nf-fa-code` | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
-| limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day`, `spend_limit` | `5h 24% (1h12m) 7d 41% $ 62%`. Coloured by the worst of the figures, with the 60% and 85% bands whatever the window size. The countdown is omitted once the reset time has passed. The `$` figure is the spend limit. Claude Code sends it only behind a Claude apps gateway with a spend limit, and only from 2.1.251 on |
+| limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day`, `spend_limit` | `5h 24% (1h12m) 7d 41% $ 62%`. Coloured by the worst of the figures, with the 60% and 85% bands, or the config's `thresholds`, whatever the window size. The countdown is omitted once the reset time has passed. The `$` figure is the spend limit. Claude Code sends it only behind a Claude apps gateway with a spend limit, and only from 2.1.251 on |
 | badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
 | folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.repo`, `workspace.project_dir`, `workspace.current_dir` | Blue. `owner/name` when the payload names the repository, then `›` and the directory name when it differs from the project root. Without a repository, the directory name alone. The short form is the repository name |
 | branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git status --porcelain=v1 --branch` run in `workspace.current_dir` | Magenta when clean, yellow with the pencil when the tree has changes. The counts described below sit between the name and the pencil. Shows `detached` on a detached HEAD |
@@ -252,17 +278,15 @@ Get-Content my-payload.json -Raw | pwsh -NoProfile -File .\statusline.ps1 -Confi
 
 ## Customise
 
-The things you are likely to change sit at the top of `statusline.ps1`:
+Segment order, the two rows, the colour cut-offs and the glyphs are `statusline.json` keys, described
+under Configuration. What is left sits at the top of `statusline.ps1`:
 
-- Each icon is a code point, for example `$iconCtx = G 0xF035B`. The [Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet) lists alternatives.
+- `Get-IconDefault` holds the built-in code point of every glyph, under the name the `icons` key takes. The [Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet) lists alternatives.
 - `$gitTimeoutMs` is how long the branch segment waits for `git status`.
 - `$defaultEffort` is the level at which the effort badge is hidden.
-- The 60% and 85% colour cut-offs are the defaults of `Get-ThresholdRole`. The context block passes 70 and 90 for a 1M window; the rate-limit block uses the defaults.
+- The 70% and 90% cut-offs of a 1M window are passed by the context block to `Get-ThresholdRole`; `thresholds` does not move them.
 - `Get-Palette` holds the colours for both styles.
-
-Segment order is fixed for each layout, and `statusline.json` only hides segments rather than moving them.
-To change the order, edit `Get-SegmentRegistry` near the top of `statusline.ps1`: array order is layout `one`,
-`Row` and `RowRank` place a segment on the two rows of layout `two`, and `ShrinkRank` and `DropRank` set the fitting order.
+- `Get-SegmentRegistry` is the segment table. Its array order is the default `order`, `Row` and `RowRank` give the default `rows`, and `ShrinkRank` and `DropRank` set the fitting order, which the config does not change.
 
 ## Troubleshooting
 
@@ -326,11 +350,11 @@ Done so far:
 - [x] Ahead and behind counts on the branch
 - [x] Staged, changed, untracked and conflict counts on the branch
 - [x] `1M` marker and past-200k warning on the model segment, wider colour bands for a 1M window
+- [x] Segment order, rows, colour cut-offs and glyphs as `statusline.json` keys
 
 [Issues #2 to #28](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
 each with its own plan. In rough order: small additions to existing segments (installer flags),
-then a segment registry so order, thresholds and glyphs move into
-`statusline.json`, then new segments (pull-request link, cache warmth, session clock), presets and
+then new segments (pull-request link, cache warmth, session clock), presets and
 per-project config, and finally an ASCII style that needs no Nerd Font and a light palette.
 
 ## License

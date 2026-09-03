@@ -36,7 +36,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 |---|---|
 | `statusline.ps1` | Reads JSON on stdin and `statusline.json` beside it; prints one or two coloured lines fitted to `COLUMNS`. |
 | `install.ps1` | Copies the script to `~/.claude/`, writes the `statusLine` entry to user settings with `hideVimModeIndicator` on and, with `-RefreshInterval <seconds>`, a `refreshInterval`; optionally installs JetBrainsMono Nerd Font via winget and sets it as the Windows Terminal default font. Supports `-Uninstall` and `-SettingsPath` (the seam the tests use). |
-| `statusline.json` | Defaults for layout, style, the folder mode, the state file toggle and segment toggles. Installed beside the script. |
+| `statusline.json` | Defaults for layout, style, the folder mode, the state file toggle, segment toggles, the layout-one order, the two layout-two rows, the colour thresholds and glyph overrides. Installed beside the script. |
 | `%TEMP%\claude-statusline-state\` | One JSON file per session (`<session_id>.json`, version 1): last cost, token totals, context and 5-hour percentages, and a ring of up to twenty cost readings. Written after the line is printed, swept of day-old files at most every six hours. `~/.claude/statusline-state` when `TEMP` is empty. |
 | `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, checks the git fallback in temporary repositories: clean, dirty, unborn, detached, ahead, behind, a mixed tree, a git that fails and one that hangs, exercises the session state file end to end, and runs `install.ps1` against a settings file in a temp folder. `-Columns`, `-Config`, `-Raw`. |
 | `samples/*.json` | Every payload in `samples/` goes through the render matrix. One per case: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort, a repository identity below its project root, a 1M window with `exceeds_200k_tokens` true. |
@@ -72,7 +72,18 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   colour role, bold); one function renders a line in plain or powerline style, and width fitting
   shrinks then drops records in a fixed order.
 - **Silent config.** Any missing or invalid value in `statusline.json` falls back to its default with
-  no output.
+  no output, and each key falls back on its own: a valid `order` beside a broken `thresholds` keeps
+  the order.
+- **One segment table, and the config moves what it can.** `Get-SegmentRegistry` is the single list of
+  segments: its array order is the default `order`, its row keys the default `rows`, its ranks the
+  shrink and drop order, and the build loop dispatches through it. The `order` and `rows` keys pick
+  and place segments from that table by name; a segment on no line is not built, so leaving `branch`
+  out also skips the git probe. `thresholds` reaches both callers of `Get-ThresholdRole` through the
+  config, but not the fixed 70 and 90 of a 1M window, which belong to the window size. `icons` maps a
+  name to a code point, and the `$icon*` constants are assigned from `Get-IconSet` after the config
+  is read and before the payload is parsed, so the fallback line and every builder see one set of
+  glyphs. The fitting order stays in the table: it is a property of what each segment can shed, not
+  of taste.
 - **One branch record, two readers.** The porcelain parser and the payload reader return the same
   eight keys (branch, dirty, ahead, behind, staged, modified, untracked, conflicts), so the segment
   builder reads one shape whichever source filled it, and a test pins the two key sets against each
@@ -110,8 +121,9 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 Two-line layout, powerline style, config file, width fitting and the git fallback are implemented.
 The branch segment shows ahead and behind counts (#16) and staged, changed, untracked and conflict
-counts (#17), all from the one `git status` call. Segment order, thresholds, glyphs and a light
-palette are still constants in the script.
+counts (#17), all from the one `git status` call. Segment order, the two rows, the colour thresholds
+and the glyphs are `statusline.json` keys over the segment registry (#20). A light palette is still
+a constant in the script.
 
 ## Future work
 
@@ -120,7 +132,7 @@ Issues #2 to #28 hold the backlog, each with a plan and success criteria. The in
 1. Existing segments only: installer flags for the refresh interval and the built-in vim
    indicator (#26). The 1M-context marker (#9) is done.
 2. A segment registry with `order`, `rows`, `thresholds` and `icons` keys in `statusline.json` (#20).
-   Every later segment builds on it.
+   Done; every later segment builds on it.
 3. Enablers: a pull-request badge with the OSC 8 link helper (#12), a per-session state file for
    deltas between renders (#4).
 4. New segments: cache warmth and hit ratio, owner/repo, worktree, links, agent and session badges,

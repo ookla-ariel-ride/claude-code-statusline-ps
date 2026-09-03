@@ -376,6 +376,16 @@ Confirm-Equal $shippedFileSegments.Count 8 'shipped config: the file itself list
 Confirm-True (@($shippedFileSegments | Where-Object { $_.Value -isnot [bool] -or $_.Value -ne $true }).Count -eq 0) 'shipped config: the file itself sets them all to the boolean true'
 Confirm-Equal $c.State $true 'shipped config: state on'
 Confirm-True ($shippedJson.state -is [bool] -and $shippedJson.state) 'shipped config: the file itself sets state to the boolean true'
+# The four registry keys ship with their defaults spelled out, so the file documents them and a parse
+# of it gives exactly what a missing file gives.
+Confirm-Equal ($c.Order -join ',') $registryOrder 'shipped config: order is the registry order'
+Confirm-Equal (@($shippedJson.order) -join ',') $registryOrder 'shipped config: the file itself lists the registry order'
+Confirm-Equal (Get-RowText $c) $registryRows 'shipped config: rows are the registry rows'
+Confirm-True ($shippedJson.rows -is [array] -and $shippedJson.rows.Count -eq 2) 'shipped config: the file itself has two rows'
+Confirm-Equal (Get-ThresholdText $c) '60/85' 'shipped config: thresholds 60 and 85'
+Confirm-True ($shippedJson.thresholds.warn -eq 60 -and $shippedJson.thresholds.bad -eq 85) 'shipped config: the file itself says 60 and 85'
+Confirm-Equal $c.Icons.Count 0 'shipped config: no icon overrides'
+Confirm-True ($shippedJson.icons -is [System.Management.Automation.PSCustomObject] -and @($shippedJson.icons.PSObject.Properties).Count -eq 0) 'shipped config: the file itself has an empty icons object'
 
 Write-Host '== unit: icons' -ForegroundColor Cyan
 # Get-IconSet turns the built-in table and the config's overrides into one glyph per name, and the
@@ -1835,10 +1845,16 @@ $glyphSegment = @{
     home = 'branch'; pencil = 'branch'; branch = 'branch'
     fast = 'badges'; think = 'badges'; effort = 'badges'; vim = 'badges'
 }
-# statusline.ps1's own line sets, derived from the registry so the test knows which segments share a line.
-$layoutRows = @{
-    one = @(, $allSegments)
-    two = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
+# A config record for the matrix. Rows is what the script prints from this config, read the way the
+# script reads it: the order key for layout one, the two rows for layout two. Enabled is the segments
+# the script will build, toggled on and listed on a row, so a segment the order leaves out is checked
+# for absence like one toggled off.
+function Get-ConfigRecord([string] $Name, [string] $Path, $Parsed) {
+    $rows = @(if ($Parsed.Layout -eq 'two') { $Parsed.Rows } else { , $Parsed.Order })
+    $listed = @($rows | ForEach-Object { $_ })
+    $enabled = @{}
+    foreach ($n in $allSegments) { $enabled[$n] = [bool] ($Parsed.Segments[$n] -and $n -in $listed) }
+    return @{ Name = $Name; Path = $Path; Layout = $Parsed.Layout; Style = $Parsed.Style; Folder = $Parsed.Folder; Enabled = $enabled; Rows = $rows }
 }
 # The oracle turns off every registry segment but model, so a new segment is off here without an edit.
 $modelOnlySegments = @($allSegments | Where-Object { $_ -ne 'model' } | ForEach-Object { '"' + $_ + '": false' }) -join ', '
@@ -1856,20 +1872,33 @@ if ($Config) {
     $parsed = Read-StatusConfig $resolved
     $off = @($allSegments | Where-Object { -not $parsed.Segments[$_] })
     if ($off.Count -gt 0) { Write-Host "note: $(Split-Path $resolved -Leaf) turns off $($off -join ', '); those segments are checked for absence instead" -ForegroundColor Yellow }
-    $configSet.Add(@{ Name = (Split-Path $resolved -Leaf); Path = $resolved; Layout = $parsed.Layout; Style = $parsed.Style; Folder = $parsed.Folder; Enabled = $parsed.Segments })
+    $configSet.Add((Get-ConfigRecord (Split-Path $resolved -Leaf) $resolved $parsed))
 } else {
     foreach ($layout in @('one', 'two')) {
         foreach ($style in @('plain', 'powerline')) {
             $path = Write-TempConfig "$layout-$style.json" ('{ "layout": "' + $layout + '", "style": "' + $style + '" }')
-            $parsed = Read-StatusConfig $path
-            $configSet.Add(@{ Name = "$layout-$style"; Path = $path; Layout = $layout; Style = $style; Folder = $parsed.Folder; Enabled = $parsed.Segments })
+            $configSet.Add((Get-ConfigRecord "$layout-$style" $path (Read-StatusConfig $path)))
         }
     }
     # Leaf mode through the whole script, so the registry's wiring of the config into Get-FolderSegment
     # is covered by a real render and not only by the unit call.
     $path = Write-TempConfig 'folder-leaf.json' '{ "folder": "leaf" }'
-    $parsed = Read-StatusConfig $path
-    $configSet.Add(@{ Name = 'folder-leaf'; Path = $path; Layout = $parsed.Layout; Style = $parsed.Style; Folder = $parsed.Folder; Enabled = $parsed.Segments })
+    $configSet.Add((Get-ConfigRecord 'folder-leaf' $path (Read-StatusConfig $path)))
+    # The order and rows keys through the whole script: layout one in the registry order reversed with
+    # cost left out, and layout two with the rows swapped and each reversed. The row checks below then
+    # prove every marker lands on the row, and at the place on it, that the config asks for, and that
+    # the segment left out is not on the line at all.
+    $reversed = @($allSegments | Where-Object { $_ -ne 'cost' })
+    [array]::Reverse($reversed)
+    $path = Write-TempConfig 'order-reversed.json' ('{ "layout": "one", "style": "plain", "order": ' + (ConvertTo-Json -InputObject $reversed -Compress) + ' }')
+    $configSet.Add((Get-ConfigRecord 'order-reversed' $path (Read-StatusConfig $path)))
+    $swappedRows = @(@(Get-SegmentOrder 'RowRank' 2), @(Get-SegmentOrder 'RowRank' 1))
+    foreach ($row in $swappedRows) { [array]::Reverse($row) }
+    $path = Write-TempConfig 'rows-swapped.json' ('{ "layout": "two", "style": "powerline", "rows": ' + (ConvertTo-Json -InputObject $swappedRows -Compress) + ' }')
+    $configSet.Add((Get-ConfigRecord 'rows-swapped' $path (Read-StatusConfig $path)))
+    Confirm-Equal ($configSet[$configSet.Count - 1].Rows[0] -join ',') 'lines,cost,limits,context' 'rows-swapped config: first row is the registry second row reversed'
+    Confirm-Equal ($configSet[$configSet.Count - 1].Rows[1] -join ',') 'badges,branch,folder,model' 'rows-swapped config: second row is the registry first row reversed'
+    Confirm-Equal ($configSet[$configSet.Count - 2].Rows[0] -join ',') 'branch,folder,badges,limits,lines,context,model' 'order-reversed config: one row, reversed, without cost'
 }
 
 # No sample carries a session_id, so no render in the matrix may write state. The child renders get a
@@ -1932,7 +1961,7 @@ foreach ($cfg in $configSet) {
                 $marks = $sampleMarkers[$sample.Name]
                 $visible = @($allSegments | Where-Object { $cfg.Enabled[$_] -and $_ -in $known })
                 $rowVisible = [System.Collections.Generic.List[object]]::new()
-                foreach ($row in $layoutRows[$cfg.Layout]) { $rowVisible.Add(@($row | Where-Object { $_ -in $visible })) }
+                foreach ($row in $cfg.Rows) { $rowVisible.Add(@($row | Where-Object { $_ -in $visible })) }
                 if ($visible.Count -eq 0) {
                     # The config turns off everything this sample could show. statusline.ps1 builds no
                     # segments at all then and prints its fallback, the model glyph and the word claude.
@@ -1946,23 +1975,29 @@ foreach ($cfg in $configSet) {
                         $seen = @($segmentGlyphs[$name] | Where-Object { $_ -notin $shared -and $text.Contains($_) })
                         Confirm-True ($seen.Count -eq 0) "${label}: $name is off, none of its glyphs appear"
                     }
-                    # The rows this render should print, in order. Layout one is a single row; layout two
-                    # drops a row that has nothing visible left on it, because Get-FittedLine returns
-                    # $null for an empty set and the print loop skips it.
-                    if ($cfg.Layout -eq 'two') { $rows = @($rowVisible | Where-Object { $_.Count -gt 0 }) } else { $rows = @(, $visible) }
+                    # The rows this render should print, in order: the config's rows with the segments
+                    # this sample shows, minus a row that has nothing visible left on it, because
+                    # Get-FittedLine returns $null for an empty set and the print loop skips it.
+                    $rows = @($rowVisible | Where-Object { $_.Count -gt 0 })
                     Confirm-Equal $lines.Count $rows.Count "${label}: renders $($rows.Count) line(s)"
                     if ($lines.Count -eq $rows.Count) {
                         for ($ri = 0; $ri -lt $rows.Count; $ri++) {
                             $rowText = ConvertTo-PlainText $lines[$ri]
                             $mine = @($rows[$ri])
                             # Every visible segment has to prove it rendered, by its own marker, on its
-                            # own row. This is the check that a dropped segment cannot slip past: the
-                            # absence table names only a few glyphs per sample.
+                            # own row, and after the segment the config puts before it. This is the
+                            # check that a dropped or misplaced segment cannot slip past: the absence
+                            # table names only a few glyphs per sample.
+                            $lastAt = -1
                             foreach ($name in $mine) {
                                 $marker = $marks[$name]
                                 if ($marker -is [hashtable]) { $marker = $marker[$cfg.Folder] }
                                 if (-not $marker) { Confirm-True $false "${label}: no marker for $name in the marker table"; continue }
-                                Confirm-True ($rowText.Contains($marker)) "${label}: line $($ri + 1) shows $name as '$marker'"
+                                $at = $rowText.IndexOf($marker)
+                                Confirm-True ($at -ge 0) "${label}: line $($ri + 1) shows $name as '$marker'"
+                                if ($at -lt 0) { continue }
+                                Confirm-True ($at -gt $lastAt) "${label}: line $($ri + 1) has $name after the segment listed before it"
+                                $lastAt = $at
                             }
                             $other = @($visible | Where-Object { $_ -notin $mine })
                             if ($other.Count -gt 0) {
@@ -2023,6 +2058,37 @@ foreach ($cfg in $configSet) {
         }
     }
 }
+
+# The thresholds and icons keys through the whole script, one sample each at the unset width: 06 has a
+# 32% context meter, green at 60/85 and yellow at 20/40, and 01 renders the model glyph, which the
+# config swaps for the bolt. Plain style, so a segment's colour is the SGR code in front of its text.
+Write-Host ''
+Write-Host '== render: thresholds and icons' -ForegroundColor Cyan
+$payload06 = $samplePayloads[$sample06.Name]
+foreach ($case in @(
+        @{ Name = 'thresholds-default'; Json = '{}'; Sgr = '32'; Label = 'default 60/85 leaves the 32% meter green' }
+        @{ Name = 'thresholds-low'; Json = '{ "thresholds": { "warn": 20, "bad": 40 } }'; Sgr = '33'; Label = '20/40 turns the 32% meter yellow' }
+        @{ Name = 'thresholds-high'; Json = '{ "thresholds": { "warn": 33, "bad": 34 } }'; Sgr = '32'; Label = '33/34 leaves the 32% meter green' }
+        @{ Name = 'thresholds-crossed'; Json = '{ "thresholds": { "warn": 90, "bad": 10 } }'; Sgr = '32'; Label = '90/10 falls back to 60/85, the meter is green' }
+        @{ Name = 'thresholds-fraction'; Json = '{ "thresholds": { "warn": 20.5, "bad": 40 } }'; Sgr = '32'; Label = 'a fraction falls back to 60/85, the meter is green' })) {
+    $r = Invoke-StatusLine $payload06 (Write-TempConfig "render-$($case.Name).json" $case.Json) 0
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) "render $($case.Name): exit code 0, stderr empty"
+    Confirm-True (($r.Lines -join "`n").Contains("$esc[$($case.Sgr)m$iconCtx 32%")) "render $($case.Name): $($case.Label)"
+}
+$bolt = [char]::ConvertFromUtf32(0xF0E7)
+$payload01 = $samplePayloads['01-main-clean.json']
+$r = Invoke-StatusLine $payload01 (Write-TempConfig 'render-icons-bolt.json' '{ "icons": { "model": "F0E7", "home": "U+2302", "cost": "zz" } }') 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render icons: exit code 0, stderr empty'
+$text = ConvertTo-PlainText ($r.Lines -join "`n")
+Confirm-True ($text.Contains("$bolt Fable 5.1")) 'render icons: the model segment carries the bolt'
+Confirm-True (-not $text.Contains($iconModel)) 'render icons: the robot is gone'
+Confirm-True ($text.Contains("$([char]::ConvertFromUtf32(0x2302)) main")) 'render icons: the home glyph takes a U+ form'
+Confirm-True ($text.Contains("$iconCost `$")) 'render icons: an invalid value keeps the built-in cash glyph'
+Confirm-True ($text.Contains("$iconFolder my-project")) 'render icons: an icon not mentioned keeps its glyph'
+$r = Invoke-StatusLine $payload01 (Write-TempConfig 'render-icons-surrogate.json' '{ "icons": { "model": "D800" } }') 0
+Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains("$iconModel Fable 5.1")) 'render icons: a surrogate falls back to the robot'
+$r = Invoke-StatusLine 'not json' (Write-TempConfig 'render-icons-bolt.json' '{ "icons": { "model": "F0E7" } }') 0
+Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) "$bolt claude" 'render icons: the bad-payload fallback line carries the override too'
 Confirm-True (@(Get-ChildItem -LiteralPath $matrixTemp -Recurse -Force -File).Count -eq 0) 'render matrix: no state written for payloads without a session_id'
 } finally {
     if ($null -ne $oldTemp) { $env:TEMP = $oldTemp } else { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }
