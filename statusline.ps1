@@ -128,6 +128,7 @@ function Read-StatusConfig([string] $Path) {
     $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Segments = @{} }
     foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
     $cfg.Order = @((Get-SegmentRegistry).Name)
+    $cfg.Rows = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
     try {
         if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $cfg }
         $j = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
@@ -146,6 +147,15 @@ function Read-StatusConfig([string] $Path) {
         # order: the segment names of layout one. Empty, or naming no segment, keeps the registry order.
         $order = Read-SegmentNameList $j.order $cfg.Segments @{}
         if ($null -ne $order -and $order.Count -gt 0) { $cfg.Order = $order }
+        # rows: two arrays of names for layout two, read against one seen set so a segment sits on one
+        # row only. Anything but exactly two arrays, or two rows naming nothing, keeps the registry rows.
+        $rows = $j.rows
+        if ($rows -is [array] -and $rows.Count -eq 2) {
+            $seen = @{}
+            $row1 = Read-SegmentNameList $rows[0] $cfg.Segments $seen
+            $row2 = Read-SegmentNameList $rows[1] $cfg.Segments $seen
+            if ($null -ne $row1 -and $null -ne $row2 -and ($row1.Count + $row2.Count) -gt 0) { $cfg.Rows = @($row1, $row2) }
+        }
     } catch { return $cfg }
     return $cfg
 }
@@ -710,9 +720,7 @@ function Get-BranchSegment($d, $cfg) {
 # The names on each printed line: the config's order for layout one, the two rows for layout two. A
 # segment that is toggled off, or that no line lists, is not built at all, so an order without branch
 # never runs the git probe.
-$lineSets = @(if ($cfg.Layout -eq 'two') {
-    @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
-} else { , $cfg.Order })
+$lineSets = @(if ($cfg.Layout -eq 'two') { $cfg.Rows } else { , $cfg.Order })
 $listed = @{}
 foreach ($names in $lineSets) { foreach ($n in $names) { $listed[$n] = $true } }
 

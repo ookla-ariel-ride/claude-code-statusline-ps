@@ -285,6 +285,32 @@ $c = Read-StatusConfig (Write-TempConfig 'order-good-layout-bad.json' '{ "order"
 Confirm-Equal ($c.Order -join ',') 'model' 'config order: kept when another key is invalid'
 Confirm-Equal $c.Layout 'one' 'config order: the invalid key still falls back on its own'
 
+# The rows key: two arrays of names for layout two, the same rules per row, and a name the first row
+# took is skipped on the second. A row may be empty. Anything but an array of exactly two arrays, or
+# two rows that between them name no segment, falls back to the registry rows whole.
+$registryRows = "$((Get-SegmentOrder 'RowRank' 1) -join ',')|$((Get-SegmentOrder 'RowRank' 2) -join ',')"
+function Get-RowText($c) { return "$($c.Rows[0] -join ',')|$($c.Rows[1] -join ',')" }
+$c = Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')
+Confirm-Equal $c.Rows.Count 2 'config missing: two rows'
+Confirm-Equal (Get-RowText $c) $registryRows 'config missing: rows are the registry rows'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-swapped.json' '{ "rows": [["context", "cost"], ["model", "branch"]] }'))) 'context,cost|model,branch' 'config rows: two rows as given'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-unknown.json' '{ "rows": [["model", "nonsense"], ["Context", 7]] }'))) 'model|context' 'config rows: unknown and non-string entries skipped, case folded'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-repeat.json' '{ "rows": [["model", "branch"], ["branch", "cost"]] }'))) 'model,branch|cost' 'config rows: a name on the first row is skipped on the second'
+$c = Read-StatusConfig (Write-TempConfig 'rows-empty-first.json' '{ "rows": [[], ["model"]] }')
+Confirm-Equal $c.Rows.Count 2 'config rows: an empty first row is still a row'
+Confirm-Equal (Get-RowText $c) '|model' 'config rows: an empty first row is kept'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-empty-both.json' '{ "rows": [[], []] }'))) $registryRows 'config rows: both rows empty falls back'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-none.json' '{ "rows": [["nonsense"], ["bogus"]] }'))) $registryRows 'config rows: no known name falls back'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-one.json' '{ "rows": [["model"]] }'))) $registryRows 'config rows: one row falls back'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-three.json' '{ "rows": [["model"], ["cost"], ["branch"]] }'))) $registryRows 'config rows: three rows fall back'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-flat.json' '{ "rows": ["model", "cost"] }'))) $registryRows 'config rows: a flat array of names falls back'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-half.json' '{ "rows": [["model"], "cost"] }'))) $registryRows 'config rows: a row that is not an array falls back whole'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-object.json' '{ "rows": { "one": ["model"], "two": ["cost"] } }'))) $registryRows 'config rows: object falls back'
+Confirm-Equal (Get-RowText (Read-StatusConfig (Write-TempConfig 'rows-string.json' '{ "rows": "model" }'))) $registryRows 'config rows: string falls back'
+$c = Read-StatusConfig (Write-TempConfig 'rows-good-order-bad.json' '{ "rows": [["model"], ["cost"]], "order": 5 }')
+Confirm-Equal (Get-RowText $c) 'model|cost' 'config rows: kept when order is invalid'
+Confirm-Equal ($c.Order -join ',') $registryOrder 'config rows: the invalid order falls back on its own'
+
 # The config that ships with the repo has to be valid JSON and to mean what the README says it means.
 $shippedConfig = Join-Path $PSScriptRoot 'statusline.json'
 $shippedJson = try { Get-Content -LiteralPath $shippedConfig -Raw | ConvertFrom-Json } catch { $null }
