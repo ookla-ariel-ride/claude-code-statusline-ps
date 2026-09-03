@@ -20,7 +20,6 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 - Zero dependencies beyond PowerShell 7 and a Nerd Font.
 - Degrade gracefully: omit any segment whose data is missing from the payload, and never print nothing.
 - One-command install and uninstall that preserves the rest of `~/.claude/settings.json`.
-- Be easy to customise by editing constants at the top of one file.
 - Fit the terminal width rather than wrap.
 - Be configurable from one small JSON file without editing the script.
 
@@ -133,7 +132,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 ## Success criteria
 
-- `.\test.ps1` passes: the unit checks, every payload in `samples/` across five configs and four widths (120, 60, 20 and unset) with content checks at the unset width, the git cases, and the install cases.
+- `.\test.ps1` passes: the unit checks, every payload in `samples/` across seven configs and four widths (120, 60, 20 and unset) with content checks at the unset width, the git cases with the probe cache, the state file cases, and the install cases.
 - `.\install.ps1` on a fresh machine produces a working status line in Claude Code after one session restart.
 - `.\install.ps1 -Uninstall` returns `settings.json` to its prior state minus the `statusLine` key.
 - `.\install.ps1` leaves an existing `~/.claude/statusline.json` untouched.
@@ -143,26 +142,28 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 Two-line layout, powerline style, config file, width fitting and the git fallback are implemented.
 The branch segment shows ahead and behind counts (#16) and staged, changed, untracked and conflict
 counts (#17), all from the one `git status` call, and that call is cached per repository with its
-timeout and lifetime in the config (#18). The pull-request segment (#12) links `#N` to the PR with
-OSC 8. Segment order, the two rows, the colour thresholds and the glyphs are `statusline.json` keys
-over the segment registry (#20). A light palette is still a constant in the script.
+timeout and lifetime in the config (#18). The model segment marks a 1M window (#9), the limits
+segment shows the spend limit (#7), and the folder segment shows `owner/name` (#10). The
+pull-request segment (#12) links `#N` to the PR with OSC 8. Segment order, the two rows, the colour
+thresholds and the glyphs are `statusline.json` keys over the segment registry (#20). The installer
+writes `hideVimModeIndicator` and, on request, `refreshInterval` (#26). A state file per session
+(#4) is written but nothing on the line reads it yet. A light palette is still a constant in the
+script.
 
 ## Future work
 
-Issues #2 to #28 hold the backlog, each with a plan and success criteria. The intended order:
+Issues #2 to #43 hold the backlog, each with a plan and success criteria. The enablers are done:
+the segment registry and config keys (#20), the state file (#4), the link helper (#12) and the git
+cache (#18). The intended order for the rest:
 
-1. Existing segments only: installer flags for the refresh interval and the built-in vim
-   indicator (#26). The 1M-context marker (#9) is done.
-2. A segment registry with `order`, `rows`, `thresholds` and `icons` keys in `statusline.json` (#20).
-   Done; every later segment builds on it.
-3. Enablers: a per-session state file for deltas between renders (#4). The pull-request badge with
-   the OSC 8 link helper (#12) is done.
-4. New segments: cache warmth and hit ratio, owner/repo, worktree, links, agent and session badges,
-   spend limit, cost per turn, pace, session clock (#2, #3, #5 to #8, #10, #11, #13, #14).
-5. Config: presets, a quiet block, an alarm colour, per-project config (#19, #21 to #23). The git
-   cache and timeout (#18) are done.
-6. Style and terminal: an ASCII style, a light palette, a right-aligned group with a clock, taskbar
+1. New segments: cache warmth and hit ratio, worktree name, links on the folder and branch, agent
+   and session badges, cost per turn, pace, session clock (#2, #3, #5, #6, #8, #11, #13, #14). #5
+   and #6 read the state file; #13 reuses `Format-Link`.
+2. Config: presets, a quiet block, an alarm colour, per-project config (#19, #21 to #23).
+3. Style and terminal: an ASCII style, a light palette, a right-aligned group with a clock, taskbar
    progress, a subagent status line (#15, #24, #25, #27, #28).
+4. Small fixes from review: the zero-segment fallback line should respect the model toggle and the
+   configured order (#42), and an optional diagnostics log for the silent catch blocks (#43).
 
 ## License
 

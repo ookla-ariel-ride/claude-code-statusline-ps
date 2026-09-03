@@ -8,9 +8,9 @@ A PowerShell status line for [Claude Code](https://code.claude.com) on Windows. 
 
 ![Status line rendered in Windows Terminal with JetBrainsMono Nerd Font](docs/statusline.png)
 
-Left to right: model, context meter, cost, lines changed, rate limits, mode badges, folder, and the
-branch with its change counts. Each segment starts with a Nerd Font icon, which GitHub cannot show
-in text, so the rest of this file names the icons instead.
+Left to right: model, context meter, cost, lines changed, rate limits, mode badges, the pull
+request, folder, and the branch with its change counts. Each segment starts with a Nerd Font icon,
+which GitHub cannot show in text, so the rest of this file names the icons instead.
 
 ![Two-line powerline layout](docs/statusline-two-line.png)
 
@@ -35,7 +35,7 @@ how close you are to a rate limit, and which modes are on.
 - Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory, cached for a few seconds so most renders never start git.
 - Counts beside the branch name: `↑N` `↓N` commits ahead of or behind the upstream, `+N` staged, `~N` changed, `?N` untracked, and a red triangle with a count when files are in conflict. See [Branch counts](#branch-counts).
 - One line or two, plain separators or powerline blocks, and any segment switched off, all from `statusline.json`.
-- Fits the terminal width. A line that is too long first loses detail from the limits, context and branch segments, then loses whole segments from the right, so lines stop wrapping in normal use.
+- Fits the terminal width. A line that is too long first loses detail from the limits, context, branch and folder segments, then loses whole segments from the right, so lines stop wrapping in normal use.
 - If a field is missing from the payload, the script drops that segment. If the payload will not parse, it still prints the model glyph.
 - Icons come from Unicode code points rather than pasted characters, so the file's own encoding cannot corrupt them.
 - No modules to install. PowerShell 7 and a Nerd Font are the whole dependency list.
@@ -268,31 +268,34 @@ arrows. A `git` object with an empty branch name shows nothing.
 
 ## Test without Claude Code
 
-`test.ps1` runs four groups. Unit checks call the script's helper functions directly (width
-measurement, config parsing, rendering, width fitting, the context meter, `git status` parsing, the
-payload counts, the branch segment). The git group runs the branch fallback against temporary
-repositories: clean, dirty, unborn, detached, one commit ahead, one behind, a mixed tree with a
-staged, a modified and an untracked file, a fake `git` that fails and one that hangs. The install
-group runs `install.ps1` with `USERPROFILE` and `-SettingsPath` pointed into a temp folder: a fresh
-settings file, an existing one with unrelated keys, `-RefreshInterval`, a refused value, and
-`-Uninstall`. It checks afterwards that the real `~/.claude` files were not touched. The render
-matrix pipes every payload in `samples/` through the script for each layout and style at each
-width:
+`test.ps1` runs five groups. Unit checks call the script's helper functions directly (width
+measurement, config parsing, the segment table, rendering, width fitting, the context meter, the
+limits, `git status` parsing, the payload counts, the branch and pr segments, the state file, the
+git cache). The git group runs the branch fallback against temporary repositories: clean, dirty,
+unborn, detached, one commit ahead, one behind, a mixed tree with a staged, a modified and an
+untracked file, a fake `git` that fails and one that hangs, then the cache end to end: a second
+render with a failing `git` on `PATH`, a fetch from a bare remote, a push, a worktree. The state
+group writes and reads session files in a temp folder. The install group runs `install.ps1` with
+`USERPROFILE` and `-SettingsPath` pointed into a temp folder: a fresh settings file, an existing one
+with unrelated keys, `-RefreshInterval`, a refused value, and `-Uninstall`. It checks afterwards
+that the real `~/.claude` files were not touched. The render matrix pipes every payload in
+`samples/` through the script for each of seven configs (both layouts and styles, model only, a
+reversed `order`, swapped `rows`) at each width:
 
 ```powershell
-.\test.ps1                                # full run, about a minute
+.\test.ps1                                # full run, about three minutes
 .\test.ps1 -Columns 80                    # one width instead of 120, 60, 20 and unset
-.\test.ps1 -Config .\statusline.json      # one config instead of the four combinations
+.\test.ps1 -Config .\statusline.json      # one config instead of the seven
 .\test.ps1 -Raw                           # show ANSI escapes as <ESC>
 ```
 
 Every render must exit 0 with nothing on stderr, print the number of lines its layout allows, and fit
-the terminal width. At a set width the branch segment must be whole, shortened, or gone, never half
-shed. At the unset width the matrix also checks content: each segment the sample and config enable
-must appear on its row with its glyph and value, disabled segments must not, and the separators must
-match the style. Those content checks only run when `-Columns` includes `0`, which the default does.
-The script exits non-zero if any check fails. Each render takes about 250 ms, nearly all of it
-`pwsh` start-up.
+the terminal width. At a set width a segment with a short form (limits, context, branch, folder)
+must be whole, shortened, or gone, never half shed. At the unset width the matrix also checks
+content: each segment the sample and config enable must appear on its row, in the configured order,
+with its glyph and value, disabled segments must not, and the separators must match the style. Those
+content checks only run when `-Columns` includes `0`, which the default does. The script exits
+non-zero if any check fails. Each render takes about 400 ms, nearly all of it `pwsh` start-up.
 
 The tests never touch your own repositories. They point `GIT_CEILING_DIRECTORIES` at the temp
 folder and pass an empty global git config, so the results do not depend on the machine.
@@ -388,13 +391,18 @@ Done so far:
 - [x] Ahead and behind counts on the branch
 - [x] Staged, changed, untracked and conflict counts on the branch
 - [x] `1M` marker and past-200k warning on the model segment, wider colour bands for a 1M window
+- [x] Spend limit beside the rate limits
+- [x] `owner/name` in the folder segment
+- [x] Installer switch for the refresh interval
+- [x] Per-session state file, so a later render can see what changed
 - [x] Pull-request segment with a clickable link
 - [x] Segment order, rows, colour cut-offs and glyphs as `statusline.json` keys
+- [x] Cached `git status` with a configurable timeout
 
-[Issues #2 to #28](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
-each with its own plan. In rough order: small additions to existing segments (installer flags),
-then new segments (cache warmth, session clock), presets and
-per-project config, and finally an ASCII style that needs no Nerd Font and a light palette.
+[Issues #2 to #43](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
+each with its own plan. In rough order: new segments (cache warmth, cost per turn, pace, session
+clock, worktree name, links on the folder and branch), presets and per-project config, and finally
+an ASCII style that needs no Nerd Font and a light palette.
 
 ## License
 
