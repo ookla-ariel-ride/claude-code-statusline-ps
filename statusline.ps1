@@ -23,6 +23,7 @@ $iconModel  = G 0xF06A9   # nf-md-robot
 $iconCtx    = G 0xF035B   # nf-md-memory
 $iconCost   = G 0xF0155   # nf-md-cash
 $iconFolder = G 0xF07C    # nf-fa-folder_open
+$iconChevron = G 0x203A   # single right-pointing angle quotation mark (between owner/name and the leaf)
 $iconBranch = G 0xE0A0    # powerline branch
 $iconHome   = G 0xF015    # nf-fa-home  (on main/master)
 $iconDirty  = G 0xF040    # nf-fa-pencil (uncommitted changes)
@@ -65,16 +66,55 @@ function Get-VisibleWidth([string] $Text) {
     return $width
 }
 
+# The segment table: one record per segment, in layout-one order. It is the single source for the config
+# defaults, the shrink and drop order in Get-FittedLine, the build dispatch and the layout-two rows.
+# Build names the builder function; the build loop calls it with the payload and the config, and a builder
+# that only takes the payload leaves the config in $args. It returns the segment record or $null. Default
+# seeds Read-StatusConfig. ShrinkRank orders stage one of Get-FittedLine for the segments that can have a
+# Short form; a record whose Short is $null is skipped there. DropRank orders stage two, and the model
+# record has none because it is never dropped.
+# Row is the layout-two line and RowRank the position on it, because a row is not in layout-one order.
+# The table is built once per run: a render asks for it several times, and this is on the startup path.
+function Get-SegmentRegistry {
+    if (-not $script:segmentRegistry) {
+        $script:segmentRegistry = @(
+            @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
+            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 2;     DropRank = 7;     Row = 2; RowRank = 1 }
+            @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = $null; DropRank = 3;     Row = 2; RowRank = 3 }
+            @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
+            @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
+            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 4 }
+            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 4;     DropRank = 5;     Row = 1; RowRank = 2 }
+            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 3;     DropRank = 6;     Row = 1; RowRank = 3 }
+        )
+    }
+    return $script:segmentRegistry
+}
+
+# Segment names sorted by one of the registry's rank keys, skipping records where it is $null. A row
+# number limits the list to that layout-two row. Ranks are dense, 1 to N within the list asked for, so
+# the names are dropped into slots by rank and read back in order: a plain loop over a hashtable, because
+# this runs before the first line is printed and a cold pipeline, generic list or [array]::Sort each cost
+# several milliseconds the first time.
+function Get-SegmentOrder([ValidateSet('ShrinkRank', 'DropRank', 'RowRank')] [string] $Rank, [int] $Row = 0) {
+    $slots = @{}
+    foreach ($rec in Get-SegmentRegistry) {
+        if ($null -ne $rec[$Rank] -and ($Row -eq 0 -or $rec.Row -eq $Row)) { $slots[$rec[$Rank]] = $rec.Name }
+    }
+    return @(for ($i = 1; $i -le $slots.Count; $i++) { $slots[$i] })
+}
+
 # Reads statusline.json. Anything missing or invalid silently falls back to its default.
 function Read-StatusConfig([string] $Path) {
-    $cfg = @{ Layout = 'one'; Style = 'plain'; State = $true; Segments = @{} }
-    foreach ($n in @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch')) { $cfg.Segments[$n] = $true }
+    $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Segments = @{} }
+    foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
     try {
         if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $cfg }
         $j = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
         if ($j -isnot [System.Management.Automation.PSCustomObject]) { return $cfg }
         if ($j.layout -is [string] -and $j.layout.ToLowerInvariant() -in @('one', 'two')) { $cfg.Layout = $j.layout.ToLowerInvariant() }
         if ($j.style -is [string] -and $j.style.ToLowerInvariant() -in @('plain', 'powerline')) { $cfg.Style = $j.style.ToLowerInvariant() }
+        if ($j.folder -is [string] -and $j.folder.ToLowerInvariant() -in @('repo', 'leaf')) { $cfg.Folder = $j.folder.ToLowerInvariant() }
         if ($j.state -is [bool]) { $cfg.State = $j.state }
         $segs = $j.segments
         if ($segs -is [System.Management.Automation.PSCustomObject]) {
@@ -104,6 +144,7 @@ function Get-Palette {
             added   = @{ Sgr = '32'; Fg = 46 }
             removed = @{ Sgr = '31'; Fg = 203 }
             track   = @{ Sgr = '90'; Fg = 245 }
+            muted   = @{ Sgr = '22;36'; Fg = 152 }
         }
     }
 }
@@ -145,9 +186,11 @@ function Format-Line($Segments, [string] $Style) {
 }
 
 # Renders a line and, when a width is given, shrinks then drops segments until it fits.
-# Stage 1 swaps limits, context, then branch for their Short form. Stage 2 drops whole segments in a fixed order.
-# The model segment is never dropped and may overflow on its own. Returns $null when nothing is left.
-function Get-FittedLine($Segments, [string] $Style, $Width) {
+# Stage 1 swaps segments for their Short form in $ShrinkOrder (limits, context, branch, then folder by default).
+# Stage 2 drops whole segments in $DropOrder. Either order left $null comes from the registry's ranks; an
+# empty array skips that stage. The model segment is never dropped whatever the drop order says, so it may
+# overflow on its own. Returns $null when nothing is left.
+function Get-FittedLine($Segments, [string] $Style, $Width, [string[]] $ShrinkOrder = $null, [string[]] $DropOrder = $null) {
     $segs = [System.Collections.Generic.List[hashtable]]::new()
     foreach ($s in $Segments) { if ($s) { $segs.Add($s.Clone()) } }
     if ($segs.Count -eq 0) { return $null }
@@ -155,7 +198,9 @@ function Get-FittedLine($Segments, [string] $Style, $Width) {
     if ($null -eq $Width) { return $line }
     $target = [int] $Width
     if ((Get-VisibleWidth $line) -le $target) { return $line }
-    foreach ($name in @('limits', 'context', 'branch')) {
+    if ($null -eq $ShrinkOrder) { $ShrinkOrder = Get-SegmentOrder 'ShrinkRank' }
+    if ($null -eq $DropOrder) { $DropOrder = Get-SegmentOrder 'DropRank' }
+    foreach ($name in $ShrinkOrder) {
         for ($i = 0; $i -lt $segs.Count; $i++) {
             if ($segs[$i].Name -eq $name -and $segs[$i].Short) {
                 $segs[$i].Text = $segs[$i].Short
@@ -164,7 +209,8 @@ function Get-FittedLine($Segments, [string] $Style, $Width) {
             }
         }
     }
-    foreach ($name in @('lines', 'badges', 'cost', 'limits', 'folder', 'branch', 'context')) {
+    foreach ($name in $DropOrder) {
+        if ($name -eq 'model') { continue }
         $at = -1
         for ($i = 0; $i -lt $segs.Count; $i++) { if ($segs[$i].Name -eq $name) { $at = $i } }
         if ($at -lt 0) { continue }
@@ -410,15 +456,25 @@ $prevState = if ($cfg.State -and $sessionId) { Read-SessionState $sessionId } el
 
 # ---- Segment builders. Each returns $null (segment omitted) or @{ Name; Text; Short; Role; Bold }. ----
 
-function Get-ThresholdRole([int] $pct) { if ($pct -ge 85) { 'bad' } elseif ($pct -ge 60) { 'warn' } else { 'ok' } }
+# Colour bands for a percentage. The defaults suit a 200k window; a 1M window passes wider bands, because
+# 85% of 1M still leaves 150k tokens, more than a whole fresh 200k session.
+function Get-ThresholdRole([int] $pct, [int] $Warn = 60, [int] $Bad = 85) { if ($pct -ge $Bad) { 'bad' } elseif ($pct -ge $Warn) { 'warn' } else { 'ok' } }
+
+# The one window size that gets the 1M marker and the wider bands. Claude Code reports it as exactly 1000000.
+function Test-WideWindow($size) { return $size -eq 1000000 }
 
 # Thousands of tokens: 1.5k, 64k, 1.0M
 function K([double] $n) { if ($n -ge 1000000) { '{0:N1}M' -f ($n / 1000000) } elseif ($n -ge 10000) { '{0:N0}k' -f ($n / 1000) } else { '{0:N1}k' -f ($n / 1000) } }
 
-function Get-ModelSegment($d) {
+# A 1M window gets a dim "1M" after the name, so a percentage in the context segment reads against the
+# right total. Once the session has passed 200k tokens the warning glyph follows it.
+function Get-ModelSegment($d, $cfg) {
     $model = $d.model.display_name
     if (-not $model) { return $null }
-    return @{ Name = 'model'; Text = "$iconModel $model"; Short = $null; Role = 'model'; Bold = $true }
+    $text = "$iconModel $model"
+    if (Test-WideWindow $d.context_window.context_window_size) { $text += ' ' + (Format-Inline 'muted' '1M' 'model' $cfg.Style) }
+    if ($d.exceeds_200k_tokens -is [bool] -and $d.exceeds_200k_tokens) { $text += " $iconConflict" }
+    return @{ Name = 'model'; Text = $text; Short = $null; Role = 'model'; Bold = $true }
 }
 
 function Get-ContextSegment($d) {
@@ -432,7 +488,8 @@ function Get-ContextSegment($d) {
     $size = $d.context_window.context_window_size
     $counts = if ($used -gt 0 -and $size) { " $(K $used)/$(K $size)" } elseif ($used -gt 0) { " $(K $used)" } else { '' }
     $short = "$iconCtx $pct% $bar"
-    return @{ Name = 'context'; Text = "$short$counts"; Short = $(if ($counts) { $short } else { $null }); Role = (Get-ThresholdRole $pct); Bold = $false }
+    $role = if (Test-WideWindow $size) { Get-ThresholdRole $pct 70 90 } else { Get-ThresholdRole $pct }
+    return @{ Name = 'context'; Text = "$short$counts"; Short = $(if ($counts) { $short } else { $null }); Role = $role; Bold = $false }
 }
 
 function Get-CostSegment($d) {
@@ -459,22 +516,27 @@ function TimeLeft([object] $epoch) {
     return ' ({0}h{1:00}m)' -f [int] [math]::Floor($left.TotalHours), $left.Minutes
 }
 
-# Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets.
+# Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets, and the spend limit when
+# the payload carries one (Claude Code sends it behind a Claude apps gateway with a spend limit). The spend
+# figure uses a literal dollar sign, not the cash glyph, so it does not read as a second cost; its resets_at
+# is not shown, one countdown is enough. Every figure that is present joins the worst-of colour.
 function Get-LimitsSegment($d) {
     $rl = $d.rate_limits
     if (-not $rl) { return $null }
-    $h5 = $rl.five_hour.used_percentage
-    $d7 = $rl.seven_day.used_percentage
-    if ($null -eq $h5 -and $null -eq $d7) { return $null }
     $bits = [System.Collections.Generic.List[string]]::new()
     $worst = 0
     $short = $null
-    if ($null -ne $h5) {
-        $h5 = [int] [math]::Round([double] $h5); $worst = [math]::Max($worst, $h5)
-        $bits.Add("5h $h5%$(TimeLeft $rl.five_hour.resets_at)")
-        $short = "$iconLimit 5h $h5%"
+    # Label, source object and whether the countdown follows, in render order.
+    foreach ($row in @(@('5h', $rl.five_hour, $true), @('7d', $rl.seven_day, $false), @('$', $rl.spend_limit, $false))) {
+        $pct = $row[1].used_percentage
+        if ($null -eq $pct) { continue }
+        $pct = [int] [math]::Round([double] $pct)
+        $worst = [math]::Max($worst, $pct)
+        $tail = if ($row[2]) { TimeLeft $row[1].resets_at } else { '' }
+        $bits.Add("$($row[0]) $pct%$tail")
+        if ($row[0] -eq '5h') { $short = "$iconLimit 5h $pct%" }
     }
-    if ($null -ne $d7) { $d7 = [int] [math]::Round([double] $d7); $worst = [math]::Max($worst, $d7); $bits.Add("7d $d7%") }
+    if ($bits.Count -eq 0) { return $null }
     $text = "$iconLimit $($bits -join ' ')"
     if ($short -eq $text) { $short = $null }
     return @{ Name = 'limits'; Text = $text; Short = $short; Role = (Get-ThresholdRole $worst); Bold = $false }
@@ -493,10 +555,27 @@ function Get-BadgesSegment($d) {
     return @{ Name = 'badges'; Text = ($badges -join ' '); Short = $null; Role = 'dim'; Bold = $false }
 }
 
-function Get-FolderSegment($d) {
-    $dir = $d.workspace.current_dir
+# With workspace.repo in the payload and the folder config at repo, the text is owner/name, followed by a
+# chevron and the leaf of current_dir once the session has moved below project_dir (no project_dir counts
+# as the root). The two paths are compared with forward slashes turned into backslashes, trailing
+# separators trimmed and case ignored, since the payload can spell the same directory either way. Short
+# is the name alone. Without a repo, with either field not a string or blank, or in leaf mode, it is the
+# leaf of current_dir as it always was, with no Short form. No current_dir means no segment.
+function Get-FolderSegment($d, $cfg) {
+    $dir = [string] $d.workspace.current_dir
     if (-not $dir) { return $null }
-    return @{ Name = 'folder'; Text = "$iconFolder $(Split-Path $dir -Leaf)"; Short = $null; Role = 'folder'; Bold = $false }
+    $leaf = Split-Path $dir -Leaf
+    $owner = $d.workspace.repo.owner
+    $name = $d.workspace.repo.name
+    if ($cfg.Folder -eq 'leaf' -or -not (Test-PayloadText $owner) -or -not (Test-PayloadText $name)) {
+        return @{ Name = 'folder'; Text = "$iconFolder $leaf"; Short = $null; Role = 'folder'; Bold = $false }
+    }
+    $root = [string] $d.workspace.project_dir
+    $here = ($dir -replace '/', '\').TrimEnd('\')
+    $there = ($root -replace '/', '\').TrimEnd('\')
+    $text = "$owner/$name"
+    if ($root -and $here -ne $there) { $text += " $iconChevron $leaf" }
+    return @{ Name = 'folder'; Text = "$iconFolder $text"; Short = "$iconFolder $name"; Role = 'folder'; Bold = $false }
 }
 
 # A payload value as a count, or $null when it is not one: a whole number that fits an Int32. ConvertFrom-Json
@@ -509,6 +588,12 @@ function Get-PayloadNumber($v) {
     if ([double]::IsNaN($d) -or [double]::IsInfinity($d) -or $d -ne [math]::Floor($d)) { return $null }
     if ($d -gt [int]::MaxValue -or $d -lt [int]::MinValue) { return $null }
     return [int] $d
+}
+
+# Whether a payload value is text: a string with visible content. Numbers, arrays, objects, nulls and
+# blank strings are not, so a field that should name something cannot be rendered from one of those.
+function Test-PayloadText($v) {
+    return ($v -is [string] -and -not [string]::IsNullOrWhiteSpace($v))
 }
 
 # Dirty flag from a payload git.status value: "clean"/other string, or an object of counts/booleans.
@@ -576,20 +661,10 @@ function Get-BranchSegment($d, $cfg) {
 
 # ---- Build, lay out, fit, print ----
 
-$segmentNames = @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch')
 $segments = [System.Collections.Generic.List[hashtable]]::new()
-foreach ($name in $segmentNames) {
-    if (-not $cfg.Segments[$name]) { continue }
-    $seg = switch ($name) {
-        'model'   { Get-ModelSegment $d }
-        'context' { Get-ContextSegment $d }
-        'cost'    { Get-CostSegment $d }
-        'lines'   { Get-LinesSegment $d $cfg }
-        'limits'  { Get-LimitsSegment $d }
-        'badges'  { Get-BadgesSegment $d }
-        'folder'  { Get-FolderSegment $d }
-        'branch'  { Get-BranchSegment $d $cfg }
-    }
+foreach ($rec in Get-SegmentRegistry) {
+    if (-not $cfg.Segments[$rec.Name]) { continue }
+    $seg = & $rec.Build $d $cfg
     if ($seg) { $segments.Add($seg) }
 }
 if ($segments.Count -eq 0) { Write-Host (C '36' "$iconModel claude"); exit 0 }
@@ -600,8 +675,8 @@ $cols = 0
 if ([int]::TryParse([string] $env:COLUMNS, [ref] $cols) -and $cols -gt 0) { $width = $cols - 1 }
 
 $lineSets = @(if ($cfg.Layout -eq 'two') {
-    @(@('model', 'folder', 'branch', 'badges'), @('context', 'limits', 'cost', 'lines'))
-} else { , $segmentNames })
+    @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
+} else { , @((Get-SegmentRegistry).Name) })
 
 # A line that fits down to nothing is not printed. With model toggled off and a very narrow terminal
 # that can mean no output at all, which is what the user asked for.

@@ -1,0 +1,15 @@
+{
+  "model": { "display_name": "Fable 5.1" },
+  "context_window": {
+    "total_input_tokens": 22000,
+    "total_output_tokens": 2000,
+    "context_window_size": 200000,
+    "used_percentage": 12
+  },
+  "cost": { "total_cost_usd": 0.88 },
+  "workspace": {
+    "current_dir": "C:\\src\\demo\\tools",
+    "project_dir": "C:\\src\\demo",
+    "repo": { "owner": "octo", "name": "demo" }
+  }
+}

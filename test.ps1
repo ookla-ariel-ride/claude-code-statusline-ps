@@ -84,6 +84,18 @@ function Measure-VisibleWidth([string] $Text) {
     return $width
 }
 
+# Runs a script file in a child pwsh with $Payload on stdin, and collects stdout as Lines and stderr as Err.
+function Invoke-ChildPwsh([string] $File, [string[]] $Arguments, [string] $Payload) {
+    $pwshArgs = @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', $File) + @($Arguments)
+    $err = [System.Collections.Generic.List[string]]::new()
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $out = $Payload | pwsh @pwshArgs 2>&1 | ForEach-Object {
+        if ($_ -is [System.Management.Automation.ErrorRecord]) { $err.Add("$_") } else { "$_" }
+    }
+    $sw.Stop()
+    return @{ Lines = @($out); Err = @($err); ExitCode = $LASTEXITCODE; Ms = $sw.ElapsedMilliseconds }
+}
+
 # Runs statusline.ps1 in a child pwsh. $Columns 0 means COLUMNS unset. $PathPrefix is prepended to PATH for the child.
 function Invoke-StatusLine([string] $Payload, [string] $ConfigPath, [int] $Columns = 0, [string] $PathPrefix) {
     $oldCols = $env:COLUMNS
@@ -91,15 +103,8 @@ function Invoke-StatusLine([string] $Payload, [string] $ConfigPath, [int] $Colum
     try {
         if ($Columns -gt 0) { $env:COLUMNS = "$Columns" } else { Remove-Item Env:COLUMNS -ErrorAction SilentlyContinue }
         if ($PathPrefix) { $env:PATH = $PathPrefix + [System.IO.Path]::PathSeparator + $env:PATH }
-        $pwshArgs = @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', $script)
-        if ($ConfigPath) { $pwshArgs += @('-Config', $ConfigPath) }
-        $err = [System.Collections.Generic.List[string]]::new()
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $out = $Payload | pwsh @pwshArgs 2>&1 | ForEach-Object {
-            if ($_ -is [System.Management.Automation.ErrorRecord]) { $err.Add("$_") } else { "$_" }
-        }
-        $sw.Stop()
-        return @{ Lines = @($out); Err = @($err); ExitCode = $LASTEXITCODE; Ms = $sw.ElapsedMilliseconds }
+        $scriptArgs = if ($ConfigPath) { @('-Config', $ConfigPath) } else { @() }
+        return Invoke-ChildPwsh $script $scriptArgs $Payload
     } finally {
         if ($null -ne $oldCols) { $env:COLUMNS = $oldCols } else { Remove-Item Env:COLUMNS -ErrorAction SilentlyContinue }
         $env:PATH = $oldPath
@@ -130,10 +135,15 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep'))
 
-# Get-BranchSegment closes over these script-level names in statusline.ps1, so the test has to supply them.
+# Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment and Get-ModelSegment close over these
+# script-level names in statusline.ps1, so the test has to supply them.
 $gitTimeoutMs = 1500
+$iconLimit = [char]::ConvertFromUtf32(0xF0E4)
+$iconModel = [char]::ConvertFromUtf32(0xF06A9)
+$iconFolder = [char]::ConvertFromUtf32(0xF07C)
+$iconChevron = [char]::ConvertFromUtf32(0x203A)
 $iconHome = [char]::ConvertFromUtf32(0xF015)
 $iconBranch = [char]::ConvertFromUtf32(0xE0A0)
 $iconDirty = [char]::ConvertFromUtf32(0xF040)
@@ -161,6 +171,36 @@ foreach ($row in $widthTable) {
     Confirm-Equal -Actual (Measure-VisibleWidth $row.Text) -Expected $row.Width -Label "test width of '$shown'"
 }
 
+Write-Host '== unit: registry' -ForegroundColor Cyan
+# The registry is the one table behind the config defaults, the shrink and drop order, the build
+# dispatch and the row split. This pins its contents to what the script did when each list was written
+# out by hand, so a change there is a deliberate one. Array order is layout one.
+$registryTable = @(
+    @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
+    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 2;     DropRank = 7;     Row = 2; RowRank = 1 }
+    @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = $null; DropRank = 3;     Row = 2; RowRank = 3 }
+    @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
+    @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
+    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 4 }
+    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 4;     DropRank = 5;     Row = 1; RowRank = 2 }
+    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 3;     DropRank = 6;     Row = 1; RowRank = 3 }
+)
+$registry = @(Get-SegmentRegistry)
+Confirm-Equal $registry.Count $registryTable.Count 'registry: eight records'
+for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
+    $want = $registryTable[$i]
+    $got = $registry[$i]
+    Confirm-Equal $got.Name $want.Name "registry: record $i is $($want.Name)"
+    foreach ($key in @('Build', 'Default', 'ShrinkRank', 'DropRank', 'Row', 'RowRank')) {
+        Confirm-True ($got.ContainsKey($key)) "registry: $($want.Name) has $key"
+        Confirm-Equal $got[$key] $want[$key] "registry: $($want.Name) $key"
+    }
+}
+Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'limits,context,branch,folder' 'registry: shrink order'
+Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,badges,cost,limits,folder,branch,context' 'registry: drop order'
+Confirm-Equal ((Get-SegmentOrder 'RowRank' 1) -join ',') 'model,folder,branch,badges' 'registry: layout two row 1'
+Confirm-Equal ((Get-SegmentOrder 'RowRank' 2) -join ',') 'context,limits,cost,lines' 'registry: layout two row 2'
+
 Write-Host '== unit: config' -ForegroundColor Cyan
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "statusline-test-$PID"
 New-Item -ItemType Directory -Force $tmp | Out-Null
@@ -174,12 +214,22 @@ function Write-TempConfig([string] $Name, [string] $Json) {
     [System.IO.File]::WriteAllText($p, $Json, [System.Text.UTF8Encoding]::new($false))
     return $p
 }
-$allSegments = @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch')
+# Every segment name in layout-one order, from the registry, so this list cannot drift from the script's.
+$allSegments = @((Get-SegmentRegistry).Name)
 
 $c = Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')
 Confirm-Equal $c.Layout 'one' 'config missing: layout'
 Confirm-Equal $c.Style 'plain' 'config missing: style'
+Confirm-Equal $c.Folder 'repo' 'config missing: folder repo'
 Confirm-True (@($allSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'config missing: all segments on'
+
+$c = Read-StatusConfig (Write-TempConfig 'folder-leaf.json' '{ "folder": "LEAF" }')
+Confirm-Equal $c.Folder 'leaf' 'config folder: leaf, case-insensitive'
+Confirm-Equal $c.Segments.folder $true 'config folder: the mode does not touch the segment toggle'
+$c = Read-StatusConfig (Write-TempConfig 'folder-nonsense.json' '{ "folder": "nonsense" }')
+Confirm-Equal $c.Folder 'repo' 'config folder: unknown value falls back to repo'
+$c = Read-StatusConfig (Write-TempConfig 'folder-number.json' '{ "folder": 7 }')
+Confirm-Equal $c.Folder 'repo' 'config folder: non-string falls back to repo'
 
 $c = Read-StatusConfig (Write-TempConfig 'valid.json' '{ "layout": "Two", "style": "POWERLINE", "segments": { "cost": false, "lines": true } }')
 Confirm-Equal $c.Layout 'two' 'config valid: layout case-insensitive'
@@ -221,6 +271,8 @@ Confirm-True ($shippedJson -is [System.Management.Automation.PSCustomObject]) 's
 $c = Read-StatusConfig $shippedConfig
 Confirm-Equal $c.Layout 'one' 'shipped config: layout one'
 Confirm-Equal $c.Style 'plain' 'shipped config: style plain'
+Confirm-Equal $c.Folder 'repo' 'shipped config: folder repo'
+Confirm-Equal $shippedJson.folder 'repo' 'shipped config: the file itself says folder repo'
 $shippedSegments = @($c.Segments.Keys)
 Confirm-Equal $shippedSegments.Count 8 'shipped config: eight segments'
 Confirm-True (@($shippedSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'shipped config: every segment on'
@@ -412,6 +464,76 @@ Write-Host ("{0,-40} {1,5:N2} ms  best of five read+write" -f 'state timing', $b
     if ($null -ne $oldTemp) { $env:TEMP = $oldTemp } else { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }
 }
 
+Write-Host '== unit: folder' -ForegroundColor Cyan
+# The four render paths from the issue, then both config modes. Nothing here touches the file system:
+# the builder only splits strings, so the directories need not exist.
+function Get-FolderPayload([string] $Dir, [string] $Root, $Owner, $Name) {
+    $ws = [ordered]@{}
+    if ($Dir) { $ws.current_dir = $Dir }
+    if ($Root) { $ws.project_dir = $Root }
+    if ($Owner -or $Name) { $ws.repo = [pscustomobject]@{ owner = $Owner; name = $Name } }
+    return [pscustomobject]@{ workspace = [pscustomobject]$ws }
+}
+$cfgRepo = @{ Folder = 'repo'; Style = 'plain' }
+$cfgLeaf = @{ Folder = 'leaf'; Style = 'plain' }
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo' 'C:\src\demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder at root: owner/name'
+Confirm-Equal $seg.Short "$iconFolder demo" 'folder at root: short is the name alone'
+Confirm-Equal $seg.Role 'folder' 'folder at root: role'
+Confirm-Equal $seg.Name 'folder' 'folder at root: name'
+Confirm-Equal $seg.Bold $false 'folder at root: not bold'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo $iconChevron tools" 'folder below root: owner/name, chevron, leaf'
+Confirm-Equal $seg.Short "$iconFolder demo" 'folder below root: short is the name alone'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\' 'C:\src\demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder at root with a trailing separator: still the root'
+$seg = Get-FolderSegment (Get-FolderPayload 'c:\SRC\Demo' 'C:\src\demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder at root in another case: still the root'
+# The payload can spell either path with forward slashes, backslashes or a mix; the same directory is
+# the root whichever way it is written.
+$seg = Get-FolderSegment (Get-FolderPayload 'C:/src/demo' 'C:\src\demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder at root with forward slashes in current_dir: still the root'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo' 'C:/src/demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder at root with forward slashes in project_dir: still the root'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:/src\demo/' 'C:\src/demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder at root with mixed slashes on both sides: still the root'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:/src/demo/tools' 'C:/src/demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo $iconChevron tools" 'folder below root with forward slashes: chevron and leaf'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:/src/demo/' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo $iconChevron tools" 'folder below a forward-slash root with a trailing slash: chevron and leaf'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo2' 'C:/src/demo' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo $iconChevron demo2" 'folder beside the root: a longer name is not the root'
+# A repo field that is not a string with visible text is no repo at all: the segment falls back to the
+# leaf alone, whichever of the two fields is bad.
+$badRepoFields = @(
+    @{ Label = 'a number'; Value = 7 }
+    @{ Label = 'an array'; Value = @('octo') }
+    @{ Label = 'an object'; Value = [pscustomobject]@{ login = 'octo' } }
+    @{ Label = 'null'; Value = $null }
+    @{ Label = 'an empty string'; Value = '' }
+    @{ Label = 'a whitespace-only string'; Value = '   ' }
+)
+foreach ($bad in $badRepoFields) {
+    foreach ($field in @('owner', 'name')) {
+        $payload = if ($field -eq 'owner') { Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' $bad.Value 'demo' } else { Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' 'octo' $bad.Value }
+        $seg = Get-FolderSegment $payload $cfgRepo
+        Confirm-Equal $seg.Text "$iconFolder tools" "folder with $($bad.Label) as repo.${field}: the leaf"
+        Confirm-Equal $seg.Short $null "folder with $($bad.Label) as repo.${field}: no short form"
+    }
+}
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' '' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder with no project_dir: owner/name, no leaf'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder tools" 'folder with no repo: the leaf as before'
+Confirm-Equal $seg.Short $null 'folder with no repo: no short form'
+Confirm-Equal (Get-FolderSegment (Get-FolderPayload '' 'C:\src\demo' 'octo' 'demo') $cfgRepo) $null 'folder with no current_dir: null'
+Confirm-Equal (Get-FolderSegment ([pscustomobject]@{ model = @{ display_name = 'M' } }) $cfgRepo) $null 'folder with no workspace: null'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' 'octo' 'demo') $cfgLeaf
+Confirm-Equal $seg.Text "$iconFolder tools" 'folder leaf mode: the leaf even with a repo'
+Confirm-Equal $seg.Short $null 'folder leaf mode: no short form'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo' 'C:\src\demo' 'octo' 'demo') $cfgLeaf
+Confirm-Equal $seg.Text "$iconFolder demo" 'folder leaf mode at root: the leaf'
+
 Write-Host '== unit: renderer' -ForegroundColor Cyan
 $arrow = [char]::ConvertFromUtf32(0xE0B0)
 $chevron = [char]::ConvertFromUtf32(0xE0B1)
@@ -480,6 +602,32 @@ $line = Get-FittedLine $fitBranch 'plain' 39
 Confirm-Equal (Get-VisibleWidth $line) 38 'fit: stage 1 shrinks branch third'
 Confirm-True ($line.Contains('BB') -and -not $line.Contains('BBBB') -and $line.Contains('LL')) 'fit: branch shortened, nothing dropped at 39'
 
+# A folder with a Short form (the repo name alone) sheds it fourth in stage 1, after branch and still
+# before any whole segment goes. Full width is 48 here; limits short gives 45, context 42, branch 40, folder 38.
+$fitFolder = Get-FitSegmentSet
+$fitFolder[6] = @{ Name = 'folder'; Text = 'FFFF'; Short = 'FF'; Role = 'folder'; Bold = $false }
+$fitFolder[7] = @{ Name = 'branch'; Text = 'BBBB'; Short = 'BB'; Role = 'branch'; Bold = $false }
+$line = Get-FittedLine $fitFolder 'plain' 40
+Confirm-True ($line.Contains('FFFF') -and $line.Contains('BB') -and -not $line.Contains('BBBB')) 'fit: branch shortened before folder at 40'
+$line = Get-FittedLine $fitFolder 'plain' 39
+Confirm-Equal (Get-VisibleWidth $line) 38 'fit: stage 1 shrinks folder fourth'
+Confirm-True ($line.Contains('FF') -and -not $line.Contains('FFFF') -and $line.Contains('LL')) 'fit: folder shortened, nothing dropped at 39'
+
+# The shrink and drop orders are parameters that default to the registry, so a caller can hand in its own.
+# Shrinking context alone takes 44 to 41; dropping badges after the default shrink of limits and context
+# takes 38 to 33 (two cells of text and a three-cell separator).
+$line = Get-FittedLine $fit 'plain' 43 -ShrinkOrder @('context')
+Confirm-True ($line.Contains('CCC') -and -not $line.Contains('CCCCCC') -and $line.Contains('IIIIII')) 'fit: custom shrink order shortens context before limits'
+Confirm-Equal (Get-VisibleWidth $line) 41 'fit: custom shrink order width'
+$line = Get-FittedLine $fit 'plain' 37 -DropOrder @('badges')
+Confirm-True ($line.Contains('LL') -and -not $line.Contains('GG')) 'fit: custom drop order drops badges, keeps lines'
+Confirm-Equal (Get-VisibleWidth $line) 33 'fit: custom drop order width'
+# The model segment stays whatever the drop order names: at width 10 nothing else is left to drop, so
+# the line is the shrunk one, still holding the model.
+$line = Get-FittedLine $fit 'plain' 10 -DropOrder @('model')
+Confirm-True ($line.Contains('M') -and $line.Contains('CCC')) 'fit: drop order naming model leaves it in place'
+Confirm-Equal (Get-VisibleWidth $line) 38 'fit: drop order naming model drops nothing'
+
 Write-Host '== unit: context' -ForegroundColor Cyan
 $iconCtx = [char]::ConvertFromUtf32(0xF035B)
 $blockFull = [char]::ConvertFromUtf32(0x2588)
@@ -511,6 +659,87 @@ Confirm-Equal (Get-ContextSegment (Get-ContextPayload 64)).Role 'warn' 'context 
 Confirm-Equal (Get-ContextSegment (Get-ContextPayload 85)).Role 'bad' 'context 85: role'
 
 Confirm-Equal (Get-ContextSegment ([pscustomobject]@{})) $null 'context: missing context_window'
+
+# A 1M window moves the colour bands to 70 and 90, so the same percentage is a different colour there.
+function Get-WideContextPayload([double] $Pct) {
+    return [pscustomobject]@{ context_window = [pscustomobject]@{ used_percentage = $Pct; total_input_tokens = 650000; total_output_tokens = 0; context_window_size = 1000000 } }
+}
+Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 65)).Role 'ok' 'context 1M 65: role ok, not warn'
+Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 75)).Role 'warn' 'context 1M 75: role warn'
+Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 92)).Role 'bad' 'context 1M 92: role bad'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 65)).Role 'warn' 'context 200k 65: role stays warn'
+Confirm-True (Get-ContextSegment (Get-WideContextPayload 65)).Text.Contains("650k/$(K 1000000)") 'context 1M 65: counts'
+
+Write-Host '== unit: threshold' -ForegroundColor Cyan
+Confirm-Equal (Get-ThresholdRole 65) 'warn' 'threshold 65: default bands warn'
+Confirm-Equal (Get-ThresholdRole 65 70 90) 'ok' 'threshold 65 at 70/90: ok'
+Confirm-Equal (Get-ThresholdRole 70 70 90) 'warn' 'threshold 70 at 70/90: warn'
+Confirm-Equal (Get-ThresholdRole 89 70 90) 'warn' 'threshold 89 at 70/90: warn'
+Confirm-Equal (Get-ThresholdRole 92 70 90) 'bad' 'threshold 92 at 70/90: bad'
+Confirm-Equal (Get-ThresholdRole 85) 'bad' 'threshold 85: default bands bad'
+Confirm-True (Test-WideWindow 1000000) 'wide window: 1000000'
+Confirm-True (-not (Test-WideWindow 200000) -and -not (Test-WideWindow 1048576) -and -not (Test-WideWindow $null)) 'wide window: 200000, 1048576 and null are not'
+
+Write-Host '== unit: model' -ForegroundColor Cyan
+function Get-ModelPayload($Size, $Exceeds) {
+    $p = [pscustomobject]@{ model = [pscustomobject]@{ display_name = 'Fable 5.1' } }
+    if ($null -ne $Size) { $p | Add-Member -NotePropertyName context_window -NotePropertyValue ([pscustomobject]@{ used_percentage = 65; context_window_size = $Size }) }
+    if ($null -ne $Exceeds) { $p | Add-Member -NotePropertyName exceeds_200k_tokens -NotePropertyValue $Exceeds }
+    return $p
+}
+$plainCfg = @{ Style = 'plain' }
+$seg = Get-ModelSegment (Get-ModelPayload 1000000) $plainCfg
+Confirm-True ((ConvertTo-PlainText $seg.Text).EndsWith("$iconModel Fable 5.1 1M")) 'model 1M: text ends in 1M'
+Confirm-True ($seg.Text.Contains("$esc[22;36m1M$esc[1;36m")) 'model 1M: plain marker is muted, then bold cyan again'
+Confirm-Equal $seg.Role 'model' 'model 1M: role'
+Confirm-Equal $seg.Short $null 'model 1M: no short form'
+$seg = Get-ModelSegment (Get-ModelPayload 1000000) @{ Style = 'powerline' }
+Confirm-True ($seg.Text.Contains("$esc[38;5;152m1M$esc[38;5;231m")) 'model 1M: powerline marker restores the model foreground'
+Confirm-Equal (Get-ModelSegment (Get-ModelPayload 200000) $plainCfg).Text "$iconModel Fable 5.1" 'model 200k: exact text'
+Confirm-Equal (Get-ModelSegment (Get-ModelPayload $null) $plainCfg).Text "$iconModel Fable 5.1" 'model no size: exact text'
+Confirm-Equal (Get-ModelSegment (Get-ModelPayload 400000) $plainCfg).Text "$iconModel Fable 5.1" 'model other size: exact text'
+$seg = Get-ModelSegment (Get-ModelPayload 1000000 $true) $plainCfg
+Confirm-True ((ConvertTo-PlainText $seg.Text).EndsWith("Fable 5.1 1M $iconConflict")) 'model 1M exceeds: glyph after the marker'
+$seg = Get-ModelSegment (Get-ModelPayload 1000000 $false) $plainCfg
+Confirm-True (-not $seg.Text.Contains($iconConflict)) 'model 1M not exceeded: no glyph'
+Confirm-Equal (Get-ModelSegment (Get-ModelPayload 200000 $true) $plainCfg).Text "$iconModel Fable 5.1 $iconConflict" 'model 200k exceeds: glyph without a marker'
+# The field is a documented boolean; anything else, including values -eq $true would coerce, gives no glyph.
+foreach ($odd in @(@{ Label = 'string true'; Value = 'true' }, @{ Label = 'number 1'; Value = 1 }, @{ Label = 'null'; Value = $null },
+        @{ Label = 'array'; Value = @($true) }, @{ Label = 'object'; Value = [pscustomobject]@{ value = $true } })) {
+    $p = Get-ModelPayload 200000
+    $p | Add-Member -NotePropertyName exceeds_200k_tokens -NotePropertyValue $odd.Value
+    Confirm-Equal (Get-ModelSegment $p $plainCfg).Text "$iconModel Fable 5.1" "model exceeds as $($odd.Label): no glyph"
+}
+Confirm-Equal (Get-ModelSegment ([pscustomobject]@{ model = [pscustomobject]@{ display_name = '' } }) $plainCfg) $null 'model: empty name omits the segment'
+Write-Host '== unit: limits' -ForegroundColor Cyan
+# Resets in the past keep TimeLeft empty, so the text is deterministic. Payloads go through ConvertFrom-Json
+# so a null used_percentage is a real null property, the way Claude Code sends it.
+function Get-LimitsPayload([string] $RateLimits) {
+    return ('{"rate_limits":' + $RateLimits + '}') | ConvertFrom-Json
+}
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":24,"resets_at":1700000000},"seven_day":{"used_percentage":41,"resets_at":1700000000},"spend_limit":{"used_percentage":62,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit 5h 24% 7d 41% `$ 62%" 'limits all three: 5h, 7d, then spend'
+Confirm-Equal $seg.Short "$iconLimit 5h 24%" 'limits all three: short keeps the 5h figure only'
+Confirm-Equal $seg.Role 'warn' 'limits all three: role from the worst figure'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"spend_limit":{"used_percentage":62,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit `$ 62%" 'limits spend alone: one figure, no 5h'
+Confirm-Equal $seg.Short $null 'limits spend alone: no short form'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"spend_limit":{"used_percentage":92,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit 5h 10% `$ 92%" 'limits spend 92 with 5h 10: text'
+Confirm-Equal $seg.Role 'bad' 'limits spend 92 with 5h 10: spend drives the colour'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit absent: unchanged text'
+Confirm-Equal $seg.Role 'warn' 'limits spend_limit absent: role'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000},"spend_limit":{"used_percentage":null,"resets_at":null}}')
+Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit null percentage: unchanged text'
+
+Confirm-Equal (Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":null},"seven_day":{"used_percentage":null},"spend_limit":{"used_percentage":null}}')) $null 'limits all null: segment omitted'
+Confirm-Equal (Get-LimitsSegment ([pscustomobject]@{})) $null 'limits: missing rate_limits'
 
 Write-Host '== unit: porcelain' -ForegroundColor Cyan
 $r = Read-PorcelainStatus "## main...origin/main [ahead 1]`n"
@@ -572,6 +801,14 @@ $r = Read-PorcelainStatus "## HEAD (no branch)`n"
 Confirm-Equal $r.Branch 'detached' 'porcelain: detached'
 Confirm-Equal (Read-PorcelainStatus "fatal: not a git repository`n") $null 'porcelain: no header'
 Confirm-Equal (Read-PorcelainStatus '') $null 'porcelain: empty'
+
+Write-Host '== unit: payload text' -ForegroundColor Cyan
+Confirm-Equal (Test-PayloadText 'octo') $true 'payload text: a string with content is text'
+Confirm-Equal (Test-PayloadText '   ') $false 'payload text: whitespace only is not'
+Confirm-Equal (Test-PayloadText '') $false 'payload text: empty string is not'
+Confirm-Equal (Test-PayloadText $null) $false 'payload text: null is not'
+Confirm-Equal (Test-PayloadText 7) $false 'payload text: a number is not'
+Confirm-Equal (Test-PayloadText @('octo')) $false 'payload text: an array is not'
 
 Write-Host '== unit: payload counts' -ForegroundColor Cyan
 # ConvertFrom-Json hands the sample counts over as Int64, so the object cases go through it.
@@ -983,6 +1220,175 @@ if ($IsWindows) {
     if ($null -ne $oldTemp) { $env:TEMP = $oldTemp } else { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }
 }
 
+# ---- Install group: install.ps1 against a settings.json inside the temp tree ----
+# USERPROFILE is pointed at a folder under $tmp for the child pwsh, so the installer's copy target
+# (~/.claude/statusline.ps1) lands there, and -SettingsPath puts the settings file in the same tree. The
+# installer run is the worktree's own install.ps1, so $PSScriptRoot in the child is still the worktree
+# and the copy source is the real script. The real ~/.claude files are hashed before the group and
+# compared after it: nothing here may write outside $tmp.
+Write-Host '== install' -ForegroundColor Cyan
+$installer = Join-Path $PSScriptRoot 'install.ps1'
+$installHome = Join-Path $tmp 'install-home'
+New-Item -ItemType Directory -Force $installHome | Out-Null
+$realClaudeDir = Join-Path $env:USERPROFILE '.claude'
+function Get-WriteStamp([string] $Path) { if (Test-Path -LiteralPath $Path) { return (Get-Item -LiteralPath $Path).LastWriteTimeUtc }; return $null }
+# Content, not a timestamp: another process touching the real file during the run would break a
+# LastWriteTimeUtc comparison without the installer having written anything.
+function Get-ContentHash([string] $Path) { if (Test-Path -LiteralPath $Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash }; return $null }
+$realHash = [ordered]@{}
+foreach ($name in @('settings.json', 'settings.json.bak', 'statusline.ps1', 'statusline.json')) { $realHash[$name] = Get-ContentHash (Join-Path $realClaudeDir $name) }
+$oldUserProfile = $env:USERPROFILE
+try {
+$env:USERPROFILE = $installHome
+# Runs install.ps1 in a child pwsh. Every call must carry -SettingsPath under $tmp; USERPROFILE is
+# already redirected above, so the copy target and the uninstall delete land under $tmp as well.
+function Invoke-Installer([string] $Name, [string[]] $Arguments) {
+    $r = Invoke-ChildPwsh $installer $Arguments
+    Write-Host ("{0,-40} {1,5:N0} ms  exit {2}" -f $Name, $r.Ms, $r.ExitCode)
+    return $r
+}
+# $null for a missing or unparseable file, so an installer regression shows up as FAIL lines below
+# instead of a terminating error that takes the rest of the suite with it.
+function Read-SettingFile([string] $Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    try { return (Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json) } catch { return $null }
+}
+function Get-KeyList($Object) {
+    if ($null -eq $Object) { return '(no object)' }
+    return (@($Object.PSObject.Properties.Name) -join ',')
+}
+$installedScript = Join-Path $installHome '.claude\statusline.ps1'
+$installedConfig = Join-Path $installHome '.claude\statusline.json'
+$expectCommand = 'pwsh -NoProfile -NoLogo -NonInteractive -File ' + ($installedScript -replace '\\', '/')
+
+# A fresh file: neither settings.json nor its parent directory exists yet.
+$fresh = Join-Path $installHome 'fresh\settings.json'
+$r = Invoke-Installer 'install fresh' @('-SettingsPath', $fresh)
+Confirm-True ($r.ExitCode -eq 0) "install fresh: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "install fresh: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-True (Test-Path $fresh) 'install fresh: settings.json created'
+Confirm-True (-not (Test-Path "$fresh.bak")) 'install fresh: no .bak when there was nothing to back up'
+Confirm-True (Test-Path $installedScript) 'install fresh: statusline.ps1 copied into the temp home'
+Confirm-True (Test-Path $installedConfig) 'install fresh: statusline.json copied into the temp home'
+if (Test-Path $fresh) {
+    $s = Read-SettingFile $fresh
+    Confirm-Equal (Get-KeyList $s) 'statusLine' 'install fresh: statusLine is the only key'
+    Confirm-Equal (Get-KeyList $s.statusLine) 'type,command,padding,hideVimModeIndicator' 'install fresh: statusLine has four keys in order'
+    Confirm-Equal $s.statusLine.type 'command' 'install fresh: type'
+    Confirm-Equal $s.statusLine.command $expectCommand 'install fresh: command points at the temp home with forward slashes'
+    Confirm-Equal $s.statusLine.padding 0 'install fresh: padding'
+    Confirm-True ($s.statusLine.hideVimModeIndicator -is [bool] -and $s.statusLine.hideVimModeIndicator) 'install fresh: hideVimModeIndicator is boolean true'
+}
+
+# An existing file with unrelated keys, including a top-level hideVimModeIndicator the installer must not touch.
+$existingJson = '{ "theme": "dark", "permissions": { "allow": [ "Bash(git:*)" ] }, "hideVimModeIndicator": false }'
+$existing = Write-TempConfig 'install-home\existing.json' $existingJson
+$r = Invoke-Installer 'install existing -RefreshInterval 10' @('-SettingsPath', $existing, '-RefreshInterval', '10')
+Confirm-True ($r.ExitCode -eq 0) "install existing: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "install existing: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-True (Test-Path "$existing.bak") 'install existing: .bak written'
+if (Test-Path "$existing.bak") { Confirm-Equal (Get-Content -LiteralPath "$existing.bak" -Raw) $existingJson 'install existing: .bak holds the previous content' }
+$s = Read-SettingFile $existing
+Confirm-Equal (Get-KeyList $s) 'theme,permissions,hideVimModeIndicator,statusLine' 'install existing: unrelated keys kept, statusLine appended'
+Confirm-Equal $s.theme 'dark' 'install existing: theme kept'
+Confirm-Equal ($s.permissions.allow -join ',') 'Bash(git:*)' 'install existing: nested permissions kept'
+Confirm-True ($s.hideVimModeIndicator -is [bool] -and -not $s.hideVimModeIndicator) 'install existing: top-level hideVimModeIndicator left alone'
+Confirm-Equal (Get-KeyList $s.statusLine) 'type,command,padding,hideVimModeIndicator,refreshInterval' 'install -RefreshInterval 10: five keys in order'
+Confirm-Equal $s.statusLine.refreshInterval 10 'install -RefreshInterval 10: refreshInterval is 10'
+Confirm-True ((Get-Content -LiteralPath $existing -Raw).Contains('"refreshInterval": 10')) 'install -RefreshInterval 10: written as a number, not a string'
+Confirm-True ($s.statusLine.hideVimModeIndicator -is [bool] -and $s.statusLine.hideVimModeIndicator) 'install -RefreshInterval 10: hideVimModeIndicator is boolean true'
+
+# A run without the switch writes no refreshInterval, even over an entry that had one, and says so. The
+# child pwsh host prints warnings on stdout, so the warning is looked for in Lines, not Err.
+$r = Invoke-Installer 'install existing, no switch' @('-SettingsPath', $existing)
+Confirm-True ($r.ExitCode -eq 0) "install no switch: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "install no switch: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-True (($r.Lines -join ' ') -match 'WARNING:.*refreshInterval of 10 is dropped') "install no switch: warning names the dropped value, got '$($r.Lines -join ' | ')'"
+$s = Read-SettingFile $existing
+Confirm-Equal (Get-KeyList $s.statusLine) 'type,command,padding,hideVimModeIndicator' 'install no switch: no refreshInterval key'
+Confirm-Equal (Get-KeyList $s) 'theme,permissions,hideVimModeIndicator,statusLine' 'install no switch: unrelated keys still kept'
+
+# A 0-byte settings file parses to $null; the installer must still end up with a real object.
+$empty = Write-TempConfig 'install-home\empty.json' ''
+$r = Invoke-Installer 'install empty file' @('-SettingsPath', $empty)
+Confirm-True ($r.ExitCode -eq 0) "install empty: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "install empty: stderr empty, got '$($r.Err -join ' | ')'"
+$s = Read-SettingFile $empty
+Confirm-Equal (Get-KeyList $s) 'statusLine' 'install empty: statusLine is the only key'
+Confirm-Equal (Get-KeyList $s.statusLine) 'type,command,padding,hideVimModeIndicator' 'install empty: statusLine has four keys in order'
+Confirm-True ((Get-Content -LiteralPath $empty -Raw).Trim() -ne 'null') 'install empty: file is not the literal text null'
+
+# A settings path with wildcard characters: -Path would read it as missing and drop the existing keys.
+[void] [System.IO.Directory]::CreateDirectory((Join-Path $installHome 'a[b]'))
+$wild = Write-TempConfig 'install-home\a[b]\settings.json' '{ "theme": "light" }'
+$r = Invoke-Installer 'install wildcard path' @('-SettingsPath', $wild)
+Confirm-True ($r.ExitCode -eq 0) "install wildcard: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "install wildcard: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-True (Test-Path -LiteralPath "$wild.bak") 'install wildcard: .bak written'
+$s = Read-SettingFile $wild
+Confirm-Equal (Get-KeyList $s) 'theme,statusLine' 'install wildcard: unrelated key kept, statusLine appended'
+Confirm-Equal $s.theme 'light' 'install wildcard: theme kept'
+Confirm-Equal (Get-KeyList $s.statusLine) 'type,command,padding,hideVimModeIndicator' 'install wildcard: statusLine has four keys in order'
+$r = Invoke-Installer 'uninstall wildcard path' @('-Uninstall', '-SettingsPath', $wild)
+Confirm-True ($r.ExitCode -eq 0) "uninstall wildcard: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "uninstall wildcard: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-Equal (Get-KeyList (Read-SettingFile $wild)) 'theme' 'uninstall wildcard: statusLine removed, theme kept'
+
+# 0 and a negative value are refused by ValidateRange before anything is written: no settings rewrite,
+# no new .bak, no copy.
+Remove-Item -LiteralPath $installedScript -Force -ErrorAction SilentlyContinue
+foreach ($bad in @('0', '-5')) {
+    $label = "install -RefreshInterval $bad"
+    $before = Get-Content -LiteralPath $existing -Raw
+    $beforeStamp = Get-WriteStamp $existing
+    $beforeBakStamp = Get-WriteStamp "$existing.bak"
+    $r = Invoke-Installer $label @('-SettingsPath', $existing, '-RefreshInterval', $bad)
+    Confirm-True ($r.ExitCode -ne 0) "${label}: exit code $($r.ExitCode) is non-zero"
+    Confirm-True (($r.Err -join ' ') -match "parameter 'RefreshInterval'\. The $bad argument is less than the minimum allowed range of 1\.") "${label}: error names the parameter and the range, got '$($r.Err -join ' | ')'"
+    Confirm-Equal (Get-Content -LiteralPath $existing -Raw) $before "${label}: settings.json content unchanged"
+    Confirm-True ((Get-WriteStamp $existing) -eq $beforeStamp) "${label}: settings.json not rewritten"
+    Confirm-True ((Get-WriteStamp "$existing.bak") -eq $beforeBakStamp) "${label}: .bak not rewritten"
+    Confirm-True (-not (Test-Path $installedScript)) "${label}: statusline.ps1 not copied"
+}
+
+# Uninstall removes the whole statusLine object, both keys with it, and names them; everything else stays.
+# The uninstall cases run only if the install before them put statusline.ps1 in the temp home: that is the
+# proof the USERPROFILE seam holds, and -Uninstall deletes ~/.claude/statusline.ps1 wherever ~ points.
+$r = Invoke-Installer 'install existing -RefreshInterval 7' @('-SettingsPath', $existing, '-RefreshInterval', '7')
+Confirm-True ($r.ExitCode -eq 0) "install before uninstall: exit code $($r.ExitCode)"
+$seamHolds = Test-Path -LiteralPath $installedScript
+Confirm-True $seamHolds 'install before uninstall: statusline.ps1 is in the temp home (uninstall cases skipped otherwise)'
+if ($seamHolds) {
+    $r = Invoke-Installer 'uninstall' @('-Uninstall', '-SettingsPath', $existing)
+    Confirm-True ($r.ExitCode -eq 0) "uninstall: exit code $($r.ExitCode)"
+    Confirm-True ($r.Err.Count -eq 0) "uninstall: stderr empty, got '$($r.Err -join ' | ')'"
+    $s = Read-SettingFile $existing
+    Confirm-Equal (Get-KeyList $s) 'theme,permissions,hideVimModeIndicator' 'uninstall: statusLine removed, unrelated keys kept'
+    Confirm-True ($s.hideVimModeIndicator -is [bool] -and -not $s.hideVimModeIndicator) 'uninstall: top-level hideVimModeIndicator left alone'
+    Confirm-True (-not (Test-Path -LiteralPath $installedScript)) 'uninstall: statusline.ps1 deleted from the temp home'
+    Confirm-True (Test-Path -LiteralPath $installedConfig) 'uninstall: statusline.json kept'
+    $bak = Read-SettingFile "$existing.bak"
+    Confirm-Equal (Get-KeyList $bak.statusLine) 'type,command,padding,hideVimModeIndicator,refreshInterval' 'uninstall: .bak holds the entry that was removed'
+    $text = $r.Lines -join "`n"
+    Confirm-True ($text.Contains('hideVimModeIndicator') -and $text.Contains('refreshInterval')) "uninstall: message names both keys, got '$text'"
+
+    # A second uninstall has nothing to remove and leaves the file as it is.
+    $before = Get-Content -LiteralPath $existing -Raw
+    $beforeStamp = Get-WriteStamp $existing
+    $r = Invoke-Installer 'uninstall again' @('-Uninstall', '-SettingsPath', $existing)
+    Confirm-True ($r.ExitCode -eq 0) "uninstall again: exit code $($r.ExitCode)"
+    Confirm-True ($r.Err.Count -eq 0) "uninstall again: stderr empty, got '$($r.Err -join ' | ')'"
+    Confirm-Equal (Get-Content -LiteralPath $existing -Raw) $before 'uninstall again: settings.json content unchanged'
+    Confirm-True ((Get-WriteStamp $existing) -eq $beforeStamp) 'uninstall again: settings.json not rewritten'
+}
+} finally {
+    $env:USERPROFILE = $oldUserProfile
+}
+foreach ($name in $realHash.Keys) {
+    $p = Join-Path $realClaudeDir $name
+    Confirm-True ((Get-ContentHash $p) -eq $realHash[$name]) "install: real $p untouched"
+}
+
 # ---- Render matrix: samples x configs x widths ----
 $sampleFiles = Get-ChildItem (Join-Path $PSScriptRoot 'samples') -Filter *.json | Sort-Object Name
 $sample06 = $sampleFiles | Where-Object { $_.Name -eq '06-limits-badges-lines.json' }
@@ -994,26 +1400,35 @@ $sample06 = $sampleFiles | Where-Object { $_.Name -eq '06-limits-badges-lines.js
 # $tmp\probe instead: the folder segment prints the same leaf, and the probe is provably not a repository.
 # The probe dirs get their own parent so a sample leaf can never collide with one of the git fixtures the
 # group above creates directly under $tmp (a sample whose folder was called `repo-clean` would otherwise
-# be pointed at a real repository). The rewrite is in memory, for every config including a user-supplied
-# -Config; the sample files never change.
+# be pointed at a real repository). A sample that also carries workspace.project_dir with current_dir at
+# or below it keeps that shape: the probe stands in for the project root and current_dir keeps its path
+# under it, so the folder segment still sees the same session. The two paths are compared the way
+# Get-FolderSegment compares them (slashes to backslashes, trailing separators trimmed, case ignored),
+# and the root has to end at a separator, so `C:\src\demo2` is not under `C:\src\demo`. When current_dir
+# is not under project_dir the root is current_dir itself and project_dir is left alone. The rewrite is
+# in memory, for every config including a user-supplied -Config; the sample files never change.
 function Convert-ToHermeticPayload([string] $Path) {
     $text = Get-Content -LiteralPath $Path -Raw
     $json = $text | ConvertFrom-Json
     if ($null -ne $json.git) { return $text }
-    $dir = $json.workspace.current_dir
+    $dir = [string] $json.workspace.current_dir
     if (-not $dir) { return $text }
-    $probe = Join-Path (Join-Path $tmp 'probe') (Split-Path $dir -Leaf)
+    $here = ($dir -replace '/', '\').TrimEnd('\')
+    $there = (([string] $json.workspace.project_dir) -replace '/', '\').TrimEnd('\')
+    $underRoot = $there -and ($here -eq $there -or $here.StartsWith("$there\", [System.StringComparison]::OrdinalIgnoreCase))
+    if (-not $underRoot) { $there = $here }
+    $probeRoot = Join-Path (Join-Path $tmp 'probe') (Split-Path $there -Leaf)
+    $below = $here.Substring($there.Length).TrimStart('\')
+    $probe = if ($below) { Join-Path $probeRoot $below } else { $probeRoot }
+    if ($underRoot) { $json.workspace.project_dir = $probeRoot }
     New-Item -ItemType Directory -Force $probe | Out-Null
     $json.workspace.current_dir = $probe
     return ($json | ConvertTo-Json -Depth 20 -Compress)
 }
 $samplePayloads = @{}
 foreach ($sample in $sampleFiles) { $samplePayloads[$sample.Name] = Convert-ToHermeticPayload $sample.FullName }
-$iconModel = [char]::ConvertFromUtf32(0xF06A9)
 $iconCost = [char]::ConvertFromUtf32(0xF0155)
-$iconFolder = [char]::ConvertFromUtf32(0xF07C)
 $iconLines = [char]::ConvertFromUtf32(0xF121)
-$iconLimits = [char]::ConvertFromUtf32(0xF0E4)
 $iconFast = [char]::ConvertFromUtf32(0xF0E7)
 $iconThink = [char]::ConvertFromUtf32(0xF09D0)
 $iconEffort = [char]::ConvertFromUtf32(0xF04C5)
@@ -1023,34 +1438,42 @@ $minus = [char]::ConvertFromUtf32(0x2212)
 # below cannot give, because a marker can only say that something rendered: a clean tree carries no
 # pencil, a feature branch no home icon, a payload without rate limits no tachometer, and 07's badges
 # are all off or at the default level. Rows that only said "this glyph is present" are gone - the
-# per-segment markers assert that, by value, for every visible segment.
+# per-segment markers assert that, by value, for every visible segment. The warning glyph is the
+# branch segment's conflict mark and the model segment's past-200k mark; only 09 sets
+# exceeds_200k_tokens, so the other samples must not show it on the model row.
 $absentGlyphs = @{
     '01-main-clean.json'                    = @(
         @{ Icon = $iconDirty; Name = 'pencil' }
         @{ Icon = $iconLines; Name = 'lines' }
-        @{ Icon = $iconLimits; Name = 'limits' }
+        @{ Icon = $iconLimit; Name = 'limits' }
         @{ Icon = $iconBranch; Name = 'branch' }
+        @{ Icon = $iconConflict; Name = 'warn' }
     )
     '02-feature-dirty-high.json'            = @(
         @{ Icon = $iconHome; Name = 'home' }
         @{ Icon = $iconLines; Name = 'lines' }
-        @{ Icon = $iconLimits; Name = 'limits' }
+        @{ Icon = $iconLimit; Name = 'limits' }
+        @{ Icon = $iconConflict; Name = 'warn' }
     )
     '03-main-dirty-mid.json'                = @(
         @{ Icon = $iconLines; Name = 'lines' }
-        @{ Icon = $iconLimits; Name = 'limits' }
+        @{ Icon = $iconLimit; Name = 'limits' }
+        @{ Icon = $iconConflict; Name = 'warn' }
     )
     '04-minimal.json'                       = @(
         @{ Icon = $iconCtx; Name = 'context' }
         @{ Icon = $iconFolder; Name = 'folder' }
+        @{ Icon = $iconConflict; Name = 'warn' }
     )
     '05-no-git.json'                        = @(
         @{ Icon = $iconHome; Name = 'home' }
         @{ Icon = $iconBranch; Name = 'branch' }
         @{ Icon = $iconCost; Name = 'cost' }
+        @{ Icon = $iconConflict; Name = 'warn' }
     )
     '06-limits-badges-lines.json'           = @(
         @{ Icon = $iconDirty; Name = 'pencil' }
+        @{ Icon = $iconConflict; Name = 'warn' }
     )
     '07-limits-expired-default-effort.json' = @(
         @{ Icon = $iconFast; Name = 'fast' }
@@ -1059,10 +1482,23 @@ $absentGlyphs = @{
         @{ Icon = $iconVim; Name = 'vim' }
         @{ Icon = $iconHome; Name = 'home' }
         @{ Icon = $iconBranch; Name = 'branch' }
+        @{ Icon = $iconConflict; Name = 'warn' }
+    )
+    '09-1m-context.json'                    = @(
+        @{ Icon = $iconDirty; Name = 'pencil' }
+        @{ Icon = $iconLines; Name = 'lines' }
+        @{ Icon = $iconLimit; Name = 'limits' }
+        @{ Icon = $iconBranch; Name = 'branch' }
+    )
+    '08-repo-identity.json'                 = @(
+        @{ Icon = $iconHome; Name = 'home' }
+        @{ Icon = $iconBranch; Name = 'branch' }
+        @{ Icon = $iconLines; Name = 'lines' }
+        @{ Icon = $iconLimit; Name = 'limits' }
     )
 }
 # What each sample renders when every segment is enabled and nothing is fitted away: 04 carries nothing
-# but a model, 05 and 07 have no git object and their probe directory is not a repository, and 07's
+# but a model, 05, 07 and 08 have no git object and their probe directory is not a repository, and 07's
 # badges are all off or at the default level. Intersected with a config's enabled set this gives the
 # segments the line should actually show, which is what the gates below are built on.
 $sampleSegments = @{
@@ -1073,6 +1509,8 @@ $sampleSegments = @{
     '05-no-git.json'                        = @('model', 'context', 'folder')
     '06-limits-badges-lines.json'           = @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch')
     '07-limits-expired-default-effort.json' = @('model', 'context', 'cost', 'lines', 'limits', 'folder')
+    '08-repo-identity.json'                 = @('model', 'context', 'cost', 'folder')
+    '09-1m-context.json'                    = @('model', 'context', 'cost', 'folder', 'branch')
 }
 # One marker per segment per sample: the segment's glyph plus the value this payload gives it, spelled
 # the way it reaches the line once the escapes are stripped. Every visible segment has to put its marker
@@ -1080,11 +1518,18 @@ $sampleSegments = @{
 # table, which only names a few glyphs per sample. Money is formatted the way the script formats it so
 # the check survives a culture that writes 12,50. Markers stop short of anything that moves: 06's limits
 # segment carries a countdown to a 2100 reset, so its marker ends at the percentage. Badges and branch
-# have no single glyph of their own, so their markers are the whole segment text.
-# Samples whose branch segment has a Short form that differs from its Text, with the icon that proves
-# the segment is on the line at all. Checked at every set width in the matrix.
-$sampleBranchForms = @{
-    '02-feature-dirty-high.json'            = @{ Icon = $iconBranch; Full = "$iconBranch feature/x ~2 ?1 $iconDirty"; Short = "$iconBranch feature/x $iconDirty" }
+# have no single glyph of their own, so their markers are the whole segment text. A marker that depends
+# on the config's folder mode is a hashtable keyed by mode, repo and leaf.
+# Samples with a segment whose Short form differs from its Text, with the icon that proves the segment
+# is on the line at all. Checked at every set width in the matrix. A folder entry is checked in repo
+# mode only, because the segment has no Short form in leaf mode.
+$sampleShortForms = @{
+    '02-feature-dirty-high.json'            = @{
+        branch = @{ Icon = $iconBranch; Full = "$iconBranch feature/x ~2 ?1 $iconDirty"; Short = "$iconBranch feature/x $iconDirty" }
+    }
+    '08-repo-identity.json'                 = @{
+        folder = @{ Icon = $iconFolder; Full = "$iconFolder octo/demo $iconChevron tools"; Short = "$iconFolder demo" }
+    }
 }
 
 $sampleMarkers = @{
@@ -1093,7 +1538,7 @@ $sampleMarkers = @{
         folder = "$iconFolder my-project"; branch = "$iconHome main"
     }
     '02-feature-dirty-high.json'            = @{
-        model  = "$iconModel Fable 5.1"; context = "$iconCtx 90%"; cost = "$iconCost `$$('{0:N2}' -f 12.5)"
+        model  = "$iconModel Fable 5.1 1M"; context = "$iconCtx 90%"; cost = "$iconCost `$$('{0:N2}' -f 12.5)"
         folder = "$iconFolder repo"; branch = "$iconBranch feature/x ~2 ?1 $iconDirty"
     }
     '03-main-dirty-mid.json'                = @{
@@ -1108,24 +1553,32 @@ $sampleMarkers = @{
     }
     '06-limits-badges-lines.json'           = @{
         model  = "$iconModel Fable 5.1"; context = "$iconCtx 32%"; cost = "$iconCost `$$('{0:N2}' -f 1.07)"
-        lines  = "$iconLines +156 ${minus}23"; limits = "$iconLimits 5h 24%"
+        lines  = "$iconLines +156 ${minus}23"; limits = "$iconLimit 5h 24%"
         badges = "$iconFast $iconThink $iconEffort xhigh $iconVim NORMAL"
         folder = "$iconFolder my-project"; branch = "$iconHome main"
     }
     '07-limits-expired-default-effort.json' = @{
         model = "$iconModel Opus 5"; context = "$iconCtx 5%"; cost = "$iconCost `$$('{0:N2}' -f 0.02)"
-        lines = "$iconLines +0 ${minus}4"; limits = "$iconLimits 5h 61% 7d 12%"
+        lines = "$iconLines +0 ${minus}4"; limits = "$iconLimit 5h 61% 7d 12% `$ 44%"
         folder = "$iconFolder repo"
+    }
+    '08-repo-identity.json'                 = @{
+        model = "$iconModel Fable 5.1"; context = "$iconCtx 12%"; cost = "$iconCost `$$('{0:N2}' -f 0.88)"
+        folder = @{ repo = "$iconFolder octo/demo $iconChevron tools"; leaf = "$iconFolder tools" }
+    }
+    '09-1m-context.json'                    = @{
+        model  = "$iconModel Fable 5.1 1M $iconConflict"; context = "$iconCtx 65%"; cost = "$iconCost `$$('{0:N2}' -f 4.21)"
+        folder = "$iconFolder my-project"; branch = "$iconHome main"
     }
 }
 # Every glyph a segment can put on the line: a segment the config turns off must show none of them, and
 # the two-line checks use them to say which row a segment landed on.
 $segmentGlyphs = @{
-    model   = @($iconModel)
+    model   = @($iconModel, $iconConflict)
     context = @($iconCtx)
     cost    = @($iconCost)
     lines   = @($iconLines)
-    limits  = @($iconLimits)
+    limits  = @($iconLimit)
     badges  = @($iconFast, $iconThink, $iconEffort, $iconVim)
     folder  = @($iconFolder)
     branch  = @($iconHome, $iconBranch, $iconDirty, $iconAhead, $iconBehind, $iconConflict)
@@ -1133,18 +1586,20 @@ $segmentGlyphs = @{
 # The segment behind each row of the absence table, so a row can be skipped when its segment is off
 # (the per-segment absence assertions cover that case instead, for every glyph the segment owns).
 $glyphSegment = @{
-    context = 'context'; cost = 'cost'; folder = 'folder'; lines = 'lines'; limits = 'limits'
+    context = 'context'; cost = 'cost'; folder = 'folder'; lines = 'lines'; limits = 'limits'; warn = 'model'
     home = 'branch'; pencil = 'branch'; branch = 'branch'
     fast = 'badges'; think = 'badges'; effort = 'badges'; vim = 'badges'
 }
-# statusline.ps1's own line sets, mirrored here so the test knows which segments share a line.
+# statusline.ps1's own line sets, derived from the registry so the test knows which segments share a line.
 $layoutRows = @{
-    one = @(, @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch'))
-    two = @(@('model', 'folder', 'branch', 'badges'), @('context', 'limits', 'cost', 'lines'))
+    one = @(, $allSegments)
+    two = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
 }
+# The oracle turns off every registry segment but model, so a new segment is off here without an edit.
+$modelOnlySegments = @($allSegments | Where-Object { $_ -ne 'model' } | ForEach-Object { '"' + $_ + '": false' }) -join ', '
 $modelOnlyPath = @{}
 foreach ($style in @('plain', 'powerline')) {
-    $modelOnlyPath[$style] = Write-TempConfig "model-only-$style.json" ('{ "layout": "one", "style": "' + $style + '", "segments": { "context": false, "cost": false, "lines": false, "limits": false, "badges": false, "folder": false, "branch": false } }')
+    $modelOnlyPath[$style] = Write-TempConfig "model-only-$style.json" ('{ "layout": "one", "style": "' + $style + '", "segments": { ' + $modelOnlySegments + ' } }')
 }
 # Each config carries the set of segments it leaves enabled. Every assertion below is gated on that set
 # rather than on "all segments on", so a user-supplied -Config keeps each check its own segment set still
@@ -1156,14 +1611,20 @@ if ($Config) {
     $parsed = Read-StatusConfig $resolved
     $off = @($allSegments | Where-Object { -not $parsed.Segments[$_] })
     if ($off.Count -gt 0) { Write-Host "note: $(Split-Path $resolved -Leaf) turns off $($off -join ', '); those segments are checked for absence instead" -ForegroundColor Yellow }
-    $configSet.Add(@{ Name = (Split-Path $resolved -Leaf); Path = $resolved; Layout = $parsed.Layout; Style = $parsed.Style; Enabled = $parsed.Segments })
+    $configSet.Add(@{ Name = (Split-Path $resolved -Leaf); Path = $resolved; Layout = $parsed.Layout; Style = $parsed.Style; Folder = $parsed.Folder; Enabled = $parsed.Segments })
 } else {
     foreach ($layout in @('one', 'two')) {
         foreach ($style in @('plain', 'powerline')) {
             $path = Write-TempConfig "$layout-$style.json" ('{ "layout": "' + $layout + '", "style": "' + $style + '" }')
-            $configSet.Add(@{ Name = "$layout-$style"; Path = $path; Layout = $layout; Style = $style; Enabled = (Read-StatusConfig $path).Segments })
+            $parsed = Read-StatusConfig $path
+            $configSet.Add(@{ Name = "$layout-$style"; Path = $path; Layout = $layout; Style = $style; Folder = $parsed.Folder; Enabled = $parsed.Segments })
         }
     }
+    # Leaf mode through the whole script, so the registry's wiring of the config into Get-FolderSegment
+    # is covered by a real render and not only by the unit call.
+    $path = Write-TempConfig 'folder-leaf.json' '{ "folder": "leaf" }'
+    $parsed = Read-StatusConfig $path
+    $configSet.Add(@{ Name = 'folder-leaf'; Path = $path; Layout = $parsed.Layout; Style = $parsed.Style; Folder = $parsed.Folder; Enabled = $parsed.Segments })
 }
 
 # No sample carries a session_id, so no render in the matrix may write state. The child renders get a
@@ -1198,18 +1659,22 @@ foreach ($cfg in $configSet) {
                 $isModelOnly = (ConvertTo-PlainText $line) -ceq (ConvertTo-PlainText ($only.Lines -join ''))
                 Confirm-True $isModelOnly "${label}: width $w exceeds $($c - 1) and the line is not the model-only fallback"
             }
-            if ($c -gt 0 -and $cfg.Enabled['branch'] -and $sampleBranchForms.ContainsKey($sample.Name)) {
-                # At a set width the branch is one of two whole forms or gone: the full text with its
-                # counts, the Short form without them, or dropped outright. A half-shed branch, or the
-                # full form at a width it cannot fit, is what this catches; the content checks below run
-                # only for the unset width.
-                $forms = $sampleBranchForms[$sample.Name]
+            if ($c -gt 0 -and $sampleShortForms.ContainsKey($sample.Name)) {
+                # At a set width a segment with a Short form is one of two whole forms or gone: the full
+                # text, the Short form, or dropped outright. A half-shed segment, or the full form at a
+                # width it cannot fit, is what this catches; the content checks below run only for the
+                # unset width.
                 $text = ConvertTo-PlainText ($lines -join "`n")
-                $full = $text.Contains($forms.Full)
-                $short = -not $full -and $text.Contains($forms.Short)
-                $dropped = -not $text.Contains($forms.Icon)
-                Confirm-True ($full -or $short -or $dropped) "${label}: branch is the full form, the short form, or dropped"
-                if ($c -ge 120) { Confirm-True $full "${label}: branch shows its counts at $c columns" }
+                foreach ($entry in $sampleShortForms[$sample.Name].GetEnumerator()) {
+                    if (-not $cfg.Enabled[$entry.Key]) { continue }
+                    if ($entry.Key -eq 'folder' -and $cfg.Folder -eq 'leaf') { continue }
+                    $forms = $entry.Value
+                    $full = $text.Contains($forms.Full)
+                    $short = -not $full -and $text.Contains($forms.Short)
+                    $dropped = -not $text.Contains($forms.Icon)
+                    Confirm-True ($full -or $short -or $dropped) "${label}: $($entry.Key) is the full form, the short form, or dropped"
+                    if ($c -ge 120) { Confirm-True $full "${label}: $($entry.Key) shows its full form at $c columns" }
+                }
             }
             if ($c -le 0) {
                 # A sample with no row in the two tables would be checked against nothing at all, so say
@@ -1230,7 +1695,10 @@ foreach ($cfg in $configSet) {
                 } else {
                     foreach ($name in $allSegments) {
                         if ($cfg.Enabled[$name]) { continue }
-                        $seen = @($segmentGlyphs[$name] | Where-Object { $text.Contains($_) })
+                        # A glyph an enabled segment also lists (the warning triangle belongs to both
+                        # model and branch) cannot prove the off segment rendered, so it is skipped.
+                        $shared = @($allSegments | Where-Object { $_ -ne $name -and $cfg.Enabled[$_] } | ForEach-Object { $segmentGlyphs[$_] })
+                        $seen = @($segmentGlyphs[$name] | Where-Object { $_ -notin $shared -and $text.Contains($_) })
                         Confirm-True ($seen.Count -eq 0) "${label}: $name is off, none of its glyphs appear"
                     }
                     # The rows this render should print, in order. Layout one is a single row; layout two
@@ -1247,12 +1715,16 @@ foreach ($cfg in $configSet) {
                             # absence table names only a few glyphs per sample.
                             foreach ($name in $mine) {
                                 $marker = $marks[$name]
+                                if ($marker -is [hashtable]) { $marker = $marker[$cfg.Folder] }
                                 if (-not $marker) { Confirm-True $false "${label}: no marker for $name in the marker table"; continue }
                                 Confirm-True ($rowText.Contains($marker)) "${label}: line $($ri + 1) shows $name as '$marker'"
                             }
                             $other = @($visible | Where-Object { $_ -notin $mine })
                             if ($other.Count -gt 0) {
-                                $strayed = @($other | Where-Object { @($segmentGlyphs[$_] | Where-Object { $rowText.Contains($_) }).Count -gt 0 })
+                                # Same one-owner rule as the absence check: a glyph a segment on this row
+                                # also lists says nothing about the segments that belong elsewhere.
+                                $mineGlyphs = @($mine | ForEach-Object { $segmentGlyphs[$_] })
+                                $strayed = @($other | Where-Object { @($segmentGlyphs[$_] | Where-Object { $_ -notin $mineGlyphs -and $rowText.Contains($_) }).Count -gt 0 })
                                 Confirm-True ($strayed.Count -eq 0) "${label}: line $($ri + 1) carries none of $($other -join '+') (strayed '$($strayed -join ',')')"
                             }
                         }
