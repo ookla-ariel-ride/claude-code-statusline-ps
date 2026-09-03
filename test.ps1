@@ -828,7 +828,7 @@ Confirm-Equal $seg.Role 'warn' 'limits all three: role from the worst figure'
 
 $seg = Get-LimitsSegment (Get-LimitsPayload '{"spend_limit":{"used_percentage":62,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit `$ 62%" 'limits spend alone: one figure, no 5h'
-Confirm-Equal $seg.Short $null 'limits spend alone: no short form'
+Confirm-True ($null -eq $seg.Short) 'limits spend alone: no short form'
 
 $seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"spend_limit":{"used_percentage":92,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit 5h 10% `$ 92%" 'limits spend 92 with 5h 10: text'
@@ -869,7 +869,7 @@ Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits tie after rounding: 5h wins
 
 $seg = Get-LimitsSegment (Get-LimitsPayload '{"seven_day":{"used_percentage":92,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit 7d 92%" 'limits 7d alone: text'
-Confirm-Equal $seg.Short $null 'limits 7d alone: short would equal text, so none'
+Confirm-True ($null -eq $seg.Short) 'limits 7d alone: short would equal text, so none'
 
 $seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":70,"resets_at":4102444800},"seven_day":{"used_percentage":12,"resets_at":4102444800}}')
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 70% (") -and $seg.Text.EndsWith(') 7d 12%')) 'limits 5h worst with a live reset: text carries the countdown'
@@ -878,8 +878,8 @@ Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits 5h worst with a live reset:
 $seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000},"spend_limit":{"used_percentage":null,"resets_at":null}}')
 Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit null percentage: unchanged text'
 
-Confirm-Equal (Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":null},"seven_day":{"used_percentage":null},"spend_limit":{"used_percentage":null}}')) $null 'limits all null: segment omitted'
-Confirm-Equal (Get-LimitsSegment ([pscustomobject]@{})) $null 'limits: missing rate_limits'
+Confirm-True ($null -eq (Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":null},"seven_day":{"used_percentage":null},"spend_limit":{"used_percentage":null}}'))) 'limits all null: segment omitted'
+Confirm-True ($null -eq (Get-LimitsSegment ([pscustomobject]@{}))) 'limits: missing rate_limits'
 
 Write-Host '== unit: porcelain' -ForegroundColor Cyan
 $r = Read-PorcelainStatus "## main...origin/main [ahead 1]`n"
