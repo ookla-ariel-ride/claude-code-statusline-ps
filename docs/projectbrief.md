@@ -86,8 +86,9 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   builder puts the result in its record's `Text`, so the renderer needs no link support: the colour
   codes of either style wrap the link, and OSC 8 carries no SGR state, so a powerline background runs
   through it. The width rule strips OSC 8 (either terminator) before the colour codes, so a URL never
-  counts as text and never changes what fits. A URL that is not `http(s)` or holds a control character
-  is not linked, so a payload cannot end the sequence early.
+  counts as text and never changes what fits. The helper owns its own type gate: anything that is not
+  a string, is over 2083 characters, holds whitespace or a control character, or does not parse as an
+  absolute `http(s)` URI is not linked, so a payload cannot end the sequence early.
 - **Per-session state on disk, never on the line's critical path.** A render cannot see the previous
   payload, so a small JSON file per `session_id` carries the last cost and token totals forward. The
   read, the merge and the write all sit after the last `Write-Host`, so none of their cost is in front

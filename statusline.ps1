@@ -162,15 +162,20 @@ function Format-Inline([string] $Role, [string] $Text, [string] $SegmentRole, [s
 }
 
 # Wraps text in an OSC 8 hyperlink, ESC ] 8 ; ; url ESC \ text ESC ] 8 ; ; ESC \, which a terminal that
-# understands it (Windows Terminal on ctrl-click) opens. The text comes back unchanged for an empty url,
-# one that is not http or https, or one holding any Unicode control character (category Cc: the C0
-# range, DEL and the C1 range, where U+009B, U+009C and U+009D are CSI, ST and OSC in their 8-bit
-# forms), so nothing a payload puts there can end the sequence early or put a stray escape on the line.
+# understands it (Windows Terminal on ctrl-click) opens. The helper owns its own type gate, so it takes
+# the raw payload value: the text comes back unchanged unless the url is a string (a cast would join an
+# array into one that passes), at most 2083 characters (the classic browser cap), free of whitespace and
+# of any Unicode control character (category Cc: the C0 range, DEL and the C1 range, where U+009B,
+# U+009C and U+009D are CSI, ST and OSC in their 8-bit forms), and parses as an absolute http or https
+# URI. So nothing a payload puts there can end the sequence early or put a stray escape on the line.
 # The link goes into the segment's Text, so Format-Line wraps it in the segment's colour codes in either
 # style: OSC 8 carries no SGR state, so a powerline background runs on through it, and Get-VisibleWidth
 # strips it before measuring.
-function Format-Link([string] $Url, [string] $Text) {
-    if (-not $Url -or $Url -notmatch '^https?://' -or $Url -match '\p{Cc}') { return $Text }
+function Format-Link($Url, [string] $Text) {
+    if ($Url -isnot [string] -or $Url.Length -gt 2083 -or $Url -match '[\s\p{Cc}]') { return $Text }
+    $uri = $null
+    if (-not [System.Uri]::TryCreate($Url, [System.UriKind]::Absolute, [ref] $uri)) { return $Text }
+    if ($uri.Scheme -ne 'http' -and $uri.Scheme -ne 'https') { return $Text }
     return "`e]8;;$Url`e\$Text`e]8;;`e\"
 }
 
@@ -605,18 +610,19 @@ function Get-BadgesSegment($d) {
 
 # The pull request on the session's branch: the glyph and #number, the whole text wrapped in a link to
 # pr.url, coloured by pr.review_state - approved is ok, changes requested (spaces or underscores, any
-# case) is bad, anything else or nothing is dim. The number goes through Get-PayloadNumber and has to
-# be positive; without one there is no segment, whatever else the object holds. A url that is not text
-# or not http(s) leaves the text unlinked. pr.kind is not rendered. Omitted when the payload has no pr.
+# case) is bad, anything else is dim, including a state that is not text at all. The number goes
+# through Get-PayloadNumber and has to be positive; without one there is no segment, whatever else the
+# object holds. The url goes to Format-Link as it is, which leaves the text unlinked for anything that
+# is not a plain http(s) URL. pr.kind is not rendered. Omitted when the payload has no pr object, or
+# has something other than an object there.
 function Get-PrSegment($d) {
     $pr = $d.pr
-    if ($null -eq $pr) { return $null }
+    if ($pr -isnot [System.Management.Automation.PSCustomObject]) { return $null }
     $number = Get-PayloadNumber $pr.number
     if ($null -eq $number -or $number -le 0) { return $null }
-    $state = [regex]::Replace("$($pr.review_state)", '[_\s]+', ' ').Trim().ToLowerInvariant()
+    $state = if (Test-PayloadText $pr.review_state) { [regex]::Replace($pr.review_state, '[_\s]+', ' ').Trim().ToLowerInvariant() } else { '' }
     $role = switch ($state) { 'approved' { 'ok' } 'changes requested' { 'bad' } default { 'dim' } }
-    $url = if (Test-PayloadText $pr.url) { $pr.url } else { '' }
-    return @{ Name = 'pr'; Text = (Format-Link $url "$iconPr #$number"); Short = $null; Role = $role; Bold = $false }
+    return @{ Name = 'pr'; Text = (Format-Link $pr.url "$iconPr #$number"); Short = $null; Role = $role; Bold = $false }
 }
 
 # With workspace.repo in the payload and the folder config at repo, the text is owner/name, followed by a
@@ -653,10 +659,12 @@ function Get-PayloadNumber($v) {
     return [int] $d
 }
 
-# Whether a payload value is text: a string with visible content. Numbers, arrays, objects, nulls and
-# blank strings are not, so a field that should name something cannot be rendered from one of those.
+# Whether a payload value is text: a string with visible content and no control character. Numbers,
+# arrays, objects, nulls, blank strings and strings carrying an escape (any Unicode Cc character) are
+# not, so a field that should name something cannot be rendered from one of those, and a repo owner or
+# name cannot smuggle an escape sequence onto the line.
 function Test-PayloadText($v) {
-    return ($v -is [string] -and -not [string]::IsNullOrWhiteSpace($v))
+    return ($v -is [string] -and -not [string]::IsNullOrWhiteSpace($v) -and $v -notmatch '\p{Cc}')
 }
 
 # Dirty flag from a payload git.status value: "clean"/other string, or an object of counts/booleans.

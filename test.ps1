@@ -26,6 +26,10 @@ $PSNativeCommandUseErrorActionPreference = $false
 $PSStyle.OutputRendering = 'Ansi'
 $script = Join-Path $PSScriptRoot 'statusline.ps1'
 $esc = [char]27
+# The escapes a rendered line can carry and a terminal does not show: an OSC 8 hyperlink wrapper with
+# either terminator (ESC \ or BEL), or an SGR colour code. The one pattern behind ConvertTo-PlainText
+# and Measure-VisibleWidth, so the two cannot drift apart.
+$ansiPattern = "$esc\]8;[^\a$esc]*(?:\a|$esc\\)|$esc\[[0-9;]*m"
 $script:passed = 0
 $script:failed = 0
 
@@ -43,9 +47,9 @@ function Confirm-True([bool] $Condition, [string] $Label) {
     Write-Host "FAIL $Label" -ForegroundColor Red
 }
 
-# Strips the OSC 8 hyperlink wrappers (either terminator) and then the SGR colour codes, so a marker
-# check searches the text a terminal would show and a URL can never satisfy or spoil one.
-function ConvertTo-PlainText([string] $Text) { $Text -replace "$esc\]8;[^\a$esc]*(?:\a|$esc\\)", '' -replace "$esc\[[0-9;]*m", '' }
+# Strips the OSC 8 hyperlink wrappers and the SGR colour codes, so a marker check searches the text a
+# terminal would show and a URL can never satisfy or spoil one.
+function ConvertTo-PlainText([string] $Text) { $Text -replace $ansiPattern, '' }
 
 # Pulls named function definitions out of a script by parsing it, so pure functions can be tested
 # without running the script (which reads stdin and prints).
@@ -63,15 +67,14 @@ function Import-ScriptFunction([string] $Path, [string[]] $Name) {
 # in one does not agree with itself in the other.
 function Measure-VisibleWidth([string] $Text) {
     if (-not $Text) { return 0 }
-    $plain = [regex]::Replace($Text, "$esc\]8;[^\a$esc]*(?:\a|$esc\\)", '')
-    $plain = [regex]::Replace($plain, "$esc\[[0-9;]*m", '')
+    $plain = [regex]::Replace($Text, $ansiPattern, '')
     $width = 0
     $en = [System.Globalization.StringInfo]::GetTextElementEnumerator($plain)
     while ($en.MoveNext()) {
         $el = [string] $en.Current
         $cp = try { [char]::ConvertToUtf32($el, 0) } catch { 0x3F }
         $cat = [System.Globalization.CharUnicodeInfo]::GetUnicodeCategory($cp)
-        $zero =$cat -eq [System.Globalization.UnicodeCategory]::NonSpacingMark -or
+        $zero = $cat -eq [System.Globalization.UnicodeCategory]::NonSpacingMark -or
                 $cat -eq [System.Globalization.UnicodeCategory]::SpacingCombiningMark -or
                 $cat -eq [System.Globalization.UnicodeCategory]::EnclosingMark -or
                 ($cp -ge 0x200B -and $cp -le 0x200D) -or $cp -eq 0xFE0F
@@ -138,7 +141,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber','Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir','Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
 # these script-level names in statusline.ps1, so the test has to supply them.
@@ -154,6 +157,13 @@ $iconAhead = [char]::ConvertFromUtf32(0x2191)
 $iconBehind = [char]::ConvertFromUtf32(0x2193)
 $iconConflict = [char]::ConvertFromUtf32(0xF071)
 $iconPr = [char]::ConvertFromUtf32(0xF407)
+
+# A payload with one top-level key whose value is the given JSON. It goes through ConvertFrom-Json so
+# a null is a real null property, the way Claude Code sends it, and counts arrive as Int64, the way
+# they do from a real payload; a hashtable would not give either.
+function Get-JsonPayload([string] $Key, [string] $Json) {
+    return ('{"' + $Key + '":' + $Json + '}') | ConvertFrom-Json
+}
 
 Write-Host '== unit: width' -ForegroundColor Cyan
 $widthTable = @(
@@ -764,12 +774,21 @@ Confirm-Equal (Format-Link "https://example.com/$([char]0xE9)x" 'abc') "$esc]8;;
 Confirm-Equal (Format-Link 'HTTPS://EXAMPLE.COM/x' 'abc') "$esc]8;;HTTPS://EXAMPLE.COM/x$esc\abc${linkClose}" 'link: scheme is matched case-insensitively'
 Confirm-Equal (Format-Link 'http://example.com/x' 'abc') "$esc]8;;http://example.com/x$esc\abc${linkClose}" 'link: plain http is linked too'
 Confirm-Equal (Get-VisibleWidth (Format-Link $prUrl 'abc')) 3 'link: the url has no width'
+# The helper owns the type gate: an array cast to [string] would join to "https://a b" and pass a scheme
+# check, so the raw value is tested and anything but a string comes back unlinked.
+Confirm-Equal (Format-Link @('https://example.com/a', 'b') 'abc') 'abc' 'link: an array url leaves the text alone'
+Confirm-Equal (Format-Link 7 'abc') 'abc' 'link: a numeric url leaves the text alone'
+Confirm-Equal (Format-Link 'https://example.com/a b' 'abc') 'abc' 'link: an embedded space leaves the text alone'
+Confirm-Equal (Format-Link 'https://a b' 'abc') 'abc' 'link: a space in the host leaves the text alone'
+Confirm-Equal (Format-Link 'https:example.com' 'abc') 'abc' 'link: a url that is not absolute leaves the text alone'
+Confirm-Equal (Format-Link 'https://' 'abc') 'abc' 'link: a scheme with no host leaves the text alone'
+$url2083 = 'https://example.com/' + ('x' * 2063)
+Confirm-Equal $url2083.Length 2083 'link: cap fixture is 2083 characters'
+Confirm-Equal (Format-Link $url2083 'abc') "$esc]8;;$url2083$esc\abc${linkClose}" 'link: 2083 characters is linked'
+Confirm-Equal (Format-Link ($url2083 + 'x') 'abc') 'abc' 'link: 2084 characters leaves the text alone'
 
 # The segment: glyph, space, #number, the whole text wrapped in the link, coloured by the review state.
-function Get-PrPayload([string] $Pr) {
-    return ('{"pr":' + $Pr + '}') | ConvertFrom-Json
-}
-$seg = Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '","review_state":"approved","kind":"pull_request"}'))
+$seg = Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"approved","kind":"pull_request"}'))
 Confirm-Equal $seg.Name 'pr' 'pr approved: name'
 Confirm-Equal $seg.Text "${linkOpen}$iconPr #12${linkClose}" 'pr approved: linked glyph and number'
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconPr #12" 'pr approved: plain text is the glyph and the number'
@@ -777,32 +796,38 @@ Confirm-Equal $seg.Role 'ok' 'pr approved: role ok'
 Confirm-Equal $seg.Short $null 'pr approved: no short form'
 Confirm-Equal $seg.Bold $false 'pr approved: not bold'
 Confirm-Equal (Get-VisibleWidth $seg.Text) (Get-VisibleWidth "$iconPr #12") 'pr approved: the link adds no width'
-Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '","review_state":"changes requested"}'))).Role 'bad' 'pr changes requested: role bad'
-Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '","review_state":"CHANGES_REQUESTED"}'))).Role 'bad' 'pr CHANGES_REQUESTED: underscore and case folded, role bad'
-Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '","review_state":"Approved"}'))).Role 'ok' 'pr Approved: case folded, role ok'
-Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '","review_state":"review_required"}'))).Role 'dim' 'pr unknown state: role dim'
-Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '","review_state":null}'))).Role 'dim' 'pr null state: role dim'
-Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '"}'))).Role 'dim' 'pr missing state: role dim'
-$seg = Get-PrSegment (Get-PrPayload '{"number":12,"review_state":"approved"}')
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"changes requested"}'))).Role 'bad' 'pr changes requested: role bad'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"CHANGES_REQUESTED"}'))).Role 'bad' 'pr CHANGES_REQUESTED: underscore and case folded, role bad'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"Approved"}'))).Role 'ok' 'pr Approved: case folded, role ok'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"review_required"}'))).Role 'dim' 'pr unknown state: role dim'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":null}'))).Role 'dim' 'pr null state: role dim'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '"}'))).Role 'dim' 'pr missing state: role dim'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":["approved"]}'))).Role 'dim' 'pr array state: role dim'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":7}'))).Role 'dim' 'pr numeric state: role dim'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":{"state":"approved"}}'))).Role 'dim' 'pr object state: role dim'
+$seg = Get-PrSegment (Get-JsonPayload 'pr' '{"number":12,"review_state":"approved"}')
 Confirm-Equal $seg.Text "$iconPr #12" 'pr missing url: text unlinked'
 Confirm-Equal $seg.Role 'ok' 'pr missing url: still coloured by the state'
-Confirm-Equal (Get-PrSegment (Get-PrPayload '{"number":12,"url":"ftp://example.com/12"}')).Text "$iconPr #12" 'pr ftp url: text unlinked'
-Confirm-Equal (Get-PrSegment (Get-PrPayload '{"number":12,"url":7}')).Text "$iconPr #12" 'pr numeric url: text unlinked'
-Confirm-Equal (Get-PrSegment (Get-PrPayload '{"number":345,"url":"HTTPS://github.com/octo/demo/pull/345"}')).Text "$esc]8;;HTTPS://github.com/octo/demo/pull/345$esc\$iconPr #345${linkClose}" 'pr upper-case scheme: linked'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' '{"number":12,"url":"ftp://example.com/12"}')).Text "$iconPr #12" 'pr ftp url: text unlinked'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' '{"number":12,"url":7}')).Text "$iconPr #12" 'pr numeric url: text unlinked'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' '{"number":12,"url":["https://example.com/a","b"]}')).Text "$iconPr #12" 'pr array url: text unlinked'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' '{"number":345,"url":"HTTPS://github.com/octo/demo/pull/345"}')).Text "$esc]8;;HTTPS://github.com/octo/demo/pull/345$esc\$iconPr #345${linkClose}" 'pr upper-case scheme: linked'
 Confirm-Equal (Get-PrSegment ([pscustomobject]@{ model = @{ display_name = 'M' } })) $null 'pr missing object: null'
-Confirm-Equal (Get-PrSegment (Get-PrPayload 'null')) $null 'pr null object: null'
-Confirm-Equal (Get-PrSegment (Get-PrPayload '"open"')) $null 'pr object is a string: null'
-Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"url":"' + $prUrl + '","review_state":"approved"}'))) $null 'pr missing number: null even with a url'
-Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":"12","url":"' + $prUrl + '"}'))) $null 'pr string number: null'
-Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":12.5,"url":"' + $prUrl + '"}'))) $null 'pr float number: null'
-Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":0,"url":"' + $prUrl + '"}'))) $null 'pr zero number: null'
-Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":-3,"url":"' + $prUrl + '"}'))) $null 'pr negative number: null'
-Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":2147483648,"url":"' + $prUrl + '"}'))) $null 'pr number above Int32: null'
-Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":12.0,"url":"' + $prUrl + '"}'))).Text "${linkOpen}$iconPr #12${linkClose}" 'pr whole float number: rendered as 12'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' 'null')) $null 'pr null object: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' '"open"')) $null 'pr object is a string: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('[{"number":12,"url":"' + $prUrl + '"}]'))) $null 'pr object is an array: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' '12')) $null 'pr object is a number: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"url":"' + $prUrl + '","review_state":"approved"}'))) $null 'pr missing number: null even with a url'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":"12","url":"' + $prUrl + '"}'))) $null 'pr string number: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12.5,"url":"' + $prUrl + '"}'))) $null 'pr float number: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":0,"url":"' + $prUrl + '"}'))) $null 'pr zero number: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":-3,"url":"' + $prUrl + '"}'))) $null 'pr negative number: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":2147483648,"url":"' + $prUrl + '"}'))) $null 'pr number above Int32: null'
+Confirm-Equal (Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12.0,"url":"' + $prUrl + '"}'))).Text "${linkOpen}$iconPr #12${linkClose}" 'pr whole float number: rendered as 12'
 
 # The renderer wraps the link in the segment's colour codes in both styles, so the link sits inside the
 # colour and the terminal keeps the background through it.
-$segPr = Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '","review_state":"approved"}'))
+$segPr = Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"approved"}'))
 Confirm-Equal (Format-Line @($segPr) 'plain') "$esc[32m${linkOpen}$iconPr #12${linkClose}$esc[0m" 'pr plain: colour outside the link'
 Confirm-Equal (Format-Line @($segPr) 'powerline') "$esc[0;48;5;28;38;5;231m ${linkOpen}$iconPr #12${linkClose} $esc[0m$esc[38;5;28m$arrow$esc[0m" 'pr powerline: block colour outside the link'
 
@@ -811,8 +836,8 @@ Confirm-Equal (Format-Line @($segPr) 'powerline') "$esc[0;48;5;28;38;5;231m ${li
 # only the limits short form, so at both widths the pr segment must survive whatever the URL length.
 $longUrl = 'https://github.com/octo/demo/pull/12?' + ('x' * 263)
 Confirm-Equal $longUrl.Length 300 'pr long url: 300 characters'
-$fitShort = @(Get-FitSegmentSet) + @(Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '","review_state":"approved"}')))
-$fitLong = @(Get-FitSegmentSet) + @(Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $longUrl + '","review_state":"approved"}')))
+$fitShort = @(Get-FitSegmentSet) + @(Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"approved"}')))
+$fitLong = @(Get-FitSegmentSet) + @(Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $longUrl + '","review_state":"approved"}')))
 Confirm-Equal (Get-VisibleWidth (Format-Line $fitLong 'plain')) 52 'pr long url: full line is 52 wide'
 foreach ($w in @(60, 49)) {
     $shortLine = Get-FittedLine $fitShort 'plain' $w
@@ -916,27 +941,22 @@ foreach ($odd in @(@{ Label = 'string true'; Value = 'true' }, @{ Label = 'numbe
 }
 Confirm-Equal (Get-ModelSegment ([pscustomobject]@{ model = [pscustomobject]@{ display_name = '' } }) $plainCfg) $null 'model: empty name omits the segment'
 Write-Host '== unit: limits' -ForegroundColor Cyan
-# Resets in the past keep TimeLeft empty, so the text is deterministic. Payloads go through ConvertFrom-Json
-# so a null used_percentage is a real null property, the way Claude Code sends it.
-function Get-LimitsPayload([string] $RateLimits) {
-    return ('{"rate_limits":' + $RateLimits + '}') | ConvertFrom-Json
-}
-
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":24,"resets_at":1700000000},"seven_day":{"used_percentage":41,"resets_at":1700000000},"spend_limit":{"used_percentage":62,"resets_at":1700000000}}')
+# Resets in the past keep TimeLeft empty, so the text is deterministic.
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":24,"resets_at":1700000000},"seven_day":{"used_percentage":41,"resets_at":1700000000},"spend_limit":{"used_percentage":62,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit 5h 24% 7d 41% `$ 62%" 'limits all three: 5h, 7d, then spend'
 Confirm-Equal $seg.Short "$iconLimit `$ 62%" 'limits all three: short keeps the spend figure that drives the colour'
 Confirm-Equal $seg.Role 'warn' 'limits all three: role from the worst figure'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"spend_limit":{"used_percentage":62,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"spend_limit":{"used_percentage":62,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit `$ 62%" 'limits spend alone: one figure, no 5h'
 Confirm-True ($null -eq $seg.Short) 'limits spend alone: no short form'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"spend_limit":{"used_percentage":92,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"spend_limit":{"used_percentage":92,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit 5h 10% `$ 92%" 'limits spend 92 with 5h 10: text'
 Confirm-Equal $seg.Role 'bad' 'limits spend 92 with 5h 10: spend drives the colour'
 Confirm-Equal $seg.Short "$iconLimit `$ 92%" 'limits spend 92 with 5h 10: short keeps the spend figure, not the 5h one'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit absent: unchanged text'
 Confirm-Equal $seg.Role 'warn' 'limits spend_limit absent: role'
 Confirm-Equal $seg.Short "$iconLimit 5h 61%" 'limits spend_limit absent: short keeps the 5h figure when it is the worst'
@@ -944,50 +964,50 @@ Confirm-Equal $seg.Short "$iconLimit 5h 61%" 'limits spend_limit absent: short k
 # The Short form keeps whichever figure drives the colour, so a fitted line never shows a red segment
 # with a calm number on it. Below the warn line nothing drives the colour, and the first present figure
 # stands in; a tie keeps render order (5h, 7d, then spend); the countdown never follows.
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"seven_day":{"used_percentage":88,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"seven_day":{"used_percentage":88,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit 5h 10% 7d 88%" 'limits 7d worst: text'
 Confirm-Equal $seg.Short "$iconLimit 7d 88%" 'limits 7d worst: short keeps the 7d figure'
 Confirm-Equal $seg.Role 'bad' 'limits 7d worst: role'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"seven_day":{"used_percentage":41,"resets_at":1700000000},"spend_limit":{"used_percentage":30,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"seven_day":{"used_percentage":41,"resets_at":1700000000},"spend_limit":{"used_percentage":30,"resets_at":1700000000}}')
 Confirm-Equal $seg.Short "$iconLimit 5h 10%" 'limits all below warn: short is the first figure, not the largest'
 Confirm-Equal $seg.Role 'ok' 'limits all below warn: role'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"seven_day":{"used_percentage":92,"resets_at":1700000000},"spend_limit":{"used_percentage":10,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"seven_day":{"used_percentage":92,"resets_at":1700000000},"spend_limit":{"used_percentage":10,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit 7d 92% `$ 10%" 'limits no 5h, 7d red: text'
 Confirm-Equal $seg.Short "$iconLimit 7d 92%" 'limits no 5h, 7d red: short exists and keeps the 7d figure'
 Confirm-Equal $seg.Role 'bad' 'limits no 5h, 7d red: role'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"seven_day":{"used_percentage":20,"resets_at":1700000000},"spend_limit":{"used_percentage":30,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"seven_day":{"used_percentage":20,"resets_at":1700000000},"spend_limit":{"used_percentage":30,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit 7d 20% `$ 30%" 'limits no 5h, all below warn: text'
 Confirm-Equal $seg.Short "$iconLimit 7d 20%" 'limits no 5h, all below warn: short is the first present figure'
 Confirm-Equal $seg.Role 'ok' 'limits no 5h, all below warn: role'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":70,"resets_at":1700000000},"seven_day":{"used_percentage":70,"resets_at":1700000000},"spend_limit":{"used_percentage":70,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":70,"resets_at":1700000000},"seven_day":{"used_percentage":70,"resets_at":1700000000},"spend_limit":{"used_percentage":70,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit 5h 70% 7d 70% `$ 70%" 'limits three-way tie: text'
 Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits three-way tie: 5h wins by render order'
 Confirm-Equal $seg.Role 'warn' 'limits three-way tie: role'
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"seven_day":{"used_percentage":70,"resets_at":1700000000},"spend_limit":{"used_percentage":70,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"seven_day":{"used_percentage":70,"resets_at":1700000000},"spend_limit":{"used_percentage":70,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit 7d 70% `$ 70%" 'limits 7d and spend tie: text'
 Confirm-Equal $seg.Short "$iconLimit 7d 70%" 'limits 7d and spend tie: 7d wins by render order'
 Confirm-Equal $seg.Role 'warn' 'limits 7d and spend tie: role'
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":69.6,"resets_at":1700000000},"seven_day":{"used_percentage":70.4,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":69.6,"resets_at":1700000000},"seven_day":{"used_percentage":70.4,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit 5h 70% 7d 70%" 'limits tie after rounding: text rounds both to 70'
 Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits tie after rounding: 5h wins by render order'
 Confirm-Equal $seg.Role 'warn' 'limits tie after rounding: role'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"seven_day":{"used_percentage":92,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"seven_day":{"used_percentage":92,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit 7d 92%" 'limits 7d alone: text'
 Confirm-True ($null -eq $seg.Short) 'limits 7d alone: short would equal text, so none'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":70,"resets_at":4102444800},"seven_day":{"used_percentage":12,"resets_at":4102444800}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":70,"resets_at":4102444800},"seven_day":{"used_percentage":12,"resets_at":4102444800}}')
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 70% (") -and $seg.Text.EndsWith(') 7d 12%')) 'limits 5h worst with a live reset: text carries the countdown'
 Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits 5h worst with a live reset: short drops the countdown'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000},"spend_limit":{"used_percentage":null,"resets_at":null}}')
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000},"spend_limit":{"used_percentage":null,"resets_at":null}}')
 Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit null percentage: unchanged text'
 
-Confirm-True ($null -eq (Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":null},"seven_day":{"used_percentage":null},"spend_limit":{"used_percentage":null}}'))) 'limits all null: segment omitted'
+Confirm-True ($null -eq (Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":null},"seven_day":{"used_percentage":null},"spend_limit":{"used_percentage":null}}'))) 'limits all null: segment omitted'
 Confirm-True ($null -eq (Get-LimitsSegment ([pscustomobject]@{}))) 'limits: missing rate_limits'
 
 Write-Host '== unit: porcelain' -ForegroundColor Cyan
@@ -1058,6 +1078,11 @@ Confirm-Equal (Test-PayloadText '') $false 'payload text: empty string is not'
 Confirm-Equal (Test-PayloadText $null) $false 'payload text: null is not'
 Confirm-Equal (Test-PayloadText 7) $false 'payload text: a number is not'
 Confirm-Equal (Test-PayloadText @('octo')) $false 'payload text: an array is not'
+# A control character in the text would carry an escape sequence onto the line through the folder
+# segment's owner and name, so such a string is not text either.
+Confirm-Equal (Test-PayloadText "oc${esc}[31mto") $false 'payload text: a string with ESC inside is not'
+Confirm-Equal (Test-PayloadText "octo$([char]0x9B)") $false 'payload text: a string with a C1 control is not'
+Confirm-Equal (Test-PayloadText "oct$([char]0xE9)") $true 'payload text: a non-control non-ASCII character is still text'
 
 Write-Host '== unit: payload counts' -ForegroundColor Cyan
 # ConvertFrom-Json hands the sample counts over as Int64, so the object cases go through it.
@@ -1701,7 +1726,6 @@ $absentGlyphs = @{
         @{ Icon = $iconLimit; Name = 'limits' }
         @{ Icon = $iconBranch; Name = 'branch' }
         @{ Icon = $iconConflict; Name = 'warn' }
-        @{ Icon = $iconPr; Name = 'pr' }
     )
     '02-feature-dirty-high.json'            = @(
         @{ Icon = $iconHome; Name = 'home' }
@@ -1749,7 +1773,6 @@ $absentGlyphs = @{
         @{ Icon = $iconBranch; Name = 'branch' }
         @{ Icon = $iconLines; Name = 'lines' }
         @{ Icon = $iconLimit; Name = 'limits' }
-        @{ Icon = $iconPr; Name = 'pr' }
     )
     '10-pr.json'                            = @(
         @{ Icon = $iconHome; Name = 'home' }
@@ -1862,7 +1885,7 @@ $segmentGlyphs = @{
 # (the per-segment absence assertions cover that case instead, for every glyph the segment owns).
 $glyphSegment = @{
     context = 'context'; cost = 'cost'; folder = 'folder'; lines = 'lines'; limits = 'limits'; warn = 'model'
-    home = 'branch'; pencil = 'branch'; branch = 'branch'; pr = 'pr'
+    home = 'branch'; pencil = 'branch'; branch = 'branch'
     fast = 'badges'; think = 'badges'; effort = 'badges'; vim = 'badges'
 }
 # statusline.ps1's own line sets, derived from the registry so the test knows which segments share a line.
@@ -1986,6 +2009,17 @@ foreach ($cfg in $configSet) {
                         $shared = @($allSegments | Where-Object { $_ -ne $name -and $cfg.Enabled[$_] } | ForEach-Object { $segmentGlyphs[$_] })
                         $seen = @($segmentGlyphs[$name] | Where-Object { $_ -notin $shared -and $text.Contains($_) })
                         Confirm-True ($seen.Count -eq 0) "${label}: $name is off, none of its glyphs appear"
+                    }
+                    # A segment the config leaves on but the sample gives no data for has to stay off the
+                    # line too, under the same one-owner rule: a glyph that a listed, enabled segment also
+                    # owns proves nothing. This is what catches a builder that starts rendering from a
+                    # payload that should give it nothing, for every sample rather than the few the
+                    # absence table names.
+                    foreach ($name in $allSegments) {
+                        if (-not $cfg.Enabled[$name] -or $name -in $known) { continue }
+                        $shared = @($allSegments | Where-Object { $_ -ne $name -and $cfg.Enabled[$_] -and $_ -in $known } | ForEach-Object { $segmentGlyphs[$_] })
+                        $seen = @($segmentGlyphs[$name] | Where-Object { $_ -notin $shared -and $text.Contains($_) })
+                        Confirm-True ($seen.Count -eq 0) "${label}: $name has no data in this sample, none of its glyphs appear"
                     }
                     # The rows this render should print, in order. Layout one is a single row; layout two
                     # drops a row that has nothing visible left on it, because Get-FittedLine returns
