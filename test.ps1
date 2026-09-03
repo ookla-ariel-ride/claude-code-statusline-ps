@@ -43,7 +43,9 @@ function Confirm-True([bool] $Condition, [string] $Label) {
     Write-Host "FAIL $Label" -ForegroundColor Red
 }
 
-function ConvertTo-PlainText([string] $Text) { $Text -replace "$esc\[[0-9;]*m", '' }
+# Strips the OSC 8 hyperlink wrappers (either terminator) and then the SGR colour codes, so a marker
+# check searches the text a terminal would show and a URL can never satisfy or spoil one.
+function ConvertTo-PlainText([string] $Text) { $Text -replace "$esc\]8;[^\a$esc]*(?:\a|$esc\\)", '' -replace "$esc\[[0-9;]*m", '' }
 
 # Pulls named function definitions out of a script by parsing it, so pure functions can be tested
 # without running the script (which reads stdin and prints).
@@ -61,14 +63,15 @@ function Import-ScriptFunction([string] $Path, [string[]] $Name) {
 # in one does not agree with itself in the other.
 function Measure-VisibleWidth([string] $Text) {
     if (-not $Text) { return 0 }
-    $plain = [regex]::Replace($Text, "$esc\[[0-9;]*m", '')
+    $plain = [regex]::Replace($Text, "$esc\]8;[^\a$esc]*(?:\a|$esc\\)", '')
+    $plain = [regex]::Replace($plain, "$esc\[[0-9;]*m", '')
     $width = 0
     $en = [System.Globalization.StringInfo]::GetTextElementEnumerator($plain)
     while ($en.MoveNext()) {
         $el = [string] $en.Current
         $cp = try { [char]::ConvertToUtf32($el, 0) } catch { 0x3F }
         $cat = [System.Globalization.CharUnicodeInfo]::GetUnicodeCategory($cp)
-        $zero = $cat -eq [System.Globalization.UnicodeCategory]::NonSpacingMark -or
+        $zero =$cat -eq [System.Globalization.UnicodeCategory]::NonSpacingMark -or
                 $cat -eq [System.Globalization.UnicodeCategory]::SpacingCombiningMark -or
                 $cat -eq [System.Globalization.UnicodeCategory]::EnclosingMark -or
                 ($cp -ge 0x200B -and $cp -le 0x200D) -or $cp -eq 0xFE0F
@@ -135,10 +138,10 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber','Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep'))
 
-# Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment and Get-ModelSegment close over these
-# script-level names in statusline.ps1, so the test has to supply them.
+# Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
+# these script-level names in statusline.ps1, so the test has to supply them.
 $gitTimeoutMs = 1500
 $iconLimit = [char]::ConvertFromUtf32(0xF0E4)
 $iconModel = [char]::ConvertFromUtf32(0xF06A9)
@@ -150,6 +153,7 @@ $iconDirty = [char]::ConvertFromUtf32(0xF040)
 $iconAhead = [char]::ConvertFromUtf32(0x2191)
 $iconBehind = [char]::ConvertFromUtf32(0x2193)
 $iconConflict = [char]::ConvertFromUtf32(0xF071)
+$iconPr = [char]::ConvertFromUtf32(0xF407)
 
 Write-Host '== unit: width' -ForegroundColor Cyan
 $widthTable = @(
@@ -164,6 +168,10 @@ $widthTable = @(
     @{ Text = [string][char]0x0301; Width = 0 }                                         # lone combining mark
     @{ Text = "$esc[1;36mab$esc[0m $esc[90mc$esc[0m"; Width = 4 }                     # escapes stripped
     @{ Text = "${iconAhead}1 ${iconBehind}2"; Width = 5 }                              # ahead/behind arrows are narrow
+    @{ Text = "$esc]8;;https://example.com/pull/12$esc\abc$esc]8;;$esc\"; Width = 3 } # OSC 8 link: the URL is not visible
+    @{ Text = "$esc]8;;https://example.com$esc\$esc[32mab$esc[0m$esc]8;;$esc\"; Width = 2 }  # link around coloured text
+    @{ Text = "$esc]8;;$esc\"; Width = 0 }                                              # a bare link terminator
+    @{ Text = "$esc]8;;https://example.com`aabcd$esc]8;;`a"; Width = 4 }               # BEL-terminated link
 )
 foreach ($row in $widthTable) {
     $shown = $row.Text -replace $esc, '<ESC>'
@@ -177,16 +185,17 @@ Write-Host '== unit: registry' -ForegroundColor Cyan
 # out by hand, so a change there is a deliberate one. Array order is layout one.
 $registryTable = @(
     @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 2;     DropRank = 7;     Row = 2; RowRank = 1 }
+    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 2;     DropRank = 8;     Row = 2; RowRank = 1 }
     @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = $null; DropRank = 3;     Row = 2; RowRank = 3 }
     @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
     @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
-    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 4 }
-    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 4;     DropRank = 5;     Row = 1; RowRank = 2 }
-    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 3;     DropRank = 6;     Row = 1; RowRank = 3 }
+    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 5 }
+    @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 4 }
+    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 4;     DropRank = 6;     Row = 1; RowRank = 2 }
+    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 3;     DropRank = 7;     Row = 1; RowRank = 3 }
 )
 $registry = @(Get-SegmentRegistry)
-Confirm-Equal $registry.Count $registryTable.Count 'registry: eight records'
+Confirm-Equal $registry.Count $registryTable.Count 'registry: nine records'
 for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
     $want = $registryTable[$i]
     $got = $registry[$i]
@@ -197,8 +206,8 @@ for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
     }
 }
 Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'limits,context,branch,folder' 'registry: shrink order'
-Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,badges,cost,limits,folder,branch,context' 'registry: drop order'
-Confirm-Equal ((Get-SegmentOrder 'RowRank' 1) -join ',') 'model,folder,branch,badges' 'registry: layout two row 1'
+Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,badges,cost,limits,pr,folder,branch,context' 'registry: drop order'
+Confirm-Equal ((Get-SegmentOrder 'RowRank' 1) -join ',') 'model,folder,branch,pr,badges' 'registry: layout two row 1'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 2) -join ',') 'context,limits,cost,lines' 'registry: layout two row 2'
 
 Write-Host '== unit: config' -ForegroundColor Cyan
@@ -274,10 +283,10 @@ Confirm-Equal $c.Style 'plain' 'shipped config: style plain'
 Confirm-Equal $c.Folder 'repo' 'shipped config: folder repo'
 Confirm-Equal $shippedJson.folder 'repo' 'shipped config: the file itself says folder repo'
 $shippedSegments = @($c.Segments.Keys)
-Confirm-Equal $shippedSegments.Count 8 'shipped config: eight segments'
+Confirm-Equal $shippedSegments.Count 9 'shipped config: nine segments'
 Confirm-True (@($shippedSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'shipped config: every segment on'
 $shippedFileSegments = @($shippedJson.segments.PSObject.Properties)
-Confirm-Equal $shippedFileSegments.Count 8 'shipped config: the file itself lists eight segments'
+Confirm-Equal $shippedFileSegments.Count 9 'shipped config: the file itself lists nine segments'
 # -ne coerces its right side to the left side's type, so 'true' -ne $true is False; test the type too.
 Confirm-True (@($shippedFileSegments | Where-Object { $_.Value -isnot [bool] -or $_.Value -ne $true }).Count -eq 0) 'shipped config: the file itself sets them all to the boolean true'
 Confirm-Equal $c.State $true 'shipped config: state on'
@@ -730,6 +739,90 @@ Confirm-Equal (Get-VisibleWidth $line) 33 'fit: custom drop order width'
 $line = Get-FittedLine $fit 'plain' 10 -DropOrder @('model')
 Confirm-True ($line.Contains('M') -and $line.Contains('CCC')) 'fit: drop order naming model leaves it in place'
 Confirm-Equal (Get-VisibleWidth $line) 38 'fit: drop order naming model drops nothing'
+
+Write-Host '== unit: pr' -ForegroundColor Cyan
+# The link helper: OSC 8 open, the text, OSC 8 close, with ESC \ as the terminator. Anything that is not
+# an http or https URL leaves the text alone, so a bad payload can never put a stray escape on the line.
+$prUrl = 'https://github.com/octo/demo/pull/12'
+$linkOpen = "$esc]8;;$prUrl$esc\"
+$linkClose = "$esc]8;;$esc\"
+Confirm-Equal (Format-Link $prUrl 'abc') "${linkOpen}abc${linkClose}" 'link: exact bytes'
+Confirm-Equal (Format-Link '' 'abc') 'abc' 'link: empty url leaves the text alone'
+Confirm-Equal (Format-Link $null 'abc') 'abc' 'link: null url leaves the text alone'
+Confirm-Equal (Format-Link 'ftp://example.com/x' 'abc') 'abc' 'link: ftp url leaves the text alone'
+Confirm-Equal (Format-Link 'javascript:alert(1)' 'abc') 'abc' 'link: javascript url leaves the text alone'
+Confirm-Equal (Format-Link "https://example.com/$esc\x" 'abc') 'abc' 'link: a control character in the url leaves the text alone'
+Confirm-Equal (Format-Link "https://example.com/`ax" 'abc') 'abc' 'link: a BEL in the url leaves the text alone'
+Confirm-Equal (Format-Link 'HTTPS://EXAMPLE.COM/x' 'abc') "$esc]8;;HTTPS://EXAMPLE.COM/x$esc\abc${linkClose}" 'link: scheme is matched case-insensitively'
+Confirm-Equal (Format-Link 'http://example.com/x' 'abc') "$esc]8;;http://example.com/x$esc\abc${linkClose}" 'link: plain http is linked too'
+Confirm-Equal (Get-VisibleWidth (Format-Link $prUrl 'abc')) 3 'link: the url has no width'
+
+# The segment: glyph, space, #number, the whole text wrapped in the link, coloured by the review state.
+function Get-PrPayload([string] $Pr) {
+    return ('{"pr":' + $Pr + '}') | ConvertFrom-Json
+}
+$seg = Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '","review_state":"approved","kind":"pull_request"}'))
+Confirm-Equal $seg.Name 'pr' 'pr approved: name'
+Confirm-Equal $seg.Text "${linkOpen}$iconPr #12${linkClose}" 'pr approved: linked glyph and number'
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconPr #12" 'pr approved: plain text is the glyph and the number'
+Confirm-Equal $seg.Role 'ok' 'pr approved: role ok'
+Confirm-Equal $seg.Short $null 'pr approved: no short form'
+Confirm-Equal $seg.Bold $false 'pr approved: not bold'
+Confirm-Equal (Get-VisibleWidth $seg.Text) (Get-VisibleWidth "$iconPr #12") 'pr approved: the link adds no width'
+Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '","review_state":"changes requested"}'))).Role 'bad' 'pr changes requested: role bad'
+Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '","review_state":"CHANGES_REQUESTED"}'))).Role 'bad' 'pr CHANGES_REQUESTED: underscore and case folded, role bad'
+Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '","review_state":"Approved"}'))).Role 'ok' 'pr Approved: case folded, role ok'
+Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '","review_state":"review_required"}'))).Role 'dim' 'pr unknown state: role dim'
+Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '","review_state":null}'))).Role 'dim' 'pr null state: role dim'
+Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '"}'))).Role 'dim' 'pr missing state: role dim'
+$seg = Get-PrSegment (Get-PrPayload '{"number":12,"review_state":"approved"}')
+Confirm-Equal $seg.Text "$iconPr #12" 'pr missing url: text unlinked'
+Confirm-Equal $seg.Role 'ok' 'pr missing url: still coloured by the state'
+Confirm-Equal (Get-PrSegment (Get-PrPayload '{"number":12,"url":"ftp://example.com/12"}')).Text "$iconPr #12" 'pr ftp url: text unlinked'
+Confirm-Equal (Get-PrSegment (Get-PrPayload '{"number":12,"url":7}')).Text "$iconPr #12" 'pr numeric url: text unlinked'
+Confirm-Equal (Get-PrSegment (Get-PrPayload '{"number":345,"url":"HTTPS://github.com/octo/demo/pull/345"}')).Text "$esc]8;;HTTPS://github.com/octo/demo/pull/345$esc\$iconPr #345${linkClose}" 'pr upper-case scheme: linked'
+Confirm-Equal (Get-PrSegment ([pscustomobject]@{ model = @{ display_name = 'M' } })) $null 'pr missing object: null'
+Confirm-Equal (Get-PrSegment (Get-PrPayload 'null')) $null 'pr null object: null'
+Confirm-Equal (Get-PrSegment (Get-PrPayload '"open"')) $null 'pr object is a string: null'
+Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"url":"' + $prUrl + '","review_state":"approved"}'))) $null 'pr missing number: null even with a url'
+Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":"12","url":"' + $prUrl + '"}'))) $null 'pr string number: null'
+Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":12.5,"url":"' + $prUrl + '"}'))) $null 'pr float number: null'
+Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":0,"url":"' + $prUrl + '"}'))) $null 'pr zero number: null'
+Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":-3,"url":"' + $prUrl + '"}'))) $null 'pr negative number: null'
+Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":2147483648,"url":"' + $prUrl + '"}'))) $null 'pr number above Int32: null'
+Confirm-Equal (Get-PrSegment (Get-PrPayload ('{"number":12.0,"url":"' + $prUrl + '"}'))).Text "${linkOpen}$iconPr #12${linkClose}" 'pr whole float number: rendered as 12'
+
+# The renderer wraps the link in the segment's colour codes in both styles, so the link sits inside the
+# colour and the terminal keeps the background through it.
+$segPr = Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '","review_state":"approved"}'))
+Confirm-Equal (Format-Line @($segPr) 'plain') "$esc[32m${linkOpen}$iconPr #12${linkClose}$esc[0m" 'pr plain: colour outside the link'
+Confirm-Equal (Format-Line @($segPr) 'powerline') "$esc[0;48;5;28;38;5;231m ${linkOpen}$iconPr #12${linkClose} $esc[0m$esc[38;5;28m$arrow$esc[0m" 'pr powerline: block colour outside the link'
+
+# The URL never counts towards the width, so a long one fits where a short one does and is shed in the
+# same place. The fit set is 44 wide; the pr segment adds five cells and a separator, 52, and 49 needs
+# only the limits short form, so at both widths the pr segment must survive whatever the URL length.
+$longUrl = 'https://github.com/octo/demo/pull/12?' + ('x' * 263)
+Confirm-Equal $longUrl.Length 300 'pr long url: 300 characters'
+$fitShort = @(Get-FitSegmentSet) + @(Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $prUrl + '","review_state":"approved"}')))
+$fitLong = @(Get-FitSegmentSet) + @(Get-PrSegment (Get-PrPayload ('{"number":12,"url":"' + $longUrl + '","review_state":"approved"}')))
+Confirm-Equal (Get-VisibleWidth (Format-Line $fitLong 'plain')) 52 'pr long url: full line is 52 wide'
+foreach ($w in @(60, 49)) {
+    $shortLine = Get-FittedLine $fitShort 'plain' $w
+    $longLine = Get-FittedLine $fitLong 'plain' $w
+    Confirm-Equal (ConvertTo-PlainText $longLine) (ConvertTo-PlainText $shortLine) "pr long url at ${w}: same visible text as the short url"
+    Confirm-Equal (Get-VisibleWidth $longLine) (Get-VisibleWidth $shortLine) "pr long url at ${w}: same width as the short url"
+    Confirm-True ((Get-VisibleWidth $longLine) -le $w) "pr long url at ${w}: fits"
+    Confirm-True ($longLine.Contains("$iconPr #12") -and $longLine.Contains($longUrl)) "pr long url at ${w}: pr segment kept with its link"
+}
+$line = Get-FittedLine $fitLong 'plain' 49
+Confirm-True ($line.Contains('III') -and -not $line.Contains('IIIIII') -and $line.Contains('CCCCCC')) 'pr long url at 49: limits shortened, nothing dropped'
+# In the drop order pr goes after limits and before folder. Both short forms take 52 to 46; dropping
+# lines (41), badges (36), cost (31) and limits (25) leaves pr on a 25-cell line, and 24 drops pr next,
+# keeping folder and branch. The pr record sits last in this set, so it renders after BB here.
+$line = Get-FittedLine $fitLong 'plain' 25
+Confirm-Equal (ConvertTo-PlainText $line) "M $chevron CCC $chevron FF $chevron BB $chevron $iconPr #12" 'pr drop order: at 25 pr is still on the line'
+$line = Get-FittedLine $fitLong 'plain' 24
+Confirm-Equal (ConvertTo-PlainText $line) "M $chevron CCC $chevron FF $chevron BB" 'pr drop order: at 24 pr goes before folder and branch'
 
 Write-Host '== unit: context' -ForegroundColor Cyan
 $iconCtx = [char]::ConvertFromUtf32(0xF035B)
@@ -1555,6 +1648,7 @@ $absentGlyphs = @{
         @{ Icon = $iconLimit; Name = 'limits' }
         @{ Icon = $iconBranch; Name = 'branch' }
         @{ Icon = $iconConflict; Name = 'warn' }
+        @{ Icon = $iconPr; Name = 'pr' }
     )
     '02-feature-dirty-high.json'            = @(
         @{ Icon = $iconHome; Name = 'home' }
@@ -1602,6 +1696,14 @@ $absentGlyphs = @{
         @{ Icon = $iconBranch; Name = 'branch' }
         @{ Icon = $iconLines; Name = 'lines' }
         @{ Icon = $iconLimit; Name = 'limits' }
+        @{ Icon = $iconPr; Name = 'pr' }
+    )
+    '10-pr.json'                            = @(
+        @{ Icon = $iconHome; Name = 'home' }
+        @{ Icon = $iconDirty; Name = 'pencil' }
+        @{ Icon = $iconLines; Name = 'lines' }
+        @{ Icon = $iconLimit; Name = 'limits' }
+        @{ Icon = $iconConflict; Name = 'warn' }
     )
 }
 # What each sample renders when every segment is enabled and nothing is fitted away: 04 carries nothing
@@ -1618,6 +1720,7 @@ $sampleSegments = @{
     '07-limits-expired-default-effort.json' = @('model', 'context', 'cost', 'lines', 'limits', 'folder')
     '08-repo-identity.json'                 = @('model', 'context', 'cost', 'folder')
     '09-1m-context.json'                    = @('model', 'context', 'cost', 'folder', 'branch')
+    '10-pr.json'                            = @('model', 'context', 'cost', 'pr', 'folder', 'branch')
 }
 # One marker per segment per sample: the segment's glyph plus the value this payload gives it, spelled
 # the way it reaches the line once the escapes are stripped. Every visible segment has to put its marker
@@ -1677,6 +1780,10 @@ $sampleMarkers = @{
         model  = "$iconModel Fable 5.1 1M $iconConflict"; context = "$iconCtx 65%"; cost = "$iconCost `$$('{0:N2}' -f 4.21)"
         folder = "$iconFolder my-project"; branch = "$iconHome main"
     }
+    '10-pr.json'                            = @{
+        model  = "$iconModel Fable 5.1"; context = "$iconCtx 8%"; cost = "$iconCost `$$('{0:N2}' -f 0.4312)"
+        pr     = "$iconPr #12"; folder = "$iconFolder my-project"; branch = "$iconBranch feature/x"
+    }
 }
 # Every glyph a segment can put on the line: a segment the config turns off must show none of them, and
 # the two-line checks use them to say which row a segment landed on.
@@ -1687,6 +1794,7 @@ $segmentGlyphs = @{
     lines   = @($iconLines)
     limits  = @($iconLimit)
     badges  = @($iconFast, $iconThink, $iconEffort, $iconVim)
+    pr      = @($iconPr)
     folder  = @($iconFolder)
     branch  = @($iconHome, $iconBranch, $iconDirty, $iconAhead, $iconBehind, $iconConflict)
 }
@@ -1694,7 +1802,7 @@ $segmentGlyphs = @{
 # (the per-segment absence assertions cover that case instead, for every glyph the segment owns).
 $glyphSegment = @{
     context = 'context'; cost = 'cost'; folder = 'folder'; lines = 'lines'; limits = 'limits'; warn = 'model'
-    home = 'branch'; pencil = 'branch'; branch = 'branch'
+    home = 'branch'; pencil = 'branch'; branch = 'branch'; pr = 'pr'
     fast = 'badges'; think = 'badges'; effort = 'badges'; vim = 'badges'
 }
 # statusline.ps1's own line sets, derived from the registry so the test knows which segments share a line.

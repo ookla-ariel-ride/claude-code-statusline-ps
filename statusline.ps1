@@ -30,6 +30,7 @@ $iconDirty  = G 0xF040    # nf-fa-pencil (uncommitted changes)
 $iconAhead  = G 0x2191    # up arrow (commits ahead of upstream)
 $iconBehind = G 0x2193    # down arrow (commits behind upstream)
 $iconConflict = G 0xF071  # nf-fa-exclamation_triangle (merge conflicts)
+$iconPr     = G 0xF407    # nf-oct-git_pull_request
 $iconLines  = G 0xF121    # nf-fa-code  (lines added/removed)
 $iconLimit  = G 0xF0E4    # nf-fa-tachometer (rate limits)
 $iconFast   = G 0xF0E7    # nf-fa-bolt  (fast mode)
@@ -41,10 +42,12 @@ $defaultEffort = 'high'   # effort badge is hidden at this level
 $gitTimeoutMs = 1500      # how long the branch segment waits for `git status` before giving up
 
 # Visible cell width of a rendered line: escapes stripped, combining marks 0, CJK and emoji 2, else 1.
-# A small wcwidth approximation; Nerd Font glyphs count as 1.
+# A small wcwidth approximation; Nerd Font glyphs count as 1. The OSC 8 hyperlink wrappers go first,
+# with either terminator (ESC \ or BEL), so a URL is never counted as text; then the SGR colour codes.
 function Get-VisibleWidth([string] $Text) {
     if (-not $Text) { return 0 }
-    $plain = [regex]::Replace($Text, "`e\[[0-9;]*m", '')
+    $plain = [regex]::Replace($Text, "`e\]8;[^`a`e]*(?:`a|`e\\)", '')
+    $plain = [regex]::Replace($plain, "`e\[[0-9;]*m", '')
     $width = 0
     $en = [System.Globalization.StringInfo]::GetTextElementEnumerator($plain)
     while ($en.MoveNext()) {
@@ -79,13 +82,14 @@ function Get-SegmentRegistry {
     if (-not $script:segmentRegistry) {
         $script:segmentRegistry = @(
             @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 2;     DropRank = 7;     Row = 2; RowRank = 1 }
+            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 2;     DropRank = 8;     Row = 2; RowRank = 1 }
             @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = $null; DropRank = 3;     Row = 2; RowRank = 3 }
             @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
             @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
-            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 4 }
-            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 4;     DropRank = 5;     Row = 1; RowRank = 2 }
-            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 3;     DropRank = 6;     Row = 1; RowRank = 3 }
+            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 5 }
+            @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 4 }
+            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 4;     DropRank = 6;     Row = 1; RowRank = 2 }
+            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 3;     DropRank = 7;     Row = 1; RowRank = 3 }
         )
     }
     return $script:segmentRegistry
@@ -155,6 +159,17 @@ function Format-Inline([string] $Role, [string] $Text, [string] $SegmentRole, [s
     $pal = Get-Palette
     if ($Style -eq 'powerline') { return "`e[38;5;$($pal.Inline[$Role].Fg)m$Text`e[38;5;$($pal.Roles[$SegmentRole].Fg)m" }
     return "`e[$($pal.Inline[$Role].Sgr)m$Text`e[$($pal.Roles[$SegmentRole].Sgr)m"
+}
+
+# Wraps text in an OSC 8 hyperlink, ESC ] 8 ; ; url ESC \ text ESC ] 8 ; ; ESC \, which a terminal that
+# understands it (Windows Terminal on ctrl-click) opens. The text comes back unchanged for an empty url,
+# one that is not http or https, or one holding a control character, so nothing a payload puts there
+# can end the sequence early or put a stray escape on the line. The link goes into the segment's Text,
+# so Format-Line wraps it in the segment's colour codes in either style: OSC 8 carries no SGR state, so
+# a powerline background runs on through it, and Get-VisibleWidth strips it before measuring.
+function Format-Link([string] $Url, [string] $Text) {
+    if (-not $Url -or $Url -notmatch '^https?://' -or $Url -match '[\x00-\x1F\x7F]') { return $Text }
+    return "`e]8;;$Url`e\$Text`e]8;;`e\"
 }
 
 # Renders an ordered list of segment records as one line in the given style.
@@ -577,6 +592,22 @@ function Get-BadgesSegment($d) {
     if ($vim) { $badges.Add("$iconVim $vim") }
     if ($badges.Count -eq 0) { return $null }
     return @{ Name = 'badges'; Text = ($badges -join ' '); Short = $null; Role = 'dim'; Bold = $false }
+}
+
+# The pull request on the session's branch: the glyph and #number, the whole text wrapped in a link to
+# pr.url, coloured by pr.review_state - approved is ok, changes requested (spaces or underscores, any
+# case) is bad, anything else or nothing is dim. The number goes through Get-PayloadNumber and has to
+# be positive; without one there is no segment, whatever else the object holds. A url that is not text
+# or not http(s) leaves the text unlinked. pr.kind is not rendered. Omitted when the payload has no pr.
+function Get-PrSegment($d) {
+    $pr = $d.pr
+    if ($null -eq $pr) { return $null }
+    $number = Get-PayloadNumber $pr.number
+    if ($null -eq $number -or $number -le 0) { return $null }
+    $state = [regex]::Replace("$($pr.review_state)", '[_\s]+', ' ').Trim().ToLowerInvariant()
+    $role = switch ($state) { 'approved' { 'ok' } 'changes requested' { 'bad' } default { 'dim' } }
+    $url = if (Test-PayloadText $pr.url) { $pr.url } else { '' }
+    return @{ Name = 'pr'; Text = (Format-Link $url "$iconPr #$number"); Short = $null; Role = $role; Bold = $false }
 }
 
 # With workspace.repo in the payload and the folder config at repo, the text is owner/name, followed by a
