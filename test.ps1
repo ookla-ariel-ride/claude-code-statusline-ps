@@ -823,26 +823,71 @@ function Get-LimitsPayload([string] $RateLimits) {
 
 $seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":24,"resets_at":1700000000},"seven_day":{"used_percentage":41,"resets_at":1700000000},"spend_limit":{"used_percentage":62,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit 5h 24% 7d 41% `$ 62%" 'limits all three: 5h, 7d, then spend'
-Confirm-Equal $seg.Short "$iconLimit 5h 24%" 'limits all three: short keeps the 5h figure only'
+Confirm-Equal $seg.Short "$iconLimit `$ 62%" 'limits all three: short keeps the spend figure that drives the colour'
 Confirm-Equal $seg.Role 'warn' 'limits all three: role from the worst figure'
 
 $seg = Get-LimitsSegment (Get-LimitsPayload '{"spend_limit":{"used_percentage":62,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit `$ 62%" 'limits spend alone: one figure, no 5h'
-Confirm-Equal $seg.Short $null 'limits spend alone: no short form'
+Confirm-True ($null -eq $seg.Short) 'limits spend alone: no short form'
 
 $seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"spend_limit":{"used_percentage":92,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit 5h 10% `$ 92%" 'limits spend 92 with 5h 10: text'
 Confirm-Equal $seg.Role 'bad' 'limits spend 92 with 5h 10: spend drives the colour'
+Confirm-Equal $seg.Short "$iconLimit `$ 92%" 'limits spend 92 with 5h 10: short keeps the spend figure, not the 5h one'
 
 $seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')
 Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit absent: unchanged text'
 Confirm-Equal $seg.Role 'warn' 'limits spend_limit absent: role'
+Confirm-Equal $seg.Short "$iconLimit 5h 61%" 'limits spend_limit absent: short keeps the 5h figure when it is the worst'
+
+# The Short form keeps whichever figure drives the colour, so a fitted line never shows a red segment
+# with a calm number on it. Below the warn line nothing drives the colour, and the first present figure
+# stands in; a tie keeps render order (5h, 7d, then spend); the countdown never follows.
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"seven_day":{"used_percentage":88,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit 5h 10% 7d 88%" 'limits 7d worst: text'
+Confirm-Equal $seg.Short "$iconLimit 7d 88%" 'limits 7d worst: short keeps the 7d figure'
+Confirm-Equal $seg.Role 'bad' 'limits 7d worst: role'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"seven_day":{"used_percentage":41,"resets_at":1700000000},"spend_limit":{"used_percentage":30,"resets_at":1700000000}}')
+Confirm-Equal $seg.Short "$iconLimit 5h 10%" 'limits all below warn: short is the first figure, not the largest'
+Confirm-Equal $seg.Role 'ok' 'limits all below warn: role'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"seven_day":{"used_percentage":92,"resets_at":1700000000},"spend_limit":{"used_percentage":10,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit 7d 92% `$ 10%" 'limits no 5h, 7d red: text'
+Confirm-Equal $seg.Short "$iconLimit 7d 92%" 'limits no 5h, 7d red: short exists and keeps the 7d figure'
+Confirm-Equal $seg.Role 'bad' 'limits no 5h, 7d red: role'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"seven_day":{"used_percentage":20,"resets_at":1700000000},"spend_limit":{"used_percentage":30,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit 7d 20% `$ 30%" 'limits no 5h, all below warn: text'
+Confirm-Equal $seg.Short "$iconLimit 7d 20%" 'limits no 5h, all below warn: short is the first present figure'
+Confirm-Equal $seg.Role 'ok' 'limits no 5h, all below warn: role'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":70,"resets_at":1700000000},"seven_day":{"used_percentage":70,"resets_at":1700000000},"spend_limit":{"used_percentage":70,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit 5h 70% 7d 70% `$ 70%" 'limits three-way tie: text'
+Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits three-way tie: 5h wins by render order'
+Confirm-Equal $seg.Role 'warn' 'limits three-way tie: role'
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"seven_day":{"used_percentage":70,"resets_at":1700000000},"spend_limit":{"used_percentage":70,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit 7d 70% `$ 70%" 'limits 7d and spend tie: text'
+Confirm-Equal $seg.Short "$iconLimit 7d 70%" 'limits 7d and spend tie: 7d wins by render order'
+Confirm-Equal $seg.Role 'warn' 'limits 7d and spend tie: role'
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":69.6,"resets_at":1700000000},"seven_day":{"used_percentage":70.4,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit 5h 70% 7d 70%" 'limits tie after rounding: text rounds both to 70'
+Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits tie after rounding: 5h wins by render order'
+Confirm-Equal $seg.Role 'warn' 'limits tie after rounding: role'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"seven_day":{"used_percentage":92,"resets_at":1700000000}}')
+Confirm-Equal $seg.Text "$iconLimit 7d 92%" 'limits 7d alone: text'
+Confirm-True ($null -eq $seg.Short) 'limits 7d alone: short would equal text, so none'
+
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":70,"resets_at":4102444800},"seven_day":{"used_percentage":12,"resets_at":4102444800}}')
+Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 70% (") -and $seg.Text.EndsWith(') 7d 12%')) 'limits 5h worst with a live reset: text carries the countdown'
+Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits 5h worst with a live reset: short drops the countdown'
 
 $seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000},"spend_limit":{"used_percentage":null,"resets_at":null}}')
 Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit null percentage: unchanged text'
 
-Confirm-Equal (Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":null},"seven_day":{"used_percentage":null},"spend_limit":{"used_percentage":null}}')) $null 'limits all null: segment omitted'
-Confirm-Equal (Get-LimitsSegment ([pscustomobject]@{})) $null 'limits: missing rate_limits'
+Confirm-True ($null -eq (Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":null},"seven_day":{"used_percentage":null},"spend_limit":{"used_percentage":null}}'))) 'limits all null: segment omitted'
+Confirm-True ($null -eq (Get-LimitsSegment ([pscustomobject]@{}))) 'limits: missing rate_limits'
 
 Write-Host '== unit: porcelain' -ForegroundColor Cyan
 $r = Read-PorcelainStatus "## main...origin/main [ahead 1]`n"
@@ -1629,10 +1674,17 @@ $sampleSegments = @{
 # on the config's folder mode is a hashtable keyed by mode, repo and leaf.
 # Samples with a segment whose Short form differs from its Text, with the icon that proves the segment
 # is on the line at all. Checked at every set width in the matrix. A folder entry is checked in repo
-# mode only, because the segment has no Short form in leaf mode.
+# mode only, because the segment has no Short form in leaf mode. The limits Short form keeps the figure
+# that drives the colour, the 5h one in 07. 06 would show its 7d figure, but its line with every badge
+# on runs past 120 columns, and its five_hour resets in 2100, which puts a drifting countdown in the
+# full text (the $sampleMarkers note above stops its marker short of it), so it cannot meet the two-form
+# rule below and stays out of this table. The one-off check after that rule covers it instead.
 $sampleShortForms = @{
     '02-feature-dirty-high.json'            = @{
         branch = @{ Icon = $iconBranch; Full = "$iconBranch feature/x ~2 ?1 $iconDirty"; Short = "$iconBranch feature/x $iconDirty" }
+    }
+    '07-limits-expired-default-effort.json' = @{
+        limits = @{ Icon = $iconLimit; Full = "$iconLimit 5h 61% 7d 12% `$ 44%"; Short = "$iconLimit 5h 61%" }
     }
     '08-repo-identity.json'                 = @{
         folder = @{ Icon = $iconFolder; Full = "$iconFolder octo/demo $iconChevron tools"; Short = "$iconFolder demo" }
@@ -1781,6 +1833,17 @@ foreach ($cfg in $configSet) {
                     $dropped = -not $text.Contains($forms.Icon)
                     Confirm-True ($full -or $short -or $dropped) "${label}: $($entry.Key) is the full form, the short form, or dropped"
                     if ($c -ge 120) { Confirm-True $full "${label}: $($entry.Key) shows its full form at $c columns" }
+                }
+            }
+            if ($c -gt 0 -and $sample.Name -eq '06-limits-badges-lines.json' -and $cfg.Enabled['limits']) {
+                # Issue #34's case: 06 is red from its 7d figure, 88 against a 5h of 24. Wherever the limits
+                # icon survives fitting, the 7d figure has to be on the line, and the 5h figure may only
+                # stand beside it, in the full form. A Short form built from the 5h figure alone, which is
+                # what the segment used to do, shows 5h 24% on a red segment with the red figure shed.
+                $text = ConvertTo-PlainText ($lines -join "`n")
+                if ($text.Contains($iconLimit)) {
+                    Confirm-True ($text.Contains('7d 88%')) "${label}: limits keeps the 7d figure that drives its colour"
+                    Confirm-True (-not $text.Contains('5h 24%') -or $text.Contains('7d 88%')) "${label}: the 5h figure appears only beside the 7d one"
                 }
             }
             if ($c -le 0) {
