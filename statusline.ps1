@@ -26,7 +26,7 @@ function C([string] $code, [string] $text) { "$e[${code}m$text$e[0m" }
 function Get-IconDefault {
     return @{
         model    = 0xF06A9   # nf-md-robot
-        ctx      = 0xF035B   # nf-md-memory
+        context  = 0xF035B   # nf-md-memory
         cost     = 0xF0155   # nf-md-cash
         folder   = 0xF07C    # nf-fa-folder_open
         chevron  = 0x203A    # single right-pointing angle quotation mark (between owner/name and the leaf)
@@ -37,7 +37,7 @@ function Get-IconDefault {
         behind   = 0x2193    # down arrow (commits behind upstream)
         conflict = 0xF071    # nf-fa-exclamation_triangle (merge conflicts)
         lines    = 0xF121    # nf-fa-code  (lines added/removed)
-        limit    = 0xF0E4    # nf-fa-tachometer (rate limits)
+        limits   = 0xF0E4    # nf-fa-tachometer (rate limits)
         fast     = 0xF0E7    # nf-fa-bolt  (fast mode)
         think    = 0xF09D0   # nf-md-brain (extended thinking)
         effort   = 0xF04C5   # nf-md-speedometer (effort level)
@@ -45,17 +45,19 @@ function Get-IconDefault {
     }
 }
 
-# A code point from a config value: a string of one to six hex digits, with U+ or 0x allowed in front and
-# space around it, in 0 to 10FFFF and not a surrogate. $null for anything else, so the caller keeps the
-# built-in glyph.
+# A code point from a config value: a string of hex digits, with U+ or 0x allowed in front, space around
+# it and leading zeros, at most six digits once those are gone, up to 10FFFF, not a surrogate and not a
+# control character (00 to 1F and 7F to 9F, which would put a raw newline or a bare escape on the line).
+# $null for anything else, so the caller keeps the built-in glyph.
 function Read-CodePoint($Value) {
     if ($Value -isnot [string]) { return $null }
     $hex = $Value.Trim()
     if ($hex.StartsWith('U+', [StringComparison]::OrdinalIgnoreCase) -or $hex.StartsWith('0x', [StringComparison]::OrdinalIgnoreCase)) { $hex = $hex.Substring(2) }
+    $hex = $hex.TrimStart('0')
     if ($hex.Length -lt 1 -or $hex.Length -gt 6) { return $null }
     $cp = 0
     if (-not [int]::TryParse($hex, [System.Globalization.NumberStyles]::AllowHexSpecifier, [cultureinfo]::InvariantCulture, [ref] $cp)) { return $null }
-    if ($cp -gt 0x10FFFF -or ($cp -ge 0xD800 -and $cp -le 0xDFFF)) { return $null }
+    if ($cp -gt 0x10FFFF -or ($cp -ge 0xD800 -and $cp -le 0xDFFF) -or $cp -le 0x1F -or ($cp -ge 0x7F -and $cp -le 0x9F)) { return $null }
     return $cp
 }
 
@@ -194,22 +196,27 @@ function Read-StatusConfig([string] $Path) {
             if ($null -ne $row1 -and $null -ne $row2 -and ($row1.Count + $row2.Count) -gt 0) { $cfg.Rows = @($row1, $row2) }
         }
         # thresholds: warn and bad, whole numbers 0 to 100 with warn at or below bad, for the context
-        # meter on a standard window and for the rate limits. Either value wrong keeps 60 and 85 for both.
+        # meter on a standard window and for the rate limits. A whole number written as 20.0 counts, the
+        # way Get-PayloadNumber reads a count, since a config written by another tool can spell it so.
+        # Either value wrong keeps 60 and 85 for both.
         $t = $j.thresholds
         if ($t -is [System.Management.Automation.PSCustomObject]) {
-            $w = $t.warn
-            $b = $t.bad
-            if (($w -is [long] -or $w -is [int]) -and ($b -is [long] -or $b -is [int]) -and $w -ge 0 -and $b -le 100 -and $w -le $b) {
+            $w = Get-FiniteNumber $t.warn
+            $b = Get-FiniteNumber $t.bad
+            if ($null -ne $w -and $null -ne $b -and $w -eq [math]::Floor($w) -and $b -eq [math]::Floor($b) -and $w -ge 0 -and $b -le 100 -and $w -le $b) {
                 $cfg.Thresholds = @{ Warn = [int] $w; Bad = [int] $b }
             }
         }
         # icons: icon name to a hex code point string. Only a known name with a code point Read-CodePoint
-        # accepts is kept, as name to integer; every other entry leaves the built-in glyph alone.
+        # accepts is kept, as name to integer; every other entry leaves the built-in glyph alone. The two
+        # names the constants shorten are accepted in either spelling.
         $ic = $j.icons
         if ($ic -is [System.Management.Automation.PSCustomObject]) {
             $known = Get-IconDefault
+            $alias = @{ ctx = 'context'; limit = 'limits' }
             foreach ($p in $ic.PSObject.Properties) {
                 $n = $p.Name.ToLowerInvariant()
+                if ($alias.ContainsKey($n)) { $n = $alias[$n] }
                 $cp = Read-CodePoint $p.Value
                 if ($known.ContainsKey($n) -and $null -ne $cp) { $cfg.Icons[$n] = $cp }
             }
@@ -570,7 +577,7 @@ $cfg = Read-StatusConfig $configPath
 # is read before the payload so these are settled before anything is printed.
 $icons = Get-IconSet $cfg
 $iconModel = $icons.model
-$iconCtx = $icons.ctx
+$iconCtx = $icons.context
 $iconCost = $icons.cost
 $iconFolder = $icons.folder
 $iconChevron = $icons.chevron
@@ -581,7 +588,7 @@ $iconAhead = $icons.ahead
 $iconBehind = $icons.behind
 $iconConflict = $icons.conflict
 $iconLines = $icons.lines
-$iconLimit = $icons.limit
+$iconLimit = $icons.limits
 $iconFast = $icons.fast
 $iconThink = $icons.think
 $iconEffort = $icons.effort
@@ -592,10 +599,11 @@ try { $d = $raw | ConvertFrom-Json } catch { Write-Host (C '36' "$iconModel clau
 
 # ---- Segment builders. Each returns $null (segment omitted) or @{ Name; Text; Short; Role; Bold }. ----
 
-# Colour bands for a percentage. The callers pass the config's thresholds, 60 and 85 unless statusline.json
-# moves them, which suit a 200k window. A 1M window passes its own wider bands instead, because 85% of 1M
-# still leaves 150k tokens, more than a whole fresh 200k session, so the config does not reach them.
-function Get-ThresholdRole([int] $pct, [int] $Warn = 60, [int] $Bad = 85) { if ($pct -ge $Bad) { 'bad' } elseif ($pct -ge $Warn) { 'warn' } else { 'ok' } }
+# Colour bands for a percentage. Every caller passes both bands: the config's thresholds, 60 and 85 unless
+# statusline.json moves them, which suit a 200k window, or the fixed 70 and 90 of a 1M window, because 85%
+# of 1M still leaves 150k tokens, more than a whole fresh 200k session, so the config does not reach them.
+# No defaults here: a caller that forgot the config would bind 0 and 0 and colour everything red.
+function Get-ThresholdRole([int] $pct, [int] $Warn, [int] $Bad) { if ($pct -ge $Bad) { 'bad' } elseif ($pct -ge $Warn) { 'warn' } else { 'ok' } }
 
 # The one window size that gets the 1M marker and the wider bands. Claude Code reports it as exactly 1000000.
 function Test-WideWindow($size) { return $size -eq 1000000 }

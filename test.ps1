@@ -323,6 +323,8 @@ Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'threshold
 Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-over.json' '{ "thresholds": { "warn": 20, "bad": 101 } }'))) '60/85' 'config thresholds: above 100 falls back for both'
 Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-under.json' '{ "thresholds": { "warn": -1, "bad": 40 } }'))) '60/85' 'config thresholds: below 0 falls back for both'
 Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-fraction.json' '{ "thresholds": { "warn": 20.5, "bad": 40 } }'))) '60/85' 'config thresholds: a fraction falls back for both'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-double.json' '{ "thresholds": { "warn": 20.0, "bad": 40.0 } }'))) '20/40' 'config thresholds: whole numbers written as doubles are accepted'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-exponent.json' '{ "thresholds": { "warn": 2e1, "bad": 4E1 } }'))) '20/40' 'config thresholds: whole numbers in exponent form are accepted'
 Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-string.json' '{ "thresholds": { "warn": "20", "bad": 40 } }'))) '60/85' 'config thresholds: a string falls back for both'
 Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-bool.json' '{ "thresholds": { "warn": true, "bad": 40 } }'))) '60/85' 'config thresholds: a boolean falls back for both'
 Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-array.json' '{ "thresholds": [20, 40] }'))) '60/85' 'config thresholds: array falls back'
@@ -338,16 +340,23 @@ Confirm-Equal ($c.Order -join ',') 'model' 'config thresholds: the valid order i
 # has, or a value that is not a string, not hex, above 10FFFF or a surrogate, is skipped and the built-in
 # glyph stays. The parsed table holds the valid overrides only, as name to integer.
 Confirm-Equal (Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')).Icons.Count 0 'config missing: no icon overrides'
-$c = Read-StatusConfig (Write-TempConfig 'icons-four.json' '{ "icons": { "model": "F0E7", "dirty": "U+F040", "ctx": "0x2588", "Branch": "e0a0" } }')
-Confirm-Equal $c.Icons.Count 4 'config icons: four overrides'
+$c = Read-StatusConfig (Write-TempConfig 'icons-four.json' '{ "icons": { "model": "F0E7", "dirty": "U+F040", "context": "0x2588", "Branch": "e0a0", "limits": "0000F0E4" } }')
+Confirm-Equal $c.Icons.Count 5 'config icons: five overrides'
 Confirm-Equal $c.Icons.model 0xF0E7 'config icons: bare hex'
 Confirm-Equal $c.Icons.dirty 0xF040 'config icons: U+ prefix'
-Confirm-Equal $c.Icons.ctx 0x2588 'config icons: 0x prefix'
+Confirm-Equal $c.Icons.context 0x2588 'config icons: 0x prefix'
 Confirm-Equal $c.Icons.branch 0xE0A0 'config icons: name case folded, lower-case hex'
+Confirm-Equal $c.Icons.limits 0xF0E4 'config icons: leading zeros'
+# The two names the constants shorten are accepted in either spelling, and land under the long one.
+$c = Read-StatusConfig (Write-TempConfig 'icons-alias.json' '{ "icons": { "ctx": "2588", "limit": "2591" } }')
+Confirm-Equal $c.Icons.Count 2 'config icons: ctx and limit are aliases'
+Confirm-Equal $c.Icons.context 0x2588 'config icons: ctx lands under context'
+Confirm-Equal $c.Icons.limits 0x2591 'config icons: limit lands under limits'
+Confirm-True (-not $c.Icons.ContainsKey('ctx') -and -not $c.Icons.ContainsKey('limit')) 'config icons: the short spellings are not keys of their own'
 $c = Read-StatusConfig (Write-TempConfig 'icons-unknown.json' '{ "icons": { "model": "F0E7", "bogus": "F0E7" } }')
 Confirm-Equal $c.Icons.Count 1 'config icons: unknown name skipped'
 Confirm-Equal $c.Icons.model 0xF0E7 'config icons: the known name beside it is kept'
-$c = Read-StatusConfig (Write-TempConfig 'icons-invalid.json' '{ "icons": { "model": "zz", "cost": 61671, "folder": "", "lines": "110000", "limit": "D800", "fast": "DFFF", "think": "-1", "effort": "F0 E7", "vim": null, "home": ["F0E7"], "ahead": true } }')
+$c = Read-StatusConfig (Write-TempConfig 'icons-invalid.json' '{ "icons": { "model": "zz", "cost": 61671, "folder": "", "lines": "110000", "limits": "D800", "fast": "DFFF", "think": "-1", "effort": "F0 E7", "vim": null, "home": ["F0E7"], "ahead": true, "behind": "1B", "conflict": "A", "chevron": "0" } }')
 Confirm-Equal $c.Icons.Count 0 'config icons: every invalid value is skipped'
 $c = Read-StatusConfig (Write-TempConfig 'icons-edges.json' '{ "icons": { "model": "10FFFF", "dirty": "E000", "ahead": "D7FF", "behind": "41" } }')
 Confirm-Equal $c.Icons.Count 4 'config icons: the edges of the range are allowed'
@@ -376,12 +385,13 @@ Confirm-Equal $shippedFileSegments.Count 8 'shipped config: the file itself list
 Confirm-True (@($shippedFileSegments | Where-Object { $_.Value -isnot [bool] -or $_.Value -ne $true }).Count -eq 0) 'shipped config: the file itself sets them all to the boolean true'
 Confirm-Equal $c.State $true 'shipped config: state on'
 Confirm-True ($shippedJson.state -is [bool] -and $shippedJson.state) 'shipped config: the file itself sets state to the boolean true'
-# The four registry keys ship with their defaults spelled out, so the file documents them and a parse
-# of it gives exactly what a missing file gives.
+# thresholds and icons ship at their defaults, spelled out. order and rows are left out on purpose: the
+# installer keeps an existing config, so a file that listed every segment by name would pin the set and
+# a segment added by a later release would never appear for anyone who installed this one.
 Confirm-Equal ($c.Order -join ',') $registryOrder 'shipped config: order is the registry order'
-Confirm-Equal (@($shippedJson.order) -join ',') $registryOrder 'shipped config: the file itself lists the registry order'
+Confirm-True ($null -eq $shippedJson.PSObject.Properties['order']) 'shipped config: the file itself has no order key, so a new segment appears on its own'
 Confirm-Equal (Get-RowText $c) $registryRows 'shipped config: rows are the registry rows'
-Confirm-True ($shippedJson.rows -is [array] -and $shippedJson.rows.Count -eq 2) 'shipped config: the file itself has two rows'
+Confirm-True ($null -eq $shippedJson.PSObject.Properties['rows']) 'shipped config: the file itself has no rows key'
 Confirm-Equal (Get-ThresholdText $c) '60/85' 'shipped config: thresholds 60 and 85'
 Confirm-True ($shippedJson.thresholds.warn -eq 60 -and $shippedJson.thresholds.bad -eq 85) 'shipped config: the file itself says 60 and 85'
 Confirm-Equal $c.Icons.Count 0 'shipped config: no icon overrides'
@@ -400,17 +410,22 @@ Confirm-Equal $set.dirty $iconDirty 'icons: no override gives the built-in penci
 $set = Get-IconSet @{ Icons = @{ model = 0xF0E7; dirty = 0x2588 } }
 Confirm-Equal $set.model ([char]::ConvertFromUtf32(0xF0E7)) 'icons: model override is the bolt'
 Confirm-Equal $set.dirty ([char]::ConvertFromUtf32(0x2588)) 'icons: dirty override is the block'
-Confirm-Equal $set.ctx ([char]::ConvertFromUtf32(0xF035B)) 'icons: an unmentioned name keeps its glyph'
+Confirm-Equal $set.context ([char]::ConvertFromUtf32(0xF035B)) 'icons: an unmentioned name keeps its glyph'
+Confirm-Equal $set.limits $iconLimit 'icons: limits is the tachometer'
 Confirm-Equal (Get-IconSet @{}).model $iconModel 'icons: a config without an Icons table gives the built-ins'
 $set = Get-IconSet (Read-StatusConfig (Write-TempConfig 'icons-bolt.json' '{ "icons": { "model": "F0E7" } }'))
 Confirm-Equal $set.model ([char]::ConvertFromUtf32(0xF0E7)) 'icons: the bolt in the config reaches the set'
 Confirm-Equal $set.fast ([char]::ConvertFromUtf32(0xF0E7)) 'icons: the fast badge keeps its own bolt'
-# Every form Read-CodePoint accepts, and a sample of what it refuses.
+# Every form Read-CodePoint accepts, and a sample of what it refuses. Leading zeros are dropped before
+# the six-digit cap, so a zero-padded form reads. A control character (00 to 1F, 7F to 9F) is refused:
+# A is a newline and 1B a bare escape, either of which would break the line.
 foreach ($row in @(@('F0E7', 0xF0E7), @('f0e7', 0xF0E7), @('U+F0E7', 0xF0E7), @('u+f0e7', 0xF0E7), @('0xF0E7', 0xF0E7), @('0XF0E7', 0xF0E7),
-        @(' F0E7 ', 0xF0E7), @('10FFFF', 0x10FFFF), @('41', 0x41), @('0', 0))) {
+        @(' F0E7 ', 0xF0E7), @('10FFFF', 0x10FFFF), @('41', 0x41), @('0000F0E7', 0xF0E7), @('U+0000F0E7', 0xF0E7), @('0x0000F0E7', 0xF0E7),
+        @('000000000041', 0x41), @('20', 0x20), @('A0', 0xA0), @('7E', 0x7E))) {
     Confirm-Equal (Read-CodePoint $row[0]) $row[1] "code point: '$($row[0])' reads as $($row[1])"
 }
-foreach ($bad in @('', ' ', 'zz', '110000', 'D800', 'DBFF', 'DC00', 'DFFF', '-1', 'F0 E7', '+F0E7', 'U+', '0x', '1234567', 'U+0xF0E7', $null, 61671, $true, @('F0E7'))) {
+foreach ($bad in @('', ' ', 'zz', '110000', 'D800', 'DBFF', 'DC00', 'DFFF', '-1', 'F0 E7', '+F0E7', 'U+', '0x', '1234567', 'U+0xF0E7',
+        '0', '0000', 'U+0000', 'A', '1B', '1F', '7F', '9B', '9F', '0x0A', $null, 61671, $true, @('F0E7'))) {
     Confirm-Equal (Read-CodePoint $bad) $null "code point: '$bad' is refused"
 }
 
@@ -916,12 +931,16 @@ Confirm-Equal (Get-ContextSegment (Get-ContextPayload 20) $lowCfg).Role 'warn' '
 Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 65) $lowCfg).Role 'ok' 'context 1M 65 at 20/40: the 1M bands stay 70 and 90'
 
 Write-Host '== unit: threshold' -ForegroundColor Cyan
-Confirm-Equal (Get-ThresholdRole 65) 'warn' 'threshold 65: default bands warn'
+# Both bands are always passed; the function has no defaults, so a caller without a config is a bug
+# the tests would see as everything red, not as a quiet 60/85.
+Confirm-Equal (Get-ThresholdRole 65 60 85) 'warn' 'threshold 65 at 60/85: warn'
 Confirm-Equal (Get-ThresholdRole 65 70 90) 'ok' 'threshold 65 at 70/90: ok'
 Confirm-Equal (Get-ThresholdRole 70 70 90) 'warn' 'threshold 70 at 70/90: warn'
 Confirm-Equal (Get-ThresholdRole 89 70 90) 'warn' 'threshold 89 at 70/90: warn'
 Confirm-Equal (Get-ThresholdRole 92 70 90) 'bad' 'threshold 92 at 70/90: bad'
-Confirm-Equal (Get-ThresholdRole 85) 'bad' 'threshold 85: default bands bad'
+Confirm-Equal (Get-ThresholdRole 85 60 85) 'bad' 'threshold 85 at 60/85: bad'
+Confirm-Equal (Get-ThresholdRole 59 60 85) 'ok' 'threshold 59 at 60/85: ok'
+Confirm-Equal (Get-ThresholdRole 50 50 50) 'bad' 'threshold 50 at 50/50: bad, the warn band is empty'
 Confirm-True (Test-WideWindow 1000000) 'wide window: 1000000'
 Confirm-True (-not (Test-WideWindow 200000) -and -not (Test-WideWindow 1048576) -and -not (Test-WideWindow $null)) 'wide window: 200000, 1048576 and null are not'
 
@@ -1398,6 +1417,30 @@ foreach ($case in $gitCases) {
     if ($case.MaxMs) { Confirm-True ($r.Ms -lt $case.MaxMs) "${label}: finished in $($r.Ms) ms (limit $($case.MaxMs))" }
     if ($case.NoPing) { Start-Sleep -Milliseconds 300; Confirm-True ((Get-FakePingCount $pingTag) -eq 0) "${label}: ping child killed with the tree" }
     Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f $case.Name, $r.Ms, $text)
+}
+
+# The config gates the probe. A segment the active layout's list leaves out is never built, so an order
+# without branch never launches git at all, which a marker-writing fake on PATH proves; the same fake
+# with branch listed is launched and renders. The toggle is checked the same way, and the payload has no
+# git object, so the fake is the only source of a branch.
+$fakeMark = Write-FakeGit 'fake-mark' "echo ran > `"%~dp0fake.ran`"`r`necho ## main`r`nexit 0"
+$markerPath = Join-Path $fakeMark 'fake.ran'
+foreach ($case in @(
+        @{ Name = 'order without branch';  Json = '{ "order": ["model", "folder"] }'; Ran = $false }
+        @{ Name = 'order with branch';     Json = '{ "order": ["model", "branch"] }'; Ran = $true }
+        @{ Name = 'rows without branch';   Json = '{ "layout": "two", "rows": [["model"], ["folder"]] }'; Ran = $false }
+        @{ Name = 'rows with branch';      Json = '{ "layout": "two", "rows": [["model"], ["branch"]] }'; Ran = $true }
+        @{ Name = 'order ignored by two';  Json = '{ "layout": "two", "order": ["model"] }'; Ran = $true }
+        @{ Name = 'branch toggled off';    Json = '{ "order": ["model", "branch"], "segments": { "branch": false } }'; Ran = $false })) {
+    Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+    $r = Invoke-StatusLine (Get-GitPayload $notRepo) (Write-TempConfig "git-gate-$($case.Name -replace ' ', '-').json" $case.Json) 0 $fakeMark
+    $text = ConvertTo-PlainText ($r.Lines -join "`n")
+    $label = "git gate $($case.Name)"
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) "${label}: exit code 0, stderr empty"
+    Confirm-Equal (Test-Path -LiteralPath $markerPath) $case.Ran "${label}: fake git launched is $($case.Ran)"
+    if ($case.Ran) { Confirm-True ($text.Contains("$iconHome main")) "${label}: the branch the fake reports is on the line" }
+    else { Confirm-True (-not $text.Contains($iconHome) -and -not $text.Contains($iconBranch)) "${label}: no branch on the line, got '$text'" }
+    Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f $label, $r.Ms, $text)
 }
 
 # Positive control for the hang case's "no ping is left behind": that assertion would also pass if the
@@ -1906,13 +1949,14 @@ $glyphSegment = @{
 # A config record for the matrix. Rows is what the script prints from this config, read the way the
 # script reads it: the order key for layout one, the two rows for layout two. Enabled is the segments
 # the script will build, toggled on and listed on a row, so a segment the order leaves out is checked
-# for absence like one toggled off.
-function Get-ConfigRecord([string] $Name, [string] $Path, $Parsed) {
+# for absence like one toggled off. Widths is the column list the config renders at, every width in
+# -Columns unless the config asks for fewer.
+function Get-ConfigRecord([string] $Name, [string] $Path, $Parsed, [int[]] $Widths = $Columns) {
     $rows = @(if ($Parsed.Layout -eq 'two') { $Parsed.Rows } else { , $Parsed.Order })
     $listed = @($rows | ForEach-Object { $_ })
     $enabled = @{}
     foreach ($n in $allSegments) { $enabled[$n] = [bool] ($Parsed.Segments[$n] -and $n -in $listed) }
-    return @{ Name = $Name; Path = $Path; Layout = $Parsed.Layout; Style = $Parsed.Style; Folder = $Parsed.Folder; Enabled = $enabled; Rows = $rows }
+    return @{ Name = $Name; Path = $Path; Layout = $Parsed.Layout; Style = $Parsed.Style; Folder = $Parsed.Folder; Enabled = $enabled; Rows = $rows; Widths = $Widths }
 }
 # The oracle turns off every registry segment but model, so a new segment is off here without an edit.
 $modelOnlySegments = @($allSegments | Where-Object { $_ -ne 'model' } | ForEach-Object { '"' + $_ + '": false' }) -join ', '
@@ -1945,15 +1989,18 @@ if ($Config) {
     # The order and rows keys through the whole script: layout one in the registry order reversed with
     # cost left out, and layout two with the rows swapped and each reversed. The row checks below then
     # prove every marker lands on the row, and at the place on it, that the config asks for, and that
-    # the segment left out is not on the line at all.
+    # the segment left out is not on the line at all. Those checks run at the unset width, so the two
+    # render there and at one narrow width, which keeps the fitting path covered without another 72
+    # child renders.
+    $keyWidths = @($Columns | Where-Object { $_ -in @(0, 60) })
     $reversed = @($allSegments | Where-Object { $_ -ne 'cost' })
     [array]::Reverse($reversed)
     $path = Write-TempConfig 'order-reversed.json' ('{ "layout": "one", "style": "plain", "order": ' + (ConvertTo-Json -InputObject $reversed -Compress) + ' }')
-    $configSet.Add((Get-ConfigRecord 'order-reversed' $path (Read-StatusConfig $path)))
+    $configSet.Add((Get-ConfigRecord 'order-reversed' $path (Read-StatusConfig $path) $keyWidths))
     $swappedRows = @(@(Get-SegmentOrder 'RowRank' 2), @(Get-SegmentOrder 'RowRank' 1))
     foreach ($row in $swappedRows) { [array]::Reverse($row) }
     $path = Write-TempConfig 'rows-swapped.json' ('{ "layout": "two", "style": "powerline", "rows": ' + (ConvertTo-Json -InputObject $swappedRows -Compress) + ' }')
-    $configSet.Add((Get-ConfigRecord 'rows-swapped' $path (Read-StatusConfig $path)))
+    $configSet.Add((Get-ConfigRecord 'rows-swapped' $path (Read-StatusConfig $path) $keyWidths))
     Confirm-Equal ($configSet[$configSet.Count - 1].Rows[0] -join ',') 'lines,cost,limits,context' 'rows-swapped config: first row is the registry second row reversed'
     Confirm-Equal ($configSet[$configSet.Count - 1].Rows[1] -join ',') 'badges,branch,folder,model' 'rows-swapped config: second row is the registry first row reversed'
     Confirm-Equal ($configSet[$configSet.Count - 2].Rows[0] -join ',') 'branch,folder,badges,limits,lines,context,model' 'order-reversed config: one row, reversed, without cost'
@@ -1967,7 +2014,7 @@ New-Item -ItemType Directory -Force $matrixTemp | Out-Null
 $env:TEMP = $matrixTemp
 try {
 foreach ($cfg in $configSet) {
-    foreach ($c in $Columns) {
+    foreach ($c in $cfg.Widths) {
         Write-Host ''
         Write-Host ("== render {0}  COLUMNS={1}" -f $cfg.Name, $(if ($c -gt 0) { $c } else { 'unset' })) -ForegroundColor Cyan
         $maxLines = if ($cfg.Layout -eq 'two') { 2 } else { 1 }

@@ -116,11 +116,6 @@ The script reads `statusline.json` from its own folder, so after installing that
   "style": "plain",
   "folder": "repo",
   "state": true,
-  "order": ["model", "context", "cost", "lines", "limits", "badges", "folder", "branch"],
-  "rows": [
-    ["model", "folder", "branch", "badges"],
-    ["context", "limits", "cost", "lines"]
-  ],
   "thresholds": { "warn": 60, "bad": 85 },
   "icons": {},
   "segments": {
@@ -136,6 +131,10 @@ The script reads `statusline.json` from its own folder, so after installing that
 }
 ```
 
+The file leaves `order` and `rows` out on purpose: without them the segments come in the script's own
+order, and a segment added by a later release appears on its own. The installer keeps an existing
+`statusline.json`, so a file that spells the order out would pin it.
+
 | Key | Values | What it does |
 |---|---|---|
 | `layout` | `one`, `two` | `two` puts model, folder, branch and badges on the first line and context, limits, cost and lines on the second, unless `rows` says otherwise. |
@@ -143,10 +142,10 @@ The script reads `statusline.json` from its own folder, so after installing that
 | `folder` | `repo`, `leaf` | `repo` shows `owner/name` from `workspace.repo` when the payload has one, with the current directory's name after a `›` when it differs from the project root. `leaf` always shows the directory name alone. |
 | `segments.<name>` | `true`, `false` | `false` hides that segment. |
 | `state` | `true`, `false` | `false` stops the script writing a state file for the session. |
-| `order` | `["model", "branch", "context"]` | The segments of layout `one`, left to right. A segment left out is not shown, an unknown name is skipped, a repeat keeps its first place. An empty list, a list naming no segment, or anything that is not a list keeps the order above. |
-| `rows` | `[["model", "branch"], ["context", "cost"]]` | The two lines of layout `two`, with the same rules per row. A segment named on the first row is not repeated on the second, and a row may be empty. Anything but exactly two lists, or two lists naming no segment, keeps the rows above. |
-| `thresholds` | `{ "warn": 20, "bad": 40 }` | Where the context meter and the rate limits turn yellow and red: whole numbers from 0 to 100, `warn` no higher than `bad`. Either value wrong keeps 60 and 85 for both. A 1M window keeps its own 70 and 90. |
-| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` allowed in front. Names: `model`, `ctx`, `cost`, `folder`, `chevron`, `branch`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `lines`, `limit`, `fast`, `think`, `effort`, `vim`. A name the list does not have, or a value that is not a code point (not hex, above `10FFFF`, or a surrogate), keeps the built-in glyph. |
+| `order` | `["model", "branch", "context"]` | The segments of layout `one`, left to right. A segment left out is not shown, an unknown name is skipped, a repeat keeps its first place. Left out altogether, as the installed file leaves it, the segments come in the script's order, new ones included. An empty list, a list naming no segment, or anything that is not a list does the same. |
+| `rows` | `[["model", "branch"], ["context", "cost"]]` | The two lines of layout `two`, with the same rules per row. A segment named on the first row is not repeated on the second, and a row may be empty. Left out, the script's own two rows apply, new segments included. Anything but exactly two lists, or two lists naming no segment, does the same. |
+| `thresholds` | `{ "warn": 20, "bad": 40 }` | Where the context meter and the rate limits turn yellow and red: whole numbers from 0 to 100 (`20` or `20.0`, not `20.5`), `warn` no higher than `bad`. Either value wrong keeps 60 and 85 for both. A 1M window keeps its own 70 and 90. |
+| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cost`, `folder`, `chevron`, `branch`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`. A name the list does not have, or a value that is not a printable code point (not hex, above `10FFFF`, a surrogate, or a control character such as `A` or `1B`), keeps the built-in glyph. |
 
 A config only needs the keys it changes. This one puts the branch beside the model, colours the
 meter early and uses a house glyph on `main`:
@@ -160,8 +159,9 @@ meter early and uses a house glyph on `main`:
 }
 ```
 
-A segment that is toggled off, or that neither `order` nor the active layout's `rows` names, is
-not built at all: leave `branch` out and the script never runs `git status`.
+A segment that is toggled off, or that the active layout's list does not name (`order` for layout
+`one`, `rows` for layout `two`), is not built at all: leave `branch` out and the script never runs
+`git status`.
 
 With `badges` off the vim mode is shown nowhere, because the installer sets `hideVimModeIndicator`
 and that hides Claude Code's own indicator. If that matters, remove `hideVimModeIndicator` from the
