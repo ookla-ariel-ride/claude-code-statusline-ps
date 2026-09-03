@@ -135,7 +135,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-SegmentNameList', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment and Get-ModelSegment close over these
 # script-level names in statusline.ps1, so the test has to supply them.
@@ -334,6 +334,30 @@ $c = Read-StatusConfig (Write-TempConfig 'thresholds-bad-order-good.json' '{ "th
 Confirm-Equal (Get-ThresholdText $c) '60/85' 'config thresholds: crossed values fall back beside a valid order'
 Confirm-Equal ($c.Order -join ',') 'model' 'config thresholds: the valid order is kept'
 
+# The icons key: icon name to a hex code point string, with U+ or 0x allowed in front. A name no icon
+# has, or a value that is not a string, not hex, above 10FFFF or a surrogate, is skipped and the built-in
+# glyph stays. The parsed table holds the valid overrides only, as name to integer.
+Confirm-Equal (Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')).Icons.Count 0 'config missing: no icon overrides'
+$c = Read-StatusConfig (Write-TempConfig 'icons-four.json' '{ "icons": { "model": "F0E7", "dirty": "U+F040", "ctx": "0x2588", "Branch": "e0a0" } }')
+Confirm-Equal $c.Icons.Count 4 'config icons: four overrides'
+Confirm-Equal $c.Icons.model 0xF0E7 'config icons: bare hex'
+Confirm-Equal $c.Icons.dirty 0xF040 'config icons: U+ prefix'
+Confirm-Equal $c.Icons.ctx 0x2588 'config icons: 0x prefix'
+Confirm-Equal $c.Icons.branch 0xE0A0 'config icons: name case folded, lower-case hex'
+$c = Read-StatusConfig (Write-TempConfig 'icons-unknown.json' '{ "icons": { "model": "F0E7", "bogus": "F0E7" } }')
+Confirm-Equal $c.Icons.Count 1 'config icons: unknown name skipped'
+Confirm-Equal $c.Icons.model 0xF0E7 'config icons: the known name beside it is kept'
+$c = Read-StatusConfig (Write-TempConfig 'icons-invalid.json' '{ "icons": { "model": "zz", "cost": 61671, "folder": "", "lines": "110000", "limit": "D800", "fast": "DFFF", "think": "-1", "effort": "F0 E7", "vim": null, "home": ["F0E7"], "ahead": true } }')
+Confirm-Equal $c.Icons.Count 0 'config icons: every invalid value is skipped'
+$c = Read-StatusConfig (Write-TempConfig 'icons-edges.json' '{ "icons": { "model": "10FFFF", "dirty": "E000", "ahead": "D7FF", "behind": "41" } }')
+Confirm-Equal $c.Icons.Count 4 'config icons: the edges of the range are allowed'
+Confirm-Equal $c.Icons.model 0x10FFFF 'config icons: 10FFFF'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'icons-array.json' '{ "icons": ["F0E7"] }')).Icons.Count 0 'config icons: array falls back'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'icons-string.json' '{ "icons": "F0E7" }')).Icons.Count 0 'config icons: string falls back'
+$c = Read-StatusConfig (Write-TempConfig 'icons-good-thresholds-bad.json' '{ "icons": { "model": "F0E7" }, "thresholds": 5 }')
+Confirm-Equal $c.Icons.model 0xF0E7 'config icons: kept when thresholds is invalid'
+Confirm-Equal (Get-ThresholdText $c) '60/85' 'config icons: the invalid thresholds fall back on their own'
+
 # The config that ships with the repo has to be valid JSON and to mean what the README says it means.
 $shippedConfig = Join-Path $PSScriptRoot 'statusline.json'
 $shippedJson = try { Get-Content -LiteralPath $shippedConfig -Raw | ConvertFrom-Json } catch { $null }
@@ -352,6 +376,33 @@ Confirm-Equal $shippedFileSegments.Count 8 'shipped config: the file itself list
 Confirm-True (@($shippedFileSegments | Where-Object { $_.Value -isnot [bool] -or $_.Value -ne $true }).Count -eq 0) 'shipped config: the file itself sets them all to the boolean true'
 Confirm-Equal $c.State $true 'shipped config: state on'
 Confirm-True ($shippedJson.state -is [bool] -and $shippedJson.state) 'shipped config: the file itself sets state to the boolean true'
+
+Write-Host '== unit: icons' -ForegroundColor Cyan
+# Get-IconSet turns the built-in table and the config's overrides into one glyph per name, and the
+# script assigns its $icon* constants from that set.
+$defaultIcons = Get-IconDefault
+Confirm-Equal $defaultIcons.Count 17 'icons: seventeen built-in glyphs'
+Confirm-Equal $defaultIcons.model 0xF06A9 'icons: model is the robot'
+$set = Get-IconSet @{ Icons = @{} }
+Confirm-Equal $set.Count 17 'icons: one glyph per name'
+Confirm-Equal $set.model $iconModel 'icons: no override gives the built-in model glyph'
+Confirm-Equal $set.dirty $iconDirty 'icons: no override gives the built-in pencil'
+$set = Get-IconSet @{ Icons = @{ model = 0xF0E7; dirty = 0x2588 } }
+Confirm-Equal $set.model ([char]::ConvertFromUtf32(0xF0E7)) 'icons: model override is the bolt'
+Confirm-Equal $set.dirty ([char]::ConvertFromUtf32(0x2588)) 'icons: dirty override is the block'
+Confirm-Equal $set.ctx ([char]::ConvertFromUtf32(0xF035B)) 'icons: an unmentioned name keeps its glyph'
+Confirm-Equal (Get-IconSet @{}).model $iconModel 'icons: a config without an Icons table gives the built-ins'
+$set = Get-IconSet (Read-StatusConfig (Write-TempConfig 'icons-bolt.json' '{ "icons": { "model": "F0E7" } }'))
+Confirm-Equal $set.model ([char]::ConvertFromUtf32(0xF0E7)) 'icons: the bolt in the config reaches the set'
+Confirm-Equal $set.fast ([char]::ConvertFromUtf32(0xF0E7)) 'icons: the fast badge keeps its own bolt'
+# Every form Read-CodePoint accepts, and a sample of what it refuses.
+foreach ($row in @(@('F0E7', 0xF0E7), @('f0e7', 0xF0E7), @('U+F0E7', 0xF0E7), @('u+f0e7', 0xF0E7), @('0xF0E7', 0xF0E7), @('0XF0E7', 0xF0E7),
+        @(' F0E7 ', 0xF0E7), @('10FFFF', 0x10FFFF), @('41', 0x41), @('0', 0))) {
+    Confirm-Equal (Read-CodePoint $row[0]) $row[1] "code point: '$($row[0])' reads as $($row[1])"
+}
+foreach ($bad in @('', ' ', 'zz', '110000', 'D800', 'DBFF', 'DC00', 'DFFF', '-1', 'F0 E7', '+F0E7', 'U+', '0x', '1234567', 'U+0xF0E7', $null, 61671, $true, @('F0E7'))) {
+    Confirm-Equal (Read-CodePoint $bad) $null "code point: '$bad' is refused"
+}
 
 Write-Host '== unit: state' -ForegroundColor Cyan
 # The state helpers derive their directory from TEMP, so point it at a folder under $tmp for these cases

@@ -3,7 +3,8 @@
 # Requires a Nerd Font in the terminal (install.ps1 can set up JetBrainsMono Nerd Font).
 # Reads the JSON Claude Code pipes on stdin and prints one or two lines, e.g.
 #   󰚩 Fable 5.1  󰍛 37% ████░░░░░░   $0.43   my-project   main
-# Layout, separator style and segment toggles come from statusline.json next to this script.
+# Layout, separator style, segment toggles and order, colour bands and glyph overrides come from
+# statusline.json next to this script.
 # Glyphs are emitted from code points so the file's own encoding never matters.
 [CmdletBinding()]
 param(
@@ -19,23 +20,57 @@ function G([int] $cp) { [char]::ConvertFromUtf32($cp) }
 $e = [char]27
 function C([string] $code, [string] $text) { "$e[${code}m$text$e[0m" }
 
-$iconModel  = G 0xF06A9   # nf-md-robot
-$iconCtx    = G 0xF035B   # nf-md-memory
-$iconCost   = G 0xF0155   # nf-md-cash
-$iconFolder = G 0xF07C    # nf-fa-folder_open
-$iconChevron = G 0x203A   # single right-pointing angle quotation mark (between owner/name and the leaf)
-$iconBranch = G 0xE0A0    # powerline branch
-$iconHome   = G 0xF015    # nf-fa-home  (on main/master)
-$iconDirty  = G 0xF040    # nf-fa-pencil (uncommitted changes)
-$iconAhead  = G 0x2191    # up arrow (commits ahead of upstream)
-$iconBehind = G 0x2193    # down arrow (commits behind upstream)
-$iconConflict = G 0xF071  # nf-fa-exclamation_triangle (merge conflicts)
-$iconLines  = G 0xF121    # nf-fa-code  (lines added/removed)
-$iconLimit  = G 0xF0E4    # nf-fa-tachometer (rate limits)
-$iconFast   = G 0xF0E7    # nf-fa-bolt  (fast mode)
-$iconThink  = G 0xF09D0   # nf-md-brain (extended thinking)
-$iconEffort = G 0xF04C5   # nf-md-speedometer (effort level)
-$iconVim    = G 0xE62B    # nf-custom-vim
+# The built-in code point of every glyph the segments use, keyed by the name the icons key of
+# statusline.json takes: the $icon* constant minus its prefix, lower-cased. The constants themselves
+# are assigned from Get-IconSet once the config is read, so an override is in place before any builder runs.
+function Get-IconDefault {
+    return @{
+        model    = 0xF06A9   # nf-md-robot
+        ctx      = 0xF035B   # nf-md-memory
+        cost     = 0xF0155   # nf-md-cash
+        folder   = 0xF07C    # nf-fa-folder_open
+        chevron  = 0x203A    # single right-pointing angle quotation mark (between owner/name and the leaf)
+        branch   = 0xE0A0    # powerline branch
+        home     = 0xF015    # nf-fa-home  (on main/master)
+        dirty    = 0xF040    # nf-fa-pencil (uncommitted changes)
+        ahead    = 0x2191    # up arrow (commits ahead of upstream)
+        behind   = 0x2193    # down arrow (commits behind upstream)
+        conflict = 0xF071    # nf-fa-exclamation_triangle (merge conflicts)
+        lines    = 0xF121    # nf-fa-code  (lines added/removed)
+        limit    = 0xF0E4    # nf-fa-tachometer (rate limits)
+        fast     = 0xF0E7    # nf-fa-bolt  (fast mode)
+        think    = 0xF09D0   # nf-md-brain (extended thinking)
+        effort   = 0xF04C5   # nf-md-speedometer (effort level)
+        vim      = 0xE62B    # nf-custom-vim
+    }
+}
+
+# A code point from a config value: a string of one to six hex digits, with U+ or 0x allowed in front and
+# space around it, in 0 to 10FFFF and not a surrogate. $null for anything else, so the caller keeps the
+# built-in glyph.
+function Read-CodePoint($Value) {
+    if ($Value -isnot [string]) { return $null }
+    $hex = $Value.Trim()
+    if ($hex.StartsWith('U+', [StringComparison]::OrdinalIgnoreCase) -or $hex.StartsWith('0x', [StringComparison]::OrdinalIgnoreCase)) { $hex = $hex.Substring(2) }
+    if ($hex.Length -lt 1 -or $hex.Length -gt 6) { return $null }
+    $cp = 0
+    if (-not [int]::TryParse($hex, [System.Globalization.NumberStyles]::AllowHexSpecifier, [cultureinfo]::InvariantCulture, [ref] $cp)) { return $null }
+    if ($cp -gt 0x10FFFF -or ($cp -ge 0xD800 -and $cp -le 0xDFFF)) { return $null }
+    return $cp
+}
+
+# One glyph per icon name: the built-in code point, or the config's override where its Icons table has
+# one. A plain loop over the table, because this runs before the first line is printed.
+function Get-IconSet($cfg) {
+    $set = @{}
+    foreach ($e in (Get-IconDefault).GetEnumerator()) {
+        $cp = $e.Value
+        if ($cfg.Icons -and $cfg.Icons.ContainsKey($e.Key)) { $cp = $cfg.Icons[$e.Key] }
+        $set[$e.Key] = G $cp
+    }
+    return $set
+}
+
 $defaultEffort = 'high'   # effort badge is hidden at this level
 
 $gitTimeoutMs = 1500      # how long the branch segment waits for `git status` before giving up
@@ -130,6 +165,7 @@ function Read-StatusConfig([string] $Path) {
     $cfg.Order = @((Get-SegmentRegistry).Name)
     $cfg.Rows = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
     $cfg.Thresholds = @{ Warn = 60; Bad = 85 }
+    $cfg.Icons = @{}
     try {
         if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $cfg }
         $j = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
@@ -165,6 +201,17 @@ function Read-StatusConfig([string] $Path) {
             $b = $t.bad
             if (($w -is [long] -or $w -is [int]) -and ($b -is [long] -or $b -is [int]) -and $w -ge 0 -and $b -le 100 -and $w -le $b) {
                 $cfg.Thresholds = @{ Warn = [int] $w; Bad = [int] $b }
+            }
+        }
+        # icons: icon name to a hex code point string. Only a known name with a code point Read-CodePoint
+        # accepts is kept, as name to integer; every other entry leaves the built-in glyph alone.
+        $ic = $j.icons
+        if ($ic -is [System.Management.Automation.PSCustomObject]) {
+            $known = Get-IconDefault
+            foreach ($p in $ic.PSObject.Properties) {
+                $n = $p.Name.ToLowerInvariant()
+                $cp = Read-CodePoint $p.Value
+                if ($known.ContainsKey($n) -and $null -ne $cp) { $cfg.Icons[$n] = $cp }
             }
         }
     } catch { return $cfg }
@@ -516,11 +563,32 @@ function Write-SessionState([string] $SessionId, $State) {
     } catch { $null = $_ }
 }
 
-$raw = [Console]::In.ReadToEnd()
-try { $d = $raw | ConvertFrom-Json } catch { Write-Host (C '36' "$iconModel claude"); exit 0 }
-
 $configPath = if ($Config) { $Config } else { Join-Path $PSScriptRoot 'statusline.json' }
 $cfg = Read-StatusConfig $configPath
+
+# The glyphs the builders and the fallback line use, with the config's icons overrides applied. The config
+# is read before the payload so these are settled before anything is printed.
+$icons = Get-IconSet $cfg
+$iconModel = $icons.model
+$iconCtx = $icons.ctx
+$iconCost = $icons.cost
+$iconFolder = $icons.folder
+$iconChevron = $icons.chevron
+$iconBranch = $icons.branch
+$iconHome = $icons.home
+$iconDirty = $icons.dirty
+$iconAhead = $icons.ahead
+$iconBehind = $icons.behind
+$iconConflict = $icons.conflict
+$iconLines = $icons.lines
+$iconLimit = $icons.limit
+$iconFast = $icons.fast
+$iconThink = $icons.think
+$iconEffort = $icons.effort
+$iconVim = $icons.vim
+
+$raw = [Console]::In.ReadToEnd()
+try { $d = $raw | ConvertFrom-Json } catch { Write-Host (C '36' "$iconModel claude"); exit 0 }
 
 # ---- Segment builders. Each returns $null (segment omitted) or @{ Name; Text; Short; Role; Bold }. ----
 
