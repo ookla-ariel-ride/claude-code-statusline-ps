@@ -28,7 +28,7 @@ how close you are to a rate limit, and which modes are on.
 ## Features
 
 - Context meter with a ten-block bar, percent, and used/total tokens. Green, then yellow, then red.
-- Rate limits for the 5-hour and 7-day windows, with a countdown to the next 5-hour reset.
+- Rate limits for the 5-hour and 7-day windows, with a countdown to the next 5-hour reset, and the spend limit when Claude Code reports one (accounts behind a Claude apps gateway with a spend limit).
 - Session cost and lines added or removed.
 - Badges for fast mode, extended thinking, effort level, and vim mode. They disappear when nothing is on.
 - Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory.
@@ -62,21 +62,33 @@ Restart Claude Code, or wait for its next status refresh.
 - Copies `statusline.ps1` to `~/.claude/statusline.ps1`.
 - Copies `statusline.json` to `~/.claude/statusline.json` unless one is already there. If the repo copy is missing it warns and carries on. The script has the same defaults built in.
 - Adds a `statusLine` entry to your user-level `~/.claude/settings.json`. It keeps every other key and writes a `.bak` copy first.
+- Sets `hideVimModeIndicator` inside that entry. The badges segment already shows the vim mode, so Claude Code's own indicator would be the same word twice on one bar.
+- With `-RefreshInterval <seconds>`, sets `refreshInterval` inside that entry so Claude Code re-renders the line on a timer as well as on events. Without the switch the key is not written. A value below 1 is refused and nothing is written.
 - With `-InstallFont`, installs JetBrainsMono Nerd Font through winget. Expect one elevation prompt.
 - With `-ConfigureWindowsTerminal`, sets Windows Terminal's default font to `JetBrainsMono NF` and backs up its settings.
 
-The settings entry it writes:
+The settings entry it writes after `.\install.ps1 -RefreshInterval 10`:
 
 ```json
 "statusLine": {
   "type": "command",
   "command": "pwsh -NoProfile -NoLogo -NonInteractive -File C:/Users/<you>/.claude/statusline.ps1",
-  "padding": 0
+  "padding": 0,
+  "hideVimModeIndicator": true,
+  "refreshInterval": 10
 }
 ```
 
 The path uses forward slashes on purpose. Claude Code may run the command through Git Bash, which
 strips backslashes.
+
+`refreshInterval` is what keeps a clock, or a taskbar bar driven by the context percentage, moving
+between events. Nothing in the line needs it today, so the installer only writes it when asked. A
+reinstall without the switch writes an entry without the key. Pass the switch again to keep it.
+
+`-SettingsPath <file>` changes only which settings file is edited. The `statusline.ps1` and
+`statusline.json` copies, and the delete on `-Uninstall`, still use `~/.claude`. It exists for the
+test suite, which points it into a temp folder.
 
 ### Other terminals
 
@@ -89,7 +101,9 @@ terminal's font to a Nerd Font yourself and skip `-ConfigureWindowsTerminal`.
 .\install.ps1 -Uninstall
 ```
 
-This removes the `statusLine` entry and deletes `~/.claude/statusline.ps1`. Fonts and `~/.claude/statusline.json` stay.
+This removes the whole `statusLine` entry, `hideVimModeIndicator` and `refreshInterval` with it, and
+deletes `~/.claude/statusline.ps1`. Fonts and `~/.claude/statusline.json` stay. A `.bak` of the
+settings file from before the removal is kept beside it.
 
 ## Configuration
 
@@ -121,6 +135,10 @@ The script reads `statusline.json` from its own folder, so after installing that
 | `folder` | `repo`, `leaf` | `repo` shows `owner/name` from `workspace.repo` when the payload has one, with the current directory's name after a `›` when it differs from the project root. `leaf` always shows the directory name alone. |
 | `segments.<name>` | `true`, `false` | `false` hides that segment. |
 
+With `badges` off the vim mode is shown nowhere, because the installer sets `hideVimModeIndicator`
+and that hides Claude Code's own indicator. If that matters, remove `hideVimModeIndicator` from the
+`statusLine` entry in `settings.json` by hand.
+
 Anything missing or invalid falls back to its default without a message, so a typo cannot blank
 the status line. Delete the file to get the defaults back. `docs/statusline-two-line.json` is the
 config behind the second screenshot.
@@ -128,8 +146,8 @@ config behind the second screenshot.
 Claude Code tells the script the terminal width. When a line is too long the script shortens it in
 two stages:
 
-1. Detail comes off four segments, in this order: the countdown and 7-day figure from limits, the
-   token counts from context, every count from the branch, and the owner and directory name from
+1. Detail comes off four segments, in this order: the countdown, 7-day and spend figures from limits,
+   the token counts from context, every count from the branch, and the owner and directory name from
    the folder, which keeps only the repository name.
 2. Whole segments go, from the right: lines, badges, cost, limits, folder, branch, context.
 
@@ -143,7 +161,7 @@ The model segment always stays.
 | context | <img src="docs/icons/memory.svg" height="18" alt="memory"> `nf-md-memory` | `context_window.*` | Percent, ten-block bar, used/total tokens. Green below 60%, yellow below 85%, red above |
 | cost | <img src="docs/icons/cash.svg" height="18" alt="cash"> `nf-md-cash` | `cost.total_cost_usd` | Dimmed, two decimals |
 | lines | <img src="docs/icons/code.svg" height="18" alt="code"> `nf-fa-code` | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
-| limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day` | `5h 24% (1h12m) 7d 41%`. Coloured by the worse of the two using the context thresholds. The countdown is omitted once the reset time has passed |
+| limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day`, `spend_limit` | `5h 24% (1h12m) 7d 41% $ 62%`. Coloured by the worst of the figures using the context thresholds. The countdown is omitted once the reset time has passed. The `$` figure is the spend limit. Claude Code sends it only behind a Claude apps gateway with a spend limit, and only from 2.1.251 on |
 | badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
 | folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.repo`, `workspace.project_dir`, `workspace.current_dir` | Blue. `owner/name` when the payload names the repository, then `›` and the directory name when it differs from the project root. Without a repository, the directory name alone. The short form is the repository name |
 | branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git status --porcelain=v1 --branch` run in `workspace.current_dir` | Magenta when clean, yellow with the pencil when the tree has changes. The counts described below sit between the name and the pencil. Shows `detached` on a detached HEAD |
@@ -183,11 +201,14 @@ arrows. A `git` object with an empty branch name shows nothing.
 
 ## Test without Claude Code
 
-`test.ps1` runs three groups. Unit checks call the script's helper functions directly (width
+`test.ps1` runs four groups. Unit checks call the script's helper functions directly (width
 measurement, config parsing, rendering, width fitting, the context meter, `git status` parsing, the
 payload counts, the branch segment). The git group runs the branch fallback against temporary
 repositories: clean, dirty, unborn, detached, one commit ahead, one behind, a mixed tree with a
-staged, a modified and an untracked file, a fake `git` that fails and one that hangs. The render
+staged, a modified and an untracked file, a fake `git` that fails and one that hangs. The install
+group runs `install.ps1` with `USERPROFILE` and `-SettingsPath` pointed into a temp folder: a fresh
+settings file, an existing one with unrelated keys, `-RefreshInterval`, a refused value, and
+`-Uninstall`. It checks afterwards that the real `~/.claude` files were not touched. The render
 matrix pipes every payload in `samples/` through the script for each layout and style at each
 width:
 
@@ -227,8 +248,8 @@ The things you are likely to change sit at the top of `statusline.ps1`:
 - `Get-Palette` holds the colours for both styles.
 
 Segment order is fixed for each layout, and `statusline.json` only hides segments rather than moving them.
-To change the order, edit the lists near the bottom of `statusline.ps1`: `$segmentNames` for layout `one`, and
-`$lineSets` for the two rows of layout `two`.
+To change the order, edit `Get-SegmentRegistry` near the top of `statusline.ps1`: array order is layout `one`,
+`Row` and `RowRank` place a segment on the two rows of layout `two`, and `ShrinkRank` and `DropRank` set the fitting order.
 
 ## Troubleshooting
 
