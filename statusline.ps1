@@ -560,27 +560,34 @@ function TimeLeft([object] $epoch) {
 # Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets, and the spend limit when
 # the payload carries one (Claude Code sends it behind a Claude apps gateway with a spend limit). The spend
 # figure uses a literal dollar sign, not the cash glyph, so it does not read as a second cost; its resets_at
-# is not shown, one countdown is enough. Every figure that is present joins the worst-of colour.
+# is not shown, one countdown is enough. Every figure that is present joins the worst-of colour, and the
+# Short form a narrow terminal falls back to keeps the figure behind that colour: the worst one, or the
+# first present one when nothing is above the warn line. Either way it carries no countdown.
 function Get-LimitsSegment($d) {
     $rl = $d.rate_limits
     if (-not $rl) { return $null }
     $bits = [System.Collections.Generic.List[string]]::new()
-    $worst = 0
-    $short = $null
+    $worst = -1
+    $first = $null
+    $top = $null
     # Label, source object and whether the countdown follows, in render order.
     foreach ($row in @(@('5h', $rl.five_hour, $true), @('7d', $rl.seven_day, $false), @('$', $rl.spend_limit, $false))) {
         $pct = $row[1].used_percentage
         if ($null -eq $pct) { continue }
         $pct = [int] [math]::Round([double] $pct)
-        $worst = [math]::Max($worst, $pct)
+        $bit = "$($row[0]) $pct%"
+        if ($null -eq $first) { $first = $bit }
+        # A strict comparison keeps the earlier figure on a tie, so 5h beats 7d beats spend.
+        if ($pct -gt $worst) { $top = $bit; $worst = $pct }
         $tail = if ($row[2]) { TimeLeft $row[1].resets_at } else { '' }
-        $bits.Add("$($row[0]) $pct%$tail")
-        if ($row[0] -eq '5h') { $short = "$iconLimit 5h $pct%" }
+        $bits.Add("$bit$tail")
     }
     if ($bits.Count -eq 0) { return $null }
     $text = "$iconLimit $($bits -join ' ')"
+    $role = Get-ThresholdRole $worst
+    $short = "$iconLimit " + $(if ($role -eq 'ok') { $first } else { $top })
     if ($short -eq $text) { $short = $null }
-    return @{ Name = 'limits'; Text = $text; Short = $short; Role = (Get-ThresholdRole $worst); Bold = $false }
+    return @{ Name = 'limits'; Text = $text; Short = $short; Role = $role; Bold = $false }
 }
 
 # Session mode badges: fast mode, thinking, non-default effort, vim mode. Omitted when nothing is on.
