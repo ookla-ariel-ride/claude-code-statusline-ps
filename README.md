@@ -31,7 +31,7 @@ how close you are to a rate limit, and which modes are on.
 - Rate limits for the 5-hour and 7-day windows, with a countdown to the next 5-hour reset, and the spend limit when Claude Code reports one (accounts behind a Claude apps gateway with a spend limit).
 - Session cost and lines added or removed.
 - Badges for fast mode, extended thinking, effort level, and vim mode. They disappear when nothing is on.
-- Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory.
+- Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory, cached for a few seconds so most renders never start git.
 - Counts beside the branch name: `↑N` `↓N` commits ahead of or behind the upstream, `+N` staged, `~N` changed, `?N` untracked, and a red triangle with a count when files are in conflict. See [Branch counts](#branch-counts).
 - One line or two, plain separators or powerline blocks, and any segment switched off, all from `statusline.json`.
 - Fits the terminal width. A line that is too long first loses detail from the limits, context and branch segments, then loses whole segments from the right, so lines stop wrapping in normal use.
@@ -116,6 +116,11 @@ The script reads `statusline.json` from its own folder, so after installing that
   "style": "plain",
   "folder": "repo",
   "state": true,
+  "git": {
+    "timeoutMs": 1500,
+    "cacheSeconds": 5,
+    "cache": true
+  },
   "segments": {
     "model": true,
     "context": true,
@@ -136,6 +141,9 @@ The script reads `statusline.json` from its own folder, so after installing that
 | `folder` | `repo`, `leaf` | `repo` shows `owner/name` from `workspace.repo` when the payload has one, with the current directory's name after a `›` when it differs from the project root. `leaf` always shows the directory name alone. |
 | `segments.<name>` | `true`, `false` | `false` hides that segment. |
 | `state` | `true`, `false` | `false` stops the script writing a state file for the session. |
+| `git.timeoutMs` | `100` to `10000` | How long the branch segment waits for `git status`, in milliseconds, before it gives up and leaves the segment out. A value outside the range is clamped to it. |
+| `git.cacheSeconds` | `0` to `300` | How long a `git status` result is reused for, in seconds, before git is asked again. `0` asks git on every render. Clamped like `timeoutMs`. |
+| `git.cache` | `true`, `false` | `false` asks git on every render, whatever `cacheSeconds` says. |
 
 With `badges` off the vim mode is shown nowhere, because the installer sets `hideVimModeIndicator`
 and that hides Claude Code's own indicator. If that matters, remove `hideVimModeIndicator` from the
@@ -155,6 +163,13 @@ Nothing on the line uses the file yet. Set `state` to `false` and the script nei
 writes it. Upgrading over an existing `statusline.json` leaves that file alone, so a config without
 a `state` key gets the default, which is on. `.\install.ps1 -Uninstall` prints where the files are
 so you can delete the folder.
+
+The branch segment keeps the last `git status` answer for each repository in `claude-statusline`
+under the same temp folder, one small JSON file per repository named by a hash of its path, and
+reuses it for `git.cacheSeconds` while `.git/index` and `.git/HEAD` are unchanged. A commit,
+checkout, add or reset moves one of those, so it shows straight away; an edit or a new file in the
+work tree does not, so the pencil and the counts can lag by up to five seconds. A worktree or a
+submodule, where `.git` is a file, is never cached.
 
 Claude Code tells the script the terminal width. When a line is too long the script shortens it in
 two stages:
@@ -274,7 +289,14 @@ your `PATH` and that the `command` path in `settings.json` exists.
 
 No branch segment: the script runs `git status` in the session's working directory. Check that
 `git` is on your `PATH` and that the directory is inside a repository. If `git status` takes longer
-than 1.5 seconds the segment is skipped for that refresh.
+than 1.5 seconds the segment is skipped for that refresh; `git.timeoutMs` in `statusline.json`
+raises the limit for a large repository or a slow disk.
+
+The branch segment is a few seconds behind: that is the cache. The last `git status` answer for
+each repository sits in `%TEMP%\claude-statusline\` and is reused for five seconds unless
+`.git/index` or `.git/HEAD` changes, so an edit or a new file can take up to five seconds to show
+as a pencil or a count. `git.cacheSeconds` shortens the window, `0` or `"cache": false` turns it
+off. The folder is safe to delete at any time; the next render writes it again.
 
 No arrows after the branch name: the branch has no upstream, or the upstream branch was deleted.
 `git branch -u origin/<branch>` sets one.

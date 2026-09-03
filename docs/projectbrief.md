@@ -36,9 +36,10 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 |---|---|
 | `statusline.ps1` | Reads JSON on stdin and `statusline.json` beside it; prints one or two coloured lines fitted to `COLUMNS`. |
 | `install.ps1` | Copies the script to `~/.claude/`, writes the `statusLine` entry to user settings with `hideVimModeIndicator` on and, with `-RefreshInterval <seconds>`, a `refreshInterval`; optionally installs JetBrainsMono Nerd Font via winget and sets it as the Windows Terminal default font. Supports `-Uninstall` and `-SettingsPath` (the seam the tests use). |
-| `statusline.json` | Defaults for layout, style, the folder mode, the state file toggle and segment toggles. Installed beside the script. |
+| `statusline.json` | Defaults for layout, style, the folder mode, the state file toggle, segment toggles, and the git probe's timeout and cache (`git.timeoutMs`, `git.cacheSeconds`, `git.cache`). Installed beside the script. |
 | `%TEMP%\claude-statusline-state\` | One JSON file per session (`<session_id>.json`, version 1): last cost, token totals, context and 5-hour percentages, and a ring of up to twenty cost readings. Written after the line is printed, swept of day-old files at most every six hours. `~/.claude/statusline-state` when `TEMP` is empty. |
-| `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, checks the git fallback in temporary repositories: clean, dirty, unborn, detached, ahead, behind, a mixed tree, a git that fails and one that hangs, exercises the session state file end to end, and runs `install.ps1` against a settings file in a temp folder. `-Columns`, `-Config`, `-Raw`. |
+| `%TEMP%\claude-statusline\` | The git probe cache: one JSON file per repository, named by the first 16 hex characters of the SHA-256 of the lower-cased root path, holding the root, the UTC stamps of `.git/index` and `.git/HEAD`, the write time and the last `git status` record. Read before the branch segment is built and reused for `git.cacheSeconds` while both stamps match; a worktree or submodule, where `.git` is a file, is never cached. No cache when `TEMP` is empty. |
+| `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, checks the git fallback in temporary repositories: clean, dirty, unborn, detached, ahead, behind, a mixed tree, a git that fails and one that hangs, the probe cache with a counting stand-in and end to end with a failing git on `PATH`, exercises the session state file end to end, and runs `install.ps1` against a settings file in a temp folder. `-Columns`, `-Config`, `-Raw`. |
 | `samples/*.json` | Every payload in `samples/` goes through the render matrix. One per case: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort, a repository identity below its project root, a 1M window with `exceeds_200k_tokens` true. |
 | `docs/render-screenshot.ps1` | Renders a payload and config through the script and captures the terminal as the README screenshot. |
 | `docs/render-icons.ps1` | Extracts the Nerd Font glyphs used by the script as SVG outlines for `docs/icons/`. |
@@ -66,8 +67,16 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   JSON parse failure falls back to a plain model glyph. A broken status line must never break Claude Code.
 - **Line endings.** `.gitattributes` forces CRLF on `.ps1` files and LF elsewhere.
 - **Git fallback with a hard timeout.** The documented payload has no `git` object, so the branch
-  segment runs `git status` itself through `System.Diagnostics.Process`, kills it after 1.5 s, and
-  omits the segment on any failure.
+  segment runs `git status` itself through `System.Diagnostics.Process`, kills it after
+  `git.timeoutMs` (1.5 s by default, 100 ms to 10 s), and omits the segment on any failure.
+- **The probe is cached, keyed on `.git`, not on the work tree.** A render that starts git pays for
+  a process and a status walk every time; most renders happen seconds apart in an unchanged
+  repository. The last answer is kept per repository and reused while `.git/index` and `.git/HEAD`
+  carry the same stamps and the entry is younger than `git.cacheSeconds`. Commits, checkouts, adds
+  and resets move one of the two files and show at once; an edit or a new file in the work tree
+  moves neither and shows when the entry ages out, a lag of five seconds by default. The read sits
+  in front of the branch segment because it replaces the probe, and it is one file read and two
+  stamps. A null answer is never cached, and every failure ends in a plain probe.
 - **Segment records and one renderer.** Each segment is a small record (name, text, short text,
   colour role, bold); one function renders a line in plain or powerline style, and width fitting
   shrinks then drops records in a fixed order.
@@ -110,8 +119,9 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 Two-line layout, powerline style, config file, width fitting and the git fallback are implemented.
 The branch segment shows ahead and behind counts (#16) and staged, changed, untracked and conflict
-counts (#17), all from the one `git status` call. Segment order, thresholds, glyphs and a light
-palette are still constants in the script.
+counts (#17), all from the one `git status` call, and that call is cached per repository with its
+timeout and lifetime in the config (#18). Segment order, thresholds, glyphs and a light palette are
+still constants in the script.
 
 ## Future work
 
@@ -125,8 +135,8 @@ Issues #2 to #28 hold the backlog, each with a plan and success criteria. The in
    deltas between renders (#4).
 4. New segments: cache warmth and hit ratio, owner/repo, worktree, links, agent and session badges,
    spend limit, cost per turn, pace, session clock (#2, #3, #5 to #8, #10, #11, #13, #14).
-5. Config: presets, a quiet block, an alarm colour, per-project config, git cache and timeout
-   (#18, #19, #21 to #23).
+5. Config: presets, a quiet block, an alarm colour, per-project config (#19, #21 to #23). The git
+   cache and timeout (#18) are done.
 6. Style and terminal: an ASCII style, a light palette, a right-aligned group with a clock, taskbar
    progress, a subagent status line (#15, #24, #25, #27, #28).
 
