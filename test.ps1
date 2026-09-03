@@ -135,7 +135,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment and Get-ModelSegment close over these
 # script-level names in statusline.ps1, so the test has to supply them.
@@ -309,6 +309,30 @@ Confirm-Equal (Read-SessionState 'nothing-yet') $null 'state read: missing file 
 Confirm-True (-not (Test-Path -LiteralPath $stateDir)) 'state read: creates no directory'
 Confirm-Equal (Get-SessionStateDir $false) $null 'state dir: missing and not asked to create gives null'
 
+# One guard behind both number helpers: anything that is not a number at all is rejected by both, and
+# each then applies its own rule - a count that fits an Int32, or a figure floored to a long when whole.
+foreach ($case in @(
+        @{ Name = 'missing';      V = $null }
+        @{ Name = 'string';       V = '2' }
+        @{ Name = 'empty string'; V = '' }
+        @{ Name = 'boolean';      V = $true }
+        @{ Name = 'array';        V = @(1, 2) }
+        @{ Name = 'object';       V = ([pscustomobject]@{ a = 1 }) }
+        @{ Name = 'NaN';          V = [double]::NaN }
+        @{ Name = 'infinity';     V = [double]::PositiveInfinity })) {
+    Confirm-Equal (Get-FiniteNumber $case.V) $null "state number: $($case.Name) is not a finite number"
+    Confirm-Equal (Get-PayloadNumber $case.V) $null "state number: $($case.Name) is not a payload count"
+    Confirm-Equal (Get-StateNumber $case.V) $null "state number: $($case.Name) is not a state figure"
+    Confirm-Equal (Get-StateNumber $case.V -Whole) $null "state number: $($case.Name) is not a whole state figure"
+}
+Confirm-Equal (Get-FiniteNumber 0) 0 'state number: zero is a finite number'
+Confirm-Equal (Get-PayloadNumber 1.5) $null 'state number: a fraction is not a count'
+Confirm-Equal (Get-StateNumber 1.5) 1.5 'state number: a fraction is a figure'
+Confirm-Equal (Get-StateNumber 1.5 -Whole) 1 'state number: -Whole floors a fraction'
+Confirm-Equal (Get-PayloadNumber 2147483648) $null 'state number: a count must fit an Int32'
+Confirm-Equal (Get-StateNumber 2147483648 -Whole) 2147483648 'state number: a whole figure may exceed an Int32'
+Confirm-Equal (Get-StateNumber 1e300 -Whole) $null 'state number: a whole figure must fit a long'
+
 $state = Merge-SessionState $null (Get-StatePayload 1.07) 1767225600
 Confirm-Equal $state.v 1 'state merge: version 1'
 Confirm-Equal $state.updated_at 1767225600 'state merge: updated_at is the clock given'
@@ -363,6 +387,26 @@ $badCost = Merge-SessionState $null ([pscustomobject]@{ cost = [pscustomobject]@
 Confirm-Equal $badCost.cost_usd $null 'state merge: string cost is not a number'
 Confirm-Equal @($badCost.history).Count 0 'state merge: string cost starts no history'
 
+# A payload can arrive with no cost object at all (the minimal sample is that shape), which stores a
+# null cost. The comparison is against the last history entry, not that null, so the render after the
+# gap does not re-append a cost that never moved.
+$run = Merge-SessionState $null (Get-StatePayload 1.07) 1
+Confirm-Equal @($run.history).Count 1 'state merge: gap run starts with one entry'
+$run = Merge-SessionState $run ([pscustomobject]@{ session_id = 'abc' }) 2
+Confirm-Equal $run.cost_usd $null 'state merge: gap run stores a null cost'
+Confirm-Equal @($run.history).Count 1 'state merge: gap run keeps the entry it had'
+$run = Merge-SessionState $run (Get-StatePayload 1.07) 3
+Confirm-Equal @($run.history).Count 1 'state merge: the same cost after a gap adds no entry'
+$run = Merge-SessionState $run (Get-StatePayload 1.2) 4
+Confirm-Equal @($run.history).Count 2 'state merge: a moved cost after a gap adds an entry'
+# The same three renders through the file, the way they actually run.
+Write-SessionState 'gap' (Merge-SessionState (Read-SessionState 'gap') (Get-StatePayload 1.07) 1)
+Write-SessionState 'gap' (Merge-SessionState (Read-SessionState 'gap') ([pscustomobject]@{}) 2)
+Write-SessionState 'gap' (Merge-SessionState (Read-SessionState 'gap') (Get-StatePayload 1.07) 3)
+$gap = Read-SessionState 'gap'
+Confirm-Equal @($gap.history).Count 1 'state merge: 1.07, no cost, 1.07 through the file leaves one entry'
+Confirm-Equal $gap.history[0].cost_usd 1.07 'state merge: and that entry is the first cost'
+
 # Twenty-five renders with a rising cost through the file: the ring keeps the newest twenty.
 $ring = $null
 for ($i = 1; $i -le 25; $i++) {
@@ -398,7 +442,15 @@ Confirm-Equal $odd.history[0].cost_usd 0.5 'state read: the whole entry is kept'
 # characters stripped, or was longer than that, gets a hash of the whole id as a suffix, so two ids that
 # strip or cut to the same text (a/b and ab; two long ids with one first 64 characters) never share a file.
 function Get-StateFileName([string] $Id) { return (Split-Path (Get-SessionStatePath $Id $false) -Leaf) }
-function Get-IdHash([string] $Id) { return [System.Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($Id)), 0, 8).ToLowerInvariant() }
+# The test's own way to the same 16 characters: a byte-by-byte hex format, not the script's
+# BitConverter expression, and only APIs PowerShell 7.0's .NET Core 3.1 has.
+function Get-IdHash([string] $Id) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Id)) } finally { $sha.Dispose() }
+    return (-join @(0..7 | ForEach-Object { $bytes[$_].ToString('x2') }))
+}
+# And one hash written out in full, so the expectations below cannot all be wrong together.
+Confirm-Equal (Get-IdHash 'a/b') 'c14cddc033f64b9d' 'state name: the hash of a/b, written out'
 $uuid = '0f8fad5b-d9cb-469f-a165-70867728950e'
 Confirm-Equal (Get-StateFileName $uuid) "$uuid.json" 'state name: a UUID keeps its readable name'
 Confirm-Equal (Get-StateFileName ('x' * 64)) (('x' * 64) + '.json') 'state name: 64 clean characters kept as they are'
@@ -412,6 +464,11 @@ Confirm-True ((Get-StateFileName $long1) -cmatch ('^' + ('y' * 47) + '-[0-9a-f]{
 Confirm-Equal (Get-StateFileName ('x' * 100)).Length 69 'state name: a hashed name is 64 characters plus .json'
 Confirm-True ((Get-StateFileName '///') -cmatch '^[0-9a-f]{16}\.json$') 'state name: an id of only punctuation is the hash alone'
 Confirm-Equal (Get-StateFileName '../abc') "..abc-$(Get-IdHash '../abc').json" 'state name: slashes stripped, dots kept, hash added'
+# Case is not a difference to the file system, so an id that is not already lower-case is hashed too.
+Confirm-Equal (Get-StateFileName 'a1b2c3') 'a1b2c3.json' 'state name: a lower-case id is readable'
+Confirm-Equal (Get-StateFileName 'A1B2C3') "a1b2c3-$(Get-IdHash 'A1B2C3').json" 'state name: an id with upper case gets the hash of the id as written'
+Confirm-True ((Get-StateFileName 'A1B2C3') -cne (Get-StateFileName 'a1b2c3')) 'state name: two ids differing only in case get different files'
+Confirm-Equal (Get-StateFileName $uuid.ToUpperInvariant()) "$uuid-$(Get-IdHash $uuid.ToUpperInvariant()).json" 'state name: an upper-case UUID keeps a readable prefix and gains a hash'
 Write-SessionState 'a b/c:d\e' $state
 Confirm-True (Test-Path -LiteralPath (Join-Path $stateDir "abcde-$(Get-IdHash 'a b/c:d\e').json")) 'state write: stripped id lands under its hashed name'
 Write-SessionState '../up' $state
@@ -424,6 +481,13 @@ Write-SessionState 'abc' $null
 Confirm-Equal (Get-StateFileCount) $countBefore 'state write: empty id and null state write nothing'
 Confirm-Equal (Read-SessionState '') $null 'state read: empty id gives null'
 Confirm-Equal (Get-SessionStatePath '' $false) $null 'state path: empty id gives null'
+
+# The record is written to a .tmp file and moved over the real one, so an interrupted write costs
+# nothing. A .tmp left behind by one must not stop the next write.
+[System.IO.File]::WriteAllText((Join-Path $stateDir 'abc.json.tmp'), 'half a record')
+Write-SessionState 'abc' $state
+Confirm-Equal (Read-SessionState 'abc').cost_usd 1.07 'state write: a stale .tmp file does not stop a later write'
+Confirm-True (-not (Test-Path -LiteralPath (Join-Path $stateDir 'abc.json.tmp'))) 'state write: no .tmp file is left behind'
 
 # The sweep: state files not written for a day go, at most once per six hours, marked by the stamp.
 $oldFile = Join-Path $stateDir 'old.json'
@@ -448,6 +512,45 @@ Confirm-True (-not (Test-Path -LiteralPath $oldFile)) 'state sweep: a stamp olde
 Confirm-True (((Get-Item -LiteralPath $stateStamp).LastWriteTimeUtc - [DateTime]::UtcNow).TotalMinutes -gt -1) 'state sweep: stamp touched'
 Invoke-SessionStateSweep (Join-Path $stateTemp 'no-such-dir')
 Confirm-True $true 'state sweep: a missing directory is silent'
+
+# The 200-file cap. A pass that hits it leaves the stamp alone, so the next render carries on with the
+# backlog rather than draining 200 files every six hours.
+function Initialize-SweepDir([string] $Name) {
+    $d = Join-Path $stateTemp $Name
+    New-Item -ItemType Directory -Force $d | Out-Null
+    return $d
+}
+function Get-SweepFileCount([string] $Dir) { return @(Get-ChildItem -LiteralPath $Dir -Filter *.json -File -ErrorAction SilentlyContinue).Count }
+$backlog = Initialize-SweepDir 'backlog'
+for ($i = 0; $i -lt 250; $i++) {
+    $p = Join-Path $backlog "old-$i.json"
+    [System.IO.File]::WriteAllText($p, '{ "v": 1 }')
+    Write-StateFileAge $p 30
+}
+Invoke-SessionStateSweep $backlog
+Confirm-Equal (Get-SweepFileCount $backlog) 50 'state sweep: a capped pass deletes 200 and stops'
+Confirm-True (-not (Test-Path -LiteralPath (Join-Path $backlog '.sweep'))) 'state sweep: a capped pass writes no stamp'
+Invoke-SessionStateSweep $backlog
+Confirm-Equal (Get-SweepFileCount $backlog) 0 'state sweep: the next pass clears the rest of the backlog'
+Confirm-True (Test-Path -LiteralPath (Join-Path $backlog '.sweep')) 'state sweep: the pass that finished writes the stamp'
+
+# A stamp or a file dated in the future is stale, not fresh: a clock change must not park housekeeping
+# until the wall clock catches up.
+$future = Initialize-SweepDir 'future'
+$futureStamp = Join-Path $future '.sweep'
+$futureOld = Join-Path $future 'old.json'
+[System.IO.File]::WriteAllText($futureOld, '{ "v": 1 }')
+Write-StateFileAge $futureOld 30
+[System.IO.File]::WriteAllText($futureStamp, '')
+Write-StateFileAge $futureStamp (-24 * 365)
+Invoke-SessionStateSweep $future
+Confirm-True (-not (Test-Path -LiteralPath $futureOld)) 'state sweep: a stamp dated a year ahead still sweeps'
+$futureFile = Join-Path $future 'ahead.json'
+[System.IO.File]::WriteAllText($futureFile, '{ "v": 1 }')
+Write-StateFileAge $futureFile (-24 * 365)
+Remove-Item -LiteralPath $futureStamp -Force
+Invoke-SessionStateSweep $future
+Confirm-True (-not (Test-Path -LiteralPath $futureFile)) 'state sweep: a file dated a year ahead is swept too'
 
 # Read plus write on a warm cache. The first call pays for JIT and module load, so take the best of five.
 $best = [double]::MaxValue
@@ -1371,6 +1474,10 @@ if ($seamHolds) {
     Confirm-Equal (Get-KeyList $bak.statusLine) 'type,command,padding,hideVimModeIndicator,refreshInterval' 'uninstall: .bak holds the entry that was removed'
     $text = $r.Lines -join "`n"
     Confirm-True ($text.Contains('hideVimModeIndicator') -and $text.Contains('refreshInterval')) "uninstall: message names both keys, got '$text'"
+    # The state files live outside ~/.claude, so the uninstaller has to say where they are; it never
+    # deletes them itself.
+    Confirm-True ($text.Contains('claude-statusline-state')) "uninstall: message names the state directory, got '$text'"
+    Confirm-True ($text -match 'Session state files are in .+claude-statusline-state') "uninstall: message gives the state directory path, got '$text'"
 
     # A second uninstall has nothing to remove and leaves the file as it is.
     $before = Get-Content -LiteralPath $existing -Raw

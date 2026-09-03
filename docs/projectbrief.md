@@ -81,11 +81,14 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   (a whole number that fits an Int32). The dirty flag and the counts both use it, so a value can
   never mark the tree dirty without showing a count, or the reverse.
 - **Per-session state on disk, never on the line's critical path.** A render cannot see the previous
-  payload, so a small JSON file per `session_id` carries the last cost and token totals forward. It is
-  read once before the builders run and written after the last `Write-Host`, so the write's cost is
-  never in front of the visible line. Every failure (no temp folder, a read-only directory, a corrupt
-  file) is silent and leaves the line unchanged. The file holds numbers and one id, nothing from the
-  prompt or the file system. Cleanup is a stamped sweep, so the common render is one read and one write.
+  payload, so a small JSON file per `session_id` carries the last cost and token totals forward. The
+  read, the merge and the write all sit after the last `Write-Host`, so none of their cost is in front
+  of the visible line; measured end to end, a render with a `session_id` reaches its first line within
+  a millisecond or two of one without. Every failure (no temp folder, a read-only directory, a corrupt
+  file) is silent and leaves the line unchanged. The record is written to a `.tmp` file and moved over
+  the real one, so an interrupted write costs nothing. The file holds numbers and one id, nothing from
+  the prompt or the file system. Cleanup is a stamped sweep, so the common render is one read and one
+  write.
 
 ## Constraints
 

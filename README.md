@@ -152,7 +152,9 @@ The file is named after the session id and holds numbers only: the last cost, in
 totals, context and 5-hour usage percentages, and up to twenty timestamped cost readings. No prompt
 text, path or file name is written. Files not touched for a day are deleted on a later render.
 Nothing on the line uses the file yet. Set `state` to `false` and the script neither reads nor
-writes it.
+writes it. Upgrading over an existing `statusline.json` leaves that file alone, so a config without
+a `state` key gets the default, which is on. `.\install.ps1 -Uninstall` prints where the files are
+so you can delete the folder.
 
 Claude Code tells the script the terminal width. When a line is too long the script shortens it in
 two stages:

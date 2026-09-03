@@ -313,10 +313,23 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
     }
 }
 
+# A payload or state field as a finite double, or $null when it is not a number at all: missing, a
+# boolean, a string, an array, NaN or infinite. This is the one guard behind Get-PayloadNumber and
+# Get-StateNumber, each of which then applies its own rule to the result - a count that fits an Int32,
+# or a figure floored to a long. It sits here because the script runs top to bottom and both callers
+# are below.
+function Get-FiniteNumber($v) {
+    if (-not ($v -is [ValueType]) -or $v -is [bool]) { return $null }
+    $n = try { [double] $v } catch { return $null }
+    if ([double]::IsNaN($n) -or [double]::IsInfinity($n)) { return $null }
+    return $n
+}
+
 # ---- Per-session state ----
 # Each render is a fresh process that sees one payload, so a small JSON file per session keeps the last
 # cost, token totals and a short cost history for the next render to compare against. Nothing on the line
-# reads it yet. Every failure here is silent: no directory, no file, no state, and the line is unchanged.
+# reads it yet, and the read, merge and write all happen after the line is printed. Every failure here is
+# silent: no directory, no file, no state, and the line is unchanged.
 
 # The state directory: claude-statusline-state under TEMP, or ~/.claude/statusline-state when TEMP is
 # empty. Created only when $Create is set, which the write path does. $null when it is not there and
@@ -332,20 +345,23 @@ function Get-SessionStateDir([bool] $Create) {
     } catch { return $null }
 }
 
-# The file for a session, <name>.json. When the id is at most 64 characters and has nothing outside
-# [A-Za-z0-9_.-] (a UUID), the id is the name. Otherwise stripping or cutting it could give two ids one
-# file - `a/b` and `ab`, or two long ids with the same first 64 characters - and they would inherit each
-# other's history. So the name is then the stripped id cut to 47 characters, a hyphen, and the first 16
-# hex characters of the SHA-256 of the whole original id; the hash alone when nothing readable is left.
+# The file for a session, <name>.json. When the id is already lower-case, at most 64 characters and has
+# nothing outside [A-Za-z0-9_.-] (a UUID), the id is the name. Any other id would not name itself
+# uniquely: stripping or cutting gives two ids one file (`a/b` and `ab`, or two long ids with the same
+# first 64 characters), and so does case alone, because the file system folds it (`A1` and `a1`). Such
+# an id gets the lower-cased readable part, cut to 47 characters, a hyphen, and the first 16 hex
+# characters of the SHA-256 of the whole original id; the hash alone when nothing readable is left.
 # Slashes are never kept, so an id cannot name a path outside the directory. $null for an empty id or
 # when there is no directory.
 function Get-SessionStatePath([string] $SessionId, [bool] $Create) {
     if (-not $SessionId) { return $null }
     $name = [regex]::Replace($SessionId, '[^A-Za-z0-9_.-]', '')
-    if ($name -cne $SessionId -or $name.Length -gt 64) {
-        $digest = [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($SessionId))
-        $hash = [System.Convert]::ToHexString($digest, 0, 8).ToLowerInvariant()
-        $prefix = if ($name.Length -gt 47) { $name.Substring(0, 47) } else { $name }
+    if ($name -cne $SessionId.ToLowerInvariant() -or $name.Length -gt 64) {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { $digest = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($SessionId)) } finally { $sha.Dispose() }
+        $hash = [BitConverter]::ToString($digest, 0, 8).Replace('-', '').ToLowerInvariant()
+        $prefix = $name.ToLowerInvariant()
+        if ($prefix.Length -gt 47) { $prefix = $prefix.Substring(0, 47) }
         $name = if ($prefix) { "$prefix-$hash" } else { $hash }
     }
     $dir = Get-SessionStateDir $Create
@@ -353,12 +369,11 @@ function Get-SessionStatePath([string] $SessionId, [bool] $Create) {
     return Join-Path $dir "$name.json"
 }
 
-# A payload or state value as a number, or $null when it is not one: missing, boolean, string, NaN or
-# infinite. With -Whole the result is floored to a long, and $null when it would not fit one.
+# A payload or state value as a figure, or $null when Get-FiniteNumber says it is not a number.
+# With -Whole the result is floored to a long, and $null when it would not fit one.
 function Get-StateNumber($v, [switch] $Whole) {
-    if (-not ($v -is [ValueType]) -or $v -is [bool]) { return $null }
-    $n = try { [double] $v } catch { return $null }
-    if ([double]::IsNaN($n) -or [double]::IsInfinity($n)) { return $null }
+    $n = Get-FiniteNumber $v
+    if ($null -eq $n) { return $null }
     if (-not $Whole) { return $n }
     if ([math]::Abs($n) -gt 9e15) { return $null }
     return [long] [math]::Floor($n)
@@ -389,14 +404,16 @@ function Read-SessionState([string] $SessionId) {
 # The next state for a session: the payload's figures now, and the history ring carried over from the
 # previous state with a new entry when the cost moved (a first render counts as moved). The ring keeps
 # the newest 20. Keys are in schema order so the file always reads the same way.
+# The comparison is against the last entry in the ring, not against the previous record's cost_usd: a
+# payload can arrive with no cost object at all (the minimal sample is that shape), which stores a null
+# cost, and comparing against that null would re-append an unchanged cost on the render after it.
 function Merge-SessionState($Previous, $Payload, [long] $Now) {
     $cost = Get-StateNumber $Payload.cost.total_cost_usd
     $history = [System.Collections.Generic.List[hashtable]]::new()
-    $last = $null
     if ($Previous) {
         foreach ($h in @($Previous.history)) { if ($h) { $history.Add($h) } }
-        $last = Get-StateNumber $Previous.cost_usd
     }
+    $last = if ($history.Count -gt 0) { Get-StateNumber $history[$history.Count - 1].cost_usd } else { $null }
     if ($null -ne $cost -and $cost -ne $last) { $history.Add(@{ t = $Now; cost_usd = $cost }) }
     while ($history.Count -gt 20) { $history.RemoveAt(0) }
     $ctx = $Payload.context_window
@@ -412,33 +429,45 @@ function Merge-SessionState($Previous, $Payload, [long] $Now) {
     }
 }
 
-# Housekeeping, at most once per six hours per directory: a .sweep stamp marks the last pass. When it is
-# missing or older than six hours, state files not written for a day are deleted, at most 200 in one
-# pass, and the stamp is touched. The common render pays for one stat of the stamp and nothing else.
+# Housekeeping, at most once per six hours per directory: a .sweep stamp marks the last finished pass.
+# When it is missing or older than six hours, state files not written for a day are deleted, at most 200
+# in one pass. A pass that hits the cap leaves the stamp alone, so the next render carries on with the
+# backlog instead of draining 200 files every six hours. Ages are absolute, so a stamp or a file dated
+# in the future - a clock change, a restored backup - reads as stale rather than as freshly written,
+# which would park housekeeping until the wall clock caught up.
+# The common render pays for one stat of the stamp and nothing else.
 function Invoke-SessionStateSweep([string] $Dir) {
     try {
         $stamp = Join-Path $Dir '.sweep'
         $now = [DateTime]::UtcNow
-        if ([System.IO.File]::Exists($stamp) -and ($now - [System.IO.File]::GetLastWriteTimeUtc($stamp)).TotalHours -lt 6) { return }
+        if ([System.IO.File]::Exists($stamp) -and [math]::Abs(($now - [System.IO.File]::GetLastWriteTimeUtc($stamp)).TotalHours) -lt 6) { return }
         $deleted = 0
+        $capped = $false
         foreach ($f in [System.IO.Directory]::EnumerateFiles($Dir, '*.json')) {
-            if ($deleted -ge 200) { break }
-            if (($now - [System.IO.File]::GetLastWriteTimeUtc($f)).TotalDays -lt 1) { continue }
+            if ($deleted -ge 200) { $capped = $true; break }
+            if ([math]::Abs(($now - [System.IO.File]::GetLastWriteTimeUtc($f)).TotalDays) -lt 1) { continue }
             try { [System.IO.File]::Delete($f); $deleted++ } catch { $null = $_ }
         }
-        [System.IO.File]::WriteAllText($stamp, '')
+        if (-not $capped) { [System.IO.File]::WriteAllText($stamp, '') }
     } catch { $null = $_ }
 }
 
-# Writes a session's state as compact JSON, then runs the sweep. Nothing is written for an empty record
-# or an id that leaves no file name. Every failure is swallowed: the line has already been printed.
+# Writes a session's state as compact JSON, then runs the sweep. Nothing is written for an empty record,
+# an id that leaves no file name, or JSON that would not serialise - a half-written or empty file would
+# cost the whole ring rather than one delta, so the record goes to a sibling .tmp file and is moved over
+# the real one, which is atomic on both Windows and Linux. Every failure is swallowed: the line has
+# already been printed. Concurrent renders of one session still race, and the last writer wins; a lock
+# file is out of scope for the same reason, the cost of losing is one missing delta.
 function Write-SessionState([string] $SessionId, $State) {
     try {
         if (-not $State) { return }
         $path = Get-SessionStatePath $SessionId $true
         if (-not $path) { return }
-        $json = ConvertTo-Json -InputObject $State -Depth 4 -Compress
-        [System.IO.File]::WriteAllText($path, $json, [System.Text.UTF8Encoding]::new($false))
+        $json = ConvertTo-Json -InputObject $State -Depth 4 -Compress -ErrorAction Stop
+        if (-not $json) { return }
+        $tmp = "$path.tmp"
+        [System.IO.File]::WriteAllText($tmp, $json, [System.Text.UTF8Encoding]::new($false))
+        [System.IO.File]::Move($tmp, $path, $true)
         Invoke-SessionStateSweep (Split-Path $path -Parent)
     } catch { $null = $_ }
 }
@@ -448,11 +477,6 @@ try { $d = $raw | ConvertFrom-Json } catch { Write-Host (C '36' "$iconModel clau
 
 $configPath = if ($Config) { $Config } else { Join-Path $PSScriptRoot 'statusline.json' }
 $cfg = Read-StatusConfig $configPath
-
-# The previous render's state for this session, read once before the builders run. Nothing on the line
-# uses it yet; the write at the very end keeps it current for the next render.
-$sessionId = [string] $d.session_id
-$prevState = if ($cfg.State -and $sessionId) { Read-SessionState $sessionId } else { $null }
 
 # ---- Segment builders. Each returns $null (segment omitted) or @{ Name; Text; Short; Role; Bold }. ----
 
@@ -583,9 +607,8 @@ function Get-FolderSegment($d, $cfg) {
 # Test-PayloadDirty and Get-PayloadCount share this one rule so the pencil and the counts can never
 # disagree about what a value means.
 function Get-PayloadNumber($v) {
-    if (-not ($v -is [ValueType]) -or $v -is [bool]) { return $null }
-    $d = try { [double] $v } catch { return $null }
-    if ([double]::IsNaN($d) -or [double]::IsInfinity($d) -or $d -ne [math]::Floor($d)) { return $null }
+    $d = Get-FiniteNumber $v
+    if ($null -eq $d -or $d -ne [math]::Floor($d)) { return $null }
     if ($d -gt [int]::MaxValue -or $d -lt [int]::MinValue) { return $null }
     return [int] $d
 }
@@ -686,5 +709,9 @@ foreach ($names in $lineSets) {
     if ($text) { Write-Host $text }
 }
 
-# State goes to disk after the last Write-Host, so its cost is never in front of the visible line.
-if ($cfg.State -and $sessionId) { Write-SessionState $sessionId (Merge-SessionState $prevState $d ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) }
+# All of the state work - the read, the merge and the write - sits after the last Write-Host, so none of
+# it is in front of the visible line. Nothing above this point reads the file.
+$sessionId = [string] $d.session_id
+if ($cfg.State -and $sessionId) {
+    Write-SessionState $sessionId (Merge-SessionState (Read-SessionState $sessionId) $d ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()))
+}
