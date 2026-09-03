@@ -753,6 +753,14 @@ Confirm-Equal (Format-Link 'ftp://example.com/x' 'abc') 'abc' 'link: ftp url lea
 Confirm-Equal (Format-Link 'javascript:alert(1)' 'abc') 'abc' 'link: javascript url leaves the text alone'
 Confirm-Equal (Format-Link "https://example.com/$esc\x" 'abc') 'abc' 'link: a control character in the url leaves the text alone'
 Confirm-Equal (Format-Link "https://example.com/`ax" 'abc') 'abc' 'link: a BEL in the url leaves the text alone'
+# The C1 controls are the 8-bit forms of CSI, ST and OSC; a terminal that honours them would end the
+# link early, so they are refused like the C0 range.
+Confirm-Equal (Format-Link "https://example.com/$([char]0x9B)x" 'abc') 'abc' 'link: a C1 CSI (U+009B) in the url leaves the text alone'
+Confirm-Equal (Format-Link "https://example.com/$([char]0x9C)x" 'abc') 'abc' 'link: a C1 ST (U+009C) in the url leaves the text alone'
+Confirm-Equal (Format-Link "https://example.com/$([char]0x9D)x" 'abc') 'abc' 'link: a C1 OSC (U+009D) in the url leaves the text alone'
+Confirm-Equal (Format-Link "https://example.com/$([char]0x80)x" 'abc') 'abc' 'link: a C1 control (U+0080) in the url leaves the text alone'
+Confirm-Equal (Format-Link "https://example.com/$([char]0x7F)x" 'abc') 'abc' 'link: DEL in the url leaves the text alone'
+Confirm-Equal (Format-Link "https://example.com/$([char]0xE9)x" 'abc') "$esc]8;;https://example.com/$([char]0xE9)x$esc\abc${linkClose}" 'link: a non-control non-ASCII character in the url is still linked'
 Confirm-Equal (Format-Link 'HTTPS://EXAMPLE.COM/x' 'abc') "$esc]8;;HTTPS://EXAMPLE.COM/x$esc\abc${linkClose}" 'link: scheme is matched case-insensitively'
 Confirm-Equal (Format-Link 'http://example.com/x' 'abc') "$esc]8;;http://example.com/x$esc\abc${linkClose}" 'link: plain http is linked too'
 Confirm-Equal (Get-VisibleWidth (Format-Link $prUrl 'abc')) 3 'link: the url has no width'

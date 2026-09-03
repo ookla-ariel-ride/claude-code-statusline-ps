@@ -163,12 +163,14 @@ function Format-Inline([string] $Role, [string] $Text, [string] $SegmentRole, [s
 
 # Wraps text in an OSC 8 hyperlink, ESC ] 8 ; ; url ESC \ text ESC ] 8 ; ; ESC \, which a terminal that
 # understands it (Windows Terminal on ctrl-click) opens. The text comes back unchanged for an empty url,
-# one that is not http or https, or one holding a control character, so nothing a payload puts there
-# can end the sequence early or put a stray escape on the line. The link goes into the segment's Text,
-# so Format-Line wraps it in the segment's colour codes in either style: OSC 8 carries no SGR state, so
-# a powerline background runs on through it, and Get-VisibleWidth strips it before measuring.
+# one that is not http or https, or one holding any Unicode control character (category Cc: the C0
+# range, DEL and the C1 range, where U+009B, U+009C and U+009D are CSI, ST and OSC in their 8-bit
+# forms), so nothing a payload puts there can end the sequence early or put a stray escape on the line.
+# The link goes into the segment's Text, so Format-Line wraps it in the segment's colour codes in either
+# style: OSC 8 carries no SGR state, so a powerline background runs on through it, and Get-VisibleWidth
+# strips it before measuring.
 function Format-Link([string] $Url, [string] $Text) {
-    if (-not $Url -or $Url -notmatch '^https?://' -or $Url -match '[\x00-\x1F\x7F]') { return $Text }
+    if (-not $Url -or $Url -notmatch '^https?://' -or $Url -match '\p{Cc}') { return $Text }
     return "`e]8;;$Url`e\$Text`e]8;;`e\"
 }
 
