@@ -104,10 +104,30 @@ function Get-SegmentOrder([ValidateSet('ShrinkRank', 'DropRank', 'RowRank')] [st
     return @(for ($i = 1; $i -le $slots.Count; $i++) { $slots[$i] })
 }
 
-# Reads statusline.json. Anything missing or invalid silently falls back to its default.
+# The segment names in a config array, lower-cased and known to the registry, each at its first place:
+# a repeat, an entry that is not a string and a name no segment has are skipped. $Seen carries the names
+# already taken and is updated, so the second row of layout two cannot list a segment the first row has.
+# $null when the value is not an array at all, which the caller tells from an empty list. A plain loop
+# and array rather than a pipeline, because this runs on the startup path for every render.
+function Read-SegmentNameList($Value, [hashtable] $Known, [hashtable] $Seen) {
+    if ($Value -isnot [array]) { return $null }
+    $names = @()
+    foreach ($v in $Value) {
+        if ($v -isnot [string]) { continue }
+        $n = $v.ToLowerInvariant()
+        if (-not $Known.ContainsKey($n) -or $Seen.ContainsKey($n)) { continue }
+        $Seen[$n] = $true
+        $names += $n
+    }
+    return , $names
+}
+
+# Reads statusline.json. Anything missing or invalid silently falls back to its default, and each key
+# falls back on its own: a valid order beside a broken thresholds keeps the order.
 function Read-StatusConfig([string] $Path) {
     $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Segments = @{} }
     foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
+    $cfg.Order = @((Get-SegmentRegistry).Name)
     try {
         if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $cfg }
         $j = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
@@ -123,6 +143,9 @@ function Read-StatusConfig([string] $Path) {
                 if ($v -is [bool]) { $cfg.Segments[$n] = $v }
             }
         }
+        # order: the segment names of layout one. Empty, or naming no segment, keeps the registry order.
+        $order = Read-SegmentNameList $j.order $cfg.Segments @{}
+        if ($null -ne $order -and $order.Count -gt 0) { $cfg.Order = $order }
     } catch { return $cfg }
     return $cfg
 }
@@ -684,9 +707,18 @@ function Get-BranchSegment($d, $cfg) {
 
 # ---- Build, lay out, fit, print ----
 
+# The names on each printed line: the config's order for layout one, the two rows for layout two. A
+# segment that is toggled off, or that no line lists, is not built at all, so an order without branch
+# never runs the git probe.
+$lineSets = @(if ($cfg.Layout -eq 'two') {
+    @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
+} else { , $cfg.Order })
+$listed = @{}
+foreach ($names in $lineSets) { foreach ($n in $names) { $listed[$n] = $true } }
+
 $segments = [System.Collections.Generic.List[hashtable]]::new()
 foreach ($rec in Get-SegmentRegistry) {
-    if (-not $cfg.Segments[$rec.Name]) { continue }
+    if (-not $cfg.Segments[$rec.Name] -or -not $listed[$rec.Name]) { continue }
     $seg = & $rec.Build $d $cfg
     if ($seg) { $segments.Add($seg) }
 }
@@ -696,10 +728,6 @@ if ($segments.Count -eq 0) { Write-Host (C '36' "$iconModel claude"); exit 0 }
 $width = $null
 $cols = 0
 if ([int]::TryParse([string] $env:COLUMNS, [ref] $cols) -and $cols -gt 0) { $width = $cols - 1 }
-
-$lineSets = @(if ($cfg.Layout -eq 'two') {
-    @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
-} else { , @((Get-SegmentRegistry).Name) })
 
 # A line that fits down to nothing is not printed. With model toggled off and a very narrow terminal
 # that can mean no output at all, which is what the user asked for.

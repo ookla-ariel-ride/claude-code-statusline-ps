@@ -135,7 +135,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-SegmentNameList', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment and Get-ModelSegment close over these
 # script-level names in statusline.ps1, so the test has to supply them.
@@ -263,6 +263,27 @@ Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-false.json' '{ "state"
 Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-absent.json' '{ "layout": "two" }')).State $true 'config state absent: on'
 Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-string.json' '{ "state": "false" }')).State $true 'config state string: on'
 Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-number.json' '{ "state": 0 }')).State $true 'config state number: on'
+
+# The order key: the segment names of layout one. An unknown name is skipped, a name left out is not
+# shown, a repeat keeps its first place and case does not matter. An empty array, an array naming no
+# segment, or anything that is not an array falls back to the registry order.
+$registryOrder = $allSegments -join ','
+Confirm-Equal ((Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')).Order -join ',') $registryOrder 'config missing: order is the registry order'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-three.json' '{ "order": ["model", "branch", "context"] }')).Order -join ',') 'model,branch,context' 'config order: three names in the given order'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-unknown.json' '{ "order": ["model", "nonsense"] }')).Order -join ',') 'model' 'config order: unknown name skipped, model alone'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-case.json' '{ "order": ["Branch", "MODEL", "branch"] }')).Order -join ',') 'branch,model' 'config order: case folded, a repeat keeps its first place'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-mixed.json' '{ "order": ["cost", 3, null, true, ["model"], "folder"] }')).Order -join ',') 'cost,folder' 'config order: entries that are not strings are skipped'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-empty.json' '{ "order": [] }')).Order -join ',') $registryOrder 'config order: empty array falls back'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-none.json' '{ "order": ["nonsense"] }')).Order -join ',') $registryOrder 'config order: no known name falls back'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-string.json' '{ "order": "model" }')).Order -join ',') $registryOrder 'config order: string falls back'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-object.json' '{ "order": { "model": 1 } }')).Order -join ',') $registryOrder 'config order: object falls back'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'order-null.json' '{ "order": null }')).Order -join ',') $registryOrder 'config order: null falls back'
+$c = Read-StatusConfig (Write-TempConfig 'order-toggle.json' '{ "order": ["branch", "model"], "segments": { "branch": false } }')
+Confirm-Equal ($c.Order -join ',') 'branch,model' 'config order: a toggled-off name stays in the order'
+Confirm-Equal $c.Segments.branch $false 'config order: the toggle still applies'
+$c = Read-StatusConfig (Write-TempConfig 'order-good-layout-bad.json' '{ "order": ["model"], "layout": "three" }')
+Confirm-Equal ($c.Order -join ',') 'model' 'config order: kept when another key is invalid'
+Confirm-Equal $c.Layout 'one' 'config order: the invalid key still falls back on its own'
 
 # The config that ships with the repo has to be valid JSON and to mean what the README says it means.
 $shippedConfig = Join-Path $PSScriptRoot 'statusline.json'
