@@ -165,11 +165,17 @@ a `state` key gets the default, which is on. `.\install.ps1 -Uninstall` prints w
 so you can delete the folder.
 
 The branch segment keeps the last `git status` answer for each repository in `claude-statusline`
-under the same temp folder, one small JSON file per repository named by a hash of its path, and
-reuses it for `git.cacheSeconds` while `.git/index` and `.git/HEAD` are unchanged. A commit,
-checkout, add or reset moves one of those, so it shows straight away; an edit or a new file in the
-work tree does not, so the pencil and the counts can lag by up to five seconds. A worktree or a
-submodule, where `.git` is a file, is never cached.
+under the same temp folder (`TMPDIR` or the runtime's temp path when there is no `TEMP`), one small
+JSON file per repository named by a hash of its path, and reuses it for `git.cacheSeconds` while the
+repository's git directory is unchanged: the timestamps of `.git` itself, of `index`, `HEAD`,
+`ORIG_HEAD`, `FETCH_HEAD`, `MERGE_HEAD`, `packed-refs` and `logs/HEAD`, and of every directory under
+`refs`. A commit, checkout, add, reset, merge, fetch or push moves one of those, so it shows
+straight away; an edit or a new file in the work tree does not, so the pencil and the counts can lag
+by up to five seconds. A worktree or a submodule, where `.git` is a file, is cached under its own
+path, with its main repository's refs counted too. A `git status` that failed or timed out is
+remembered for the same lifetime, so a slow repository pays the wait once per lifetime, not once per
+render. A `statusline.json` from before this cache has no `git` block and gets the defaults: the
+cache on, five seconds, a 1.5 second timeout. Add `"git": { "cache": false }` to turn it off.
 
 Claude Code tells the script the terminal width. When a line is too long the script shortens it in
 two stages:
@@ -271,7 +277,7 @@ Get-Content my-payload.json -Raw | pwsh -NoProfile -File .\statusline.ps1 -Confi
 The things you are likely to change sit at the top of `statusline.ps1`:
 
 - Each icon is a code point, for example `$iconCtx = G 0xF035B`. The [Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet) lists alternatives.
-- `$gitTimeoutMs` is how long the branch segment waits for `git status`.
+- How long the branch segment waits for `git status` is `git.timeoutMs` in `statusline.json`, not a constant in the script.
 - `$defaultEffort` is the level at which the effort badge is hidden.
 - The 60% and 85% colour cut-offs are the defaults of `Get-ThresholdRole`. The context block passes 70 and 90 for a 1M window; the rate-limit block uses the defaults.
 - `Get-Palette` holds the colours for both styles.
@@ -294,10 +300,11 @@ than 1.5 seconds the segment is skipped for that refresh; `git.timeoutMs` in `st
 raises the limit for a large repository or a slow disk.
 
 The branch segment is a few seconds behind: that is the cache. The last `git status` answer for
-each repository sits in `%TEMP%\claude-statusline\` and is reused for five seconds unless
-`.git/index` or `.git/HEAD` changes, so an edit or a new file can take up to five seconds to show
-as a pencil or a count. `git.cacheSeconds` shortens the window, `0` or `"cache": false` turns it
-off. The folder is safe to delete at any time; the next render writes it again.
+each repository sits in `%TEMP%\claude-statusline\` and is reused for five seconds unless something
+under `.git` changes (a commit, checkout, add, reset, merge, fetch or push all count), so an edit or
+a new file in the work tree can take up to five seconds to show as a pencil or a count.
+`git.cacheSeconds` shortens the window, `0` or `"cache": false` turns it off. The folder is safe to
+delete at any time; the next render writes it again, and entries not written for a day are swept.
 
 No arrows after the branch name: the branch has no upstream, or the upstream branch was deleted.
 `git branch -u origin/<branch>` sets one.
