@@ -550,7 +550,7 @@ function Get-LimitsSegment($d) {
     $rl = $d.rate_limits
     if (-not $rl) { return $null }
     $bits = [System.Collections.Generic.List[string]]::new()
-    $worst = 0
+    $worst = -1
     $first = $null
     $top = $null
     # Label, source object and whether the countdown follows, in render order.
@@ -558,17 +558,17 @@ function Get-LimitsSegment($d) {
         $pct = $row[1].used_percentage
         if ($null -eq $pct) { continue }
         $pct = [int] [math]::Round([double] $pct)
-        $figure = "$iconLimit $($row[0]) $pct%"
-        if ($null -eq $first) { $first = $figure }
+        $bit = "$($row[0]) $pct%"
+        if ($null -eq $first) { $first = $bit }
         # A strict comparison keeps the earlier figure on a tie, so 5h beats 7d beats spend.
-        if ($null -eq $top -or $pct -gt $worst) { $top = $figure; $worst = $pct }
+        if ($pct -gt $worst) { $top = $bit; $worst = $pct }
         $tail = if ($row[2]) { TimeLeft $row[1].resets_at } else { '' }
-        $bits.Add("$($row[0]) $pct%$tail")
+        $bits.Add("$bit$tail")
     }
     if ($bits.Count -eq 0) { return $null }
     $text = "$iconLimit $($bits -join ' ')"
     $role = Get-ThresholdRole $worst
-    $short = if ($role -eq 'ok') { $first } else { $top }
+    $short = "$iconLimit " + $(if ($role -eq 'ok') { $first } else { $top })
     if ($short -eq $text) { $short = $null }
     return @{ Name = 'limits'; Text = $text; Short = $short; Role = $role; Bold = $false }
 }
