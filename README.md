@@ -154,11 +154,11 @@ The model segment always stays.
 
 | Segment | Icon | Data | Rendering |
 |---|---|---|---|
-| model | <img src="docs/icons/robot.svg" height="18" alt="robot"> `nf-md-robot` | `model.display_name` | Bold cyan |
-| context | <img src="docs/icons/memory.svg" height="18" alt="memory"> `nf-md-memory` | `context_window.*` | Percent, ten-block bar, used/total tokens. Green below 60%, yellow below 85%, red above |
+| model | <img src="docs/icons/robot.svg" height="18" alt="robot"> `nf-md-robot` | `model.display_name`, `context_window.context_window_size`, `exceeds_200k_tokens` | Bold cyan. On a 1M window `1M` follows the name in a lighter cyan, then a warning triangle when Claude Code reports `exceeds_200k_tokens` as true |
+| context | <img src="docs/icons/memory.svg" height="18" alt="memory"> `nf-md-memory` | `context_window.*` | Percent, ten-block bar, used/total tokens. Green below 60%, yellow below 85%, red above. On a 1M window the cut-offs are 70% and 90%, so red still means about 100k tokens left |
 | cost | <img src="docs/icons/cash.svg" height="18" alt="cash"> `nf-md-cash` | `cost.total_cost_usd` | Dimmed, two decimals |
 | lines | <img src="docs/icons/code.svg" height="18" alt="code"> `nf-fa-code` | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
-| limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day`, `spend_limit` | `5h 24% (1h12m) 7d 41% $ 62%`. Coloured by the worst of the figures using the context thresholds. The countdown is omitted once the reset time has passed. The `$` figure is the spend limit. Claude Code sends it only behind a Claude apps gateway with a spend limit, and only from 2.1.251 on |
+| limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day`, `spend_limit` | `5h 24% (1h12m) 7d 41% $ 62%`. Coloured by the worst of the figures, with the 60% and 85% bands whatever the window size. The countdown is omitted once the reset time has passed. The `$` figure is the spend limit. Claude Code sends it only behind a Claude apps gateway with a spend limit, and only from 2.1.251 on |
 | badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
 | folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.current_dir` | Blue, leaf directory name |
 | branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git status --porcelain=v1 --branch` run in `workspace.current_dir` | Magenta when clean, yellow with the pencil when the tree has changes. The counts described below sit between the name and the pencil. Shows `detached` on a detached HEAD |
@@ -241,7 +241,7 @@ The things you are likely to change sit at the top of `statusline.ps1`:
 - Each icon is a code point, for example `$iconCtx = G 0xF035B`. The [Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet) lists alternatives.
 - `$gitTimeoutMs` is how long the branch segment waits for `git status`.
 - `$defaultEffort` is the level at which the effort badge is hidden.
-- The 60% and 85% colour cut-offs live in the context and rate-limit blocks.
+- The 60% and 85% colour cut-offs are the defaults of `Get-ThresholdRole`. The context block passes 70 and 90 for a 1M window; the rate-limit block uses the defaults.
 - `Get-Palette` holds the colours for both styles.
 
 Segment order is fixed for each layout, and `statusline.json` only hides segments rather than moving them.
@@ -308,10 +308,11 @@ Done so far:
 - [x] Optional two-line layout and powerline style
 - [x] Ahead and behind counts on the branch
 - [x] Staged, changed, untracked and conflict counts on the branch
+- [x] `1M` marker and past-200k warning on the model segment, wider colour bands for a 1M window
 
 [Issues #2 to #28](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
-each with its own plan. In rough order: small additions to existing segments (a 1M-context marker,
-installer flags), then a segment registry so order, thresholds and glyphs move into
+each with its own plan. In rough order: small additions to existing segments (installer flags),
+then a segment registry so order, thresholds and glyphs move into
 `statusline.json`, then new segments (pull-request link, cache warmth, session clock), presets and
 per-project config, and finally an ASCII style that needs no Nerd Font and a light palette.
 

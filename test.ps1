@@ -135,11 +135,13 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment'))
 
-# Get-BranchSegment and Get-LimitsSegment close over these script-level names in statusline.ps1, so the test has to supply them.
+# Get-BranchSegment, Get-LimitsSegment and Get-ModelSegment close over these script-level names in statusline.ps1,
+# so the test has to supply them.
 $gitTimeoutMs = 1500
 $iconLimit = [char]::ConvertFromUtf32(0xF0E4)
+$iconModel = [char]::ConvertFromUtf32(0xF06A9)
 $iconHome = [char]::ConvertFromUtf32(0xF015)
 $iconBranch = [char]::ConvertFromUtf32(0xE0A0)
 $iconDirty = [char]::ConvertFromUtf32(0xF040)
@@ -373,6 +375,57 @@ Confirm-Equal (Get-ContextSegment (Get-ContextPayload 85)).Role 'bad' 'context 8
 
 Confirm-Equal (Get-ContextSegment ([pscustomobject]@{})) $null 'context: missing context_window'
 
+# A 1M window moves the colour bands to 70 and 90, so the same percentage is a different colour there.
+function Get-WideContextPayload([double] $Pct) {
+    return [pscustomobject]@{ context_window = [pscustomobject]@{ used_percentage = $Pct; total_input_tokens = 650000; total_output_tokens = 0; context_window_size = 1000000 } }
+}
+Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 65)).Role 'ok' 'context 1M 65: role ok, not warn'
+Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 75)).Role 'warn' 'context 1M 75: role warn'
+Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 92)).Role 'bad' 'context 1M 92: role bad'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 65)).Role 'warn' 'context 200k 65: role stays warn'
+Confirm-True (Get-ContextSegment (Get-WideContextPayload 65)).Text.Contains("650k/$(K 1000000)") 'context 1M 65: counts'
+
+Write-Host '== unit: threshold' -ForegroundColor Cyan
+Confirm-Equal (Get-ThresholdRole 65) 'warn' 'threshold 65: default bands warn'
+Confirm-Equal (Get-ThresholdRole 65 70 90) 'ok' 'threshold 65 at 70/90: ok'
+Confirm-Equal (Get-ThresholdRole 70 70 90) 'warn' 'threshold 70 at 70/90: warn'
+Confirm-Equal (Get-ThresholdRole 89 70 90) 'warn' 'threshold 89 at 70/90: warn'
+Confirm-Equal (Get-ThresholdRole 92 70 90) 'bad' 'threshold 92 at 70/90: bad'
+Confirm-Equal (Get-ThresholdRole 85) 'bad' 'threshold 85: default bands bad'
+Confirm-True (Test-WideWindow 1000000) 'wide window: 1000000'
+Confirm-True (-not (Test-WideWindow 200000) -and -not (Test-WideWindow 1048576) -and -not (Test-WideWindow $null)) 'wide window: 200000, 1048576 and null are not'
+
+Write-Host '== unit: model' -ForegroundColor Cyan
+function Get-ModelPayload($Size, $Exceeds) {
+    $p = [pscustomobject]@{ model = [pscustomobject]@{ display_name = 'Fable 5.1' } }
+    if ($null -ne $Size) { $p | Add-Member -NotePropertyName context_window -NotePropertyValue ([pscustomobject]@{ used_percentage = 65; context_window_size = $Size }) }
+    if ($null -ne $Exceeds) { $p | Add-Member -NotePropertyName exceeds_200k_tokens -NotePropertyValue $Exceeds }
+    return $p
+}
+$plainCfg = @{ Style = 'plain' }
+$seg = Get-ModelSegment (Get-ModelPayload 1000000) $plainCfg
+Confirm-True ((ConvertTo-PlainText $seg.Text).EndsWith("$iconModel Fable 5.1 1M")) 'model 1M: text ends in 1M'
+Confirm-True ($seg.Text.Contains("$esc[22;36m1M$esc[1;36m")) 'model 1M: plain marker is muted, then bold cyan again'
+Confirm-Equal $seg.Role 'model' 'model 1M: role'
+Confirm-Equal $seg.Short $null 'model 1M: no short form'
+$seg = Get-ModelSegment (Get-ModelPayload 1000000) @{ Style = 'powerline' }
+Confirm-True ($seg.Text.Contains("$esc[38;5;152m1M$esc[38;5;231m")) 'model 1M: powerline marker restores the model foreground'
+Confirm-Equal (Get-ModelSegment (Get-ModelPayload 200000) $plainCfg).Text "$iconModel Fable 5.1" 'model 200k: exact text'
+Confirm-Equal (Get-ModelSegment (Get-ModelPayload $null) $plainCfg).Text "$iconModel Fable 5.1" 'model no size: exact text'
+Confirm-Equal (Get-ModelSegment (Get-ModelPayload 400000) $plainCfg).Text "$iconModel Fable 5.1" 'model other size: exact text'
+$seg = Get-ModelSegment (Get-ModelPayload 1000000 $true) $plainCfg
+Confirm-True ((ConvertTo-PlainText $seg.Text).EndsWith("Fable 5.1 1M $iconConflict")) 'model 1M exceeds: glyph after the marker'
+$seg = Get-ModelSegment (Get-ModelPayload 1000000 $false) $plainCfg
+Confirm-True (-not $seg.Text.Contains($iconConflict)) 'model 1M not exceeded: no glyph'
+Confirm-Equal (Get-ModelSegment (Get-ModelPayload 200000 $true) $plainCfg).Text "$iconModel Fable 5.1 $iconConflict" 'model 200k exceeds: glyph without a marker'
+# The field is a documented boolean; anything else, including values -eq $true would coerce, gives no glyph.
+foreach ($odd in @(@{ Label = 'string true'; Value = 'true' }, @{ Label = 'number 1'; Value = 1 }, @{ Label = 'null'; Value = $null },
+        @{ Label = 'array'; Value = @($true) }, @{ Label = 'object'; Value = [pscustomobject]@{ value = $true } })) {
+    $p = Get-ModelPayload 200000
+    $p | Add-Member -NotePropertyName exceeds_200k_tokens -NotePropertyValue $odd.Value
+    Confirm-Equal (Get-ModelSegment $p $plainCfg).Text "$iconModel Fable 5.1" "model exceeds as $($odd.Label): no glyph"
+}
+Confirm-Equal (Get-ModelSegment ([pscustomobject]@{ model = [pscustomobject]@{ display_name = '' } }) $plainCfg) $null 'model: empty name omits the segment'
 Write-Host '== unit: limits' -ForegroundColor Cyan
 # Resets in the past keep TimeLeft empty, so the text is deterministic. Payloads go through ConvertFrom-Json
 # so a null used_percentage is a real null property, the way Claude Code sends it.
@@ -980,7 +1033,6 @@ function Convert-ToHermeticPayload([string] $Path) {
 }
 $samplePayloads = @{}
 foreach ($sample in $sampleFiles) { $samplePayloads[$sample.Name] = Convert-ToHermeticPayload $sample.FullName }
-$iconModel = [char]::ConvertFromUtf32(0xF06A9)
 $iconCost = [char]::ConvertFromUtf32(0xF0155)
 $iconFolder = [char]::ConvertFromUtf32(0xF07C)
 $iconLines = [char]::ConvertFromUtf32(0xF121)
@@ -993,34 +1045,42 @@ $minus = [char]::ConvertFromUtf32(0x2212)
 # below cannot give, because a marker can only say that something rendered: a clean tree carries no
 # pencil, a feature branch no home icon, a payload without rate limits no tachometer, and 07's badges
 # are all off or at the default level. Rows that only said "this glyph is present" are gone - the
-# per-segment markers assert that, by value, for every visible segment.
+# per-segment markers assert that, by value, for every visible segment. The warning glyph is the
+# branch segment's conflict mark and the model segment's past-200k mark; only 09 sets
+# exceeds_200k_tokens, so the other samples must not show it on the model row.
 $absentGlyphs = @{
     '01-main-clean.json'                    = @(
         @{ Icon = $iconDirty; Name = 'pencil' }
         @{ Icon = $iconLines; Name = 'lines' }
         @{ Icon = $iconLimit; Name = 'limits' }
         @{ Icon = $iconBranch; Name = 'branch' }
+        @{ Icon = $iconConflict; Name = 'warn' }
     )
     '02-feature-dirty-high.json'            = @(
         @{ Icon = $iconHome; Name = 'home' }
         @{ Icon = $iconLines; Name = 'lines' }
         @{ Icon = $iconLimit; Name = 'limits' }
+        @{ Icon = $iconConflict; Name = 'warn' }
     )
     '03-main-dirty-mid.json'                = @(
         @{ Icon = $iconLines; Name = 'lines' }
         @{ Icon = $iconLimit; Name = 'limits' }
+        @{ Icon = $iconConflict; Name = 'warn' }
     )
     '04-minimal.json'                       = @(
         @{ Icon = $iconCtx; Name = 'context' }
         @{ Icon = $iconFolder; Name = 'folder' }
+        @{ Icon = $iconConflict; Name = 'warn' }
     )
     '05-no-git.json'                        = @(
         @{ Icon = $iconHome; Name = 'home' }
         @{ Icon = $iconBranch; Name = 'branch' }
         @{ Icon = $iconCost; Name = 'cost' }
+        @{ Icon = $iconConflict; Name = 'warn' }
     )
     '06-limits-badges-lines.json'           = @(
         @{ Icon = $iconDirty; Name = 'pencil' }
+        @{ Icon = $iconConflict; Name = 'warn' }
     )
     '07-limits-expired-default-effort.json' = @(
         @{ Icon = $iconFast; Name = 'fast' }
@@ -1028,6 +1088,13 @@ $absentGlyphs = @{
         @{ Icon = $iconEffort; Name = 'effort' }
         @{ Icon = $iconVim; Name = 'vim' }
         @{ Icon = $iconHome; Name = 'home' }
+        @{ Icon = $iconBranch; Name = 'branch' }
+        @{ Icon = $iconConflict; Name = 'warn' }
+    )
+    '09-1m-context.json'                    = @(
+        @{ Icon = $iconDirty; Name = 'pencil' }
+        @{ Icon = $iconLines; Name = 'lines' }
+        @{ Icon = $iconLimit; Name = 'limits' }
         @{ Icon = $iconBranch; Name = 'branch' }
     )
 }
@@ -1043,6 +1110,7 @@ $sampleSegments = @{
     '05-no-git.json'                        = @('model', 'context', 'folder')
     '06-limits-badges-lines.json'           = @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch')
     '07-limits-expired-default-effort.json' = @('model', 'context', 'cost', 'lines', 'limits', 'folder')
+    '09-1m-context.json'                    = @('model', 'context', 'cost', 'folder', 'branch')
 }
 # One marker per segment per sample: the segment's glyph plus the value this payload gives it, spelled
 # the way it reaches the line once the escapes are stripped. Every visible segment has to put its marker
@@ -1063,7 +1131,7 @@ $sampleMarkers = @{
         folder = "$iconFolder my-project"; branch = "$iconHome main"
     }
     '02-feature-dirty-high.json'            = @{
-        model  = "$iconModel Fable 5.1"; context = "$iconCtx 90%"; cost = "$iconCost `$$('{0:N2}' -f 12.5)"
+        model  = "$iconModel Fable 5.1 1M"; context = "$iconCtx 90%"; cost = "$iconCost `$$('{0:N2}' -f 12.5)"
         folder = "$iconFolder repo"; branch = "$iconBranch feature/x ~2 ?1 $iconDirty"
     }
     '03-main-dirty-mid.json'                = @{
@@ -1087,11 +1155,15 @@ $sampleMarkers = @{
         lines = "$iconLines +0 ${minus}4"; limits = "$iconLimit 5h 61% 7d 12% `$ 44%"
         folder = "$iconFolder repo"
     }
+    '09-1m-context.json'                    = @{
+        model  = "$iconModel Fable 5.1 1M $iconConflict"; context = "$iconCtx 65%"; cost = "$iconCost `$$('{0:N2}' -f 4.21)"
+        folder = "$iconFolder my-project"; branch = "$iconHome main"
+    }
 }
 # Every glyph a segment can put on the line: a segment the config turns off must show none of them, and
 # the two-line checks use them to say which row a segment landed on.
 $segmentGlyphs = @{
-    model   = @($iconModel)
+    model   = @($iconModel, $iconConflict)
     context = @($iconCtx)
     cost    = @($iconCost)
     lines   = @($iconLines)
@@ -1103,7 +1175,7 @@ $segmentGlyphs = @{
 # The segment behind each row of the absence table, so a row can be skipped when its segment is off
 # (the per-segment absence assertions cover that case instead, for every glyph the segment owns).
 $glyphSegment = @{
-    context = 'context'; cost = 'cost'; folder = 'folder'; lines = 'lines'; limits = 'limits'
+    context = 'context'; cost = 'cost'; folder = 'folder'; lines = 'lines'; limits = 'limits'; warn = 'model'
     home = 'branch'; pencil = 'branch'; branch = 'branch'
     fast = 'badges'; think = 'badges'; effort = 'badges'; vim = 'badges'
 }
@@ -1195,7 +1267,10 @@ foreach ($cfg in $configSet) {
                 } else {
                     foreach ($name in $allSegments) {
                         if ($cfg.Enabled[$name]) { continue }
-                        $seen = @($segmentGlyphs[$name] | Where-Object { $text.Contains($_) })
+                        # A glyph an enabled segment also lists (the warning triangle belongs to both
+                        # model and branch) cannot prove the off segment rendered, so it is skipped.
+                        $shared = @($allSegments | Where-Object { $_ -ne $name -and $cfg.Enabled[$_] } | ForEach-Object { $segmentGlyphs[$_] })
+                        $seen = @($segmentGlyphs[$name] | Where-Object { $_ -notin $shared -and $text.Contains($_) })
                         Confirm-True ($seen.Count -eq 0) "${label}: $name is off, none of its glyphs appear"
                     }
                     # The rows this render should print, in order. Layout one is a single row; layout two
@@ -1217,7 +1292,10 @@ foreach ($cfg in $configSet) {
                             }
                             $other = @($visible | Where-Object { $_ -notin $mine })
                             if ($other.Count -gt 0) {
-                                $strayed = @($other | Where-Object { @($segmentGlyphs[$_] | Where-Object { $rowText.Contains($_) }).Count -gt 0 })
+                                # Same one-owner rule as the absence check: a glyph a segment on this row
+                                # also lists says nothing about the segments that belong elsewhere.
+                                $mineGlyphs = @($mine | ForEach-Object { $segmentGlyphs[$_] })
+                                $strayed = @($other | Where-Object { @($segmentGlyphs[$_] | Where-Object { $_ -notin $mineGlyphs -and $rowText.Contains($_) }).Count -gt 0 })
                                 Confirm-True ($strayed.Count -eq 0) "${label}: line $($ri + 1) carries none of $($other -join '+') (strayed '$($strayed -join ',')')"
                             }
                         }

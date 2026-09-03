@@ -59,6 +59,7 @@ $rowRuns = @(foreach ($line in $rows) {
             $code = $codes[$i]
             if ($code -eq 0) { $colour = $fg; $back = $null; $bold = $false }
             elseif ($code -eq 1) { $bold = $true }
+            elseif ($code -eq 22) { $bold = $false }
             elseif ($code -eq 39) { $colour = $fg }
             elseif ($code -eq 49) { $back = $null }
             elseif ($code -eq 38 -and $codes[$i + 1] -eq 5) { $colour = ConvertFrom-Xterm256 $codes[$i + 2]; $i += 2 }

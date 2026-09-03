@@ -38,7 +38,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | `install.ps1` | Copies the script to `~/.claude/`, writes the `statusLine` entry to user settings with `hideVimModeIndicator` on and, with `-RefreshInterval <seconds>`, a `refreshInterval`; optionally installs JetBrainsMono Nerd Font via winget and sets it as the Windows Terminal default font. Supports `-Uninstall` and `-SettingsPath` (the seam the tests use). |
 | `statusline.json` | Defaults for layout, style and segment toggles. Installed beside the script. |
 | `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, checks the git fallback in temporary repositories: clean, dirty, unborn, detached, ahead, behind, a mixed tree, a git that fails and one that hangs, and runs `install.ps1` against a settings file in a temp folder. `-Columns`, `-Config`, `-Raw`. |
-| `samples/*.json` | Seven payloads: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort. |
+| `samples/*.json` | Every payload in `samples/` goes through the render matrix. One per case: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort, a 1M window with `exceeds_200k_tokens` true. |
 | `docs/render-screenshot.ps1` | Renders a payload and config through the script and captures the terminal as the README screenshot. |
 | `docs/render-icons.ps1` | Extracts the Nerd Font glyphs used by the script as SVG outlines for `docs/icons/`. |
 
@@ -46,8 +46,8 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 | Segment | Source field | Rendering |
 |---|---|---|
-| Model | `model.display_name` | Bold cyan, robot glyph |
-| Context | `context_window.used_percentage`, `total_input_tokens`, `total_output_tokens`, `context_window_size` | Percent, ten-block bar, used/total in k or M. Green below 60%, yellow below 85%, red above |
+| Model | `model.display_name`, `context_window.context_window_size`, `exceeds_200k_tokens` | Bold cyan, robot glyph. On a 1M window `1M` follows the name in a lighter cyan, then the warning triangle when Claude Code reports `exceeds_200k_tokens` as true |
+| Context | `context_window.used_percentage`, `total_input_tokens`, `total_output_tokens`, `context_window_size` | Percent, ten-block bar, used/total in k or M. Green below 60%, yellow below 85%, red above. A 1M window uses 70% and 90%, so red still means about 100k tokens of room |
 | Cost | `cost.total_cost_usd` | Dimmed, two decimals |
 | Lines | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
 | Limits | `rate_limits.five_hour`, `seven_day`, `spend_limit` | Coloured by the worst of the figures. The spend figure is `$ 62%`, a literal dollar sign, shown only when the payload carries `spend_limit`, which Claude Code sends behind a Claude apps gateway with a spend limit (2.1.251 or later); its reset time is not shown |
@@ -91,7 +91,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 ## Success criteria
 
-- `.\test.ps1` passes: the unit checks, all seven samples across four configs and four widths (120, 60, 20 and unset) with content checks at the unset width, the git cases, and the install cases.
+- `.\test.ps1` passes: the unit checks, every payload in `samples/` across four configs and four widths (120, 60, 20 and unset) with content checks at the unset width, the git cases, and the install cases.
 - `.\install.ps1` on a fresh machine produces a working status line in Claude Code after one session restart.
 - `.\install.ps1 -Uninstall` returns `settings.json` to its prior state minus the `statusLine` key.
 - `.\install.ps1` leaves an existing `~/.claude/statusline.json` untouched.
@@ -107,8 +107,8 @@ palette are still constants in the script.
 
 Issues #2 to #28 hold the backlog, each with a plan and success criteria. The intended order:
 
-1. Existing segments only: a 1M-context marker (#9), installer flags for the refresh interval and
-   the built-in vim indicator (#26).
+1. Existing segments only: installer flags for the refresh interval and the built-in vim
+   indicator (#26). The 1M-context marker (#9) is done.
 2. A segment registry with `order`, `rows`, `thresholds` and `icons` keys in `statusline.json` (#20).
    Every later segment builds on it.
 3. Enablers: a pull-request badge with the OSC 8 link helper (#12), a per-session state file for
