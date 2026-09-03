@@ -129,6 +129,7 @@ function Read-StatusConfig([string] $Path) {
     foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
     $cfg.Order = @((Get-SegmentRegistry).Name)
     $cfg.Rows = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
+    $cfg.Thresholds = @{ Warn = 60; Bad = 85 }
     try {
         if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $cfg }
         $j = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
@@ -155,6 +156,16 @@ function Read-StatusConfig([string] $Path) {
             $row1 = Read-SegmentNameList $rows[0] $cfg.Segments $seen
             $row2 = Read-SegmentNameList $rows[1] $cfg.Segments $seen
             if ($null -ne $row1 -and $null -ne $row2 -and ($row1.Count + $row2.Count) -gt 0) { $cfg.Rows = @($row1, $row2) }
+        }
+        # thresholds: warn and bad, whole numbers 0 to 100 with warn at or below bad, for the context
+        # meter on a standard window and for the rate limits. Either value wrong keeps 60 and 85 for both.
+        $t = $j.thresholds
+        if ($t -is [System.Management.Automation.PSCustomObject]) {
+            $w = $t.warn
+            $b = $t.bad
+            if (($w -is [long] -or $w -is [int]) -and ($b -is [long] -or $b -is [int]) -and $w -ge 0 -and $b -le 100 -and $w -le $b) {
+                $cfg.Thresholds = @{ Warn = [int] $w; Bad = [int] $b }
+            }
         }
     } catch { return $cfg }
     return $cfg
@@ -513,8 +524,9 @@ $cfg = Read-StatusConfig $configPath
 
 # ---- Segment builders. Each returns $null (segment omitted) or @{ Name; Text; Short; Role; Bold }. ----
 
-# Colour bands for a percentage. The defaults suit a 200k window; a 1M window passes wider bands, because
-# 85% of 1M still leaves 150k tokens, more than a whole fresh 200k session.
+# Colour bands for a percentage. The callers pass the config's thresholds, 60 and 85 unless statusline.json
+# moves them, which suit a 200k window. A 1M window passes its own wider bands instead, because 85% of 1M
+# still leaves 150k tokens, more than a whole fresh 200k session, so the config does not reach them.
 function Get-ThresholdRole([int] $pct, [int] $Warn = 60, [int] $Bad = 85) { if ($pct -ge $Bad) { 'bad' } elseif ($pct -ge $Warn) { 'warn' } else { 'ok' } }
 
 # The one window size that gets the 1M marker and the wider bands. Claude Code reports it as exactly 1000000.
@@ -534,7 +546,7 @@ function Get-ModelSegment($d, $cfg) {
     return @{ Name = 'model'; Text = $text; Short = $null; Role = 'model'; Bold = $true }
 }
 
-function Get-ContextSegment($d) {
+function Get-ContextSegment($d, $cfg) {
     $pct = $d.context_window.used_percentage
     if ($null -eq $pct) { return $null }
     $pct = [int] $pct
@@ -545,7 +557,7 @@ function Get-ContextSegment($d) {
     $size = $d.context_window.context_window_size
     $counts = if ($used -gt 0 -and $size) { " $(K $used)/$(K $size)" } elseif ($used -gt 0) { " $(K $used)" } else { '' }
     $short = "$iconCtx $pct% $bar"
-    $role = if (Test-WideWindow $size) { Get-ThresholdRole $pct 70 90 } else { Get-ThresholdRole $pct }
+    $role = if (Test-WideWindow $size) { Get-ThresholdRole $pct 70 90 } else { Get-ThresholdRole $pct $cfg.Thresholds.Warn $cfg.Thresholds.Bad }
     return @{ Name = 'context'; Text = "$short$counts"; Short = $(if ($counts) { $short } else { $null }); Role = $role; Bold = $false }
 }
 
@@ -577,7 +589,7 @@ function TimeLeft([object] $epoch) {
 # the payload carries one (Claude Code sends it behind a Claude apps gateway with a spend limit). The spend
 # figure uses a literal dollar sign, not the cash glyph, so it does not read as a second cost; its resets_at
 # is not shown, one countdown is enough. Every figure that is present joins the worst-of colour.
-function Get-LimitsSegment($d) {
+function Get-LimitsSegment($d, $cfg) {
     $rl = $d.rate_limits
     if (-not $rl) { return $null }
     $bits = [System.Collections.Generic.List[string]]::new()
@@ -596,7 +608,7 @@ function Get-LimitsSegment($d) {
     if ($bits.Count -eq 0) { return $null }
     $text = "$iconLimit $($bits -join ' ')"
     if ($short -eq $text) { $short = $null }
-    return @{ Name = 'limits'; Text = $text; Short = $short; Role = (Get-ThresholdRole $worst); Bold = $false }
+    return @{ Name = 'limits'; Text = $text; Short = $short; Role = (Get-ThresholdRole $worst $cfg.Thresholds.Warn $cfg.Thresholds.Bad); Bold = $false }
 }
 
 # Session mode badges: fast mode, thinking, non-default effort, vim mode. Omitted when nothing is on.

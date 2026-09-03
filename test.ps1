@@ -311,6 +311,29 @@ $c = Read-StatusConfig (Write-TempConfig 'rows-good-order-bad.json' '{ "rows": [
 Confirm-Equal (Get-RowText $c) 'model|cost' 'config rows: kept when order is invalid'
 Confirm-Equal ($c.Order -join ',') $registryOrder 'config rows: the invalid order falls back on its own'
 
+# The thresholds key: warn and bad, whole numbers 0 to 100 with warn at or below bad. Either value
+# missing, not a whole number, out of range, or warn above bad falls back to 60 and 85 for both.
+function Get-ThresholdText($c) { return "$($c.Thresholds.Warn)/$($c.Thresholds.Bad)" }
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Join-Path $tmp 'does-not-exist.json'))) '60/85' 'config missing: thresholds 60 and 85'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-low.json' '{ "thresholds": { "warn": 20, "bad": 40 } }'))) '20/40' 'config thresholds: 20 and 40'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-crossed.json' '{ "thresholds": { "warn": 90, "bad": 10 } }'))) '60/85' 'config thresholds: warn above bad falls back for both'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-equal.json' '{ "thresholds": { "warn": 50, "bad": 50 } }'))) '50/50' 'config thresholds: equal is allowed'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-edges.json' '{ "thresholds": { "warn": 0, "bad": 100 } }'))) '0/100' 'config thresholds: 0 and 100 are allowed'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-warn-only.json' '{ "thresholds": { "warn": 20 } }'))) '60/85' 'config thresholds: one value alone falls back for both'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-over.json' '{ "thresholds": { "warn": 20, "bad": 101 } }'))) '60/85' 'config thresholds: above 100 falls back for both'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-under.json' '{ "thresholds": { "warn": -1, "bad": 40 } }'))) '60/85' 'config thresholds: below 0 falls back for both'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-fraction.json' '{ "thresholds": { "warn": 20.5, "bad": 40 } }'))) '60/85' 'config thresholds: a fraction falls back for both'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-string.json' '{ "thresholds": { "warn": "20", "bad": 40 } }'))) '60/85' 'config thresholds: a string falls back for both'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-bool.json' '{ "thresholds": { "warn": true, "bad": 40 } }'))) '60/85' 'config thresholds: a boolean falls back for both'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-array.json' '{ "thresholds": [20, 40] }'))) '60/85' 'config thresholds: array falls back'
+Confirm-Equal (Get-ThresholdText (Read-StatusConfig (Write-TempConfig 'thresholds-number.json' '{ "thresholds": 20 }'))) '60/85' 'config thresholds: number falls back'
+$c = Read-StatusConfig (Write-TempConfig 'thresholds-good-order-bad.json' '{ "thresholds": { "warn": 20, "bad": 40 }, "order": 5 }')
+Confirm-Equal (Get-ThresholdText $c) '20/40' 'config thresholds: kept when order is invalid'
+Confirm-Equal ($c.Order -join ',') $registryOrder 'config thresholds: the invalid order falls back on its own'
+$c = Read-StatusConfig (Write-TempConfig 'thresholds-bad-order-good.json' '{ "thresholds": { "warn": 90, "bad": 10 }, "order": ["model"] }')
+Confirm-Equal (Get-ThresholdText $c) '60/85' 'config thresholds: crossed values fall back beside a valid order'
+Confirm-Equal ($c.Order -join ',') 'model' 'config thresholds: the valid order is kept'
+
 # The config that ships with the repo has to be valid JSON and to mean what the README says it means.
 $shippedConfig = Join-Path $PSScriptRoot 'statusline.json'
 $shippedJson = try { Get-Content -LiteralPath $shippedConfig -Raw | ConvertFrom-Json } catch { $null }
@@ -785,40 +808,51 @@ $blockLight = [char]::ConvertFromUtf32(0x2591)
 function Get-ContextPayload([double] $Pct) {
     return [pscustomobject]@{ context_window = [pscustomobject]@{ used_percentage = $Pct; total_input_tokens = 1000; total_output_tokens = 0; context_window_size = 200000 } }
 }
+# The builders read the colour bands from the config; this is the default pair, and $lowCfg a custom one.
+$bandCfg = @{ Thresholds = @{ Warn = 60; Bad = 85 } }
+$lowCfg = @{ Thresholds = @{ Warn = 20; Bad = 40 } }
 
-$seg = Get-ContextSegment (Get-ContextPayload 32)
+$seg = Get-ContextSegment (Get-ContextPayload 32) $bandCfg
 $bar32 = ($blockFull * 3) + ($blockLight * 7)
 Confirm-True $seg.Text.StartsWith("$iconCtx 32% ") 'context 32: text prefix'
 Confirm-True $seg.Text.Contains($bar32) 'context 32: bar is 3 full + 7 light'
 Confirm-Equal $seg.Role 'ok' 'context 32: role'
 Confirm-Equal $seg.Short "$iconCtx 32% $bar32" 'context 32: short'
 
-$seg = Get-ContextSegment (Get-ContextPayload 110)
+$seg = Get-ContextSegment (Get-ContextPayload 110) $bandCfg
 $bar100 = $blockFull * 10
 Confirm-True $seg.Text.StartsWith("$iconCtx 100% ") 'context 110: clamped text prefix'
 Confirm-True $seg.Text.Contains($bar100) 'context 110: bar is 10 full blocks'
 Confirm-Equal $seg.Role 'bad' 'context 110: role'
 
-$seg = Get-ContextSegment (Get-ContextPayload -5)
+$seg = Get-ContextSegment (Get-ContextPayload -5) $bandCfg
 $bar0 = $blockLight * 10
 Confirm-True $seg.Text.StartsWith("$iconCtx 0% ") 'context -5: clamped text prefix'
 Confirm-True $seg.Text.Contains($bar0) 'context -5: bar is 10 light blocks'
 Confirm-Equal $seg.Role 'ok' 'context -5: role'
 
-Confirm-Equal (Get-ContextSegment (Get-ContextPayload 64)).Role 'warn' 'context 64: role'
-Confirm-Equal (Get-ContextSegment (Get-ContextPayload 85)).Role 'bad' 'context 85: role'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 64) $bandCfg).Role 'warn' 'context 64: role'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 85) $bandCfg).Role 'bad' 'context 85: role'
 
-Confirm-Equal (Get-ContextSegment ([pscustomobject]@{})) $null 'context: missing context_window'
+Confirm-Equal (Get-ContextSegment ([pscustomobject]@{}) $bandCfg) $null 'context: missing context_window'
 
 # A 1M window moves the colour bands to 70 and 90, so the same percentage is a different colour there.
 function Get-WideContextPayload([double] $Pct) {
     return [pscustomobject]@{ context_window = [pscustomobject]@{ used_percentage = $Pct; total_input_tokens = 650000; total_output_tokens = 0; context_window_size = 1000000 } }
 }
-Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 65)).Role 'ok' 'context 1M 65: role ok, not warn'
-Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 75)).Role 'warn' 'context 1M 75: role warn'
-Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 92)).Role 'bad' 'context 1M 92: role bad'
-Confirm-Equal (Get-ContextSegment (Get-ContextPayload 65)).Role 'warn' 'context 200k 65: role stays warn'
-Confirm-True (Get-ContextSegment (Get-WideContextPayload 65)).Text.Contains("650k/$(K 1000000)") 'context 1M 65: counts'
+Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 65) $bandCfg).Role 'ok' 'context 1M 65: role ok, not warn'
+Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 75) $bandCfg).Role 'warn' 'context 1M 75: role warn'
+Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 92) $bandCfg).Role 'bad' 'context 1M 92: role bad'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 65) $bandCfg).Role 'warn' 'context 200k 65: role stays warn'
+Confirm-True (Get-ContextSegment (Get-WideContextPayload 65) $bandCfg).Text.Contains("650k/$(K 1000000)") 'context 1M 65: counts'
+
+# Custom thresholds move the bands on the standard window. The 1M window keeps its own 70 and 90:
+# those bands come from the window size, not from the user's taste for a 200k one.
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 32) $lowCfg).Role 'warn' 'context 32 at 20/40: warn'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 45) $lowCfg).Role 'bad' 'context 45 at 20/40: bad'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 10) $lowCfg).Role 'ok' 'context 10 at 20/40: ok'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 20) $lowCfg).Role 'warn' 'context 20 at 20/40: warn at the edge'
+Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 65) $lowCfg).Role 'ok' 'context 1M 65 at 20/40: the 1M bands stay 70 and 90'
 
 Write-Host '== unit: threshold' -ForegroundColor Cyan
 Confirm-Equal (Get-ThresholdRole 65) 'warn' 'threshold 65: default bands warn'
@@ -868,28 +902,34 @@ function Get-LimitsPayload([string] $RateLimits) {
     return ('{"rate_limits":' + $RateLimits + '}') | ConvertFrom-Json
 }
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":24,"resets_at":1700000000},"seven_day":{"used_percentage":41,"resets_at":1700000000},"spend_limit":{"used_percentage":62,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":24,"resets_at":1700000000},"seven_day":{"used_percentage":41,"resets_at":1700000000},"spend_limit":{"used_percentage":62,"resets_at":1700000000}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 24% 7d 41% `$ 62%" 'limits all three: 5h, 7d, then spend'
 Confirm-Equal $seg.Short "$iconLimit 5h 24%" 'limits all three: short keeps the 5h figure only'
 Confirm-Equal $seg.Role 'warn' 'limits all three: role from the worst figure'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"spend_limit":{"used_percentage":62,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"spend_limit":{"used_percentage":62,"resets_at":1700000000}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit `$ 62%" 'limits spend alone: one figure, no 5h'
 Confirm-Equal $seg.Short $null 'limits spend alone: no short form'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"spend_limit":{"used_percentage":92,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"spend_limit":{"used_percentage":92,"resets_at":1700000000}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 10% `$ 92%" 'limits spend 92 with 5h 10: text'
 Confirm-Equal $seg.Role 'bad' 'limits spend 92 with 5h 10: spend drives the colour'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit absent: unchanged text'
 Confirm-Equal $seg.Role 'warn' 'limits spend_limit absent: role'
 
-$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000},"spend_limit":{"used_percentage":null,"resets_at":null}}')
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000},"spend_limit":{"used_percentage":null,"resets_at":null}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit null percentage: unchanged text'
 
-Confirm-Equal (Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":null},"seven_day":{"used_percentage":null},"spend_limit":{"used_percentage":null}}')) $null 'limits all null: segment omitted'
-Confirm-Equal (Get-LimitsSegment ([pscustomobject]@{})) $null 'limits: missing rate_limits'
+Confirm-Equal (Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":null},"seven_day":{"used_percentage":null},"spend_limit":{"used_percentage":null}}') $bandCfg) $null 'limits all null: segment omitted'
+Confirm-Equal (Get-LimitsSegment ([pscustomobject]@{}) $bandCfg) $null 'limits: missing rate_limits'
+
+# The config's thresholds colour the rate limits too, whatever the window size.
+$seg = Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":24,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000}}') $lowCfg
+Confirm-Equal $seg.Role 'warn' 'limits 5h 24 at 20/40: warn'
+Confirm-Equal $seg.Text "$iconLimit 5h 24% 7d 12%" 'limits 5h 24 at 20/40: text unchanged'
+Confirm-Equal (Get-LimitsSegment (Get-LimitsPayload '{"five_hour":{"used_percentage":45,"resets_at":1700000000}}') $lowCfg).Role 'bad' 'limits 5h 45 at 20/40: bad'
 
 Write-Host '== unit: porcelain' -ForegroundColor Cyan
 $r = Read-PorcelainStatus "## main...origin/main [ahead 1]`n"
