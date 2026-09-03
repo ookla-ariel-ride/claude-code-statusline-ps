@@ -168,10 +168,12 @@ The branch segment keeps the last `git status` answer for each repository in `cl
 under the same temp folder (`TMPDIR` or the runtime's temp path when there is no `TEMP`), one small
 JSON file per repository named by a hash of its path, and reuses it for `git.cacheSeconds` while the
 repository's git directory is unchanged: the timestamps of `.git` itself, of `index`, `HEAD`,
-`ORIG_HEAD`, `FETCH_HEAD`, `MERGE_HEAD`, `packed-refs` and `logs/HEAD`, and of every directory under
-`refs`. A commit, checkout, add, reset, merge, fetch or push moves one of those, so it shows
-straight away; an edit or a new file in the work tree does not, so the pencil and the counts can lag
-by up to five seconds. A worktree or a submodule, where `.git` is a file, is cached under its own
+`ORIG_HEAD`, `FETCH_HEAD`, `MERGE_HEAD`, `packed-refs`, `logs/HEAD`, `config` and `info/exclude`,
+and of every directory under `refs` (up to 256 of them; a repository with more is not cached). A
+commit, checkout, add, reset, merge, fetch or push moves one of those, so it shows straight away, and
+so does a change to the repository's own config or exclude file; an edit or a new file in the work
+tree does not, and neither does a change to your global git config or `core.excludesFile`, so those
+can lag by up to five seconds. A worktree or a submodule, where `.git` is a file, is cached under its own
 path, with its main repository's refs counted too. A `git status` that failed or timed out is
 remembered for the same lifetime, so a slow repository pays the wait once per lifetime, not once per
 render. A `statusline.json` from before this cache has no `git` block and gets the defaults: the
@@ -301,8 +303,9 @@ raises the limit for a large repository or a slow disk.
 
 The branch segment is a few seconds behind: that is the cache. The last `git status` answer for
 each repository sits in `%TEMP%\claude-statusline\` and is reused for five seconds unless something
-under `.git` changes (a commit, checkout, add, reset, merge, fetch or push all count), so an edit or
-a new file in the work tree can take up to five seconds to show as a pencil or a count.
+under `.git` changes (a commit, checkout, add, reset, merge, fetch or push all count, and so does an
+edit to `.git/config` or `.git/info/exclude`), so an edit or a new file in the work tree, or a change
+to your global git config or `core.excludesFile`, can take up to five seconds to show.
 `git.cacheSeconds` shortens the window, `0` or `"cache": false` turns it off. The folder is safe to
 delete at any time; the next render writes it again, and entries not written for a day are swept.
 

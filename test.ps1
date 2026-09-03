@@ -1275,24 +1275,52 @@ New-Item -ItemType Directory -Force $cacheNestedFile | Out-Null
 [System.IO.File]::WriteAllText((Join-Path $cacheNestedFile '.git'), "gitdir: elsewhere`n")
 Confirm-Equal (Get-GitRepoRoot $cacheNestedFile) $null 'repo root: a .git file inside a repository still wins, the walk does not carry on to the directory above'
 
-# Get-GitStamp: the directory, seven files (0 when absent), then refs and every directory under it.
+# Get-GitStamp: the directory, nine files (0 when absent), then refs and every directory under it.
 $stamp = Get-GitStamp $cacheGitDir
 $stampFields = $stamp -split ','
-Confirm-Equal $stampFields.Count 11 'git stamp: the directory, seven files, refs and its two subdirectories'
+Confirm-Equal $stampFields.Count 13 'git stamp: the directory, nine files, refs and its two subdirectories'
 Confirm-Equal $stampFields[0] ([System.IO.Directory]::GetLastWriteTimeUtc($cacheGitDir).Ticks) 'git stamp: first field is the git directory itself'
 Confirm-Equal $stampFields[1] ([System.IO.File]::GetLastWriteTimeUtc($cacheIndex).Ticks) 'git stamp: second field is index'
 Confirm-Equal $stampFields[2] ([System.IO.File]::GetLastWriteTimeUtc($cacheHead).Ticks) 'git stamp: third field is HEAD'
-Confirm-Equal (($stampFields[3..7]) -join ',') '0,0,0,0,0' 'git stamp: ORIG_HEAD, FETCH_HEAD, MERGE_HEAD, packed-refs and logs/HEAD are 0 when absent'
-Confirm-Equal $stampFields[8] ([System.IO.Directory]::GetLastWriteTimeUtc((Join-Path $cacheGitDir 'refs')).Ticks) 'git stamp: refs follows the files'
-Confirm-Equal $stampFields[9] ([System.IO.Directory]::GetLastWriteTimeUtc((Join-Path $cacheGitDir 'refs' 'heads')).Ticks) 'git stamp: refs/heads in ordinal order'
-Confirm-Equal $stampFields[10] ([System.IO.Directory]::GetLastWriteTimeUtc((Join-Path $cacheGitDir 'refs' 'tags')).Ticks) 'git stamp: refs/tags last'
+Confirm-Equal (($stampFields[3..9]) -join ',') '0,0,0,0,0,0,0' 'git stamp: ORIG_HEAD, FETCH_HEAD, MERGE_HEAD, packed-refs, logs/HEAD, config and info/exclude are 0 when absent'
+Confirm-Equal $stampFields[10] ([System.IO.Directory]::GetLastWriteTimeUtc((Join-Path $cacheGitDir 'refs')).Ticks) 'git stamp: refs follows the files'
+Confirm-Equal $stampFields[11] ([System.IO.Directory]::GetLastWriteTimeUtc((Join-Path $cacheGitDir 'refs' 'heads')).Ticks) 'git stamp: refs/heads in ordinal order'
+Confirm-Equal $stampFields[12] ([System.IO.Directory]::GetLastWriteTimeUtc((Join-Path $cacheGitDir 'refs' 'tags')).Ticks) 'git stamp: refs/tags last'
 Confirm-Equal (Get-GitStamp $cacheGitDir) $stamp 'git stamp: the same directory stamps the same twice'
 $wtStamp = Get-GitStamp $cacheWtGitDir
 Confirm-True ($wtStamp.Contains('|')) 'git stamp: a worktree git directory carries its commondir stamps after a bar'
 Confirm-Equal ($wtStamp -split '\|', 2)[1] (Get-GitStamp $cacheGitDir -NoCommon) 'git stamp: the part after the bar is the main repository'
-Confirm-Equal (($wtStamp -split '\|', 2)[0] -split ',').Count 8 'git stamp: the worktree part has no refs directory of its own'
-Confirm-Equal ((Get-GitStamp (Join-Path $tmp 'cache-not-there')) -split ',').Count 8 'git stamp: a missing directory does not throw and has no refs'
-Confirm-Equal (((Get-GitStamp (Join-Path $tmp 'cache-not-there')) -split ',')[1..7] -join ',') '0,0,0,0,0,0,0' 'git stamp: every file of a missing directory is 0'
+Confirm-Equal (($wtStamp -split '\|', 2)[0] -split ',').Count 10 'git stamp: the worktree part has no refs directory of its own'
+Confirm-Equal ((Get-GitStamp (Join-Path $tmp 'cache-not-there')) -split ',').Count 10 'git stamp: a missing directory does not throw and has no refs'
+Confirm-Equal (((Get-GitStamp (Join-Path $tmp 'cache-not-there')) -split ',')[1..9] -join ',') '0,0,0,0,0,0,0,0,0' 'git stamp: every file of a missing directory is 0'
+# The walk under refs is capped at 256 directories. A repository over the cap gets a stamp that never
+# matches, so every call probes and nothing is written; one at 200 is cached as usual.
+function Write-RefDir([string] $Name, [int] $Count) {
+    $p = Write-FakeRepo $Name
+    for ($i = 1; $i -le $Count; $i++) { [void] [System.IO.Directory]::CreateDirectory((Join-Path $p '.git' 'refs' 'pull' "$i")) }
+    return $p
+}
+$cacheRepoMany = Write-RefDir 'cache-repo-many' 300
+$cacheRepoSome = Write-RefDir 'cache-repo-some' 200
+$manyStamp = Get-GitStamp (Join-Path $cacheRepoMany '.git')
+Confirm-True ($manyStamp.StartsWith('over-cap:')) "git stamp: over 256 ref directories gives the over-cap marker, got '$manyStamp'"
+Confirm-True ($manyStamp -cne (Get-GitStamp (Join-Path $cacheRepoMany '.git'))) 'git stamp: the over-cap stamp never matches itself'
+Confirm-Equal ((Get-GitStamp (Join-Path $cacheRepoSome '.git')) -split ',').Count (10 + 1 + 2 + 1 + 200) 'git stamp: 200 ref directories are all stamped (refs, heads, tags, pull and 200 below it)'
+$before = $script:probeCalls
+$files = Get-CacheFileCount $cacheDir
+$g = Get-CachedGitBranch $cacheRepoMany 1500 $cacheDir 5
+$g = Get-CachedGitBranch $cacheRepoMany 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls ($before + 2) 'over the ref cap: both calls probe'
+Confirm-Equal $g.Branch 'main' 'over the ref cap: the probe answers'
+Confirm-Equal (Get-CacheFileCount $cacheDir) $files 'over the ref cap: nothing written'
+$g = Get-CachedGitBranch $cacheRepoSome 1500 $cacheDir 5
+$g = Get-CachedGitBranch $cacheRepoSome 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls ($before + 3) 'under the ref cap: one probe, then a hit'
+$cacheWtGitDirMany = Join-Path $cacheRepoMany '.git' 'worktrees' 'wt'
+New-Item -ItemType Directory -Force $cacheWtGitDirMany | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $cacheWtGitDirMany 'HEAD'), "ref: refs/heads/wt`n")
+[System.IO.File]::WriteAllText((Join-Path $cacheWtGitDirMany 'commondir'), "../..`n")
+Confirm-True ((Get-GitStamp $cacheWtGitDirMany).StartsWith('over-cap:')) 'git stamp: a worktree of a repository over the cap is over the cap too'
 
 # A miss probes and writes; a hit answers from the file and does not.
 $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
@@ -1354,6 +1382,10 @@ $invalidations = @(
     @{ Name = 'MERGE_HEAD written';         Do = { [System.IO.File]::WriteAllText((Join-Path $cacheGitDir 'MERGE_HEAD'), "abc`n") } }
     @{ Name = 'packed-refs written';        Do = { [System.IO.File]::WriteAllText((Join-Path $cacheGitDir 'packed-refs'), "# pack-refs`n") } }
     @{ Name = 'logs/HEAD written';          Do = { New-Item -ItemType Directory -Force (Join-Path $cacheGitDir 'logs') | Out-Null; [System.IO.File]::WriteAllText((Join-Path $cacheGitDir 'logs' 'HEAD'), "log`n") } }
+    @{ Name = 'config written';             Do = { [System.IO.File]::WriteAllText((Join-Path $cacheGitDir 'config'), "[core]`n") } }
+    @{ Name = 'config edited';              Do = { [System.IO.File]::AppendAllText((Join-Path $cacheGitDir 'config'), "`tbare = false`n") } }
+    @{ Name = 'info/exclude written';       Do = { New-Item -ItemType Directory -Force (Join-Path $cacheGitDir 'info') | Out-Null; [System.IO.File]::WriteAllText((Join-Path $cacheGitDir 'info' 'exclude'), "*.log`n") } }
+    @{ Name = 'a line appended to info/exclude'; Do = { [System.IO.File]::AppendAllText((Join-Path $cacheGitDir 'info' 'exclude'), "build/`n") } }
     @{ Name = 'refs/heads touched';         Do = { [System.IO.Directory]::SetLastWriteTimeUtc((Join-Path $cacheGitDir 'refs' 'heads'), $later) } }
     @{ Name = 'a ref written by rename';    Do = { $lock = Join-Path $cacheGitDir 'refs' 'heads' 'main.lock'; [System.IO.File]::WriteAllText($lock, "abc`n"); [System.IO.File]::Move($lock, (Join-Path $cacheGitDir 'refs' 'heads' 'main'), $true) } }
     @{ Name = 'refs/remotes/origin created'; Do = { New-Item -ItemType Directory -Force (Join-Path $cacheGitDir 'refs' 'remotes' 'origin') | Out-Null } }
@@ -1372,7 +1404,7 @@ foreach ($case in $invalidations) {
     $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
     Confirm-Equal $script:probeCalls ($before + 1) "$($case.Name): the rewritten entry hits"
 }
-Confirm-Equal ((Get-GitStamp $cacheGitDir) -split ',').Count 13 'git stamp: refs/remotes and refs/remotes/origin joined the list'
+Confirm-Equal ((Get-GitStamp $cacheGitDir) -split ',').Count 15 'git stamp: refs/remotes and refs/remotes/origin joined the list'
 # A change to the main repository's refs invalidates a worktree's entry through its commondir.
 $g = Get-CachedGitBranch $cacheWorktree 1500 $cacheDir 5
 $g = Get-CachedGitBranch $cacheWorktree 1500 $cacheDir 5

@@ -397,23 +397,30 @@ function Get-GitRepoRoot([string] $Dir) {
 }
 
 # The stamp string for a git directory: the UTC ticks, joined with commas, of the directory itself, of
-# index, HEAD, ORIG_HEAD, FETCH_HEAD, MERGE_HEAD, packed-refs and logs/HEAD (0 for one that is not
-# there, as index is in a repository with no commits yet), then of refs and every directory below it in
-# ordinal order. Git writes a ref as x.lock renamed into place, and a rename moves the parent
-# directory's stamp, so a fetch, a push or an empty commit that touches no file above still shows. A
-# worktree's git directory names its main repository's in a commondir file, and that directory's
-# stamps follow after a bar, because the refs live there. One FileInfo or DirectoryInfo per stamp.
+# index, HEAD, ORIG_HEAD, FETCH_HEAD, MERGE_HEAD, packed-refs, logs/HEAD, config and info/exclude (0
+# for one that is not there, as index is in a repository with no commits yet), then of refs and every
+# directory below it in ordinal order. Git writes a ref as x.lock renamed into place, and a rename
+# moves the parent directory's stamp, so a fetch, a push or an empty commit that touches no file above
+# still shows. A worktree's git directory names its main repository's in a commondir file, and that
+# directory's stamps follow after a bar, because the refs live there. One FileInfo or DirectoryInfo per
+# stamp. The walk under refs stops at 256 directories: a repository with more (pull-request fetch
+# refs, notes, automation refs) would pay for enumerating and sorting them on every render, so it gets
+# a stamp that can never match - the ticks now behind an over-cap: marker - and Get-CachedGitBranch
+# treats that as no cache at all.
 function Get-GitStamp([string] $GitDir, [switch] $NoCommon) {
     $ticks = [System.Collections.Generic.List[string]]::new()
     $ticks.Add([string] [System.IO.DirectoryInfo]::new($GitDir).LastWriteTimeUtc.Ticks)
-    foreach ($rel in @('index', 'HEAD', 'ORIG_HEAD', 'FETCH_HEAD', 'MERGE_HEAD', 'packed-refs', 'logs/HEAD')) {
+    foreach ($rel in @('index', 'HEAD', 'ORIG_HEAD', 'FETCH_HEAD', 'MERGE_HEAD', 'packed-refs', 'logs/HEAD', 'config', 'info/exclude')) {
         $fi = [System.IO.FileInfo]::new([System.IO.Path]::Combine($GitDir, $rel))
         $ticks.Add([string] $(if ($fi.Exists) { $fi.LastWriteTimeUtc.Ticks } else { 0 }))
     }
     $refs = [System.IO.Path]::Combine($GitDir, 'refs')
     if ([System.IO.Directory]::Exists($refs)) {
         $dirs = [System.Collections.Generic.List[string]]::new()
-        foreach ($d in [System.IO.Directory]::EnumerateDirectories($refs, '*', [System.IO.SearchOption]::AllDirectories)) { $dirs.Add($d) }
+        foreach ($d in [System.IO.Directory]::EnumerateDirectories($refs, '*', [System.IO.SearchOption]::AllDirectories)) {
+            if ($dirs.Count -ge 256) { return 'over-cap:' + [DateTime]::UtcNow.Ticks }
+            $dirs.Add($d)
+        }
         $dirs.Sort([System.StringComparer]::Ordinal)
         $ticks.Add([string] [System.IO.DirectoryInfo]::new($refs).LastWriteTimeUtc.Ticks)
         foreach ($d in $dirs) { $ticks.Add([string] [System.IO.DirectoryInfo]::new($d).LastWriteTimeUtc.Ticks) }
@@ -426,7 +433,11 @@ function Get-GitStamp([string] $GitDir, [switch] $NoCommon) {
         if ($common) {
             if (-not [System.IO.Path]::IsPathRooted($common)) { $common = [System.IO.Path]::Combine($GitDir, $common) }
             $common = [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath($common))
-            if ($common -ne $GitDir -and [System.IO.Directory]::Exists($common)) { $stamp += '|' + (Get-GitStamp $common -NoCommon) }
+            if ($common -ne $GitDir -and [System.IO.Directory]::Exists($common)) {
+                $commonStamp = Get-GitStamp $common -NoCommon
+                if ($commonStamp.StartsWith('over-cap:')) { return $commonStamp }
+                $stamp += '|' + $commonStamp
+            }
         }
     }
     return $stamp
@@ -465,15 +476,16 @@ function Get-GitCacheDir {
 # lifetime rather than once per render. Anything else - no entry, a stale one, a corrupt one, a record
 # that fails Read-CachedRecord, a read that throws - is a miss: git runs, and the answer is written
 # back through Write-AtomicJson, then the directory is swept of day-old files. With no directory, a
-# $Ttl of 0 or no repository found this is a plain probe. The stamps are read before git runs, so a
-# change that lands during the probe invalidates the entry. The directory is created only when there
-# is something to write, and a failure to create it, or to write, costs nothing but the cache.
+# $Ttl of 0, no repository found, or a stamp that cannot be taken (the walk threw, or refs are over the
+# cap) this is a plain probe, and nothing is written. The stamps are read before git runs, so a change
+# that lands during the probe invalidates the entry. The directory is created only when there is
+# something to write, and a failure to create it, or to write, costs nothing but the cache.
 function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir, [int] $Ttl) {
     $repo = if ($CacheDir -and $Ttl -gt 0) { Get-GitRepoRoot $Dir } else { $null }
     if (-not $repo) { return Get-GitBranch $Dir $TimeoutMs }
     $root = $repo.WorkTree
     $stamps = try { Get-GitStamp $repo.GitDir } catch { $null }
-    if (-not $stamps) { return Get-GitBranch $Dir $TimeoutMs }
+    if (-not $stamps -or $stamps.StartsWith('over-cap:')) { return Get-GitBranch $Dir $TimeoutMs }
     $path = [System.IO.Path]::Combine($CacheDir, (Get-ShortHash $root.ToLowerInvariant()) + '.json')
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     try {
