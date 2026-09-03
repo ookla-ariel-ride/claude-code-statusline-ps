@@ -24,6 +24,7 @@ $payload = [ordered]@{
     effort         = @{ level = 'high' }
     workspace      = @{ current_dir = 'C:\Users\jim\src\my-project' }
     git            = @{ branch = 'main'; status = @{ staged = 1; modified = 2; untracked = 1 } }
+    pr             = @{ number = 12; url = 'https://github.com/octo/my-project/pull/12'; review_state = 'approved' }
 } | ConvertTo-Json -Depth 5
 
 $scriptArgs = @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', (Join-Path $Repo 'statusline.ps1'))
@@ -45,15 +46,19 @@ function ConvertFrom-Xterm256([int] $n) {
     return [System.Drawing.Color]::FromArgb($levels[[math]::Floor($n / 36)], $levels[[math]::Floor(($n % 36) / 6)], $levels[$n % 6])
 }
 
-# Parse each row's SGR sequences into runs of (text, fg, bg, bold)
+# Parse each row's SGR sequences into runs of (text, fg, bg, bold). OSC 8 hyperlink wrappers (either
+# terminator, ESC \ or BEL) are skipped the way Get-VisibleWidth strips them: they carry no colour and
+# no text, and left in they would draw the URL into the image.
 $esc = [char]27
-$pattern = "$esc\[([0-9;]*)m"
+$pattern = "$esc\[([0-9;]*)m|$esc\]8;[^\a$esc]*(?:\a|$esc\\)"
 $rowRuns = @(foreach ($line in $rows) {
     $runs = [System.Collections.Generic.List[object]]::new()
     $colour = $fg; $back = $null; $bold = $false
     $pos = 0
     foreach ($m in [regex]::Matches($line, $pattern)) {
         if ($m.Index -gt $pos) { $runs.Add(@{ text = $line.Substring($pos, $m.Index - $pos); colour = $colour; back = $back; bold = $bold }) }
+        $pos = $m.Index + $m.Length
+        if (-not $m.Groups[1].Success) { continue }
         $codes = @($m.Groups[1].Value -split ';' | ForEach-Object { if ($_ -eq '') { 0 } else { [int] $_ } })
         for ($i = 0; $i -lt $codes.Count; $i++) {
             $code = $codes[$i]
@@ -66,7 +71,6 @@ $rowRuns = @(foreach ($line in $rows) {
             elseif ($code -eq 48 -and $codes[$i + 1] -eq 5) { $back = ConvertFrom-Xterm256 $codes[$i + 2]; $i += 2 }
             elseif ($palette.ContainsKey($code)) { $colour = [System.Drawing.ColorTranslator]::FromHtml($palette[$code]) }
         }
-        $pos = $m.Index + $m.Length
     }
     if ($pos -lt $line.Length) { $runs.Add(@{ text = $line.Substring($pos); colour = $colour; back = $back; bold = $bold }) }
     , $runs

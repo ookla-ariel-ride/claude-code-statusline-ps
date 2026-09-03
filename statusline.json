@@ -12,6 +12,7 @@
     "lines": true,
     "limits": true,
     "badges": true,
+    "pr": true,
     "folder": true,
     "branch": true
   }

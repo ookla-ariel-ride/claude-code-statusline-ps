@@ -4,8 +4,8 @@
 
 A PowerShell status line for Claude Code on Windows. It replaces the default status line with one
 or two lines showing the active model, context-window usage, session cost, lines changed, rate
-limits, mode badges, current folder, and the git branch with its ahead, behind and file-change
-counts, rendered with Nerd Font glyphs and ANSI colour.
+limits, mode badges, the branch's pull request as a clickable link, current folder, and the git
+branch with its ahead, behind and file-change counts, rendered with Nerd Font glyphs and ANSI colour.
 
 ## Problem
 
@@ -39,7 +39,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | `statusline.json` | Defaults for layout, style, the folder mode, the state file toggle, segment toggles, the colour thresholds and glyph overrides. The layout-one `order` and layout-two `rows` keys are left out so the registry stays the source and a new segment appears on its own. Installed beside the script. |
 | `%TEMP%\claude-statusline-state\` | One JSON file per session (`<session_id>.json`, version 1): last cost, token totals, context and 5-hour percentages, and a ring of up to twenty cost readings. Written after the line is printed, swept of day-old files at most every six hours. `~/.claude/statusline-state` when `TEMP` is empty. |
 | `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, checks the git fallback in temporary repositories: clean, dirty, unborn, detached, ahead, behind, a mixed tree, a git that fails and one that hangs, exercises the session state file end to end, and runs `install.ps1` against a settings file in a temp folder. `-Columns`, `-Config`, `-Raw`. |
-| `samples/*.json` | Every payload in `samples/` goes through the render matrix. One per case: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort, a repository identity below its project root, a 1M window with `exceeds_200k_tokens` true. |
+| `samples/*.json` | Every payload in `samples/` goes through the render matrix. One per case: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort, a repository identity below its project root, a 1M window with `exceeds_200k_tokens` true, a feature branch with an approved pull request. |
 | `docs/render-screenshot.ps1` | Renders a payload and config through the script and captures the terminal as the README screenshot. |
 | `docs/render-icons.ps1` | Extracts the Nerd Font glyphs used by the script as SVG outlines for `docs/icons/`. |
 
@@ -53,6 +53,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | Lines | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
 | Limits | `rate_limits.five_hour`, `seven_day`, `spend_limit` | Coloured by the worst of the figures. The spend figure is `$ 62%`, a literal dollar sign, shown only when the payload carries `spend_limit`, which Claude Code sends behind a Claude apps gateway with a spend limit (2.1.251 or later); its reset time is not shown |
 | Badges | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dim glyphs |
+| PR | `pr.number`, `pr.url`, `pr.review_state` (`pr.kind` is read but not shown) | Pull-request glyph and `#N`, the whole text wrapped in an OSC 8 hyperlink to `pr.url`. Green on `approved`, red on `changes requested` (underscores and case ignored), dim for anything else. Omitted without a `pr` object or a whole, positive `number`; a `url` that is not `http(s)` leaves the text unlinked. No short form |
 | Folder | `workspace.repo.owner`, `workspace.repo.name`, `workspace.project_dir`, `workspace.current_dir` | Blue. `owner/name` when the payload carries a repository, followed by `›` and the leaf of `current_dir` when it differs from `project_dir`. The leaf alone without a repository or with `"folder": "leaf"` in the config. Short form is the repository name |
 | Branch | `git status --porcelain=v1 --branch` in `workspace.current_dir`. The Claude Code payload has no `git` object, so this is the normal path; a payload that does carry `git.branch` and `git.status` (the test samples) is used as is | Home glyph on main/master, branch glyph otherwise. Yellow with pencil glyph when dirty, magenta when clean. Between the name and the pencil, dim counts in a fixed order: `↑N` `↓N` ahead of and behind the upstream (header bracket, git path only), `+N` staged, `~N` changed in the work tree, `?N` untracked entries, then a red triangle with the conflict count. Zero counts are left out. The short form used at a narrow width is icon, name and pencil |
 
@@ -90,7 +91,15 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   other.
 - **One rule for payload numbers.** A single helper decides whether a `git.status` value is a count
   (a whole number that fits an Int32). The dirty flag and the counts both use it, so a value can
-  never mark the tree dirty without showing a count, or the reverse.
+  never mark the tree dirty without showing a count, or the reverse. The PR number goes through the
+  same helper.
+- **Links live in the segment text.** `Format-Link` wraps text in an OSC 8 hyperlink and the PR
+  builder puts the result in its record's `Text`, so the renderer needs no link support: the colour
+  codes of either style wrap the link, and OSC 8 carries no SGR state, so a powerline background runs
+  through it. The width rule strips OSC 8 (either terminator) before the colour codes, so a URL never
+  counts as text and never changes what fits. The helper owns its own type gate: anything that is not
+  a string, is over 2083 characters, holds whitespace or a control character, or does not parse as an
+  absolute `http(s)` URI is not linked, so a payload cannot end the sequence early.
 - **Per-session state on disk, never on the line's critical path.** A render cannot see the previous
   payload, so a small JSON file per `session_id` carries the last cost and token totals forward. The
   read, the merge and the write all sit after the last `Write-Host`, so none of their cost is in front
@@ -121,9 +130,10 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 Two-line layout, powerline style, config file, width fitting and the git fallback are implemented.
 The branch segment shows ahead and behind counts (#16) and staged, changed, untracked and conflict
-counts (#17), all from the one `git status` call. Segment order, the two rows, the colour thresholds
-and the glyphs are `statusline.json` keys over the segment registry (#20). A light palette is still
-a constant in the script.
+counts (#17), all from the one `git status` call. The pull-request segment (#12) links `#N` to the
+PR with OSC 8. Segment order, the two rows, the colour thresholds and the glyphs are
+`statusline.json` keys over the segment registry (#20). A light palette is still a constant in the
+script.
 
 ## Future work
 
@@ -133,8 +143,8 @@ Issues #2 to #28 hold the backlog, each with a plan and success criteria. The in
    indicator (#26). The 1M-context marker (#9) is done.
 2. A segment registry with `order`, `rows`, `thresholds` and `icons` keys in `statusline.json` (#20).
    Done; every later segment builds on it.
-3. Enablers: a pull-request badge with the OSC 8 link helper (#12), a per-session state file for
-   deltas between renders (#4).
+3. Enablers: a per-session state file for deltas between renders (#4). The pull-request badge with
+   the OSC 8 link helper (#12) is done.
 4. New segments: cache warmth and hit ratio, owner/repo, worktree, links, agent and session badges,
    spend limit, cost per turn, pace, session clock (#2, #3, #5 to #8, #10, #11, #13, #14).
 5. Config: presets, a quiet block, an alarm colour, per-project config, git cache and timeout
