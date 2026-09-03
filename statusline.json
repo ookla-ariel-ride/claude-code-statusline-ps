@@ -1,6 +1,7 @@
 {
   "layout": "one",
   "style": "plain",
+  "folder": "repo",
   "segments": {
     "model": true,
     "context": true,

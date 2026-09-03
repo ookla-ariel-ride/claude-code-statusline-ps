@@ -23,6 +23,7 @@ $iconModel  = G 0xF06A9   # nf-md-robot
 $iconCtx    = G 0xF035B   # nf-md-memory
 $iconCost   = G 0xF0155   # nf-md-cash
 $iconFolder = G 0xF07C    # nf-fa-folder_open
+$iconChevron = G 0x203A   # single right-pointing angle quotation mark (between owner/name and the leaf)
 $iconBranch = G 0xE0A0    # powerline branch
 $iconHome   = G 0xF015    # nf-fa-home  (on main/master)
 $iconDirty  = G 0xF040    # nf-fa-pencil (uncommitted changes)
@@ -69,8 +70,9 @@ function Get-VisibleWidth([string] $Text) {
 # defaults, the shrink and drop order in Get-FittedLine, the build dispatch and the layout-two rows.
 # Build names the builder function; the build loop calls it with the payload and the config, and a builder
 # that only takes the payload leaves the config in $args. It returns the segment record or $null. Default
-# seeds Read-StatusConfig. ShrinkRank orders stage one of Get-FittedLine and is $null for a segment with no
-# Short form; DropRank orders stage two, and the model record has none because it is never dropped.
+# seeds Read-StatusConfig. ShrinkRank orders stage one of Get-FittedLine for the segments that can have a
+# Short form; a record whose Short is $null is skipped there. DropRank orders stage two, and the model
+# record has none because it is never dropped.
 # Row is the layout-two line and RowRank the position on it, because a row is not in layout-one order.
 # The table is built once per run: a render asks for it several times, and this is on the startup path.
 function Get-SegmentRegistry {
@@ -82,7 +84,7 @@ function Get-SegmentRegistry {
             @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
             @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
             @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 4 }
-            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 2 }
+            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 4;     DropRank = 5;     Row = 1; RowRank = 2 }
             @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 3;     DropRank = 6;     Row = 1; RowRank = 3 }
         )
     }
@@ -104,7 +106,7 @@ function Get-SegmentOrder([ValidateSet('ShrinkRank', 'DropRank', 'RowRank')] [st
 
 # Reads statusline.json. Anything missing or invalid silently falls back to its default.
 function Read-StatusConfig([string] $Path) {
-    $cfg = @{ Layout = 'one'; Style = 'plain'; Segments = @{} }
+    $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; Segments = @{} }
     foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
     try {
         if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $cfg }
@@ -112,6 +114,7 @@ function Read-StatusConfig([string] $Path) {
         if ($j -isnot [System.Management.Automation.PSCustomObject]) { return $cfg }
         if ($j.layout -is [string] -and $j.layout.ToLowerInvariant() -in @('one', 'two')) { $cfg.Layout = $j.layout.ToLowerInvariant() }
         if ($j.style -is [string] -and $j.style.ToLowerInvariant() -in @('plain', 'powerline')) { $cfg.Style = $j.style.ToLowerInvariant() }
+        if ($j.folder -is [string] -and $j.folder.ToLowerInvariant() -in @('repo', 'leaf')) { $cfg.Folder = $j.folder.ToLowerInvariant() }
         $segs = $j.segments
         if ($segs -is [System.Management.Automation.PSCustomObject]) {
             foreach ($n in @($cfg.Segments.Keys)) {
@@ -182,7 +185,7 @@ function Format-Line($Segments, [string] $Style) {
 }
 
 # Renders a line and, when a width is given, shrinks then drops segments until it fits.
-# Stage 1 swaps segments for their Short form in $ShrinkOrder (limits, context, then branch by default).
+# Stage 1 swaps segments for their Short form in $ShrinkOrder (limits, context, branch, then folder by default).
 # Stage 2 drops whole segments in $DropOrder. Either order left $null comes from the registry's ranks; an
 # empty array skips that stage. The model segment is never dropped whatever the drop order says, so it may
 # overflow on its own. Returns $null when nothing is left.
@@ -416,10 +419,27 @@ function Get-BadgesSegment($d) {
     return @{ Name = 'badges'; Text = ($badges -join ' '); Short = $null; Role = 'dim'; Bold = $false }
 }
 
-function Get-FolderSegment($d) {
-    $dir = $d.workspace.current_dir
+# With workspace.repo in the payload and the folder config at repo, the text is owner/name, followed by a
+# chevron and the leaf of current_dir once the session has moved below project_dir (no project_dir counts
+# as the root). The two paths are compared with forward slashes turned into backslashes, trailing
+# separators trimmed and case ignored, since the payload can spell the same directory either way. Short
+# is the name alone. Without a repo, with either field not a string or blank, or in leaf mode, it is the
+# leaf of current_dir as it always was, with no Short form. No current_dir means no segment.
+function Get-FolderSegment($d, $cfg) {
+    $dir = [string] $d.workspace.current_dir
     if (-not $dir) { return $null }
-    return @{ Name = 'folder'; Text = "$iconFolder $(Split-Path $dir -Leaf)"; Short = $null; Role = 'folder'; Bold = $false }
+    $leaf = Split-Path $dir -Leaf
+    $owner = $d.workspace.repo.owner
+    $name = $d.workspace.repo.name
+    if ($cfg.Folder -eq 'leaf' -or -not (Test-PayloadText $owner) -or -not (Test-PayloadText $name)) {
+        return @{ Name = 'folder'; Text = "$iconFolder $leaf"; Short = $null; Role = 'folder'; Bold = $false }
+    }
+    $root = [string] $d.workspace.project_dir
+    $here = ($dir -replace '/', '\').TrimEnd('\')
+    $there = ($root -replace '/', '\').TrimEnd('\')
+    $text = "$owner/$name"
+    if ($root -and $here -ne $there) { $text += " $iconChevron $leaf" }
+    return @{ Name = 'folder'; Text = "$iconFolder $text"; Short = "$iconFolder $name"; Role = 'folder'; Bold = $false }
 }
 
 # A payload value as a count, or $null when it is not one: a whole number that fits an Int32. ConvertFrom-Json
@@ -432,6 +452,12 @@ function Get-PayloadNumber($v) {
     if ([double]::IsNaN($d) -or [double]::IsInfinity($d) -or $d -ne [math]::Floor($d)) { return $null }
     if ($d -gt [int]::MaxValue -or $d -lt [int]::MinValue) { return $null }
     return [int] $d
+}
+
+# Whether a payload value is text: a string with visible content. Numbers, arrays, objects, nulls and
+# blank strings are not, so a field that should name something cannot be rendered from one of those.
+function Test-PayloadText($v) {
+    return ($v -is [string] -and -not [string]::IsNullOrWhiteSpace($v))
 }
 
 # Dirty flag from a payload git.status value: "clean"/other string, or an object of counts/booleans.
