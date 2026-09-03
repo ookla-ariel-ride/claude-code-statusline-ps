@@ -36,9 +36,10 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 |---|---|
 | `statusline.ps1` | Reads JSON on stdin and `statusline.json` beside it; prints one or two coloured lines fitted to `COLUMNS`. |
 | `install.ps1` | Copies the script to `~/.claude/`, writes the `statusLine` entry to user settings with `hideVimModeIndicator` on and, with `-RefreshInterval <seconds>`, a `refreshInterval`; optionally installs JetBrainsMono Nerd Font via winget and sets it as the Windows Terminal default font. Supports `-Uninstall` and `-SettingsPath` (the seam the tests use). |
-| `statusline.json` | Defaults for layout, style, the folder mode, the state file toggle, segment toggles, the colour thresholds and glyph overrides. The layout-one `order` and layout-two `rows` keys are left out so the registry stays the source and a new segment appears on its own. Installed beside the script. |
+| `statusline.json` | Defaults for layout, style, the folder mode, the state file toggle, segment toggles, the colour thresholds, glyph overrides, and the git probe's timeout and cache (`git.timeoutMs`, `git.cacheSeconds`, `git.cache`). The layout-one `order` and layout-two `rows` keys are left out so the registry stays the source and a new segment appears on its own. Installed beside the script. |
 | `%TEMP%\claude-statusline-state\` | One JSON file per session (`<session_id>.json`, version 1): last cost, token totals, context and 5-hour percentages, and a ring of up to twenty cost readings. Written after the line is printed, swept of day-old files at most every six hours. `~/.claude/statusline-state` when `TEMP` is empty. |
-| `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, checks the git fallback in temporary repositories: clean, dirty, unborn, detached, ahead, behind, a mixed tree, a git that fails and one that hangs, exercises the session state file end to end, and runs `install.ps1` against a settings file in a temp folder. `-Columns`, `-Config`, `-Raw`. |
+| `%TEMP%\claude-statusline\` | The git probe cache: one JSON file per repository, named by the first 16 hex characters of the SHA-256 of the lower-cased work tree path, holding the root, a stamp string (the UTC ticks of the git directory, of `index`, `HEAD`, `ORIG_HEAD`, `FETCH_HEAD`, `MERGE_HEAD`, `packed-refs`, `logs/HEAD`, `config` and `info/exclude`, and of every directory under `refs`, capped at 256; a worktree's main repository after a bar), the write time and the last `git status` record, or null when the probe failed. Read before the branch segment is built and reused for `git.cacheSeconds` while the stamp string matches; swept of day-old files with the state sweep. `TMPDIR`, then the runtime's temp path, when `TEMP` is empty. |
+| `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, checks the git fallback in temporary repositories: clean, dirty, unborn, detached, ahead, behind, a mixed tree, a git that fails and one that hangs, the probe cache with a counting stand-in and end to end with a failing git on `PATH`, exercises the session state file end to end, and runs `install.ps1` against a settings file in a temp folder. `-Columns`, `-Config`, `-Raw`. |
 | `samples/*.json` | Every payload in `samples/` goes through the render matrix. One per case: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort, a repository identity below its project root, a 1M window with `exceeds_200k_tokens` true, a feature branch with an approved pull request. |
 | `docs/render-screenshot.ps1` | Renders a payload and config through the script and captures the terminal as the README screenshot. |
 | `docs/render-icons.ps1` | Extracts the Nerd Font glyphs used by the script as SVG outlines for `docs/icons/`. |
@@ -67,8 +68,19 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   JSON parse failure falls back to a plain model glyph. A broken status line must never break Claude Code.
 - **Line endings.** `.gitattributes` forces CRLF on `.ps1` files and LF elsewhere.
 - **Git fallback with a hard timeout.** The documented payload has no `git` object, so the branch
-  segment runs `git status` itself through `System.Diagnostics.Process`, kills it after 1.5 s, and
-  omits the segment on any failure.
+  segment runs `git status` itself through `System.Diagnostics.Process`, kills it after
+  `git.timeoutMs` (1.5 s by default, 100 ms to 10 s), and omits the segment on any failure.
+- **The probe is cached, keyed on the git directory, not on the work tree.** A render that starts
+  git pays for a process and a status walk every time; most renders happen seconds apart in an
+  unchanged repository. The last answer is kept per repository and reused while the git directory's
+  stamps match (the directory itself, nine named files, every directory under `refs` up to 256 of
+  them, because git renames `x.lock` into place and that moves the parent's stamp) and the entry is younger than
+  `git.cacheSeconds`. Commits, checkouts, adds, resets, merges, fetches and pushes move one of them
+  and show at once; an edit or a new file in the work tree moves none and shows when the entry ages
+  out, a lag of five seconds by default. The read sits in front of the branch segment because it
+  replaces the probe, and it is one file read and a dozen stats. A null answer is cached too, so a
+  slow repository pays the timeout once per lifetime; a cached record is checked with the payload
+  guards before it is rendered, and every failure ends in a plain probe.
 - **Segment records and one renderer.** Each segment is a small record (name, text, short text,
   colour role, bold); one function renders a line in plain or powerline style, and width fitting
   shrinks then drops records in a fixed order.
@@ -130,10 +142,10 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 Two-line layout, powerline style, config file, width fitting and the git fallback are implemented.
 The branch segment shows ahead and behind counts (#16) and staged, changed, untracked and conflict
-counts (#17), all from the one `git status` call. The pull-request segment (#12) links `#N` to the
-PR with OSC 8. Segment order, the two rows, the colour thresholds and the glyphs are
-`statusline.json` keys over the segment registry (#20). A light palette is still a constant in the
-script.
+counts (#17), all from the one `git status` call, and that call is cached per repository with its
+timeout and lifetime in the config (#18). The pull-request segment (#12) links `#N` to the PR with
+OSC 8. Segment order, the two rows, the colour thresholds and the glyphs are `statusline.json` keys
+over the segment registry (#20). A light palette is still a constant in the script.
 
 ## Future work
 
@@ -147,8 +159,8 @@ Issues #2 to #28 hold the backlog, each with a plan and success criteria. The in
    the OSC 8 link helper (#12) is done.
 4. New segments: cache warmth and hit ratio, owner/repo, worktree, links, agent and session badges,
    spend limit, cost per turn, pace, session clock (#2, #3, #5 to #8, #10, #11, #13, #14).
-5. Config: presets, a quiet block, an alarm colour, per-project config, git cache and timeout
-   (#18, #19, #21 to #23).
+5. Config: presets, a quiet block, an alarm colour, per-project config (#19, #21 to #23). The git
+   cache and timeout (#18) are done.
 6. Style and terminal: an ASCII style, a light palette, a right-aligned group with a clock, taskbar
    progress, a subagent status line (#15, #24, #25, #27, #28).
 

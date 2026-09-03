@@ -5,6 +5,11 @@
   "state": true,
   "thresholds": { "warn": 60, "bad": 85 },
   "icons": {},
+  "git": {
+    "timeoutMs": 1500,
+    "cacheSeconds": 5,
+    "cache": true
+  },
   "segments": {
     "model": true,
     "context": true,

@@ -76,7 +76,19 @@ function Get-IconSet($cfg) {
 
 $defaultEffort = 'high'   # effort badge is hidden at this level
 
-$gitTimeoutMs = 1500      # how long the branch segment waits for `git status` before giving up
+# The git probe's settings when statusline.json has no git object: how long the branch segment waits
+# for `git status` before giving up, how long a probe result is reused for, and whether it is reused at
+# all. Read-StatusConfig starts from these. A fresh table each call, so a caller can change its copy.
+function Get-DefaultGitConfig { return @{ TimeoutMs = 1500; CacheSeconds = 5; Cache = $true } }
+
+# A whole-number config value clamped to $Min..$Max, or $Default when it is not a whole number at all:
+# missing, a string, a boolean, a fraction. Get-FiniteNumber is the type test, so 3000.0 and 1e1 count
+# as whole, and a value far outside Int32 clamps rather than throws.
+function Get-ConfigInteger($v, [int] $Default, [int] $Min, [int] $Max) {
+    $n = Get-FiniteNumber $v
+    if ($null -eq $n -or $n -ne [math]::Floor($n)) { return $Default }
+    return [int] [math]::Min([math]::Max($n, [double] $Min), [double] $Max)
+}
 
 # Visible cell width of a rendered line: escapes stripped, combining marks 0, CJK and emoji 2, else 1.
 # A small wcwidth approximation; Nerd Font glyphs count as 1. The OSC 8 hyperlink wrappers go first,
@@ -166,7 +178,7 @@ function Read-SegmentNameList($Value, [hashtable] $Known, [hashtable] $Seen) {
 # Reads statusline.json. Anything missing or invalid silently falls back to its default, and each key
 # falls back on its own: a valid order beside a broken thresholds keeps the order.
 function Read-StatusConfig([string] $Path) {
-    $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Segments = @{} }
+    $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Segments = @{}; Git = Get-DefaultGitConfig }
     foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
     $cfg.Order = @((Get-SegmentRegistry).Name)
     $cfg.Rows = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
@@ -224,6 +236,15 @@ function Read-StatusConfig([string] $Path) {
                 $cp = Read-CodePoint $p.Value
                 if ($known.ContainsKey($n) -and $null -ne $cp) { $cfg.Icons[$n] = $cp }
             }
+        }
+        # ---- git: probe timeout and cache ----
+        # Whole numbers are clamped to their range; a key of the wrong type keeps its default, and a git
+        # value that is not an object keeps all three.
+        $g = $j.git
+        if ($g -is [System.Management.Automation.PSCustomObject]) {
+            $cfg.Git.TimeoutMs = Get-ConfigInteger $g.timeoutMs $cfg.Git.TimeoutMs 100 10000
+            $cfg.Git.CacheSeconds = Get-ConfigInteger $g.cacheSeconds $cfg.Git.CacheSeconds 0 300
+            if ($g.cache -is [bool]) { $cfg.Git.Cache = $g.cache }
         }
     } catch { return $cfg }
     return $cfg
@@ -433,6 +454,181 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
     }
 }
 
+# The first 16 hex characters, lower-case, of the SHA-256 of a string's UTF-8 bytes. Names the state
+# file for an id that cannot name itself, and the cache entry for a repository.
+function Get-ShortHash([string] $Text) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $digest = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Text)) } finally { $sha.Dispose() }
+    return [BitConverter]::ToString($digest, 0, 8).Replace('-', '').ToLowerInvariant()
+}
+
+# Writes an object as compact UTF-8 JSON without a BOM: to a sibling .tmp file first, then moved over
+# the real one, which is atomic on both Windows and Linux, so a reader never sees half a file and an
+# interrupted write costs nothing. $false, and nothing written, when the JSON came out empty. Anything
+# that throws is the caller's to swallow.
+function Write-AtomicJson([string] $Path, $Object, [int] $Depth) {
+    $json = ConvertTo-Json -InputObject $Object -Depth $Depth -Compress -ErrorAction Stop
+    if (-not $json) { return $false }
+    $tmp = "$Path.tmp"
+    [System.IO.File]::WriteAllText($tmp, $json, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::Move($tmp, $Path, $true)
+    return $true
+}
+
+# ---- Git probe cache ----
+# Every render is a new process, so without help each one would shell out to git status and wait for
+# it. The branch segment instead keeps the last probe result per repository in a small JSON file and
+# reuses it while the repository's git directory carries the same stamps and the entry is young. The
+# stamps cover the files and ref directories that every commit, checkout, add, reset, merge, fetch and
+# push moves; an edit or a new file in the work tree moves none of them, so those show up when the
+# entry ages out. Every failure here is silent and ends in a probe.
+
+# The work tree at or above $Dir and its git directory, as @{ WorkTree; GitDir }, neither with a
+# trailing separator. The walk stops at the first .git entry that is a repository: a directory holding
+# a HEAD file, or a file whose one line is `gitdir: <path>` (a worktree or a submodule), the path taken
+# relative to the directory holding the file when it is not rooted. A .git directory without a HEAD is
+# not a repository, and the walk carries on above it as git does, so a stray empty .git folder cannot
+# key the cache on the wrong root. $null when $Dir is missing, the walk reaches the file system root, or
+# a gitdir file points nowhere. The walk knows nothing of GIT_CEILING_DIRECTORIES, which is for git
+# itself: a root found here is only a place to look for an entry, and an entry is only written after
+# git has answered.
+function Get-GitRepoRoot([string] $Dir) {
+    try {
+        if (-not $Dir -or -not [System.IO.Directory]::Exists($Dir)) { return $null }
+        $path = [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath($Dir))
+        while ($path) {
+            $dotGit = [System.IO.Path]::Combine($path, '.git')
+            if ([System.IO.Directory]::Exists($dotGit)) {
+                if ([System.IO.File]::Exists([System.IO.Path]::Combine($dotGit, 'HEAD'))) { return @{ WorkTree = $path; GitDir = $dotGit } }
+            } elseif ([System.IO.File]::Exists($dotGit)) {
+                $line = ([System.IO.File]::ReadAllText($dotGit) -split "`r?`n", 2)[0].Trim()
+                if (-not $line.StartsWith('gitdir:')) { return $null }
+                $gitDir = $line.Substring(7).Trim()
+                if (-not $gitDir) { return $null }
+                if (-not [System.IO.Path]::IsPathRooted($gitDir)) { $gitDir = [System.IO.Path]::Combine($path, $gitDir) }
+                $gitDir = [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath($gitDir))
+                if (-not [System.IO.File]::Exists([System.IO.Path]::Combine($gitDir, 'HEAD'))) { return $null }
+                return @{ WorkTree = $path; GitDir = $gitDir }
+            }
+            $path = [System.IO.Path]::GetDirectoryName($path)
+        }
+        return $null
+    } catch { return $null }
+}
+
+# The stamp string for a git directory: the UTC ticks, joined with commas, of the directory itself, of
+# index, HEAD, ORIG_HEAD, FETCH_HEAD, MERGE_HEAD, packed-refs, logs/HEAD, config and info/exclude (0
+# for one that is not there, as index is in a repository with no commits yet), then of refs and every
+# directory below it in ordinal order. Git writes a ref as x.lock renamed into place, and a rename
+# moves the parent directory's stamp, so a fetch, a push or an empty commit that touches no file above
+# still shows. A worktree's git directory names its main repository's in a commondir file, and that
+# directory's stamps follow after a bar, because the refs live there. One FileInfo or DirectoryInfo per
+# stamp. The walk under refs stops at 256 directories: a repository with more (pull-request fetch
+# refs, notes, automation refs) would pay for enumerating and sorting them on every render, so it gets
+# a stamp that can never match - the ticks now behind an over-cap: marker - and Get-CachedGitBranch
+# treats that as no cache at all.
+function Get-GitStamp([string] $GitDir, [switch] $NoCommon) {
+    $ticks = [System.Collections.Generic.List[string]]::new()
+    $ticks.Add([string] [System.IO.DirectoryInfo]::new($GitDir).LastWriteTimeUtc.Ticks)
+    foreach ($rel in @('index', 'HEAD', 'ORIG_HEAD', 'FETCH_HEAD', 'MERGE_HEAD', 'packed-refs', 'logs/HEAD', 'config', 'info/exclude')) {
+        $fi = [System.IO.FileInfo]::new([System.IO.Path]::Combine($GitDir, $rel))
+        $ticks.Add([string] $(if ($fi.Exists) { $fi.LastWriteTimeUtc.Ticks } else { 0 }))
+    }
+    $refs = [System.IO.Path]::Combine($GitDir, 'refs')
+    if ([System.IO.Directory]::Exists($refs)) {
+        $dirs = [System.Collections.Generic.List[string]]::new()
+        foreach ($d in [System.IO.Directory]::EnumerateDirectories($refs, '*', [System.IO.SearchOption]::AllDirectories)) {
+            if ($dirs.Count -ge 256) { return 'over-cap:' + [DateTime]::UtcNow.Ticks }
+            $dirs.Add($d)
+        }
+        $dirs.Sort([System.StringComparer]::Ordinal)
+        $ticks.Add([string] [System.IO.DirectoryInfo]::new($refs).LastWriteTimeUtc.Ticks)
+        foreach ($d in $dirs) { $ticks.Add([string] [System.IO.DirectoryInfo]::new($d).LastWriteTimeUtc.Ticks) }
+    }
+    $stamp = $ticks -join ','
+    if ($NoCommon) { return $stamp }
+    $commonFile = [System.IO.FileInfo]::new([System.IO.Path]::Combine($GitDir, 'commondir'))
+    if ($commonFile.Exists) {
+        $common = ([System.IO.File]::ReadAllText($commonFile.FullName) -split "`r?`n", 2)[0].Trim()
+        if ($common) {
+            if (-not [System.IO.Path]::IsPathRooted($common)) { $common = [System.IO.Path]::Combine($GitDir, $common) }
+            $common = [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath($common))
+            if ($common -ne $GitDir -and [System.IO.Directory]::Exists($common)) {
+                $commonStamp = Get-GitStamp $common -NoCommon
+                if ($commonStamp.StartsWith('over-cap:')) { return $commonStamp }
+                $stamp += '|' + $commonStamp
+            }
+        }
+    }
+    return $stamp
+}
+
+# A cache entry's result as the branch record, or $null when it does not pass the guards the payload
+# path applies: Branch must be text, Dirty a boolean, and each count a whole non-negative number. The
+# record keeps any other key the probe may grow later, as it was stored.
+function Read-CachedRecord($r) {
+    if ($r -isnot [System.Management.Automation.PSCustomObject]) { return $null }
+    if (-not (Test-PayloadText $r.Branch) -or $r.Dirty -isnot [bool]) { return $null }
+    $info = @{}
+    foreach ($prop in $r.PSObject.Properties) { $info[$prop.Name] = $prop.Value }
+    foreach ($key in @('Ahead', 'Behind', 'Staged', 'Modified', 'Untracked', 'Conflicts')) {
+        $n = Get-PayloadNumber $r.$key
+        if ($null -eq $n -or $n -lt 0) { return $null }
+        $info[$key] = $n
+    }
+    return $info
+}
+
+# The cache directory: claude-statusline under TEMP, else TMPDIR, else the runtime's temp path, so the
+# cache works on Linux and macOS too. TEMP is read first so a test can point the cache into its own tree.
+function Get-GitCacheDir {
+    $base = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { [System.IO.Path]::GetTempPath() }
+    return [System.IO.Path]::Combine($base, 'claude-statusline')
+}
+
+# Get-GitBranch with a cache in front of it. The entry for a repository is <hash>.json in $CacheDir,
+# where the hash is Get-ShortHash of the lower-cased work tree path. It holds v (1), root (the work
+# tree), stamps (Get-GitStamp of its git directory), writtenAt (Unix seconds) and result: the record
+# Get-GitBranch returned with whatever keys it had, or null when it returned nothing. The entry is used
+# when it parses, names the same root, carries the same stamps, and writtenAt is within $Ttl seconds of
+# now either way, so a clock that went backwards reads as stale rather than as fresh for years. A null
+# result is a hit too: the slow repository, and the machine with no git, pay for the probe once per
+# lifetime rather than once per render. Anything else - no entry, a stale one, a corrupt one, a record
+# that fails Read-CachedRecord, a read that throws - is a miss: git runs, and the answer is written
+# back through Write-AtomicJson, then the directory is swept of day-old files. With no directory, a
+# $Ttl of 0, no repository found, or a stamp that cannot be taken (the walk threw, or refs are over the
+# cap) this is a plain probe, and nothing is written. The stamps are read before git runs, so a change
+# that lands during the probe invalidates the entry. The directory is created only when there is
+# something to write, and a failure to create it, or to write, costs nothing but the cache.
+function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir, [int] $Ttl) {
+    $repo = if ($CacheDir -and $Ttl -gt 0) { Get-GitRepoRoot $Dir } else { $null }
+    if (-not $repo) { return Get-GitBranch $Dir $TimeoutMs }
+    $root = $repo.WorkTree
+    $stamps = try { Get-GitStamp $repo.GitDir } catch { $null }
+    if (-not $stamps -or $stamps.StartsWith('over-cap:')) { return Get-GitBranch $Dir $TimeoutMs }
+    $path = [System.IO.Path]::Combine($CacheDir, (Get-ShortHash $root.ToLowerInvariant()) + '.json')
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    try {
+        if ([System.IO.File]::Exists($path)) {
+            $j = [System.IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop
+            if ($j -is [System.Management.Automation.PSCustomObject] -and [long] $j.v -eq 1 -and
+                $j.root -is [string] -and $j.root -eq $root -and
+                $j.stamps -is [string] -and $j.stamps -ceq $stamps -and
+                [math]::Abs($now - [long] $j.writtenAt) -lt $Ttl -and $null -ne $j.PSObject.Properties['result']) {
+                if ($null -eq $j.result) { return $null }
+                $info = Read-CachedRecord $j.result
+                if ($info) { return $info }
+            }
+        }
+    } catch { $null = $_ }
+    $info = Get-GitBranch $Dir $TimeoutMs
+    try {
+        [void] [System.IO.Directory]::CreateDirectory($CacheDir)
+        if (Write-AtomicJson $path ([ordered]@{ v = 1; root = $root; stamps = $stamps; writtenAt = $now; result = $info }) 3) { Invoke-SessionStateSweep $CacheDir }
+    } catch { $null = $_ }
+    return $info
+}
+
 # A payload or state field as a finite double, or $null when it is not a number at all: missing, a
 # boolean, a string, an array, NaN or infinite. This is the one guard behind Get-PayloadNumber and
 # Get-StateNumber, each of which then applies its own rule to the result - a count that fits an Int32,
@@ -477,9 +673,7 @@ function Get-SessionStatePath([string] $SessionId, [bool] $Create) {
     if (-not $SessionId) { return $null }
     $name = [regex]::Replace($SessionId, '[^A-Za-z0-9_.-]', '')
     if ($name -cne $SessionId.ToLowerInvariant() -or $name.Length -gt 64) {
-        $sha = [System.Security.Cryptography.SHA256]::Create()
-        try { $digest = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($SessionId)) } finally { $sha.Dispose() }
-        $hash = [BitConverter]::ToString($digest, 0, 8).Replace('-', '').ToLowerInvariant()
+        $hash = Get-ShortHash $SessionId
         $prefix = $name.ToLowerInvariant()
         if ($prefix.Length -gt 47) { $prefix = $prefix.Substring(0, 47) }
         $name = if ($prefix) { "$prefix-$hash" } else { $hash }
@@ -549,12 +743,13 @@ function Merge-SessionState($Previous, $Payload, [long] $Now) {
     }
 }
 
-# Housekeeping, at most once per six hours per directory: a .sweep stamp marks the last finished pass.
-# When it is missing or older than six hours, state files not written for a day are deleted, at most 200
-# in one pass. A pass that hits the cap leaves the stamp alone, so the next render carries on with the
-# backlog instead of draining 200 files every six hours. Ages are absolute, so a stamp or a file dated
-# in the future - a clock change, a restored backup - reads as stale rather than as freshly written,
-# which would park housekeeping until the wall clock caught up.
+# Housekeeping for a directory of JSON files - the state files, and the git cache entries - at most
+# once per six hours per directory: a .sweep stamp marks the last finished pass. When it is missing or
+# older than six hours, .json files not written for a day, and .tmp files an interrupted write left
+# behind, are deleted, at most 200 in one pass. A pass that hits the cap leaves the stamp alone, so the
+# next render carries on with the backlog instead of draining 200 files every six hours. Ages are
+# absolute, so a stamp or a file dated in the future - a clock change, a restored backup - reads as
+# stale rather than as freshly written, which would park housekeeping until the wall clock caught up.
 # The common render pays for one stat of the stamp and nothing else.
 function Invoke-SessionStateSweep([string] $Dir) {
     try {
@@ -563,32 +758,30 @@ function Invoke-SessionStateSweep([string] $Dir) {
         if ([System.IO.File]::Exists($stamp) -and [math]::Abs(($now - [System.IO.File]::GetLastWriteTimeUtc($stamp)).TotalHours) -lt 6) { return }
         $deleted = 0
         $capped = $false
-        foreach ($f in [System.IO.Directory]::EnumerateFiles($Dir, '*.json')) {
-            if ($deleted -ge 200) { $capped = $true; break }
-            if ([math]::Abs(($now - [System.IO.File]::GetLastWriteTimeUtc($f)).TotalDays) -lt 1) { continue }
-            try { [System.IO.File]::Delete($f); $deleted++ } catch { $null = $_ }
+        foreach ($pattern in @('*.json', '*.tmp')) {
+            foreach ($f in [System.IO.Directory]::EnumerateFiles($Dir, $pattern)) {
+                if ($deleted -ge 200) { $capped = $true; break }
+                if ([math]::Abs(($now - [System.IO.File]::GetLastWriteTimeUtc($f)).TotalDays) -lt 1) { continue }
+                try { [System.IO.File]::Delete($f); $deleted++ } catch { $null = $_ }
+            }
+            if ($capped) { break }
         }
         if (-not $capped) { [System.IO.File]::WriteAllText($stamp, '') }
     } catch { $null = $_ }
 }
 
-# Writes a session's state as compact JSON, then runs the sweep. Nothing is written for an empty record,
-# an id that leaves no file name, or JSON that would not serialise - a half-written or empty file would
-# cost the whole ring rather than one delta, so the record goes to a sibling .tmp file and is moved over
-# the real one, which is atomic on both Windows and Linux. Every failure is swallowed: the line has
-# already been printed. Concurrent renders of one session still race, and the last writer wins; a lock
-# file is out of scope for the same reason, the cost of losing is one missing delta.
+# Writes a session's state through Write-AtomicJson, then runs the sweep. Nothing is written for an
+# empty record, an id that leaves no file name, or JSON that would not serialise - a half-written or
+# empty file would cost the whole ring rather than one delta, which is why the write is atomic. Every
+# failure is swallowed: the line has already been printed. Concurrent renders of one session still
+# race, and the last writer wins; a lock file is out of scope for the same reason, the cost of losing
+# is one missing delta.
 function Write-SessionState([string] $SessionId, $State) {
     try {
         if (-not $State) { return }
         $path = Get-SessionStatePath $SessionId $true
         if (-not $path) { return }
-        $json = ConvertTo-Json -InputObject $State -Depth 4 -Compress -ErrorAction Stop
-        if (-not $json) { return }
-        $tmp = "$path.tmp"
-        [System.IO.File]::WriteAllText($tmp, $json, [System.Text.UTF8Encoding]::new($false))
-        [System.IO.File]::Move($tmp, $path, $true)
-        Invoke-SessionStateSweep (Split-Path $path -Parent)
+        if (Write-AtomicJson $path $State 4) { Invoke-SessionStateSweep (Split-Path $path -Parent) }
     } catch { $null = $_ }
 }
 
@@ -829,14 +1022,18 @@ function Read-PayloadStatus($git) {
     return $info
 }
 
-# Branch from the payload's git object when present; otherwise from git status in current_dir. Either
-# way the record has the same keys. Ahead/behind counts only exist on the git path; the file counts come
-# from either source. All of them render dim between the name and the pencil, arrows first, then +staged
-# ~modified ?untracked, then the conflict glyph in red. Short is icon, name and pencil, so a wide line
-# sheds the counts before it sheds whole segments. Zero counts render nothing, so a clean tree is the
-# same text as before.
+# Branch from the payload's git object when present; otherwise from git status in current_dir, through
+# the probe cache, which is handed no directory when the config turns it off and does the rest of the
+# deciding itself. Either way the record has the same keys. Ahead/behind counts only exist on the git
+# path; the file counts come from either source. All of them render dim between the name and the
+# pencil, arrows first, then +staged ~modified ?untracked, then the conflict glyph in red. Short is
+# icon, name and pencil, so a wide line sheds the counts before it sheds whole segments. Zero counts
+# render nothing, so a clean tree is the same text as before.
 function Get-BranchSegment($d, $cfg) {
-    $info = if ($null -ne $d.git) { Read-PayloadStatus $d.git } else { Get-GitBranch $d.workspace.current_dir $gitTimeoutMs }
+    $info = if ($null -ne $d.git) { Read-PayloadStatus $d.git } else {
+        $cacheDir = if ($cfg.Git.Cache) { Get-GitCacheDir } else { $null }
+        Get-CachedGitBranch $d.workspace.current_dir $cfg.Git.TimeoutMs $cacheDir $cfg.Git.CacheSeconds
+    }
     if (-not $info) { return $null }
     $isMain = $info.Branch -in @('main', 'master')
     $icon = if ($isMain) { $iconHome } else { $iconBranch }

@@ -32,7 +32,7 @@ how close you are to a rate limit, and which modes are on.
 - Session cost and lines added or removed.
 - Badges for fast mode, extended thinking, effort level, and vim mode. They disappear when nothing is on.
 - The branch's pull request as `#12`, green when approved and red when changes are requested. Ctrl-click it in Windows Terminal to open the PR.
-- Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory.
+- Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory, cached for a few seconds so most renders never start git.
 - Counts beside the branch name: `↑N` `↓N` commits ahead of or behind the upstream, `+N` staged, `~N` changed, `?N` untracked, and a red triangle with a count when files are in conflict. See [Branch counts](#branch-counts).
 - One line or two, plain separators or powerline blocks, and any segment switched off, all from `statusline.json`.
 - Fits the terminal width. A line that is too long first loses detail from the limits, context and branch segments, then loses whole segments from the right, so lines stop wrapping in normal use.
@@ -119,6 +119,11 @@ The script reads `statusline.json` from its own folder, so after installing that
   "state": true,
   "thresholds": { "warn": 60, "bad": 85 },
   "icons": {},
+  "git": {
+    "timeoutMs": 1500,
+    "cacheSeconds": 5,
+    "cache": true
+  },
   "segments": {
     "model": true,
     "context": true,
@@ -148,6 +153,9 @@ order, and a segment added by a later release appears on its own. The installer 
 | `rows` | `[["model", "branch"], ["context", "cost"]]` | The two lines of layout `two`, with the same rules per row. A segment named on the first row is not repeated on the second, and a row may be empty. Left out, the script's own two rows apply, new segments included. Anything but exactly two lists, or two lists naming no segment, does the same. |
 | `thresholds` | `{ "warn": 20, "bad": 40 }` | Where the context meter and the rate limits turn yellow and red: whole numbers from 0 to 100 (`20` or `20.0`, not `20.5`), `warn` no higher than `bad`. Either value wrong keeps 60 and 85 for both. A 1M window keeps its own 70 and 90. |
 | `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cost`, `folder`, `chevron`, `branch`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `pr`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`. A name the list does not have, or a value that is not a printable code point (not hex, above `10FFFF`, a surrogate, or a control character such as `A` or `1B`), keeps the built-in glyph. |
+| `git.timeoutMs` | `100` to `10000` | How long the branch segment waits for `git status`, in milliseconds, before it gives up and leaves the segment out. A value outside the range is clamped to it. |
+| `git.cacheSeconds` | `0` to `300` | How long a `git status` result is reused for, in seconds, before git is asked again. `0` asks git on every render. Clamped like `timeoutMs`. |
+| `git.cache` | `true`, `false` | `false` asks git on every render, whatever `cacheSeconds` says. |
 
 A config only needs the keys it changes. This one puts the branch beside the model, colours the
 meter early and uses a house glyph on `main`:
@@ -184,6 +192,21 @@ writes it. Upgrading over an existing `statusline.json` leaves that file alone, 
 a `state` key gets the default, which is on. `.\install.ps1 -Uninstall` prints where the files are
 so you can delete the folder. The same goes for the `pr` segment: an existing `statusline.json`
 without a `pr` key shows it; add `"pr": false` under `segments` to turn it off.
+
+The branch segment keeps the last `git status` answer for each repository in `claude-statusline`
+under the same temp folder (`TMPDIR` or the runtime's temp path when there is no `TEMP`), one small
+JSON file per repository named by a hash of its path, and reuses it for `git.cacheSeconds` while the
+repository's git directory is unchanged: the timestamps of `.git` itself, of `index`, `HEAD`,
+`ORIG_HEAD`, `FETCH_HEAD`, `MERGE_HEAD`, `packed-refs`, `logs/HEAD`, `config` and `info/exclude`,
+and of every directory under `refs` (up to 256 of them; a repository with more is not cached). A
+commit, checkout, add, reset, merge, fetch or push moves one of those, so it shows straight away, and
+so does a change to the repository's own config or exclude file; an edit or a new file in the work
+tree does not, and neither does a change to your global git config or `core.excludesFile`, so those
+can lag by up to five seconds. A worktree or a submodule, where `.git` is a file, is cached under its own
+path, with its main repository's refs counted too. A `git status` that failed or timed out is
+remembered for the same lifetime, so a slow repository pays the wait once per lifetime, not once per
+render. A `statusline.json` from before this cache has no `git` block and gets the defaults: the
+cache on, five seconds, a 1.5 second timeout. Add `"git": { "cache": false }` to turn it off.
 
 Claude Code tells the script the terminal width. When a line is too long the script shortens it in
 two stages:
@@ -287,7 +310,7 @@ Segment order, the two rows, the colour cut-offs and the glyphs are `statusline.
 under Configuration. What is left sits at the top of `statusline.ps1`:
 
 - `Get-IconDefault` holds the built-in code point of every glyph, under the name the `icons` key takes. The [Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet) lists alternatives.
-- `$gitTimeoutMs` is how long the branch segment waits for `git status`.
+- How long the branch segment waits for `git status` is `git.timeoutMs` in `statusline.json`, not a constant in the script.
 - `$defaultEffort` is the level at which the effort badge is hidden.
 - The 70% and 90% cut-offs of a 1M window are passed by the context block to `Get-ThresholdRole`; `thresholds` does not move them.
 - `Get-Palette` holds the colours for both styles.
@@ -303,7 +326,16 @@ your `PATH` and that the `command` path in `settings.json` exists.
 
 No branch segment: the script runs `git status` in the session's working directory. Check that
 `git` is on your `PATH` and that the directory is inside a repository. If `git status` takes longer
-than 1.5 seconds the segment is skipped for that refresh.
+than 1.5 seconds the segment is skipped for that refresh; `git.timeoutMs` in `statusline.json`
+raises the limit for a large repository or a slow disk.
+
+The branch segment is a few seconds behind: that is the cache. The last `git status` answer for
+each repository sits in `%TEMP%\claude-statusline\` and is reused for five seconds unless something
+under `.git` changes (a commit, checkout, add, reset, merge, fetch or push all count, and so does an
+edit to `.git/config` or `.git/info/exclude`), so an edit or a new file in the work tree, or a change
+to your global git config or `core.excludesFile`, can take up to five seconds to show.
+`git.cacheSeconds` shortens the window, `0` or `"cache": false` turns it off. The folder is safe to
+delete at any time; the next render writes it again, and entries not written for a day are swept.
 
 No arrows after the branch name: the branch has no upstream, or the upstream branch was deleted.
 `git branch -u origin/<branch>` sets one.
