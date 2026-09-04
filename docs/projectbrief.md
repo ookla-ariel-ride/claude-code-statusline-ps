@@ -5,7 +5,8 @@
 A PowerShell status line for Claude Code on Windows. It replaces the default status line with one
 or two lines showing the active model, context-window usage, session cost, lines changed, rate
 limits, mode badges, the branch's pull request as a clickable link, current folder, and the git
-branch with its ahead, behind and file-change counts, rendered with Nerd Font glyphs and ANSI colour.
+branch with its worktree name and its ahead, behind and file-change counts, rendered with Nerd Font
+glyphs and ANSI colour.
 
 ## Problem
 
@@ -42,7 +43,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | `%TEMP%\claude-statusline-state\` | One JSON file per session (`<session_id>.json`, version 1): last cost, token totals, context and 5-hour percentages, and a ring of up to twenty cost readings. Written after the line is printed, swept of day-old files at most every six hours. `~/.claude/statusline-state` when `TEMP` is empty. |
 | `%TEMP%\claude-statusline\` | The git probe cache: one JSON file per repository, named by the first 16 hex characters of the SHA-256 of the lower-cased work tree path, holding the root, a stamp string (the UTC ticks of the git directory, of `index`, `HEAD`, `ORIG_HEAD`, `FETCH_HEAD`, `MERGE_HEAD`, `packed-refs`, `logs/HEAD`, `config` and `info/exclude`, and of every directory under `refs`, capped at 256; a worktree's main repository after a bar), the write time and the last `git status` record, or null when the probe failed. Read before the branch segment is built and reused for `git.cacheSeconds` while the stamp string matches; swept of day-old files with the state sweep. `TMPDIR`, then the runtime's temp path, when `TEMP` is empty. |
 | `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, checks the git fallback in temporary repositories: clean, dirty, unborn, detached, ahead, behind, a mixed tree, a git that fails and one that hangs, the probe cache with a counting stand-in and end to end with a failing git on `PATH`, exercises the session state file end to end, runs `install.ps1` against a settings file in a temp folder, and pipes every subagent payload through `subagent-statusline.ps1`, reading the replies the way the panel does and checking the copied helpers for drift. `-Columns`, `-Config`, `-Raw`. |
-| `samples/*.json` | Every payload in `samples/` goes through the render matrix. One per case: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort, a repository identity below its project root, a 1M window with `exceeds_200k_tokens` true, a feature branch with an approved pull request. |
+| `samples/*.json` | Every payload in `samples/` goes through the render matrix. One per case: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort, a repository identity below its project root, a 1M window with `exceeds_200k_tokens` true, a feature branch with an approved pull request, a session in a git worktree. |
 | `samples/subagent/*.json` | Subagent panel payloads, in their own subdirectory so the render matrix, which globs `samples/` without `-Recurse`, never sees them. One per case: two running agents, a task with nothing but an id, an empty task list, hostile fields (an escape in a name, a blank and an array id, `20.0` and `2e1` token counts, a zero window, a label too long for the panel), and a 1M window with no `columns` key. |
 | `docs/render-screenshot.ps1` | Renders a payload and config through the script and captures the terminal as the README screenshot. |
 | `docs/render-icons.ps1` | Extracts the Nerd Font glyphs used by the script as SVG outlines for `docs/icons/`. |
@@ -59,7 +60,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | Badges | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dim glyphs |
 | PR | `pr.number`, `pr.url`, `pr.review_state` (`pr.kind` is read but not shown) | Pull-request glyph and `#N`, the whole text wrapped in an OSC 8 hyperlink to `pr.url`. Green on `approved`, red on `changes requested` (underscores and case ignored), dim for anything else. Omitted without a `pr` object or a whole, positive `number`; a `url` that is not `http(s)` leaves the text unlinked. No short form |
 | Folder | `workspace.repo.owner`, `workspace.repo.name`, `workspace.project_dir`, `workspace.current_dir` | Blue. `owner/name` when the payload carries a repository, followed by `›` and the leaf of `current_dir` when it differs from `project_dir`. The leaf alone without a repository or with `"folder": "leaf"` in the config. Short form is the repository name |
-| Branch | `git status --porcelain=v1 --branch` in `workspace.current_dir`. The Claude Code payload has no `git` object, so this is the normal path; a payload that does carry `git.branch` and `git.status` (the test samples) is used as is | Home glyph on main/master, branch glyph otherwise. Yellow with pencil glyph when dirty, magenta when clean. Between the name and the pencil, dim counts in a fixed order: `↑N` `↓N` ahead of and behind the upstream (header bracket, git path only), `+N` staged, `~N` changed in the work tree, `?N` untracked entries, then a red triangle with the conflict count. Zero counts are left out. The short form used at a narrow width is icon, name and pencil |
+| Branch | `git status --porcelain=v1 --branch` in `workspace.current_dir`. The Claude Code payload has no `git` object, so this is the normal path; a payload that does carry `git.branch` and `git.status` (the test samples) is used as is. The worktree badge is payload-only: `worktree.name`, `worktree.path`, `workspace.git_worktree` | Home glyph on main/master, branch glyph otherwise. Yellow with pencil glyph when dirty, magenta when clean. A session in a git worktree gets the fork glyph and the worktree name straight after the branch name: `worktree.name` when it is usable text, otherwise the leaf of `worktree.path` when `workspace.git_worktree` is exactly `true`, otherwise the glyph on its own; no worktree at all means no badge, and neither field changes the colour. Between the badge and the pencil, dim counts in a fixed order: `↑N` `↓N` ahead of and behind the upstream (header bracket, git path only), `+N` staged, `~N` changed in the work tree, `?N` untracked entries, then a red triangle with the conflict count. Zero counts are left out. The short form used at a narrow width is icon, name and pencil, so the badge sheds with the counts |
 
 ## Key design decisions
 
@@ -180,7 +181,8 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 Two-line layout, powerline style, config file, width fitting and the git fallback are implemented.
 The branch segment shows ahead and behind counts (#16) and staged, changed, untracked and conflict
 counts (#17), all from the one `git status` call, and that call is cached per repository with its
-timeout and lifetime in the config (#18). The model segment marks a 1M window (#9), the limits
+timeout and lifetime in the config (#18), and it shows the worktree name beside the branch when the
+payload names one (#11). The model segment marks a 1M window (#9), the limits
 segment shows the spend limit (#7) and paces the 5-hour figure against its window (#6), and the
 folder segment shows `owner/name` (#10). The
 pull-request segment (#12) links `#N` to the PR with OSC 8. Segment order, the two rows, the colour
@@ -198,9 +200,9 @@ the link helper (#12) and the git cache (#18). A registry refactor that let the 
 segment builders would remove the copied helpers in `subagent-statusline.ps1`; it is not worth it for
 ten short functions and a drift test. The intended order for the rest:
 
-1. New segments: cache warmth and hit ratio, worktree name, links on the folder and branch, agent
-   and session badges, cost per turn, session clock (#2, #3, #5, #8, #11, #13, #14). #5 reads the
-   state file; #13 reuses `Format-Link`.
+1. New segments: cache warmth and hit ratio, links on the folder and branch, agent
+   and session badges, cost per turn, session clock (#2, #3, #5, #8, #13, #14). #5 reads the
+   state file; #13 reuses `Format-Link` around the finished branch and folder text.
 2. Config: presets, a quiet block, an alarm colour (#21 to #23). Each is one key over
    `Merge-StatusConfigFile`.
 3. Style and terminal: an ASCII style, a light palette, a right-aligned group with a clock, taskbar

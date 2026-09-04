@@ -97,6 +97,7 @@ function Get-IconDefault {
         folder   = 0xF07C    # nf-fa-folder_open
         chevron  = 0x203A    # single right-pointing angle quotation mark (between owner/name and the leaf)
         branch   = 0xE0A0    # powerline branch
+        worktree = 0xF04C1   # nf-md-source_fork (the session is in a git worktree)
         home     = 0xF015    # nf-fa-home  (on main/master)
         dirty    = 0xF040    # nf-fa-pencil (uncommitted changes)
         ahead    = 0x2191    # up arrow (commits ahead of upstream)
@@ -1082,6 +1083,7 @@ $iconCost = $icons.cost
 $iconFolder = $icons.folder
 $iconChevron = $icons.chevron
 $iconBranch = $icons.branch
+$iconWorktree = $icons.worktree
 $iconHome = $icons.home
 $iconDirty = $icons.dirty
 $iconAhead = $icons.ahead
@@ -1352,13 +1354,41 @@ function Read-PayloadStatus($git) {
     return $info
 }
 
+# The name of the worktree the session is in, for the badge inside the branch segment. Three answers:
+# the name, when worktree.name is text; the empty string, meaning "in a worktree, with nothing to call
+# it", which draws the glyph on its own; and $null, meaning the session is not in a worktree at all and
+# there is no badge. worktree.name is the field to use when Claude Code sends one, whatever
+# workspace.git_worktree says, because a payload that names a worktree is in one. Without a usable name
+# the boolean is the signal, and only a real boolean: a "true" string or a 1 is a payload that does not
+# mean what this reads, so it gets no badge. Then the last segment of worktree.path stands in, taken
+# after the separators are folded and any trailing one is dropped, so C:\src\wt-x\ and /home/j/wt-x
+# both give wt-x. Both fields go through Test-PayloadText, the one guard the branch name and the repo
+# owner and name already pass: a worktree directory is named by whoever made the repository, not by the
+# person at the keyboard, and a name carrying an escape would recolour or break the rest of the line.
+# Whatever that guard refuses, this refuses with it, rather than keeping a second rule of its own that
+# could fall behind. Nothing here starts a process or touches the disk - the payload is the only
+# source, so a render costs no more than it did.
+function Get-WorktreeName($d) {
+    $wt = $d.worktree
+    if (Test-PayloadText $wt.name) { return "$($wt.name)".Trim() }
+    if ($d.workspace.git_worktree -isnot [bool] -or -not $d.workspace.git_worktree) { return $null }
+    if (Test-PayloadText $wt.path) {
+        $path = ("$($wt.path)" -replace '/', '\').TrimEnd('\')
+        $leaf = $path.Substring($path.LastIndexOf('\') + 1)
+        if ($leaf) { return $leaf }
+    }
+    return ''
+}
+
 # Branch from the payload's git object when present; otherwise from git status in current_dir, through
 # the probe cache, which is handed no directory when the config turns it off and does the rest of the
 # deciding itself. Either way the record has the same keys. Ahead/behind counts only exist on the git
 # path; the file counts come from either source. All of them render dim between the name and the
-# pencil, arrows first, then +staged ~modified ?untracked, then the conflict glyph in red. Short is
-# icon, name and pencil, so a wide line sheds the counts before it sheds whole segments. Zero counts
-# render nothing, so a clean tree is the same text as before.
+# pencil, arrows first, then +staged ~modified ?untracked, then the conflict glyph in red. A session in
+# a git worktree gets the fork glyph and the worktree's name in front of the counts, from the payload
+# rather than from git. Short is icon, name and pencil, so a wide line sheds the badge and the counts
+# before it sheds whole segments. Zero counts render nothing, and a session outside a worktree gets no
+# badge, so an ordinary clean checkout is the same text as before.
 function Get-BranchSegment($d, $cfg) {
     $info = if ($null -ne $d.git) { Read-PayloadStatus $d.git } else {
         $cacheDir = if ($cfg.Git.Cache) { Get-GitCacheDir } else { $null }
@@ -1369,6 +1399,12 @@ function Get-BranchSegment($d, $cfg) {
     $icon = if ($isMain) { $iconHome } else { $iconBranch }
     $role = if ($info.Dirty) { 'warn' } else { 'branch' }
     $name = "$icon $($info.Branch)"
+    # The worktree badge, when the session is in one: the fork glyph and the name, straight after the
+    # branch name, so the two halves of "which checkout is this" read together and the counts and the
+    # pencil keep their places behind them. It is not in Short, so a narrow line sheds it with the
+    # counts, and it is not in the role either: a worktree is never the reason a colour changes.
+    $worktree = Get-WorktreeName $d
+    $badge = if ($null -eq $worktree) { '' } elseif ($worktree) { " $iconWorktree $worktree" } else { " $iconWorktree" }
     $counts = ''
     # Record key, prefix and inline colour role for each count, in the order they render.
     foreach ($row in @(@('Ahead', $iconAhead, 'track'), @('Behind', $iconBehind, 'track'), @('Staged', '+', 'track'),
@@ -1377,7 +1413,7 @@ function Get-BranchSegment($d, $cfg) {
         if ($n -gt 0) { $counts += ' ' + (Format-Inline $row[2] "$($row[1])$n" $role $cfg.Style) }
     }
     $pencil = if ($info.Dirty) { " $iconDirty" } else { '' }
-    return @{ Name = 'branch'; Text = "$name$counts$pencil"; Short = "$name$pencil"; Role = $role; Bold = $false }
+    return @{ Name = 'branch'; Text = "$name$badge$counts$pencil"; Short = "$name$pencil"; Role = $role; Bold = $false }
 }
 
 # ---- Build, lay out, fit, print ----
