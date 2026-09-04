@@ -227,14 +227,14 @@ Write-Host '== unit: registry' -ForegroundColor Cyan
 # out by hand, so a change there is a deliberate one. Array order is layout one.
 $registryTable = @(
     @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 2;     DropRank = 8;     Row = 2; RowRank = 1 }
-    @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = $null; DropRank = 3;     Row = 2; RowRank = 3 }
+    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 3;     DropRank = 8;     Row = 2; RowRank = 1 }
+    @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 3;     Row = 2; RowRank = 3 }
     @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
-    @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
+    @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 4;     Row = 2; RowRank = 2 }
     @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 5 }
     @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 4 }
-    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 4;     DropRank = 6;     Row = 1; RowRank = 2 }
-    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 3;     DropRank = 7;     Row = 1; RowRank = 3 }
+    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 5;     DropRank = 6;     Row = 1; RowRank = 2 }
+    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 4;     DropRank = 7;     Row = 1; RowRank = 3 }
 )
 $registry = @(Get-SegmentRegistry)
 Confirm-Equal $registry.Count $registryTable.Count 'registry: nine records'
@@ -247,7 +247,9 @@ for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
         Confirm-Equal $got[$key] $want[$key] "registry: $($want.Name) $key"
     }
 }
-Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'limits,context,branch,folder' 'registry: shrink order'
+# Cost is first in the shrink order and third in the drop order: its per-turn delta is the first detail
+# on the line to go, and the segment itself still goes after lines and badges, which is where it was.
+Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'cost,limits,context,branch,folder' 'registry: shrink order'
 Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,badges,cost,limits,pr,folder,branch,context' 'registry: drop order'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 1) -join ',') 'model,folder,branch,pr,badges' 'registry: layout two row 1'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 2) -join ',') 'context,limits,cost,lines' 'registry: layout two row 2'
@@ -1499,6 +1501,22 @@ Confirm-Equal (Get-FittedLine @() 'plain' 40) $null 'fit: no segments gives null
 $line = Get-FittedLine $fit 'powerline' 30
 Confirm-True ((Get-VisibleWidth $line) -le 30) 'fit: powerline respects width'
 
+# A cost with a Short form (its per-turn delta stripped) sheds it first of all in stage 1, ahead of the
+# limits figures and the context counts, and long before any whole segment goes. Full width is 46 here;
+# cost short gives 44, and the set with no delta at all is the 44 the checks above measure.
+$fitCost = Get-FitSegmentSet
+$fitCost[2] = @{ Name = 'cost'; Text = 'AAAA'; Short = 'AA'; Role = 'dim'; Bold = $false }
+Confirm-Equal (Get-VisibleWidth (Get-FittedLine $fitCost 'plain' $null)) 46 'fit: the delta widens the line'
+$line = Get-FittedLine $fitCost 'plain' 45
+Confirm-Equal (Get-VisibleWidth $line) 44 'fit: stage 1 sheds the cost delta first'
+Confirm-True (-not $line.Contains('AAAA') -and $line.Contains('AA') -and $line.Contains('IIIIII') -and $line.Contains('CCCCCC') -and $line.Contains('LL')) 'fit: only the cost delta went at 45, limits and context untouched and nothing dropped'
+# And the shed happens before the limits figures whatever else is on the line: at 43 the delta is gone
+# and limits is short, at 44 the delta alone is enough.
+$line = Get-FittedLine $fitCost 'plain' 44
+Confirm-True (-not $line.Contains('AAAA') -and $line.Contains('IIIIII')) 'fit: the delta alone gets the line to 44'
+$line = Get-FittedLine $fitCost 'plain' 43
+Confirm-True (-not $line.Contains('AAAA') -and $line.Contains('III') -and -not $line.Contains('IIIIII')) 'fit: the delta goes before the limits figures'
+
 # A branch with a Short form (its ahead/behind counts stripped) sheds it in stage 1, after context and
 # before any whole segment goes. Full width is 46 here; limits short gives 43, context 40, branch 38.
 $fitBranch = Get-FitSegmentSet
@@ -1745,6 +1763,47 @@ Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload 0.02) $bandCfg)) 'cost
 # A cost that is not a number cannot be compared, so the guard stands aside and the builder does what
 # it always did with it, which is to format whatever converts.
 Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload '0.50') $quiet1)) 'cost quiet 1: a string cost is not a figure the guard can read, so it is not hidden'
+
+# The per-turn delta: the change since the total the previous render wrote into the state file, in
+# parentheses behind the total, and only when it is worth at least a cent. Every expected figure here is
+# built with the same '{0:N2}' the segment uses, so a culture that writes 12,50 is compared against its
+# own text rather than against an English one.
+function Get-CostState($Usd) { return @{ v = 1; cost_usd = $Usd } }
+function Get-CostTotalText($Usd) { return "$iconCost `$" + ('{0:N2}' -f $Usd) }
+function Get-CostDeltaText($Usd, $Delta) { return (Get-CostTotalText $Usd) + " (+`$" + ('{0:N2}' -f $Delta) + ')' }
+function Get-CostText($Usd, $State) { return (Get-CostSegment (Get-CostPayload $Usd) $quietOff $State).Text }
+$costTotal = Get-CostTotalText 1.07
+Confirm-Equal (Get-CostText 1.07 (Get-CostState 0.95)) (Get-CostDeltaText 1.07 0.12) 'cost delta: 0.95 to 1.07 shows twelve cents'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState 0.95)).Short $costTotal 'cost delta: the short form is the total on its own'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState 0.95)).Role 'dim' 'cost delta: the role is still dim'
+# Under a cent there is nothing to say. 1.07 - 1.066 is 0.004, which is not a cent however it is rounded.
+Confirm-Equal (Get-CostText 1.07 (Get-CostState 1.066)) $costTotal 'cost delta: a change under a cent shows nothing'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState 1.066)).Short $null 'cost delta: no suffix means no short form, so the fitting skips the segment as before'
+# Exactly a cent is the first delta that shows. 1.08 - 1.07 is 0.010000000000000009 in binary floating
+# point, and 0.03 - 0.02 is 0.009999999999999998: both are a cent, and the figure the text prints is the
+# figure the test reads, so both show.
+Confirm-Equal (Get-CostText 1.08 (Get-CostState 1.07)) (Get-CostDeltaText 1.08 0.01) 'cost delta: exactly a cent shows'
+Confirm-Equal (Get-CostText 0.03 (Get-CostState 0.02)) (Get-CostDeltaText 0.03 0.01) 'cost delta: a cent that binary floating point leaves just short still shows'
+# No previous total to compare with, in every shape that can take.
+Confirm-Equal (Get-CostText 1.07 $null) $costTotal 'cost delta: no state gives the plain total'
+Confirm-Equal (Get-CostText 1.07 @{ v = 1 }) $costTotal 'cost delta: a state record with no cost gives the plain total'
+Confirm-Equal (Get-CostText 1.07 (Get-CostState $null)) $costTotal 'cost delta: a null cost in the state gives the plain total'
+Confirm-Equal (Get-CostText 1.07 (Get-CostState 'lots')) $costTotal 'cost delta: a state cost that is not a figure gives the plain total'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff).Text $costTotal 'cost delta: a caller that passes no state at all gives the plain total'
+# A record older than the previous render - a render in between that printed but wrote nothing, or one
+# that exited before the write - gives the change since the total the file holds. That figure is still
+# the difference between two totals this session really reached, and no render in between showed a total
+# of its own for it to contradict.
+Confirm-Equal (Get-CostText 1.3 (Get-CostState 1.0)) (Get-CostDeltaText 1.3 0.3) 'cost delta: a state two turns old gives the change since the total it holds'
+# A total that did not move, and one that went backwards - a state file from another machine's clock -
+# print nothing. Only a rise is a delta.
+Confirm-Equal (Get-CostText 1.07 (Get-CostState 1.07)) $costTotal 'cost delta: an unchanged total shows nothing'
+Confirm-Equal (Get-CostText 1.07 (Get-CostState 2.5)) $costTotal 'cost delta: a total that went down shows nothing'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState 2.5)).Short $null 'cost delta: a total that went down leaves no short form either'
+# The quiet guard reads the session total, not the delta: an expensive turn inside a session the user
+# called boring is still boring, and a segment the guard hides has no delta to show.
+Confirm-Equal (Get-CostSegment (Get-CostPayload 0.4312) $quiet1 (Get-CostState 0.1)) $null 'cost delta: the quiet guard still hides the whole segment'
+Confirm-Equal (Get-CostSegment ([pscustomobject]@{}) $quietOff (Get-CostState 0.95)) $null 'cost delta: no cost object is still no segment'
 
 Write-Host '== unit: quiet guard' -ForegroundColor Cyan
 $quietTable = @{ Quiet = @{ cost = 1.0; context = 30.0; limits = 0.0 } }
@@ -3832,13 +3891,42 @@ Confirm-Equal $file.v 1 'state render: file is version 1'
 Confirm-Equal $file.cost_usd 1.07 'state render: cost_usd matches the payload'
 Confirm-Equal $file.history.Count 1 'state render: the same cost twice is one history entry'
 Confirm-True ([math]::Abs($file.updated_at - [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) -lt 120) 'state render: updated_at is now'
+# The third render is the first with a total that moved, so it is the first to carry a delta: the file
+# holds 1.07 and the payload says 1.50. This is the feature end to end - a figure built from a file
+# written by an earlier process.
 $r3 = Invoke-StatusLine (Get-StatePayloadJson 1.5) $null 0
-Confirm-NormalRender $r3 '1.50' 'state render third'
+Confirm-NormalRender $r3 '1.50 (+$0.43)' 'state render third'
 $file = Get-Content -LiteralPath (Join-Path $renderStateDir 'sess-1.json') -Raw | ConvertFrom-Json
 Confirm-Equal $file.cost_usd 1.5 'state render: cost_usd follows the payload'
 Confirm-Equal $file.history.Count 2 'state render: a new cost adds a history entry'
 Confirm-Equal $file.history[1].cost_usd 1.5 'state render: newest history entry last'
 Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f 'state render', $r3.Ms, (ConvertTo-PlainText ($r3.Lines -join ' ')))
+
+# The delta is the first thing the fitting sheds. The width here is the plain line's own, measured
+# rather than counted out by hand, so the render has room for everything except the suffix: it comes
+# back as the line it would have been with no state at all, with nothing dropped. COLUMNS is one more
+# than the target because the script leaves the last column free.
+$r4 = Invoke-StatusLine (Get-StatePayloadJson 1.62) $null 0
+Confirm-NormalRender $r4 '1.62 (+$0.12)' 'state render delta'
+$deltaPlain = "$iconModel M $chevron $iconCost `$1.74 $chevron $iconHome main"
+$r5 = Invoke-StatusLine (Get-StatePayloadJson 1.74) $null ((Measure-VisibleWidth $deltaPlain) + 1)
+Confirm-NormalRender $r5 '1.74' 'state render delta shed to fit'
+$r6 = Invoke-StatusLine (Get-StatePayloadJson 1.86) $null 120
+Confirm-NormalRender $r6 '1.86 (+$0.12)' 'state render delta at 120 columns'
+# A render that changes nothing - the refresh timer firing with no API call in between - sees a delta of
+# zero and prints the total alone, which is the documented behaviour rather than a missing figure.
+$r7 = Invoke-StatusLine (Get-StatePayloadJson 1.86) $null 0
+Confirm-NormalRender $r7 '1.86' 'state render: a repeat of the same total carries no delta'
+
+# A render that writes no state leaves the next delta spanning both turns. "state": false is the seam
+# used here, but a render that ends before the write - the zero-segment exit is one - has the same
+# effect, and this is what the next render does with it: the change since the last total the file holds,
+# which is a real difference between two totals this session reached. The render in between printed no
+# total of its own, so there is nothing on any line for the wider figure to contradict.
+$r8 = Invoke-StatusLine (Get-StatePayloadJson 1.9) $stateOffConfig 0
+Confirm-NormalRender $r8 '1.90' 'state stale: a render with the state file off shows no delta of its own'
+$r9 = Invoke-StatusLine (Get-StatePayloadJson 2.0) $null 0
+Confirm-NormalRender $r9 '2.00 (+$0.14)' 'state stale: the next delta spans both turns, from the last total the file holds'
 
 # A truncated or empty file is read as no state, the line is normal, and the file is replaced.
 foreach ($case in @(@{ Name = 'truncated'; Text = '{ "v": 1, "cost' }, @{ Name = 'empty'; Text = '' })) {

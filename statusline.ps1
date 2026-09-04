@@ -219,25 +219,27 @@ function Get-VisibleWidth([string] $Text) {
 
 # The segment table: one record per segment, in layout-one order. It is the single source for the config
 # defaults, the shrink and drop order in Get-FittedLine, the build dispatch and the layout-two rows.
-# Build names the builder function; the build loop calls it with the payload and the config, and a builder
-# that only takes the payload leaves the config in $args. It returns the segment record or $null. Default
+# Build names the builder function; the build loop calls it with the payload, the config and the session
+# state, and a builder that wants fewer of those leaves the rest in $args, which is why the call shape is
+# one line there rather than a signature per segment. It returns the segment record or $null. Default
 # seeds Read-StatusConfig. ShrinkRank orders stage one of Get-FittedLine for the segments that can have a
-# Short form; a record whose Short is $null is skipped there. DropRank orders stage two, and the model
-# record has none because it is never dropped.
+# Short form; a record whose Short is $null is skipped there, so a rank costs nothing on a render where
+# that segment has no detail to shed. DropRank orders stage two, and the model record has none because it
+# is never dropped.
 # Row is the layout-two line and RowRank the position on it, because a row is not in layout-one order.
 # The table is built once per run: a render asks for it several times, and this is on the startup path.
 function Get-SegmentRegistry {
     if (-not $script:segmentRegistry) {
         $script:segmentRegistry = @(
             @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 2;     DropRank = 8;     Row = 2; RowRank = 1 }
-            @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = $null; DropRank = 3;     Row = 2; RowRank = 3 }
+            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 3;     DropRank = 8;     Row = 2; RowRank = 1 }
+            @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 3;     Row = 2; RowRank = 3 }
             @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
-            @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
+            @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 4;     Row = 2; RowRank = 2 }
             @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 5 }
             @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 4 }
-            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 4;     DropRank = 6;     Row = 1; RowRank = 2 }
-            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 3;     DropRank = 7;     Row = 1; RowRank = 3 }
+            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 5;     DropRank = 6;     Row = 1; RowRank = 2 }
+            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 4;     DropRank = 7;     Row = 1; RowRank = 3 }
         )
     }
     return $script:segmentRegistry
@@ -672,7 +674,9 @@ function Format-Line($Segments, [string] $Style) {
 }
 
 # Renders a line and, when a width is given, shrinks then drops segments until it fits.
-# Stage 1 swaps segments for their Short form in $ShrinkOrder (limits, context, branch, then folder by default).
+# Stage 1 swaps segments for their Short form in $ShrinkOrder (cost, limits, context, branch, then folder
+# by default: the cost segment's Short is the session total without its per-turn delta, so the delta is
+# the first detail on the line to go).
 # Stage 2 drops whole segments in $DropOrder. Either order left $null comes from the registry's ranks; an
 # empty array skips that stage. The model segment is never dropped whatever the drop order says, so it may
 # overflow on its own. Returns $null when nothing is left.
@@ -1005,9 +1009,10 @@ function Get-FiniteNumber($v) {
 
 # ---- Per-session state ----
 # Each render is a fresh process that sees one payload, so a small JSON file per session keeps the last
-# cost, token totals and a short cost history for the next render to compare against. Nothing on the line
-# reads it yet, and the read, merge and write all happen after the line is printed. Every failure here is
-# silent: no directory, no file, no state, and the line is unchanged.
+# cost, token totals and a short cost history for the next render to compare against. The cost segment's
+# per-turn delta reads it, so the read happens before the segments are built; the merge and the write
+# still happen after the line is printed. Every failure here is silent: no directory, no file, no state,
+# and the line is what it would have been with no previous render at all.
 
 # The state directory: claude-statusline-state under TEMP, or ~/.claude/statusline-state when TEMP is
 # empty. Created only when $Create is set, which the write path does. $null when it is not there and
@@ -1322,16 +1327,46 @@ function Get-ContextSegment($d, $cfg) {
     return @{ Name = 'context'; Text = "$short$counts"; Short = $(if ($counts) { $short } else { $null }); Role = $role; Bold = $false }
 }
 
-# Session cost in dollars, two decimals. quiet.cost is tested on the raw figure rather than on the text,
-# so a threshold of 1 hides a cost of 0.996 even though it would have printed $1.00.
+# Session cost in dollars, two decimals, and the change since the previous render in parentheses behind
+# it, "$1.07 (+$0.12)", so the turn just paid for is visible and not only the running total that tells
+# you nothing about it. The previous total is $state.cost_usd, the figure the last render of this session
+# wrote; no state file, a first render, a total that did not move and one that went backwards (a state
+# file carried between machines) all print the total alone, which is exactly what this segment was before
+# the delta existed. With statusLine.refreshInterval set the command re-runs on a timer, so a render with
+# no API call behind it shows no suffix until the next turn.
+# "The previous render" is exactly the last render that wrote the file, which is not always the last
+# render there was: one that ends before the write - the zero-segment exit does - leaves the next delta
+# spanning both turns. That figure is still the difference between two totals this session really
+# reached, and a render that wrote nothing printed no total of its own for it to contradict.
+# The delta is rounded to cents once, and both the "is this worth showing" test and the printed figure
+# read that one number: binary floating point makes 1.08 - 1.07 a hair over a cent and 0.03 - 0.02 a hair
+# under, and rounding first is what stops those two from being answered differently. Both figures go
+# through the same '{0:N2}', so a culture that writes 12,50 writes the delta the way it writes the total
+# beside it.
+# Short is the total on its own, and $null when there is no delta, so the fitting sheds the suffix first
+# of anything on the line and a cost with no delta is skipped in stage one as it always was.
+# quiet.cost is tested on the raw figure rather than on the text, so a threshold of 1 hides a cost of
+# 0.996 even though it would have printed $1.00. It is tested on the session total and not on the delta:
+# the threshold answers whether this session is worth a segment, not whether this turn was expensive, and
+# a segment the guard hides has no suffix to argue about.
 # There is no warning state to preserve here, unlike context and limits: this segment's role is always
 # dim and no config threshold colours it, so a spend the user called boring is only ever boring and the
 # quiet guard stands alone.
-function Get-CostSegment($d, $cfg) {
+function Get-CostSegment($d, $cfg, $state) {
     $cost = $d.cost.total_cost_usd
     if ($null -eq $cost) { return $null }
     if (Test-QuietValue $cfg 'cost' $cost) { return $null }
-    return @{ Name = 'cost'; Text = ("$iconCost `$" + ('{0:N2}' -f [double] $cost)); Short = $null; Role = 'dim'; Bold = $false }
+    $total = "$iconCost `$" + ('{0:N2}' -f [double] $cost)
+    # Both sides go through Get-FiniteNumber, so a cost or a stored figure of any other shape is simply
+    # a render with no delta: this arithmetic never decides whether the segment appears at all.
+    $suffix = ''
+    $spent = Get-FiniteNumber $cost
+    $before = Get-FiniteNumber $state.cost_usd
+    if ($null -ne $spent -and $null -ne $before) {
+        $delta = [math]::Round($spent - $before, 2)
+        if ($delta -ge 0.01) { $suffix = " (+`$" + ('{0:N2}' -f $delta) + ')' }
+    }
+    return @{ Name = 'cost'; Text = "$total$suffix"; Short = $(if ($suffix) { $total } else { $null }); Role = 'dim'; Bold = $false }
 }
 
 # Lines added/removed this session; shown when either is non-zero. Inline colours keep the dim background intact.
@@ -1657,6 +1692,15 @@ function Get-BranchSegment($d, $cfg) {
 
 # ---- Build, lay out, fit, print ----
 
+# The state this session's last render left behind, read before the segments are built because the cost
+# segment's per-turn delta is the difference from the total it holds. It is the only read of the file in
+# a render: the write at the foot of the script merges over this record rather than opening it again.
+# $null covers every way there is nothing to compare against - state turned off, no session id, no file
+# yet, an unreadable one - and every segment renders exactly as it did before deltas existed. The read
+# does not create the directory; only the write does, so a render that writes nothing still leaves none.
+$sessionId = [string] $d.session_id
+$state = if ($cfg.State -and $sessionId) { Read-SessionState $sessionId } else { $null }
+
 # The names on each printed line: the config's order for layout one, the two rows for layout two. A
 # segment that is toggled off, or that no line lists, is not built at all, so an order without branch
 # never runs the git probe.
@@ -1667,7 +1711,7 @@ foreach ($names in $lineSets) { foreach ($n in $names) { $listed[$n] = $true } }
 $segments = [System.Collections.Generic.List[hashtable]]::new()
 foreach ($rec in Get-SegmentRegistry) {
     if (-not $cfg.Segments[$rec.Name] -or -not $listed[$rec.Name]) { continue }
-    $seg = & $rec.Build $d $cfg
+    $seg = & $rec.Build $d $cfg $state
     if ($seg) { $segments.Add($seg) }
 }
 if ($segments.Count -eq 0) { Write-Host (C '36' "$iconModel claude"); exit 0 }
@@ -1685,9 +1729,9 @@ foreach ($names in $lineSets) {
     if ($text) { Write-Host $text }
 }
 
-# All of the state work - the read, the merge and the write - sits after the last Write-Host, so none of
-# it is in front of the visible line. Nothing above this point reads the file.
-$sessionId = [string] $d.session_id
+# The merge and the write sit after the last Write-Host, so neither is in front of the visible line. The
+# read is the one part that had to move above it, because the cost segment's delta is built from it; it
+# is still one read and one write per render, because what is merged here is the record already read.
 if ($cfg.State -and $sessionId) {
-    Write-SessionState $sessionId (Merge-SessionState (Read-SessionState $sessionId) $d ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()))
+    Write-SessionState $sessionId (Merge-SessionState $state $d ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()))
 }
