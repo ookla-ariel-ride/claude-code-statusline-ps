@@ -379,10 +379,13 @@ The model segment always stays.
 
 When no segment can be built at all — a payload with nothing in it, or an `order` naming only
 segments the payload cannot fill — the script prints the model glyph and the word `claude` in place
-of the model segment. That stand-in follows the same two keys the model segment does: with
-`"segments": {"model": false}`, or with an `order` or `rows` that leave `model` out, there is no
-model segment to stand in for and the script prints nothing at all. A payload that is not JSON is
-the exception and always prints the stand-in, because there is no config reading to trust behind it.
+of the model segment. The same line stands in when Claude Code sends something that is not JSON at
+all. Both follow the same two keys the model segment itself does: with `"segments": {"model":
+false}`, or with an `order` or `rows` that leave `model` out, there is no model segment to stand in
+for and the script prints nothing. A `statusline.json` that cannot be parsed leaves the built-in
+defaults, which do show the line, so a broken config still says something. An empty line is not an
+empty session: the state file is written from the payload either way, so a config that shows nothing
+still records what the session spent.
 
 ## What each segment shows
 

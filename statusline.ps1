@@ -1188,9 +1188,31 @@ $iconThink = $icons.think
 $iconEffort = $icons.effort
 $iconVim = $icons.vim
 
+# The names on each printed line: the config's order for layout one, the two rows for layout two. Settled
+# here, above the first thing that prints, because three readers need it - both fallback lines and the
+# build loop - and it depends on nothing but the config.
+$lineSets = @(if ($cfg.Layout -eq 'two') { $cfg.Rows } else { , $cfg.Order })
+$listed = @{}
+foreach ($names in $lineSets) { foreach ($n in $names) { $listed[$n] = $true } }
+
+# Both fallback lines print the model glyph and the word claude, which makes each of them the model
+# segment with no name to put in it. Neither is printed unless the config would have allowed a model
+# segment: toggled on, and named by the order or by one of the rows. One rule, decided once, so the two
+# lines cannot drift apart or answer the same config differently.
+$modelWanted = [bool] ($cfg.Segments['model'] -and $listed['model'])
+
 # A payload that is not JSON gets the fallback line. It is printed here rather than where the payload was
-# read so that it carries the config's glyph overrides, which are only settled above.
-if (-not $payloadOk) { Write-Host (C '36' "$iconModel claude"); exit 0 }
+# read so that it carries the config's glyph overrides and the toggle above, neither of which is settled
+# any earlier. It honours the config like every other line: only the PROJECT overlay is missing on this
+# path, because a payload that will not parse names no project directory, and the user file - or the file
+# -Config named - was read and merged over the defaults well before this point. A config file that could
+# not be parsed at all leaves those defaults, which have model on and listed, so the case this line
+# exists for, saying something when nothing else can be said, is carried by the defaults rather than by
+# printing over a user who asked for no model segment.
+if (-not $payloadOk) {
+    if ($modelWanted) { Write-Host (C '36' "$iconModel claude") }
+    exit 0
+}
 
 # ---- Segment builders. Each returns $null (segment omitted) or @{ Name; Text; Short; Role; Bold }. ----
 
@@ -1657,35 +1679,26 @@ function Get-BranchSegment($d, $cfg) {
 
 # ---- Build, lay out, fit, print ----
 
-# The names on each printed line: the config's order for layout one, the two rows for layout two. A
-# segment that is toggled off, or that no line lists, is not built at all, so an order without branch
-# never runs the git probe.
-$lineSets = @(if ($cfg.Layout -eq 'two') { $cfg.Rows } else { , $cfg.Order })
-$listed = @{}
-foreach ($names in $lineSets) { foreach ($n in $names) { $listed[$n] = $true } }
-
+# A segment that is toggled off, or that no line lists, is not built at all, so an order without branch
+# never runs the git probe. $lineSets and $listed are settled above, before the bad-payload line.
 $segments = [System.Collections.Generic.List[hashtable]]::new()
 foreach ($rec in Get-SegmentRegistry) {
     if (-not $cfg.Segments[$rec.Name] -or -not $listed[$rec.Name]) { continue }
     $seg = & $rec.Build $d $cfg
     if ($seg) { $segments.Add($seg) }
 }
-# Every enabled and listed builder returned nothing. The fallback line is the model glyph and the word
-# claude, so what it really is is the model segment with no name to put in it - the payload that carries
-# no model.display_name is the case it was written for. That makes it the model segment's stand-in, and
-# it is printed under the same two conditions the model segment itself is built under: toggled on, and
-# named by the config's order or, in layout two, by one of its rows. A config that turns model off, or
-# one whose order leaves it out, asked for a line with no model on it; an empty render is that answer,
-# the same answer the fitting loop below already gives when every line shrinks away to nothing.
-# This is the only fallback that reads the config. The bad-payload one above prints whatever the config
-# says, because a payload that is not JSON is the case where the config behind it cannot be trusted:
-# it names no project directory, so the project file was never merged, and there is nothing left to
-# honour. Keeping that one unconditional is what guarantees a render on the path where everything else
-# has failed, so nothing here may be moved above it or made to depend on it.
-if ($segments.Count -eq 0) {
-    if ($cfg.Segments['model'] -and $listed['model']) { Write-Host (C '36' "$iconModel claude") }
-    exit 0
-}
+# Every enabled and listed builder returned nothing. The stand-in line goes out under $modelWanted, the
+# same rule the bad-payload line above uses: the payload that carries no model.display_name is the case
+# this was written for, so it is the model segment with no name in it and belongs on screen only where a
+# model segment was allowed. A config that turns model off, or whose order leaves it out, asked for a
+# line with no model on it; nothing printed is that answer, the same answer the loop below already gives
+# when every line shrinks away to nothing.
+#
+# No exit here, deliberately. A payload that parsed carries a session id and its cost, token and rate
+# figures whatever the config chose to put on screen, and the state file is where the next render reads
+# them back from, so a display choice must not throw the sample away or skip the sweep. Falling through
+# is silent with no segments: Get-FittedLine returns $null for an empty line and the loop prints nothing.
+if ($segments.Count -eq 0 -and $modelWanted) { Write-Host (C '36' "$iconModel claude") }
 
 # Claude Code sets COLUMNS before running the script. Leave one column free to avoid the pending-wrap glitch.
 $width = $null
