@@ -119,7 +119,18 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   rule the lines and badges segments already follow, that a segment with nothing to say disappears, from
   zero to a number the user picks. One guard, `Test-QuietValue`, reads the threshold defensively, so a
   config with no `Quiet` table hides nothing; the comparison is strict, which is what makes the default
-  of `0` mean off, and it is on the raw figure rather than the rounded text. `icons` maps a
+  of `0` mean off, and it is on the raw figure rather than the rounded text. **Quiet never hides a
+  segment that is carrying a warning or an error**, which is the rule that makes the setting safe to
+  turn on: a hide-the-boring-numbers key that also hid the alarm would be worse than no key at all. So
+  each builder settles its warning state before it asks the guard — context and limits keep a segment
+  whose role is `warn` or `bad`, and limits also keeps one whose pace arrow projects an overrun, since
+  a low current percentage early in a five-hour window is precisely the reading that projects red.
+  `Get-PaceArrow` names that state `Over` rather than leaving it to be read off the glyph. Cost has no
+  warning state to preserve, its role being always `dim`, so there the threshold stands alone. What
+  `quiet.limits` compares is the larger of the 5-hour and 7-day figures, deliberately not the `$worst`
+  that also carries the spend limit and drives the colour: the key is a threshold on how much of an
+  allowance is gone, and a spend limit is not one of those. With neither window present there is
+  nothing to compare and the segment is kept. `icons` maps a
   name to a code point, and the `$icon*` constants are assigned from `Get-IconSet` after the config
   is read and before the payload is parsed, so the fallback line and every builder see one set of
   glyphs. The fitting order stays in the table: it is a property of what each segment can shed, not

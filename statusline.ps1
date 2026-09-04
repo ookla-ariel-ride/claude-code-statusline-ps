@@ -1137,6 +1137,13 @@ function Get-ModelSegment($d, $cfg) {
     return @{ Name = 'model'; Text = $text; Short = $null; Role = 'model'; Bold = $true }
 }
 
+# THE RULE THIS FEATURE RESTS ON: quiet never hides a segment that is carrying a warning or an error.
+# It is a setting for hiding boring numbers, and one that also hid the alarm would be worse than not
+# having it at all, so every caller checks its own warning state before it asks this question - the
+# context and limits builders keep a segment whose role is warn or bad, and limits keeps one whose pace
+# arrow projects an overrun, whatever the threshold says. The cost segment has no warning state of its
+# own to preserve: its role is always dim and it has no thresholds, so the guard is the whole story there.
+#
 # True when a segment has nothing worth saying yet: the value it would show is below the config's quiet
 # threshold for it, so the builder returns $null and the segment never reaches the line. The comparison
 # is strict, which is what makes the default of 0 mean off - a value of 0 is not below 0. Everything is
@@ -1155,20 +1162,25 @@ function Get-ContextSegment($d, $cfg) {
     if ($null -eq $pct) { return $null }
     $pct = [int] $pct
     $pct = [math]::Max(0, [math]::Min(100, $pct))
-    # The clamped percentage is what the segment would show, so it is what quiet.context compares.
-    if (Test-QuietValue $cfg 'context' $pct) { return $null }
+    $size = $d.context_window.context_window_size
+    $role = if (Test-WideWindow $size) { Get-ThresholdRole $pct 70 90 } else { Get-ThresholdRole $pct $cfg.Thresholds.Warn $cfg.Thresholds.Bad }
+    # quiet.context compares the clamped percentage, which is what the segment would show. The role is
+    # settled first so the rule above can hold: a meter already yellow or red is an alarm, and a
+    # threshold set above the warn band must not swallow it.
+    if ($role -eq 'ok' -and (Test-QuietValue $cfg 'context' $pct)) { return $null }
     $filled = [math]::Round($pct / 10)
     $bar = ((G 0x2588) * $filled) + ((G 0x2591) * (10 - $filled))
     $used = [double] ($d.context_window.total_input_tokens ?? 0) + [double] ($d.context_window.total_output_tokens ?? 0)
-    $size = $d.context_window.context_window_size
     $counts = if ($used -gt 0 -and $size) { " $(K $used)/$(K $size)" } elseif ($used -gt 0) { " $(K $used)" } else { '' }
     $short = "$iconCtx $pct% $bar"
-    $role = if (Test-WideWindow $size) { Get-ThresholdRole $pct 70 90 } else { Get-ThresholdRole $pct $cfg.Thresholds.Warn $cfg.Thresholds.Bad }
     return @{ Name = 'context'; Text = "$short$counts"; Short = $(if ($counts) { $short } else { $null }); Role = $role; Bold = $false }
 }
 
 # Session cost in dollars, two decimals. quiet.cost is tested on the raw figure rather than on the text,
 # so a threshold of 1 hides a cost of 0.996 even though it would have printed $1.00.
+# There is no warning state to preserve here, unlike context and limits: this segment's role is always
+# dim and no config threshold colours it, so a spend the user called boring is only ever boring and the
+# quiet guard stands alone.
 function Get-CostSegment($d, $cfg) {
     $cost = $d.cost.total_cost_usd
     if ($null -eq $cost) { return $null }
@@ -1216,8 +1228,10 @@ function Get-PaceArrow([object] $resetsAt, [object] $used, [long] $Now = ([DateT
     $left = $reset - $Now
     if ($left -le 0 -or $left -gt 16200) { return $null }
     $projected = $pct * 18000 / (18000 - $left)
-    if ($projected -le 100) { return @{ Arrow = (G 0x2192); Red = $false } }
-    return @{ Arrow = (G 0x2191); Red = ($projected -ge 120) }
+    # Over names the state the up arrow draws: this rate overruns the window. The quiet guard reads it
+    # rather than the glyph, because it is the warning that must survive a threshold, not the character.
+    if ($projected -le 100) { return @{ Arrow = (G 0x2192); Over = $false; Red = $false } }
+    return @{ Arrow = (G 0x2191); Over = $true; Red = ($projected -ge 120) }
 }
 
 # Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets, and the spend limit when
@@ -1236,14 +1250,16 @@ function Get-LimitsSegment($d, $cfg) {
     if (-not $rl) { return $null }
     $bits = [System.Collections.Generic.List[string]]::new()
     $worst = -1
+    $windowWorst = $null
     $first = $null
     $top = $null
     $pace = $null
     $paceAt = -1
     $paceHead = ''
     $paceTail = ''
-    # Label, source object and whether the pace arrow and the countdown follow, in render order.
-    foreach ($row in @(@('5h', $rl.five_hour, $true), @('7d', $rl.seven_day, $false), @('$', $rl.spend_limit, $false))) {
+    # Label, source object, whether the pace arrow and the countdown follow, and whether the figure is a
+    # rate-limit window rather than the spend limit, in render order.
+    foreach ($row in @(@('5h', $rl.five_hour, $true, $true), @('7d', $rl.seven_day, $false, $true), @('$', $rl.spend_limit, $false, $false))) {
         $pct = $row[1].used_percentage
         if ($null -eq $pct) { continue }
         $pct = [int] [math]::Round([double] $pct)
@@ -1251,6 +1267,10 @@ function Get-LimitsSegment($d, $cfg) {
         if ($null -eq $first) { $first = $bit }
         # A strict comparison keeps the earlier figure on a tie, so 5h beats 7d beats spend.
         if ($pct -gt $worst) { $top = $bit; $worst = $pct }
+        # The largest of the two rate-limit windows, kept apart from $worst because quiet.limits is a
+        # threshold on how much of an allowance is gone, and the spend limit is not one of those. $null
+        # until a window is actually present, which is what a payload carrying only a spend limit leaves.
+        if ($row[3] -and ($null -eq $windowWorst -or $pct -gt $windowWorst)) { $windowWorst = $pct }
         $tail = ''
         if ($row[2]) {
             $tail = TimeLeft $row[1].resets_at
@@ -1261,10 +1281,15 @@ function Get-LimitsSegment($d, $cfg) {
         $bits.Add("$bit$tail")
     }
     if ($bits.Count -eq 0) { return $null }
-    # quiet.limits is tested on the worst figure, the same one that picks the colour: the segment is
-    # worth reading once any window it carries is high enough, not only the five-hour one.
-    if (Test-QuietValue $cfg 'limits' $worst) { return $null }
     $role = Get-ThresholdRole $worst $cfg.Thresholds.Warn $cfg.Thresholds.Bad
+    # quiet.limits is tested on the larger of the two rate-limit windows, not on $worst, which also
+    # carries the spend limit and stays the colour-driving figure. Two guards stand in front of it, both
+    # the rule above: a segment already yellow or red is an alarm, and so is a five-hour figure whose
+    # projection overruns the window - that is the case a threshold would otherwise swallow at its most
+    # dangerous, because a low current percentage early in a window is exactly what projects red.
+    # With neither window present there is nothing to compare, and Test-QuietValue answers false on the
+    # $null, so a payload carrying only a spend limit is never hidden by this key.
+    if ($role -eq 'ok' -and -not ($paceAt -ge 0 -and $pace.Over) -and (Test-QuietValue $cfg 'limits' $windowWorst)) { return $null }
     if ($paceAt -ge 0) {
         $arrow = if ($pace.Red) { Format-Inline 'removed' $pace.Arrow $role $cfg.Style } else { $pace.Arrow }
         $bits[$paceAt] = "$paceHead $arrow$paceTail"
