@@ -142,6 +142,32 @@ The file leaves `order` and `rows` out on purpose: without them the segments com
 order, and a segment added by a later release appears on its own. The installer keeps an existing
 `statusline.json`, so a file that spells the order out would pin it.
 
+A repository can pin its own look. When the payload names a project directory, the script reads
+`<project>\.claude\statusline.json` as well and merges it over the user file. The merge is per key, so
+a project file of `{"layout": "two"}` keeps every user segment toggle, and one of
+`{"segments": {"cost": false}}` turns off cost and leaves the other eight alone. Precedence runs
+built-in defaults, user file, project file, and a value the project file gets wrong falls back to the
+value beneath it rather than to the built-in default. A project with no `.claude\statusline.json`
+changes nothing, and so does an unreadable one. `-Config <path>` is the exception: it replaces the user
+file and skips the project file, so a render with it is the same whatever directory the payload names.
+
+That file arrives with the repository rather than from you, so it is read as untrusted input. The file is
+opened first and then judged by the handle: a handle that cannot seek is a device or a pipe rather than a
+file, and the size that has to fit under 64 KiB is the one the handle reports, not one read off the path
+beforehand. A link or another reparse point is refused as well. One clock covers every step — the open,
+the size, the link check, each read and the close at the end — and it starts before the first filesystem
+call: if 250 ms goes by the attempt is abandoned and the config beneath it stands, silently, the way a
+bad value does.
+
+What that buys is a bound on this read, not on the machine. Abandoning is literal: a thread can stay
+stuck behind a hung open until the process exits, and a file left open that way is not closed on the way
+out, because closing it would wait on the same thing. The status line renders and exits without either.
+Two things the bound does not cover, said plainly rather than rounded off: your own `statusline.json` is
+read the ordinary way, with no deadline, so a home directory on a dead network share can still hold up a
+render; and a filesystem sick enough to hang calls this read never makes can hold one up somewhere else
+again. Your file is read that way on purpose — it is yours rather than a repository's, and it is the one
+whose text encoding the script does not get to choose.
+
 | Key | Values | What it does |
 |---|---|---|
 | `layout` | `one`, `two` | `two` puts model, folder, branch, pr and badges on the first line and context, limits, cost and lines on the second, unless `rows` says otherwise. |
@@ -152,7 +178,7 @@ order, and a segment added by a later release appears on its own. The installer 
 | `order` | `["model", "branch", "context"]` | The segments of layout `one`, left to right. A segment left out is not shown, an unknown name is skipped, a repeat keeps its first place. Left out altogether, as the installed file leaves it, the segments come in the script's order, new ones included. An empty list, a list naming no segment, or anything that is not a list does the same. |
 | `rows` | `[["model", "branch"], ["context", "cost"]]` | The two lines of layout `two`, with the same rules per row. A segment named on the first row is not repeated on the second, and a row may be empty. Left out, the script's own two rows apply, new segments included. Anything but exactly two lists, or two lists naming no segment, does the same. |
 | `thresholds` | `{ "warn": 20, "bad": 40 }` | Where the context meter and the rate limits turn yellow and red: whole numbers from 0 to 100 (`20` or `20.0`, not `20.5`), `warn` no higher than `bad`. Either value wrong keeps 60 and 85 for both. A 1M window keeps its own 70 and 90. |
-| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cost`, `folder`, `chevron`, `branch`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `pr`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`. A name the list does not have, or a value that is not a printable code point (not hex, above `10FFFF`, a surrogate, or a control character such as `A` or `1B`), keeps the built-in glyph. |
+| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cost`, `folder`, `chevron`, `branch`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `pr`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`. A name the list does not have, or a value that is not a single printable glyph, keeps the built-in one. To count as a glyph a code point has to be inside Unicode, not a surrogate half and not a noncharacter, one or two cells wide, and none of: a control (`A` is a newline, `1B` a bare escape), a format character (`202E` is a right-to-left override, `200D` a zero-width joiner), a line or paragraph separator, a space, or a combining mark. Private use is where the Nerd Font glyphs live, so it is allowed. |
 | `git.timeoutMs` | `100` to `10000` | How long the branch segment waits for `git status`, in milliseconds, before it gives up and leaves the segment out. A value outside the range is clamped to it. |
 | `git.cacheSeconds` | `0` to `300` | How long a `git status` result is reused for, in seconds, before git is asked again. `0` asks git on every render. Clamped like `timeoutMs`. |
 | `git.cache` | `true`, `false` | `false` asks git on every render, whatever `cacheSeconds` says. |
@@ -294,8 +320,11 @@ the terminal width. At a set width a segment with a short form (limits, context,
 must be whole, shortened, or gone, never half shed. At the unset width the matrix also checks
 content: each segment the sample and config enable must appear on its row, in the configured order,
 with its glyph and value, disabled segments must not, and the separators must match the style. Those
-content checks only run when `-Columns` includes `0`, which the default does. The script exits
-non-zero if any check fails. Each render takes about 400 ms, nearly all of it `pwsh` start-up.
+content checks only run when `-Columns` includes `0`, which the default does. A few renders after the
+matrix run with no `-Config` at all: they point a payload at a temp project directory and check that
+its `.claude\statusline.json` reaches the line, that a broken one does not, and that `-Config` ignores
+it. The script exits non-zero if any check fails. Each render takes about 400 ms, nearly all of it
+`pwsh` start-up.
 
 The tests never touch your own repositories. They point `GIT_CEILING_DIRECTORIES` at the temp
 folder and pass an empty global git config, so the results do not depend on the machine.
@@ -418,11 +447,12 @@ Done so far:
 - [x] Cached `git status` with a configurable timeout
 - [x] Optional diagnostics log behind `CLAUDE_STATUSLINE_DEBUG`
 - [x] Pace arrow on the 5-hour rate limit
+- [x] Per-project `statusline.json` merged over the user file
 
 [Issues #2 to #43](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
 each with its own plan. In rough order: new segments (cache warmth, cost per turn, session
-clock, worktree name, links on the folder and branch), presets and per-project config, and finally
-an ASCII style that needs no Nerd Font and a light palette.
+clock, worktree name, links on the folder and branch), named presets, and finally an ASCII style that
+needs no Nerd Font and a light palette.
 
 ## License
 

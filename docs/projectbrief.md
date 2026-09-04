@@ -33,9 +33,10 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 | File | Role |
 |---|---|
-| `statusline.ps1` | Reads JSON on stdin and `statusline.json` beside it; prints one or two coloured lines fitted to `COLUMNS`. |
+| `statusline.ps1` | Reads JSON on stdin, then `statusline.json` beside it and the project's own copy over that; prints one or two coloured lines fitted to `COLUMNS`. |
 | `install.ps1` | Copies the script to `~/.claude/`, writes the `statusLine` entry to user settings with `hideVimModeIndicator` on and, with `-RefreshInterval <seconds>`, a `refreshInterval`; optionally installs JetBrainsMono Nerd Font via winget and sets it as the Windows Terminal default font. Supports `-Uninstall` and `-SettingsPath` (the seam the tests use). |
 | `statusline.json` | Defaults for layout, style, the folder mode, the state file toggle, segment toggles, the colour thresholds, glyph overrides, and the git probe's timeout and cache (`git.timeoutMs`, `git.cacheSeconds`, `git.cache`). The layout-one `order` and layout-two `rows` keys are left out so the registry stays the source and a new segment appears on its own. Installed beside the script. |
+| `<workspace.project_dir>\.claude\statusline.json` | The project's own copy of the same keys, merged over the user file key by key so a repository can pin its layout without changing any other session. Read only when the payload names a project directory that holds it, and not at all when `-Config` names a file. Read as untrusted input: opened first and judged by the handle, at most 64 KiB, within one 250 ms budget that starts before the first filesystem call. |
 | `%TEMP%\claude-statusline-state\` | One JSON file per session (`<session_id>.json`, version 1): last cost, token totals, context and 5-hour percentages, and a ring of up to twenty cost readings. Written after the line is printed, swept of day-old files at most every six hours. `~/.claude/statusline-state` when `TEMP` is empty. |
 | `%TEMP%\claude-statusline\` | The git probe cache: one JSON file per repository, named by the first 16 hex characters of the SHA-256 of the lower-cased work tree path, holding the root, a stamp string (the UTC ticks of the git directory, of `index`, `HEAD`, `ORIG_HEAD`, `FETCH_HEAD`, `MERGE_HEAD`, `packed-refs`, `logs/HEAD`, `config` and `info/exclude`, and of every directory under `refs`, capped at 256; a worktree's main repository after a bar), the write time and the last `git status` record, or null when the probe failed. Read before the branch segment is built and reused for `git.cacheSeconds` while the stamp string matches; swept of day-old files with the state sweep. `TMPDIR`, then the runtime's temp path, when `TEMP` is empty. |
 | `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, checks the git fallback in temporary repositories: clean, dirty, unborn, detached, ahead, behind, a mixed tree, a git that fails and one that hangs, the probe cache with a counting stand-in and end to end with a failing git on `PATH`, exercises the session state file end to end, and runs `install.ps1` against a settings file in a temp folder. `-Columns`, `-Config`, `-Raw`. |
@@ -83,9 +84,27 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 - **Segment records and one renderer.** Each segment is a small record (name, text, short text,
   colour role, bold); one function renders a line in plain or powerline style, and width fitting
   shrinks then drops records in a fixed order.
-- **Silent config.** Any missing or invalid value in `statusline.json` falls back to its default with
-  no output, and each key falls back on its own: a valid `order` beside a broken `thresholds` keeps
-  the order.
+- **Silent config.** Any missing or invalid value in `statusline.json` falls back with no output, and
+  each key falls back on its own: a valid `order` beside a broken `thresholds` keeps the order. The
+  files are merged in precedence order, defaults then user then project, so what a key falls back to
+  is the value beneath it: a project file with a bad `layout` keeps the user's, not the default.
+- **The project file is untrusted input.** It comes with the repository, so `Read-BoundedFileText` opens
+  it first and judges the handle: not seekable means a device or a pipe rather than a file, and the
+  64 KiB cap is measured against the length the handle reports and again against the bytes read, so a
+  name that changes under the check cannot widen either. A reparse point is refused too, by asking the
+  name a second time, because the APIs that name a handle's own target are .NET 6 and the floor here is
+  .NET Core 3.1. One stopwatch, started before the first filesystem call, covers every step: the open,
+  the length (a call of its own — over SMB it is a round trip to the server), that probe, each read and
+  the close. Each runs on the thread pool through a delegate closed over the path or the stream (a
+  script block cannot: converted to a delegate it needs a runspace, and a pool thread has none) and is
+  waited on for what is left of 250 ms. The close is queued and never waited on, and with the budget
+  gone the stream is abandoned unclosed, whichever step spent it. The bound is on this read alone: a
+  thread can stay blocked until the process exits, and the user's own file, read the ordinary way for
+  its encoding detection, has no deadline at all. `Read-CodePoint` admits a
+  code point only when it draws as one glyph
+  standing alone: no control, format, separator, mark, surrogate, noncharacter or unassigned value, and
+  one or two cells wide by the script's own width rule, so a repository cannot reorder, hide or
+  mis-measure the line through the `icons` table. The user's own file keeps its ordinary read.
 - **One segment table, and the config moves what it can.** `Get-SegmentRegistry` is the single list of
   segments: its array order is the default `order`, its row keys the default `rows`, its ranks the
   shrink and drop order, and the build loop dispatches through it. The `order` and `rows` keys pick
@@ -171,13 +190,14 @@ script.
 ## Future work
 
 Issues #2 to #43 hold the backlog, each with a plan and success criteria. The enablers are done:
-the segment registry and config keys (#20), the state file (#4), the link helper (#12) and the git
-cache (#18). The intended order for the rest:
+the segment registry and config keys (#20), the per-project config merge (#19), the state file (#4),
+the link helper (#12) and the git cache (#18). The intended order for the rest:
 
 1. New segments: cache warmth and hit ratio, worktree name, links on the folder and branch, agent
    and session badges, cost per turn, pace, session clock (#2, #3, #5, #6, #8, #11, #13, #14). #5
    and #6 read the state file; #13 reuses `Format-Link`.
-2. Config: presets, a quiet block, an alarm colour, per-project config (#19, #21 to #23).
+2. Config: presets, a quiet block, an alarm colour (#21 to #23). Each is one key over
+   `Merge-StatusConfigFile`.
 3. Style and terminal: an ASCII style, a light palette, a right-aligned group with a clock, taskbar
    progress, a subagent status line (#15, #24, #25, #27, #28).
 4. Small fixes from review: the zero-segment fallback line should respect the model toggle and the

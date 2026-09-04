@@ -4,11 +4,12 @@
 # Reads the JSON Claude Code pipes on stdin and prints one or two lines, e.g.
 #   󰚩 Fable 5.1  󰍛 37% ████░░░░░░   $0.43   my-project   main
 # Layout, separator style, segment toggles and order, colour bands and glyph overrides come from
-# statusline.json next to this script.
+# statusline.json next to this script, with the project's own .claude\statusline.json merged over it.
 # Glyphs are emitted from code points so the file's own encoding never matters.
 [CmdletBinding()]
 param(
-    # Path to the config file. Defaults to statusline.json beside this script. Claude Code never passes it.
+    # Path to the config file. Defaults to statusline.json beside this script; given, it replaces that
+    # file and the project's own file is not read at all. Claude Code never passes it.
     [string] $Config
 )
 $ErrorActionPreference = 'SilentlyContinue'
@@ -111,10 +112,36 @@ function Get-IconDefault {
     }
 }
 
+# The Unicode categories an icon code point may not have. A config is not always the user's own - a
+# repository's .claude\statusline.json reaches the icons table too - so a code point is admitted only
+# when the terminal can draw it as one glyph standing by itself. Control and Format cover a bare escape,
+# a right-to-left override, a directional isolate, a zero-width joiner and a byte order mark, any of
+# which can reorder or hide the rest of the line without breaking the escape syntax; the two separators
+# would break the line in half; the three marks attach to whatever came before them instead of standing
+# alone; a surrogate half is not a character; and an unassigned code point has no glyph, so the terminal
+# draws a placeholder of its own choosing. Private use is deliberately not on the list: every Nerd Font
+# glyph the script ships lives there.
+function Get-IconRefusedCategory {
+    return @(
+        [System.Globalization.UnicodeCategory]::Control
+        [System.Globalization.UnicodeCategory]::Format
+        [System.Globalization.UnicodeCategory]::Surrogate
+        [System.Globalization.UnicodeCategory]::OtherNotAssigned
+        [System.Globalization.UnicodeCategory]::SpaceSeparator
+        [System.Globalization.UnicodeCategory]::LineSeparator
+        [System.Globalization.UnicodeCategory]::ParagraphSeparator
+        [System.Globalization.UnicodeCategory]::NonSpacingMark
+        [System.Globalization.UnicodeCategory]::SpacingCombiningMark
+        [System.Globalization.UnicodeCategory]::EnclosingMark
+    )
+}
+
 # A code point from a config value: a string of hex digits, with U+ or 0x allowed in front, space around
-# it and leading zeros, at most six digits once those are gone, up to 10FFFF, not a surrogate and not a
-# control character (00 to 1F and 7F to 9F, which would put a raw newline or a bare escape on the line).
-# $null for anything else, so the caller keeps the built-in glyph.
+# it and leading zeros, at most six digits once those are gone. What comes back is a code point that
+# draws as a single glyph: inside Unicode, not a noncharacter (xFFFE, xFFFF and FDD0 to FDEF, which no
+# process may interchange), none of the categories above, and one or two cells wide by the script's own
+# width rule, so an override can never throw the fitting off. $null for anything else, so the caller
+# keeps the built-in glyph.
 function Read-CodePoint($Value) {
     if ($Value -isnot [string]) { return $null }
     $hex = $Value.Trim()
@@ -123,7 +150,10 @@ function Read-CodePoint($Value) {
     if ($hex.Length -lt 1 -or $hex.Length -gt 6) { return $null }
     $cp = 0
     if (-not [int]::TryParse($hex, [System.Globalization.NumberStyles]::AllowHexSpecifier, [cultureinfo]::InvariantCulture, [ref] $cp)) { return $null }
-    if ($cp -gt 0x10FFFF -or ($cp -ge 0xD800 -and $cp -le 0xDFFF) -or $cp -le 0x1F -or ($cp -ge 0x7F -and $cp -le 0x9F)) { return $null }
+    if (-not [System.Text.Rune]::IsValid($cp)) { return $null }
+    if (($cp -band 0xFFFE) -eq 0xFFFE -or ($cp -ge 0xFDD0 -and $cp -le 0xFDEF)) { return $null }
+    if ([System.Text.Rune]::GetUnicodeCategory([System.Text.Rune]::new($cp)) -in (Get-IconRefusedCategory)) { return $null }
+    if ((Get-VisibleWidth ([char]::ConvertFromUtf32($cp))) -notin @(1, 2)) { return $null }
     return $cp
 }
 
@@ -240,57 +270,201 @@ function Read-SegmentNameList($Value, [hashtable] $Known, [hashtable] $Seen) {
     return , $names
 }
 
-# Reads statusline.json. Anything missing or invalid silently falls back to its default, and each key
-# falls back on its own: a valid order beside a broken thresholds keeps the order.
-function Read-StatusConfig([string] $Path) {
+# The built-in defaults: the table every config file is merged over. A fresh table each call, the nested
+# tables included, so a merge that changes one caller's copy cannot reach the next caller's.
+function Get-DefaultStatusConfig {
     $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Segments = @{}; Git = Get-DefaultGitConfig }
     foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
     $cfg.Order = @((Get-SegmentRegistry).Name)
     $cfg.Rows = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
     $cfg.Thresholds = @{ Warn = 60; Bad = 85 }
     $cfg.Icons = @{}
+    return $cfg
+}
+
+# The one-value config keys: the JSON name, the config key it lands in, and how the value is read. Enum
+# takes a string that Allowed lists, folded to lower case; Bool takes a boolean. A value of any other
+# shape leaves the key at the value beneath it. A new one-value key is one row here and nothing else; a
+# key carrying an object or a list of its own gets a block of its own in Merge-StatusConfigFile, beside
+# segments, order, rows, thresholds, icons and git.
+function Get-StatusConfigKey {
+    return @(
+        @{ Json = 'layout'; Key = 'Layout'; Kind = 'Enum'; Allowed = @('one', 'two') }
+        @{ Json = 'style';  Key = 'Style';  Kind = 'Enum'; Allowed = @('plain', 'powerline') }
+        @{ Json = 'folder'; Key = 'Folder'; Kind = 'Enum'; Allowed = @('repo', 'leaf') }
+        @{ Json = 'state';  Key = 'State';  Kind = 'Bool'; Allowed = $null }
+    )
+}
+
+# What a project config may cost to read. A config a person wrote is a few hundred bytes, so 64 KiB is
+# far past any real one and still reads in under a millisecond from a disk; the deadline is what a read
+# that never finishes may cost, and the status line is redrawn on every event, so a quarter of a second
+# is already longer than a render. Both are constants rather than config keys: they guard the file the
+# config itself comes from.
+function Get-ProjectConfigLimit { return @{ MaxBytes = 65536; TimeoutMs = 250 } }
+
+# The two calls the bounded read makes, each closed over the path so it can go straight to the thread
+# pool. Nothing here can be a script block: converted to a delegate one needs a runspace, and a thread
+# pool thread has none. Delegate.CreateDelegate over a one-argument static method is plain .NET, needs no
+# runspace, and the pair costs about a sixth of a millisecond - which is what makes it possible to put a
+# blocking open behind a deadline without starting a process, and a process per render would cost more
+# than everything else the line does. Both APIs are .NET Standard, so they hold on the 7.0 floor.
+function Get-BoundedFileDelegate([string] $Path) {
+    return @{
+        Open       = [System.Delegate]::CreateDelegate([Func[System.IO.FileStream]], $Path, [System.IO.File].GetMethod('OpenRead', [type[]] @([string])))
+        Attributes = [System.Delegate]::CreateDelegate([Func[System.IO.FileAttributes]], $Path, [System.IO.File].GetMethod('GetAttributes', [type[]] @([string])))
+    }
+}
+
+# The same trick for the two things done to an open stream that are filesystem calls in their own right.
+# Length is not a field: on Windows it asks the handle for the file's size, which over SMB is a round
+# trip to the server and can hang with the stream already open. Closing is a filesystem call too - a
+# remote close goes back to the redirector - so it is queued rather than run where it could block the
+# line. Both delegates are closed over Stream's own virtual members rather than FileStream's, so they
+# dispatch through the same call whatever the stream turns out to be.
+function Get-BoundedStreamDelegate($Stream) {
+    return @{
+        Length  = [System.Delegate]::CreateDelegate([Func[long]], $Stream, [System.IO.Stream].GetProperty('Length').GetMethod)
+        Dispose = [System.Delegate]::CreateDelegate([Action], $Stream, [System.IO.Stream].GetMethod('Dispose', [type[]] @()))
+    }
+}
+
+# The text of a file a repository controls, or $null when it is anything but a small, ordinary, promptly
+# readable one. Test-Path and Get-Content are not enough for this file: they follow a link wherever it
+# leads and read whatever comes back, for as long as it takes, so a repository could point the path at a
+# device, a FIFO or a dead network share and hold up every render, or hand over a file large enough to
+# matter. So one clock covers the whole thing, started before the first filesystem call of any kind, and
+# every call runs on the thread pool and is waited on for what is left of it: the open, the file's length,
+# the attribute probe, each read, and the close at the end. When the budget runs out the attempt is
+# abandoned and the caller keeps the config it had, exactly like any other refusal. Abandoning means what
+# it says: a thread may stay blocked in the kernel until the process exits, a handle opened after that is
+# never closed, and a stream is left open rather than closed on the way out, since closing it would wait
+# on whatever is already stuck. That is the price of not waiting, and this process renders one line and
+# exits. What the clock does not cover is what the caller does with the text afterwards, or a filesystem
+# degraded enough to hang calls this function never makes.
+function Read-BoundedFileText([string] $Path) {
+    $limit = Get-ProjectConfigLimit
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $stream = $null
     try {
-        if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $cfg }
-        $j = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-        if ($j -isnot [System.Management.Automation.PSCustomObject]) { return $cfg }
-        if ($j.layout -is [string] -and $j.layout.ToLowerInvariant() -in @('one', 'two')) { $cfg.Layout = $j.layout.ToLowerInvariant() }
-        if ($j.style -is [string] -and $j.style.ToLowerInvariant() -in @('plain', 'powerline')) { $cfg.Style = $j.style.ToLowerInvariant() }
-        if ($j.folder -is [string] -and $j.folder.ToLowerInvariant() -in @('repo', 'leaf')) { $cfg.Folder = $j.folder.ToLowerInvariant() }
-        if ($j.state -is [bool]) { $cfg.State = $j.state }
-        $segs = $j.segments
-        if ($segs -is [System.Management.Automation.PSCustomObject]) {
-            foreach ($n in @($cfg.Segments.Keys)) {
-                $v = $segs.$n
-                if ($v -is [bool]) { $cfg.Segments[$n] = $v }
+        if (-not $Path) { return $null }
+        $call = Get-BoundedFileDelegate $Path
+        # The open goes first and what it hands back is what gets judged, so there is no gap between a
+        # question asked about a name and a read of whatever that name means by then. A name swapped in
+        # that gap can still only point at another ordinary file, whose bytes this repository could have
+        # written into the config anyway; what it cannot do is make the line block on a device or read
+        # past the cap, because both of those are settled from the handle just below.
+        $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
+        if ($left -le 0) { return $null }
+        $open = [System.Threading.Tasks.Task]::Run($call.Open)
+        if (-not $open.Wait([int] $left)) { return $null }
+        $fs = $open.Result
+        $stream = Get-BoundedStreamDelegate $fs
+        # From the handle: a stream that cannot seek is not an ordinary file - a FIFO, a pipe, a
+        # character device. CanSeek is settled when the handle is made and costs nothing to read back;
+        # the length is a call of its own, so it goes to the pool under the budget like everything else.
+        # It is the length the handle reports, not one read off the path before the open.
+        if (-not $fs.CanSeek) { return $null }
+        $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
+        if ($left -le 0) { return $null }
+        $length = [System.Threading.Tasks.Task]::Run($stream.Length)
+        if (-not $length.Wait([int] $left)) { return $null }
+        if ($length.Result -gt $limit.MaxBytes) { return $null }
+        # Belt and braces, and all this runtime offers against a link: a FileStream follows one, and the
+        # APIs that name a handle's own target arrived in .NET 6, past the floor. So the name is asked
+        # once more, and a reparse point or a directory is refused even though the handle looked ordinary.
+        $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
+        if ($left -le 0) { return $null }
+        $attr = [System.Threading.Tasks.Task]::Run($call.Attributes)
+        if (-not $attr.Wait([int] $left)) { return $null }
+        if (($attr.Result -band ([System.IO.FileAttributes]::ReparsePoint -bor [System.IO.FileAttributes]::Directory)) -ne 0) { return $null }
+        $buf = [byte[]]::new($limit.MaxBytes + 1)
+        $read = 0
+        while ($read -lt $buf.Length) {
+            $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
+            if ($left -le 0) { return $null }
+            $task = $fs.ReadAsync($buf, $read, $buf.Length - $read)
+            if (-not $task.Wait([int] $left)) { return $null }
+            $n = $task.Result
+            if ($n -le 0) { break }
+            $read += $n
+        }
+        # The cap once more, in case the file grew past the length the handle reported.
+        if ($read -gt $limit.MaxBytes) { return $null }
+        $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+        # UTF8.GetString keeps a byte order mark as U+FEFF, which ConvertFrom-Json will not parse past.
+        if ($text.Length -gt 0 -and $text[0] -eq [char] 0xFEFF) { $text = $text.Substring(1) }
+        return $text
+    } catch { return $null } finally {
+        # Cleanup obeys the same clock. With budget left the close is queued on the pool and not waited
+        # on, so it cannot become the thing that overruns; with the budget gone the stream is abandoned
+        # outright, whichever stage spent it, because a close would only wait on what is already stuck.
+        # An abandoned handle is closed by the process exit that follows the line.
+        if ($null -ne $stream -and ($limit.TimeoutMs - $sw.ElapsedMilliseconds) -gt 0) {
+            try { $null = [System.Threading.Tasks.Task]::Run($stream.Dispose) } catch { $null = $_ }
+        }
+    }
+}
+
+# Applies one config file over a table and returns it. Anything missing or invalid silently falls back to
+# the value already there, and each key falls back on its own: a valid order beside a broken thresholds
+# keeps the order. Files are applied lowest precedence first, so what an invalid value in the project
+# file falls back to is the user file's value rather than the built-in default. -Bounded reads the file
+# as untrusted input, which is what the project file is; the user's own file, written by the installer
+# or by the user, is read as it always was, so an encoding Get-Content works out still loads.
+function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Bounded) {
+    try {
+        if (-not $Path) { return $Cfg }
+        $text = if ($Bounded) { Read-BoundedFileText $Path } else {
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $Cfg }
+            Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+        }
+        if (-not $text) { return $Cfg }
+        $j = $text | ConvertFrom-Json -ErrorAction Stop
+        if ($j -isnot [System.Management.Automation.PSCustomObject]) { return $Cfg }
+        foreach ($rec in Get-StatusConfigKey) {
+            $v = $j.($rec.Json)
+            if ($rec.Kind -eq 'Bool') {
+                if ($v -is [bool]) { $Cfg[$rec.Key] = $v }
+            } elseif ($v -is [string] -and $v.ToLowerInvariant() -in $rec.Allowed) {
+                $Cfg[$rec.Key] = $v.ToLowerInvariant()
             }
         }
-        # order: the segment names of layout one. Empty, or naming no segment, keeps the registry order.
-        $order = Read-SegmentNameList $j.order $cfg.Segments @{}
-        if ($null -ne $order -and $order.Count -gt 0) { $cfg.Order = $order }
+        # segments: one boolean per name, so a file naming one segment leaves the others as they were.
+        $segs = $j.segments
+        if ($segs -is [System.Management.Automation.PSCustomObject]) {
+            foreach ($n in @($Cfg.Segments.Keys)) {
+                $v = $segs.$n
+                if ($v -is [bool]) { $Cfg.Segments[$n] = $v }
+            }
+        }
+        # order: the segment names of layout one. Empty, or naming no segment, keeps the order beneath.
+        $order = Read-SegmentNameList $j.order $Cfg.Segments @{}
+        if ($null -ne $order -and $order.Count -gt 0) { $Cfg.Order = $order }
         # rows: two arrays of names for layout two, read against one seen set so a segment sits on one
-        # row only. Anything but exactly two arrays, or two rows naming nothing, keeps the registry rows.
+        # row only. Anything but exactly two arrays, or two rows naming nothing, keeps the rows beneath.
         $rows = $j.rows
         if ($rows -is [array] -and $rows.Count -eq 2) {
             $seen = @{}
-            $row1 = Read-SegmentNameList $rows[0] $cfg.Segments $seen
-            $row2 = Read-SegmentNameList $rows[1] $cfg.Segments $seen
-            if ($null -ne $row1 -and $null -ne $row2 -and ($row1.Count + $row2.Count) -gt 0) { $cfg.Rows = @($row1, $row2) }
+            $row1 = Read-SegmentNameList $rows[0] $Cfg.Segments $seen
+            $row2 = Read-SegmentNameList $rows[1] $Cfg.Segments $seen
+            if ($null -ne $row1 -and $null -ne $row2 -and ($row1.Count + $row2.Count) -gt 0) { $Cfg.Rows = @($row1, $row2) }
         }
         # thresholds: warn and bad, whole numbers 0 to 100 with warn at or below bad, for the context
         # meter on a standard window and for the rate limits. A whole number written as 20.0 counts, the
         # way Get-PayloadNumber reads a count, since a config written by another tool can spell it so.
-        # Either value wrong keeps 60 and 85 for both.
+        # Either value wrong keeps both as they were.
         $t = $j.thresholds
         if ($t -is [System.Management.Automation.PSCustomObject]) {
             $w = Get-FiniteNumber $t.warn
             $b = Get-FiniteNumber $t.bad
             if ($null -ne $w -and $null -ne $b -and $w -eq [math]::Floor($w) -and $b -eq [math]::Floor($b) -and $w -ge 0 -and $b -le 100 -and $w -le $b) {
-                $cfg.Thresholds = @{ Warn = [int] $w; Bad = [int] $b }
+                $Cfg.Thresholds = @{ Warn = [int] $w; Bad = [int] $b }
             }
         }
-        # icons: icon name to a hex code point string. Only a known name with a code point Read-CodePoint
-        # accepts is kept, as name to integer; every other entry leaves the built-in glyph alone. The two
-        # names the constants shorten are accepted in either spelling.
+        # icons: icon name to a hex code point string, merged one name at a time. Only a known name with
+        # a code point Read-CodePoint accepts is kept, as name to integer; every other entry leaves the
+        # glyph beneath alone. The two names the constants shorten are accepted in either spelling.
         $ic = $j.icons
         if ($ic -is [System.Management.Automation.PSCustomObject]) {
             $known = Get-IconDefault
@@ -299,20 +473,39 @@ function Read-StatusConfig([string] $Path) {
                 $n = $p.Name.ToLowerInvariant()
                 if ($alias.ContainsKey($n)) { $n = $alias[$n] }
                 $cp = Read-CodePoint $p.Value
-                if ($known.ContainsKey($n) -and $null -ne $cp) { $cfg.Icons[$n] = $cp }
+                if ($known.ContainsKey($n) -and $null -ne $cp) { $Cfg.Icons[$n] = $cp }
             }
         }
         # ---- git: probe timeout and cache ----
-        # Whole numbers are clamped to their range; a key of the wrong type keeps its default, and a git
-        # value that is not an object keeps all three.
+        # Whole numbers are clamped to their range; a key of the wrong type keeps the value beneath it,
+        # and a git value that is not an object keeps all three.
         $g = $j.git
         if ($g -is [System.Management.Automation.PSCustomObject]) {
-            $cfg.Git.TimeoutMs = Get-ConfigInteger $g.timeoutMs $cfg.Git.TimeoutMs 100 10000
-            $cfg.Git.CacheSeconds = Get-ConfigInteger $g.cacheSeconds $cfg.Git.CacheSeconds 0 300
-            if ($g.cache -is [bool]) { $cfg.Git.Cache = $g.cache }
+            $Cfg.Git.TimeoutMs = Get-ConfigInteger $g.timeoutMs $Cfg.Git.TimeoutMs 100 10000
+            $Cfg.Git.CacheSeconds = Get-ConfigInteger $g.cacheSeconds $Cfg.Git.CacheSeconds 0 300
+            if ($g.cache -is [bool]) { $Cfg.Git.Cache = $g.cache }
         }
-    } catch { return $cfg }
-    return $cfg
+    } catch { return $Cfg }
+    return $Cfg
+}
+
+# The config a render runs on: the built-in defaults, the user file, then the project file when the
+# payload named a project directory holding .claude\statusline.json. The merge is per key, so a project
+# file of {"layout": "two"} keeps every user toggle. A project directory that is missing, holds no
+# .claude\statusline.json, or holds an unreadable one leaves the config below it exactly as it was. That
+# file arrives with the repository rather than from the user, so it is read as bounded untrusted input.
+# $ProjectDir is untyped and gated here rather than declared [string]: a payload spells project_dir
+# however it likes, and a [string] parameter would join an array into a path instead of rejecting it.
+# The caller passes it only when -Config named no file, so an explicit config renders the same whatever
+# directory the payload names.
+function Read-StatusConfig([string] $Path, $ProjectDir) {
+    $cfg = Merge-StatusConfigFile (Get-DefaultStatusConfig) $Path
+    if ($ProjectDir -isnot [string] -or -not $ProjectDir) { return $cfg }
+    # No Test-Path on the project directory on the way in. It would be a filesystem call on a path the
+    # repository chose, outside the one budget below, which is the whole thing that budget is for; a
+    # directory that is not there is refused by the bounded read like anything else it cannot open.
+    # Join-Path only joins strings, so the first call to touch a disk is inside Read-BoundedFileText.
+    try { return Merge-StatusConfigFile $cfg (Join-Path $ProjectDir '.claude' 'statusline.json') -Bounded } catch { return $cfg }
 }
 
 # Colour table. Plain style uses the SGR codes the script has always used; powerline uses 256-colour
@@ -868,11 +1061,20 @@ function Write-SessionState([string] $SessionId, $State) {
     } catch { Write-StatusDiag "state write failed: $($_.Exception.Message)" }
 }
 
-$configPath = if ($Config) { $Config } else { Join-Path $PSScriptRoot 'statusline.json' }
-$cfg = Read-StatusConfig $configPath
+$raw = [Console]::In.ReadToEnd()
+$payloadOk = $true
+$d = $null
+try { $d = $raw | ConvertFrom-Json } catch { $payloadOk = $false }
 
-# The glyphs the builders and the fallback line use, with the config's icons overrides applied. The config
-# is read before the payload so these are settled before anything is printed.
+# The config is read after the payload, because the payload names the project directory whose
+# .claude\statusline.json is merged over the user file, and still before anything is printed. -Config
+# replaces the user file and leaves the project file unread: it is the explicit override the tests and
+# the screenshot script use, and both need a render that no directory a sample payload names can change.
+$configPath = if ($Config) { $Config } else { Join-Path $PSScriptRoot 'statusline.json' }
+$projectDir = if ($Config) { $null } else { $d.workspace.project_dir }
+$cfg = Read-StatusConfig $configPath $projectDir
+
+# The glyphs the builders and the fallback line use, with the config's icons overrides applied.
 $icons = Get-IconSet $cfg
 $iconModel = $icons.model
 $iconCtx = $icons.context
@@ -893,8 +1095,9 @@ $iconThink = $icons.think
 $iconEffort = $icons.effort
 $iconVim = $icons.vim
 
-$raw = [Console]::In.ReadToEnd()
-try { $d = $raw | ConvertFrom-Json } catch { Write-Host (C '36' "$iconModel claude"); exit 0 }
+# A payload that is not JSON gets the fallback line. It is printed here rather than where the payload was
+# read so that it carries the config's glyph overrides, which are only settled above.
+if (-not $payloadOk) { Write-Host (C '36' "$iconModel claude"); exit 0 }
 
 # ---- Segment builders. Each returns $null (segment omitted) or @{ Name; Text; Short; Role; Bold }. ----
 
