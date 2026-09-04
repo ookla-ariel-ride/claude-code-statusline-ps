@@ -1,0 +1,6 @@
+{
+  "model": { "display_name": "Sonnet 5" },
+  "context_window": { "used_percentage": 92 },
+  "cost": { "total_cost_usd": 2.4 },
+  "workspace": { "current_dir": "C:\\Users\\jim\\alarm-demo" }
+}

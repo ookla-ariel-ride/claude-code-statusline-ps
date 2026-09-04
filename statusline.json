@@ -4,6 +4,7 @@
   "folder": "repo",
   "state": true,
   "thresholds": { "warn": 60, "bad": 85 },
+  "alarm": { "context": 90, "limits": 90 },
   "icons": {},
   "git": {
     "timeoutMs": 1500,

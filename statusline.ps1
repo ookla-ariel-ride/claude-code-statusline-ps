@@ -278,6 +278,7 @@ function Get-DefaultStatusConfig {
     $cfg.Order = @((Get-SegmentRegistry).Name)
     $cfg.Rows = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
     $cfg.Thresholds = @{ Warn = 60; Bad = 85 }
+    $cfg.Alarm = @{ Context = 90; Limits = 90 }
     $cfg.Icons = @{}
     return $cfg
 }
@@ -286,7 +287,7 @@ function Get-DefaultStatusConfig {
 # takes a string that Allowed lists, folded to lower case; Bool takes a boolean. A value of any other
 # shape leaves the key at the value beneath it. A new one-value key is one row here and nothing else; a
 # key carrying an object or a list of its own gets a block of its own in Merge-StatusConfigFile, beside
-# segments, order, rows, thresholds, icons and git.
+# segments, order, rows, thresholds, alarm, icons and git.
 function Get-StatusConfigKey {
     return @(
         @{ Json = 'layout'; Key = 'Layout'; Kind = 'Enum'; Allowed = @('one', 'two') }
@@ -461,6 +462,18 @@ function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Boun
             if ($null -ne $w -and $null -ne $b -and $w -eq [math]::Floor($w) -and $b -eq [math]::Floor($b) -and $w -ge 0 -and $b -le 100 -and $w -le $b) {
                 $Cfg.Thresholds = @{ Warn = [int] $w; Bad = [int] $b }
             }
+        }
+        # alarm: the two percentages at or above which the model segment turns red, one for the context
+        # window and one for the rate limits. Unlike thresholds these are read one at a time, the way the
+        # git keys are, because they are not a pair that has to agree: a file naming only context leaves
+        # limits where it was, and a value that is not a whole number keeps the value beneath it. 0 turns
+        # that alarm off outright, and a negative clamps to it. The top of the range is Int32's own end
+        # rather than 100, so a value above 100 is kept as written and can then never fire, which is the
+        # other way of saying "off"; clamping it to 100 would turn it into an alarm at every full window.
+        $al = $j.alarm
+        if ($al -is [System.Management.Automation.PSCustomObject]) {
+            $Cfg.Alarm.Context = Get-ConfigInteger $al.context $Cfg.Alarm.Context 0 ([int]::MaxValue)
+            $Cfg.Alarm.Limits = Get-ConfigInteger $al.limits $Cfg.Alarm.Limits 0 ([int]::MaxValue)
         }
         # icons: icon name to a hex code point string, merged one name at a time. Only a known name with
         # a code point Read-CodePoint accepts is kept, as name to integer; every other entry leaves the
@@ -1110,18 +1123,55 @@ function Get-ThresholdRole([int] $pct, [int] $Warn, [int] $Bad) { if ($pct -ge $
 # The one window size that gets the 1M marker and the wider bands. Claude Code reports it as exactly 1000000.
 function Test-WideWindow($size) { return $size -eq 1000000 }
 
+# One percentage against one alarm level: $true only when the level is a number above 0 and the value is
+# a number at or above it. Both arguments come straight from the payload and the config and are untyped,
+# so every way of saying "no alarm here" ends in $false rather than an error: a level of 0 (the alarm is
+# off), a missing level, a used_percentage that is null because the first API response has not landed,
+# or a value of any other shape. The comparison is on the raw percentage, not the rounded one the
+# segments print, so 89.6 does not fire a 90 alarm.
+function Test-AlarmLevel($Value, $Level) {
+    $at = Get-FiniteNumber $Level
+    if ($null -eq $at -or $at -le 0) { return $false }
+    $pct = Get-FiniteNumber $Value
+    if ($null -eq $pct) { return $false }
+    return ($pct -ge $at)
+}
+
+# Whether this payload is in an alarm state: the context window at or above alarm.context, or either
+# rate limit at or above alarm.limits. It reads the payload and the config directly rather than any
+# segment record, so it does not depend on segment order, on the fitting, or on whether the context and
+# limits segments are enabled at all - the model segment, which is never dropped, is what carries it,
+# and a later caller (the taskbar progress of #24) can ask the same question for its own purpose.
+# The spend limit is not an alarm: it is a billing ceiling rather than a rate that stops the session.
+# A config with no Alarm table, and a payload with no rate_limits (absent until the first API response,
+# and only on Pro and Max), are both simply no alarm.
+function Test-AlarmState($d, $cfg) {
+    $alarm = $cfg.Alarm
+    if ($null -eq $alarm) { return $false }
+    if (Test-AlarmLevel $d.context_window.used_percentage $alarm.Context) { return $true }
+    $rl = $d.rate_limits
+    if (Test-AlarmLevel $rl.five_hour.used_percentage $alarm.Limits) { return $true }
+    return (Test-AlarmLevel $rl.seven_day.used_percentage $alarm.Limits)
+}
+
 # Thousands of tokens: 1.5k, 64k, 1.0M
 function K([double] $n) { if ($n -ge 1000000) { '{0:N1}M' -f ($n / 1000000) } elseif ($n -ge 10000) { '{0:N0}k' -f ($n / 1000) } else { '{0:N1}k' -f ($n / 1000) } }
 
 # A 1M window gets a dim "1M" after the name, so a percentage in the context segment reads against the
 # right total. Once the session has passed 200k tokens the warning glyph follows it.
+# The role is the alarm's: red instead of cyan once the context window or a rate limit passes the alarm
+# level, with the text left exactly as it was. It is decided here rather than by the build loop because
+# the "1M" marker goes through Format-Inline, which hands the segment's own foreground back after the
+# muted run - a role changed after the text was built would leave that marker restoring cyan on a red
+# segment. The segment is never dropped and has no short form, which is what makes it the carrier.
 function Get-ModelSegment($d, $cfg) {
     $model = $d.model.display_name
     if (-not $model) { return $null }
+    $role = if (Test-AlarmState $d $cfg) { 'bad' } else { 'model' }
     $text = "$iconModel $model"
-    if (Test-WideWindow $d.context_window.context_window_size) { $text += ' ' + (Format-Inline 'muted' '1M' 'model' $cfg.Style) }
+    if (Test-WideWindow $d.context_window.context_window_size) { $text += ' ' + (Format-Inline 'muted' '1M' $role $cfg.Style) }
     if ($d.exceeds_200k_tokens -is [bool] -and $d.exceeds_200k_tokens) { $text += " $iconConflict" }
-    return @{ Name = 'model'; Text = $text; Short = $null; Role = 'model'; Bold = $true }
+    return @{ Name = 'model'; Text = $text; Short = $null; Role = $role; Bold = $true }
 }
 
 function Get-ContextSegment($d, $cfg) {
