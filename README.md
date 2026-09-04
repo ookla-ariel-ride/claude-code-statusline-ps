@@ -142,6 +142,15 @@ The file leaves `order` and `rows` out on purpose: without them the segments com
 order, and a segment added by a later release appears on its own. The installer keeps an existing
 `statusline.json`, so a file that spells the order out would pin it.
 
+A repository can pin its own look. When the payload names a project directory, the script reads
+`<project>\.claude\statusline.json` as well and merges it over the user file. The merge is per key, so
+a project file of `{"layout": "two"}` keeps every user segment toggle, and one of
+`{"segments": {"cost": false}}` turns off cost and leaves the other eight alone. Precedence runs
+built-in defaults, user file, project file, and a value the project file gets wrong falls back to the
+value beneath it rather than to the built-in default. A project with no `.claude\statusline.json`
+changes nothing, and so does an unreadable one. `-Config <path>` is the exception: it replaces the user
+file and skips the project file, so a render with it is the same whatever directory the payload names.
+
 | Key | Values | What it does |
 |---|---|---|
 | `layout` | `one`, `two` | `two` puts model, folder, branch, pr and badges on the first line and context, limits, cost and lines on the second, unless `rows` says otherwise. |
@@ -294,8 +303,11 @@ the terminal width. At a set width a segment with a short form (limits, context,
 must be whole, shortened, or gone, never half shed. At the unset width the matrix also checks
 content: each segment the sample and config enable must appear on its row, in the configured order,
 with its glyph and value, disabled segments must not, and the separators must match the style. Those
-content checks only run when `-Columns` includes `0`, which the default does. The script exits
-non-zero if any check fails. Each render takes about 400 ms, nearly all of it `pwsh` start-up.
+content checks only run when `-Columns` includes `0`, which the default does. A few renders after the
+matrix run with no `-Config` at all: they point a payload at a temp project directory and check that
+its `.claude\statusline.json` reaches the line, that a broken one does not, and that `-Config` ignores
+it. The script exits non-zero if any check fails. Each render takes about 400 ms, nearly all of it
+`pwsh` start-up.
 
 The tests never touch your own repositories. They point `GIT_CEILING_DIRECTORIES` at the temp
 folder and pass an empty global git config, so the results do not depend on the machine.
@@ -398,11 +410,12 @@ Done so far:
 - [x] Pull-request segment with a clickable link
 - [x] Segment order, rows, colour cut-offs and glyphs as `statusline.json` keys
 - [x] Cached `git status` with a configurable timeout
+- [x] Per-project `statusline.json` merged over the user file
 
 [Issues #2 to #43](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
 each with its own plan. In rough order: new segments (cache warmth, cost per turn, pace, session
-clock, worktree name, links on the folder and branch), presets and per-project config, and finally
-an ASCII style that needs no Nerd Font and a light palette.
+clock, worktree name, links on the folder and branch), named presets, and finally an ASCII style that
+needs no Nerd Font and a light palette.
 
 ## License
 

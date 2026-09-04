@@ -4,11 +4,12 @@
 # Reads the JSON Claude Code pipes on stdin and prints one or two lines, e.g.
 #   󰚩 Fable 5.1  󰍛 37% ████░░░░░░   $0.43   my-project   main
 # Layout, separator style, segment toggles and order, colour bands and glyph overrides come from
-# statusline.json next to this script.
+# statusline.json next to this script, with the project's own .claude\statusline.json merged over it.
 # Glyphs are emitted from code points so the file's own encoding never matters.
 [CmdletBinding()]
 param(
-    # Path to the config file. Defaults to statusline.json beside this script. Claude Code never passes it.
+    # Path to the config file. Defaults to statusline.json beside this script; given, it replaces that
+    # file and the project's own file is not read at all. Claude Code never passes it.
     [string] $Config
 )
 $ErrorActionPreference = 'SilentlyContinue'
@@ -175,57 +176,84 @@ function Read-SegmentNameList($Value, [hashtable] $Known, [hashtable] $Seen) {
     return , $names
 }
 
-# Reads statusline.json. Anything missing or invalid silently falls back to its default, and each key
-# falls back on its own: a valid order beside a broken thresholds keeps the order.
-function Read-StatusConfig([string] $Path) {
+# The built-in defaults: the table every config file is merged over. A fresh table each call, the nested
+# tables included, so a merge that changes one caller's copy cannot reach the next caller's.
+function Get-DefaultStatusConfig {
     $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Segments = @{}; Git = Get-DefaultGitConfig }
     foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
     $cfg.Order = @((Get-SegmentRegistry).Name)
     $cfg.Rows = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
     $cfg.Thresholds = @{ Warn = 60; Bad = 85 }
     $cfg.Icons = @{}
+    return $cfg
+}
+
+# The one-value config keys: the JSON name, the config key it lands in, and how the value is read. Enum
+# takes a string that Allowed lists, folded to lower case; Bool takes a boolean. A value of any other
+# shape leaves the key at the value beneath it. A new one-value key is one row here and nothing else; a
+# key carrying an object or a list of its own gets a block of its own in Merge-StatusConfigFile, beside
+# segments, order, rows, thresholds, icons and git.
+function Get-StatusConfigKey {
+    return @(
+        @{ Json = 'layout'; Key = 'Layout'; Kind = 'Enum'; Allowed = @('one', 'two') }
+        @{ Json = 'style';  Key = 'Style';  Kind = 'Enum'; Allowed = @('plain', 'powerline') }
+        @{ Json = 'folder'; Key = 'Folder'; Kind = 'Enum'; Allowed = @('repo', 'leaf') }
+        @{ Json = 'state';  Key = 'State';  Kind = 'Bool'; Allowed = $null }
+    )
+}
+
+# Applies one config file over a table and returns it. Anything missing or invalid silently falls back to
+# the value already there, and each key falls back on its own: a valid order beside a broken thresholds
+# keeps the order. Files are applied lowest precedence first, so what an invalid value in the project
+# file falls back to is the user file's value rather than the built-in default.
+function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path) {
     try {
-        if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $cfg }
+        if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $Cfg }
         $j = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-        if ($j -isnot [System.Management.Automation.PSCustomObject]) { return $cfg }
-        if ($j.layout -is [string] -and $j.layout.ToLowerInvariant() -in @('one', 'two')) { $cfg.Layout = $j.layout.ToLowerInvariant() }
-        if ($j.style -is [string] -and $j.style.ToLowerInvariant() -in @('plain', 'powerline')) { $cfg.Style = $j.style.ToLowerInvariant() }
-        if ($j.folder -is [string] -and $j.folder.ToLowerInvariant() -in @('repo', 'leaf')) { $cfg.Folder = $j.folder.ToLowerInvariant() }
-        if ($j.state -is [bool]) { $cfg.State = $j.state }
-        $segs = $j.segments
-        if ($segs -is [System.Management.Automation.PSCustomObject]) {
-            foreach ($n in @($cfg.Segments.Keys)) {
-                $v = $segs.$n
-                if ($v -is [bool]) { $cfg.Segments[$n] = $v }
+        if ($j -isnot [System.Management.Automation.PSCustomObject]) { return $Cfg }
+        foreach ($rec in Get-StatusConfigKey) {
+            $v = $j.($rec.Json)
+            if ($rec.Kind -eq 'Bool') {
+                if ($v -is [bool]) { $Cfg[$rec.Key] = $v }
+            } elseif ($v -is [string] -and $v.ToLowerInvariant() -in $rec.Allowed) {
+                $Cfg[$rec.Key] = $v.ToLowerInvariant()
             }
         }
-        # order: the segment names of layout one. Empty, or naming no segment, keeps the registry order.
-        $order = Read-SegmentNameList $j.order $cfg.Segments @{}
-        if ($null -ne $order -and $order.Count -gt 0) { $cfg.Order = $order }
+        # segments: one boolean per name, so a file naming one segment leaves the others as they were.
+        $segs = $j.segments
+        if ($segs -is [System.Management.Automation.PSCustomObject]) {
+            foreach ($n in @($Cfg.Segments.Keys)) {
+                $v = $segs.$n
+                if ($v -is [bool]) { $Cfg.Segments[$n] = $v }
+            }
+        }
+        # order: the segment names of layout one. Empty, or naming no segment, keeps the order beneath.
+        $order = Read-SegmentNameList $j.order $Cfg.Segments @{}
+        if ($null -ne $order -and $order.Count -gt 0) { $Cfg.Order = $order }
         # rows: two arrays of names for layout two, read against one seen set so a segment sits on one
-        # row only. Anything but exactly two arrays, or two rows naming nothing, keeps the registry rows.
+        # row only. Anything but exactly two arrays, or two rows naming nothing, keeps the rows beneath.
         $rows = $j.rows
         if ($rows -is [array] -and $rows.Count -eq 2) {
             $seen = @{}
-            $row1 = Read-SegmentNameList $rows[0] $cfg.Segments $seen
-            $row2 = Read-SegmentNameList $rows[1] $cfg.Segments $seen
-            if ($null -ne $row1 -and $null -ne $row2 -and ($row1.Count + $row2.Count) -gt 0) { $cfg.Rows = @($row1, $row2) }
+            $row1 = Read-SegmentNameList $rows[0] $Cfg.Segments $seen
+            $row2 = Read-SegmentNameList $rows[1] $Cfg.Segments $seen
+            if ($null -ne $row1 -and $null -ne $row2 -and ($row1.Count + $row2.Count) -gt 0) { $Cfg.Rows = @($row1, $row2) }
         }
         # thresholds: warn and bad, whole numbers 0 to 100 with warn at or below bad, for the context
         # meter on a standard window and for the rate limits. A whole number written as 20.0 counts, the
         # way Get-PayloadNumber reads a count, since a config written by another tool can spell it so.
-        # Either value wrong keeps 60 and 85 for both.
+        # Either value wrong keeps both as they were.
         $t = $j.thresholds
         if ($t -is [System.Management.Automation.PSCustomObject]) {
             $w = Get-FiniteNumber $t.warn
             $b = Get-FiniteNumber $t.bad
             if ($null -ne $w -and $null -ne $b -and $w -eq [math]::Floor($w) -and $b -eq [math]::Floor($b) -and $w -ge 0 -and $b -le 100 -and $w -le $b) {
-                $cfg.Thresholds = @{ Warn = [int] $w; Bad = [int] $b }
+                $Cfg.Thresholds = @{ Warn = [int] $w; Bad = [int] $b }
             }
         }
-        # icons: icon name to a hex code point string. Only a known name with a code point Read-CodePoint
-        # accepts is kept, as name to integer; every other entry leaves the built-in glyph alone. The two
-        # names the constants shorten are accepted in either spelling.
+        # icons: icon name to a hex code point string, merged one name at a time. Only a known name with
+        # a code point Read-CodePoint accepts is kept, as name to integer; every other entry leaves the
+        # glyph beneath alone. The two names the constants shorten are accepted in either spelling.
         $ic = $j.icons
         if ($ic -is [System.Management.Automation.PSCustomObject]) {
             $known = Get-IconDefault
@@ -234,17 +262,36 @@ function Read-StatusConfig([string] $Path) {
                 $n = $p.Name.ToLowerInvariant()
                 if ($alias.ContainsKey($n)) { $n = $alias[$n] }
                 $cp = Read-CodePoint $p.Value
-                if ($known.ContainsKey($n) -and $null -ne $cp) { $cfg.Icons[$n] = $cp }
+                if ($known.ContainsKey($n) -and $null -ne $cp) { $Cfg.Icons[$n] = $cp }
             }
         }
         # ---- git: probe timeout and cache ----
-        # Whole numbers are clamped to their range; a key of the wrong type keeps its default, and a git
-        # value that is not an object keeps all three.
+        # Whole numbers are clamped to their range; a key of the wrong type keeps the value beneath it,
+        # and a git value that is not an object keeps all three.
         $g = $j.git
         if ($g -is [System.Management.Automation.PSCustomObject]) {
-            $cfg.Git.TimeoutMs = Get-ConfigInteger $g.timeoutMs $cfg.Git.TimeoutMs 100 10000
-            $cfg.Git.CacheSeconds = Get-ConfigInteger $g.cacheSeconds $cfg.Git.CacheSeconds 0 300
-            if ($g.cache -is [bool]) { $cfg.Git.Cache = $g.cache }
+            $Cfg.Git.TimeoutMs = Get-ConfigInteger $g.timeoutMs $Cfg.Git.TimeoutMs 100 10000
+            $Cfg.Git.CacheSeconds = Get-ConfigInteger $g.cacheSeconds $Cfg.Git.CacheSeconds 0 300
+            if ($g.cache -is [bool]) { $Cfg.Git.Cache = $g.cache }
+        }
+    } catch { return $Cfg }
+    return $Cfg
+}
+
+# The config a render runs on: the built-in defaults, the user file, then the project file when the
+# payload named a project directory holding .claude\statusline.json. The merge is per key, so a project
+# file of {"layout": "two"} keeps every user toggle. A project directory that is missing, holds no
+# .claude\statusline.json, or holds an unreadable one leaves the config below it exactly as it was.
+# $ProjectDir is untyped and gated here rather than declared [string]: a payload spells project_dir
+# however it likes, and a [string] parameter would join an array into a path instead of rejecting it.
+# The caller passes it only when -Config named no file, so an explicit config renders the same whatever
+# directory the payload names.
+function Read-StatusConfig([string] $Path, $ProjectDir) {
+    $cfg = Merge-StatusConfigFile (Get-DefaultStatusConfig) $Path
+    if ($ProjectDir -isnot [string] -or -not $ProjectDir) { return $cfg }
+    try {
+        if (Test-Path -LiteralPath $ProjectDir -PathType Container) {
+            $cfg = Merge-StatusConfigFile $cfg (Join-Path $ProjectDir '.claude' 'statusline.json')
         }
     } catch { return $cfg }
     return $cfg
@@ -785,11 +832,20 @@ function Write-SessionState([string] $SessionId, $State) {
     } catch { $null = $_ }
 }
 
-$configPath = if ($Config) { $Config } else { Join-Path $PSScriptRoot 'statusline.json' }
-$cfg = Read-StatusConfig $configPath
+$raw = [Console]::In.ReadToEnd()
+$payloadOk = $true
+$d = $null
+try { $d = $raw | ConvertFrom-Json } catch { $payloadOk = $false }
 
-# The glyphs the builders and the fallback line use, with the config's icons overrides applied. The config
-# is read before the payload so these are settled before anything is printed.
+# The config is read after the payload, because the payload names the project directory whose
+# .claude\statusline.json is merged over the user file, and still before anything is printed. -Config
+# replaces the user file and leaves the project file unread: it is the explicit override the tests and
+# the screenshot script use, and both need a render that no directory a sample payload names can change.
+$configPath = if ($Config) { $Config } else { Join-Path $PSScriptRoot 'statusline.json' }
+$projectDir = if ($Config) { $null } else { $d.workspace.project_dir }
+$cfg = Read-StatusConfig $configPath $projectDir
+
+# The glyphs the builders and the fallback line use, with the config's icons overrides applied.
 $icons = Get-IconSet $cfg
 $iconModel = $icons.model
 $iconCtx = $icons.context
@@ -810,8 +866,9 @@ $iconThink = $icons.think
 $iconEffort = $icons.effort
 $iconVim = $icons.vim
 
-$raw = [Console]::In.ReadToEnd()
-try { $d = $raw | ConvertFrom-Json } catch { Write-Host (C '36' "$iconModel claude"); exit 0 }
+# A payload that is not JSON gets the fallback line. It is printed here rather than where the payload was
+# read so that it carries the config's glyph overrides, which are only settled above.
+if (-not $payloadOk) { Write-Host (C '36' "$iconModel claude"); exit 0 }
 
 # ---- Segment builders. Each returns $null (segment omitted) or @{ Name; Text; Short; Role; Bold }. ----
 
