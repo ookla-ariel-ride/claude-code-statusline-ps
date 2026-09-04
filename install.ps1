@@ -24,9 +24,11 @@
 .PARAMETER Uninstall
   Remove the statusLine entry from settings.json and delete ~/.claude/statusline.ps1.
   ~/.claude/statusline.json is kept. The subagentStatusLine entry and
-  ~/.claude/subagent-statusline.ps1 are removed only when they are this project's: the entry has to
-  point at ~/.claude/subagent-statusline.ps1 and the file has to carry this project's marker line.
-  Anything else of that name is left alone and reported.
+  ~/.claude/subagent-statusline.ps1 are removed only when they are this project's: the entry has to be
+  the exact command form this installer writes, with that path as its -File argument, and the file has
+  to carry this project's marker line. The rollback copy an install leaves,
+  ~/.claude/.claude-code-statusline-ps.subagent-rollback.ps1, is removed on the same test. Anything
+  else of those names is left alone and reported.
 
 .PARAMETER RefreshInterval
   Seconds between timed re-renders, written as statusLine.refreshInterval. Must be 1 or more. Leave it
@@ -61,6 +63,11 @@ $claudeDir = Join-Path $env:USERPROFILE '.claude'
 $target = Join-Path $claudeDir 'statusline.ps1'
 $configTarget = Join-Path $claudeDir 'statusline.json'
 $subagentTarget = Join-Path $claudeDir 'subagent-statusline.ps1'
+# Where an install keeps the version it replaced. Not subagent-statusline.ps1.bak: a .bak beside a file
+# is a name anyone's own tooling might already be using, and this installer writes and deletes this file
+# without being asked, so it uses a name carrying this project's id instead. Ownership is still checked
+# by the marker line before it is overwritten or removed, because a name alone is not proof.
+$subagentRollback = Join-Path $claudeDir '.claude-code-statusline-ps.subagent-rollback.ps1'
 # PowerShell variable names are case-insensitive, so $settingsPath below is the -SettingsPath parameter.
 if (-not $SettingsPath) { $settingsPath = Join-Path $claudeDir 'settings.json' }
 $fontFace = 'JetBrainsMono NF'
@@ -135,16 +142,17 @@ function Get-SettingLock([string] $Path, [int] $TimeoutMs) {
 # runs its whole body on load, so the installer cannot dot-source it, and other branches are open in that
 # file. Consolidate the two when those land.
 # Extra steps the cache and state files do not need, because this one is the user's own settings:
-#   - the whole read-modify-write is finished under an exclusive lock, so a second installer waits its
-#     turn instead of overwriting a change this one has not seen;
-#   - the file is compared with what Read-UserSetting saw, once when the lock is taken and again in the
-#     instant before the replace, so a change made in between is refused rather than silently dropped.
-#     The rename is the only step after that last comparison, which is as small as the window gets
-#     without an atomic compare-and-swap from the filesystem;
+#   - the read-modify-write runs under an exclusive lock on a sibling lock file. That serialises this
+#     installer against anything else that takes the same lock, and does nothing at all about a writer
+#     that does not take it: a cooperative lock cannot exclude a process that ignores it;
+#   - the file is compared with what Read-UserSetting saw twice, when the lock is taken and again
+#     immediately before the rename. A change that lands before that second comparison is refused;
 #   - the serialized text is parsed back before anything is replaced, so a broken document never lands;
 #   - the .bak is taken from the file as it stands, before the replace.
-# A writer that ignores the lock entirely can still be lost, and nothing in a cooperative scheme can stop
-# that. What it cannot do any more is slip in between this installer's check and its write.
+# What this does not do, stated plainly rather than implied away: a writer that does not take the lock
+# can still save in the gap between that second comparison and the rename, and the rename replaces it.
+# The gap is one filesystem operation wide and closing it would need a compare-and-swap the filesystem
+# does not offer, or a lock every writer honours. The content that was replaced is in the .bak.
 function Write-UserSetting($obj, [string] $Path) {
     $dir = Split-Path $Path -Parent
     if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
@@ -178,8 +186,9 @@ function Write-UserSetting($obj, [string] $Path) {
     }
 }
 
-# Throws when the file on disk is no longer the text Read-UserSetting saw. Called twice by the write, so
-# it is a function rather than two copies of the comparison.
+# Throws when the file on disk is no longer the text Read-UserSetting saw. Called twice by the write,
+# once on taking the lock and once immediately before the rename, so it is a function rather than two
+# copies of the comparison. The second call narrows the window to the rename; it does not remove it.
 function Confirm-SettingUnchanged([string] $Path) {
     if (-not $settingsBaseline.ContainsKey($Path)) { return }
     $current = $null
@@ -295,8 +304,17 @@ if ($Uninstall) {
         if (Test-OwnSubagentScript $subagentTarget) {
             Remove-Item -LiteralPath $subagentTarget -Force
             Write-Host "Deleted $subagentTarget"
-            # The rollback copy an install leaves is ours too, and is litter once the script is gone.
-            if (Test-Path -LiteralPath "$subagentTarget.bak") { Remove-Item -LiteralPath "$subagentTarget.bak" -Force -ErrorAction SilentlyContinue }
+            # The rollback copy an install leaves is litter once the script is gone, but it is only ours
+            # to delete when it carries the marker: the name is this project's, and that is still not
+            # proof that the file at it is.
+            if (Test-Path -LiteralPath $subagentRollback) {
+                if (Test-OwnSubagentScript $subagentRollback) {
+                    Remove-Item -LiteralPath $subagentRollback -Force -ErrorAction SilentlyContinue
+                    Write-Host "Deleted $subagentRollback"
+                } else {
+                    $kept += "$subagentRollback does not carry this project's marker line, so it was left alone"
+                }
+            }
         } else {
             $kept += "$subagentTarget does not carry this project's marker line, so it was left alone"
         }
@@ -371,8 +389,17 @@ if ($Subagents) {
 Write-UserSetting $s $settingsPath
 Write-Host "Configured statusLine in $settingsPath (hideVimModeIndicator on$(if ($wantRefresh) { ", refreshInterval $RefreshInterval s" }))"
 if ($Subagents) {
-    # The previous version, which the check above proved is ours, is kept so an install can be undone.
-    if (Test-Path -LiteralPath $subagentTarget) { Copy-Item -LiteralPath $subagentTarget -Destination "$subagentTarget.bak" -Force }
+    # The version being replaced, which the check above proved is ours, is kept so an install can be
+    # undone. Anything already sitting at the rollback name that is not ours is left alone and the copy
+    # is skipped: losing the ability to roll back is a smaller harm than overwriting someone's file, and
+    # the install itself is unaffected either way.
+    if (Test-Path -LiteralPath $subagentTarget) {
+        if ((Test-Path -LiteralPath $subagentRollback) -and -not (Test-OwnSubagentScript $subagentRollback)) {
+            Write-Warning "Kept: $subagentRollback does not carry this project's marker line, so the copy of the version being replaced was not written."
+        } else {
+            Copy-Item -LiteralPath $subagentTarget -Destination $subagentRollback -Force
+        }
+    }
     [System.IO.File]::Move($subagentStaged, $subagentTarget, $true)
     $subagentStaged = $null
     Write-Host "Installed $subagentTarget"

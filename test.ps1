@@ -3631,16 +3631,53 @@ Confirm-Equal (Get-Content -LiteralPath $subSettings -Raw) $settingsBefore 'inst
 Confirm-Equal (@(Get-ChildItem -LiteralPath (Join-Path $subHome '.claude') -Filter '*.tmp-*' -Force).Count) 0 'install over unowned: nothing is staged and left behind'
 Remove-Item -LiteralPath $installedSub -Force
 
-# The rollback copy: a reinstall over our own file keeps the version it replaced.
+# The rollback copy: a reinstall over our own file keeps the version it replaced, under a name carrying
+# this project's id rather than the generic .bak beside the script.
+$installedRollback = Join-Path $subHome '.claude\.claude-code-statusline-ps.subagent-rollback.ps1'
 $r = Invoke-Installer 'install -Subagents onto a clean home' @('-Subagents', '-SettingsPath', $subSettings)
 Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'install rollback copy: the first install is clean'
-Confirm-True (-not (Test-Path -LiteralPath "$installedSub.bak")) 'install rollback copy: no .bak when there was nothing to replace'
+Confirm-True (-not (Test-Path -LiteralPath $installedRollback)) 'install rollback copy: nothing kept when there was nothing to replace'
 $r = Invoke-Installer 'install -Subagents a second time' @('-Subagents', '-SettingsPath', $subSettings)
 Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'install rollback copy: the reinstall is clean'
-Confirm-True (Test-Path -LiteralPath "$installedSub.bak") 'install rollback copy: the replaced version is kept beside it'
+Confirm-True (Test-Path -LiteralPath $installedRollback) 'install rollback copy: the replaced version is kept'
+Confirm-True (-not (Test-Path -LiteralPath "$installedSub.bak")) 'install rollback copy: the generic .bak name beside the script is not used at all'
 $r = Invoke-Installer 'uninstall after a reinstall' @('-Uninstall', '-SettingsPath', $subSettings)
 Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'install rollback copy: the uninstall is clean'
-Confirm-True (-not (Test-Path -LiteralPath "$installedSub.bak")) 'install rollback copy: the uninstall takes the rollback copy with it'
+Confirm-True (-not (Test-Path -LiteralPath $installedRollback)) 'install rollback copy: the uninstall takes the rollback copy with it'
+
+# A .bak beside the script that this installer did not write. It used to be overwritten on install and
+# deleted on uninstall; nothing touches that name now, in either direction.
+$foreignBak = "$installedSub.bak"
+$foreignBakText = '# my own backup of my own subagent line'
+Set-Content -LiteralPath $foreignBak -Value $foreignBakText -Encoding utf8NoBOM
+$r = Invoke-Installer 'install -Subagents beside a foreign .bak' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'foreign .bak: the install is clean'
+Confirm-Equal (Get-Content -LiteralPath $foreignBak -Raw).Trim() $foreignBakText 'foreign .bak: an install does not overwrite it'
+$r = Invoke-Installer 'install -Subagents again beside a foreign .bak' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-Equal (Get-Content -LiteralPath $foreignBak -Raw).Trim() $foreignBakText 'foreign .bak: a reinstall, which does write a rollback copy, still does not overwrite it'
+$r = Invoke-Installer 'uninstall beside a foreign .bak' @('-Uninstall', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'foreign .bak: the uninstall is clean'
+Confirm-True (Test-Path -LiteralPath $foreignBak) 'foreign .bak: an uninstall does not delete it'
+Confirm-Equal (Get-Content -LiteralPath $foreignBak -Raw).Trim() $foreignBakText 'foreign .bak: its content is untouched throughout'
+Remove-Item -LiteralPath $foreignBak -Force
+
+# And a foreign file sitting at the rollback name itself. The name is this project's, which is not proof
+# that the file at it is, so it is checked by the marker before being overwritten or deleted.
+$foreignRollbackText = '# not ours either, despite the name'
+Set-Content -LiteralPath $installedRollback -Value $foreignRollbackText -Encoding utf8NoBOM
+$r = Invoke-Installer 'install -Subagents onto a foreign rollback name' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0) "foreign rollback: the install still succeeds, exit $($r.ExitCode)"
+Confirm-Equal (Get-Content -LiteralPath $installedRollback -Raw).Trim() $foreignRollbackText 'foreign rollback: the first install does not overwrite it'
+$r = Invoke-Installer 'install -Subagents again onto a foreign rollback name' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0) "foreign rollback: the reinstall still succeeds, exit $($r.ExitCode)"
+Confirm-Equal (Get-Content -LiteralPath $installedRollback -Raw).Trim() $foreignRollbackText 'foreign rollback: a reinstall skips the copy rather than overwriting it'
+Confirm-True ((($r.Lines + $r.Err) -join ' ') -match 'Kept:.+rollback') "foreign rollback: the run says the copy was skipped, got '$(($r.Lines + $r.Err) -join ' | ')'"
+$r = Invoke-Installer 'uninstall beside a foreign rollback name' @('-Uninstall', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'foreign rollback: the uninstall is clean'
+Confirm-True (Test-Path -LiteralPath $installedRollback) 'foreign rollback: an uninstall does not delete it'
+Confirm-Equal (Get-Content -LiteralPath $installedRollback -Raw).Trim() $foreignRollbackText 'foreign rollback: its content is untouched throughout'
+Confirm-True ((($r.Lines + $r.Err) -join ' ') -match "Kept:.+rollback.+marker line") "foreign rollback: the uninstall says it was left alone, got '$(($r.Lines + $r.Err) -join ' | ')'"
+Remove-Item -LiteralPath $installedRollback -Force
 
 # A second installer holding the lock. The settings write waits for it, and when it cannot have the
 # lock it writes nothing at all rather than racing the other one. This is the interprocess half of the

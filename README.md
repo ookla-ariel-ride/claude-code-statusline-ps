@@ -190,16 +190,25 @@ line, in a string literal or in a trailing comment does not count.
 
 `-Subagents` applies the same rule on the way in: it refuses to install over a
 `~/.claude/subagent-statusline.ps1` that is not ours, rather than overwriting it. When it does replace
-one of ours it keeps the previous version as `subagent-statusline.ps1.bak`, and `-Uninstall` removes
-that too.
+one of ours it keeps the previous version as `~/.claude/.claude-code-statusline-ps.subagent-rollback.ps1`
+— a name carrying this project's id, not a `.bak` beside the script, because a `.bak` is a name your
+own tooling might already be using and this file is written and deleted without being asked. Even at
+that name the marker is checked before it is overwritten or removed, so a file there that is not ours
+survives both a reinstall and an uninstall.
 
-Both entries leave in one write, so the `.bak` beside the settings file still holds them as they were.
-Every settings write is done under an exclusive lock on `settings.json.lock`, goes to a uniquely named
-file beside the real one, and is then moved over it. So an interrupted or failed write leaves the
-previous settings intact rather than a truncated file, a second installer waits its turn instead of
-overwriting what it never read, and a change made by anything else is checked for twice — once when
-the lock is taken and again in the instant before the replace — and refused rather than silently lost.
-A writer that ignores the lock entirely can still be missed; nothing cooperative can prevent that.
+Both entries leave in one write, so `settings.json.bak` still holds them as they were. Every settings
+write runs under an exclusive lock on `settings.json.lock`, goes to a uniquely named file beside the
+real one, and is then moved over it.
+
+What that gets you, stated no more strongly than it holds. An interrupted or failed write leaves the
+previous settings intact rather than a truncated file. The lock serialises this installer against
+anything else that takes the same lock, and does nothing about a writer that does not take it, because
+a cooperative lock cannot exclude a process that ignores it. The file is compared with what the
+installer read twice — when the lock is taken, and again immediately before the rename — so a change
+that lands before that second check is refused. A change that lands in the gap between that check and
+the rename, which only a writer ignoring the lock can manage, is replaced; the content it replaced is
+in `settings.json.bak`. Closing that gap would need a compare-and-swap the filesystem does not offer,
+or a lock every writer honours.
 
 ## Configuration
 
@@ -388,8 +397,9 @@ literal, in a trailing comment or below the header window. Beyond that: an insta
 not ours is refused and changes nothing, a profile whose path holds a space and an `&` produces a
 command that really runs under cmd, a settings write that cannot complete leaves the old file intact
 and no temporary file behind, a file changed between the read and the write is refused, a second
-installer holding the lock makes this one write nothing, and the capture helper bounds a single
-payload larger than its own cap. The render matrix pipes every payload in
+installer holding the lock makes this one write nothing, a `subagent-statusline.ps1.bak` and a file at
+the rollback name that this project did not write both survive a reinstall and an uninstall, and the
+capture helper bounds a single payload larger than its own cap. The render matrix pipes every payload in
 `samples/` through the script for each of seven configs (both layouts and styles, model only, a
 reversed `order`, swapped `rows`) at each width:
 
