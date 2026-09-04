@@ -141,7 +141,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
 # these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
@@ -1506,6 +1506,28 @@ Confirm-Equal (Get-ThresholdRole 50 50 50) 'bad' 'threshold 50 at 50/50: bad, th
 Confirm-True (Test-WideWindow 1000000) 'wide window: 1000000'
 Confirm-True (-not (Test-WideWindow 200000) -and -not (Test-WideWindow 1048576) -and -not (Test-WideWindow $null)) 'wide window: 200000, 1048576 and null are not'
 
+# The one rule that turns a payload figure into the whole number the line shows, the bands are read
+# against and an alarm is compared with. Half to even, which is what the [int] cast in the context
+# segment and the bare [math]::Round in the limits segment both did before this had a name, so these
+# cases also pin that nothing printed today moves. The Int32 ends are clamped rather than thrown at.
+Confirm-Equal (Get-WholePercent 89) 89 'whole percent: a whole number is itself'
+Confirm-Equal (Get-WholePercent 89.4) 89 'whole percent: 89.4 rounds down'
+Confirm-Equal (Get-WholePercent 89.5) 90 'whole percent: 89.5 goes to the even 90'
+Confirm-Equal (Get-WholePercent 89.6) 90 'whole percent: 89.6 rounds up'
+Confirm-Equal (Get-WholePercent 89.9) 90 'whole percent: 89.9 rounds up'
+Confirm-Equal (Get-WholePercent 90.4) 90 'whole percent: 90.4 rounds down'
+Confirm-Equal (Get-WholePercent 90.5) 90 'whole percent: 90.5 stays at the even 90, it does not go to 91'
+Confirm-Equal (Get-WholePercent 91.5) 92 'whole percent: 91.5 goes up to the even 92'
+Confirm-Equal (Get-WholePercent 0.5) 0 'whole percent: 0.5 goes to the even 0'
+Confirm-Equal (Get-WholePercent -0.6) -1 'whole percent: a negative rounds away from zero the same way'
+Confirm-Equal (Get-WholePercent 1e300) ([int]::MaxValue) 'whole percent: a figure past Int32 clamps instead of throwing'
+Confirm-Equal (Get-WholePercent -1e300) ([int]::MinValue) 'whole percent: and the same at the bottom'
+# The two segments that print a percentage go through it, so the rule cannot drift apart between them.
+$roundCfg = @{ Style = 'plain'; Thresholds = @{ Warn = 60; Bad = 85 } }
+Confirm-True ((Get-ContextSegment (Get-JsonPayload 'context_window' '{"used_percentage":89.6}') $roundCfg).Text.StartsWith("$iconCtx 90%")) 'whole percent: the context meter prints 89.6 as 90%'
+Confirm-True ((Get-ContextSegment (Get-JsonPayload 'context_window' '{"used_percentage":89.4}') $roundCfg).Text.StartsWith("$iconCtx 89%")) 'whole percent: and 89.4 as 89%'
+Confirm-Equal (Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":89.6}}') $roundCfg).Text "$iconLimit 5h 90%" 'whole percent: the limits segment prints 89.6 as 90% too'
+
 Write-Host '== unit: alarm' -ForegroundColor Cyan
 # Test-AlarmState answers one question from the payload and the config alone - no segment record, no
 # segment order, no rendering - so the model segment and anything else that wants the same answer
@@ -1531,8 +1553,16 @@ $alarmOn = @{ Alarm = @{ Context = 90; Limits = 90 } }
 Confirm-True (Test-AlarmLevel 90 90) 'alarm level: 90 at 90 fires'
 Confirm-True (-not (Test-AlarmLevel 89 90)) 'alarm level: 89 at 90 does not fire'
 Confirm-True (Test-AlarmLevel 90.0 90) 'alarm level: a whole double fires'
-Confirm-True (-not (Test-AlarmLevel 89.6 90)) 'alarm level: 89.6 is not rounded up into a 90 alarm'
-Confirm-True (Test-AlarmLevel 90.4 90) 'alarm level: 90.4 fires without being rounded down'
+# The comparison is on the whole number the segments print, not the raw figure. A raw comparison would
+# leave 89.6 under a 90 alarm while the context meter beside it already reads a red 90%.
+Confirm-True (Test-AlarmLevel 89.5 90) 'alarm level: 89.5 prints as 90% and fires the 90 alarm'
+Confirm-True (Test-AlarmLevel 89.6 90) 'alarm level: 89.6 prints as 90% and fires the 90 alarm'
+Confirm-True (Test-AlarmLevel 89.9 90) 'alarm level: 89.9 prints as 90% and fires the 90 alarm'
+Confirm-True (-not (Test-AlarmLevel 89.4 90)) 'alarm level: 89.4 prints as 89% and does not fire'
+Confirm-True (Test-AlarmLevel 90.4 90) 'alarm level: 90.4 prints as 90% and fires'
+Confirm-True (Test-AlarmLevel 90.5 90) 'alarm level: 90.5 prints as 90% by half-to-even and fires'
+Confirm-True (-not (Test-AlarmLevel 90.5 91)) 'alarm level: 90.5 prints as 90% and does not reach a 91 alarm'
+Confirm-True (Test-AlarmLevel 90.5 90.4) 'alarm level: a fractional level is rounded the same way, so 90.4 is a 90 alarm'
 Confirm-True (-not (Test-AlarmLevel 0 0)) 'alarm level: a level of 0 is off, even at 0%'
 Confirm-True (-not (Test-AlarmLevel 100 0)) 'alarm level: a level of 0 is off at 100%'
 Confirm-True (-not (Test-AlarmLevel 100 -1)) 'alarm level: a negative level is off'
@@ -1567,6 +1597,33 @@ Confirm-True (-not (Test-AlarmState (Get-AlarmPayload 95) @{ Alarm = @{ Context 
 Confirm-True (Test-AlarmState (Get-AlarmPayload 90) (Get-DefaultStatusConfig)) 'alarm state: the built-in default alarms at 90'
 Confirm-True (-not (Test-AlarmState (Get-AlarmPayload 89) (Get-DefaultStatusConfig))) 'alarm state: the built-in default does not alarm at 89'
 Confirm-True (Test-AlarmState (Get-AlarmPayload 10 90 10) (Get-DefaultStatusConfig)) 'alarm state: the built-in default alarms on a 90% rate limit'
+# The whole point of the shared rule: whatever percentage the context meter prints is the percentage the
+# alarm compares, so the two can never contradict each other at the boundary. Both window sizes, because
+# a 1M window keeps its own 70 and 90 bands and the alarm has to line up with those too. A raw
+# comparison passes the 89.4 and 90 rows and fails every fractional one.
+# bad is put at 90 so the meter's own band and the alarm sit on the same figure and any disagreement is
+# a real one; a 1M window already has 90 as its fixed band whatever the config says.
+$agreeCfg = @{ Style = 'plain'; Thresholds = @{ Warn = 60; Bad = 90 }; Alarm = @{ Context = 90; Limits = 0 } }
+foreach ($row in @(
+        @{ Pct = 89.4; Whole = 89; Alarm = $false }
+        @{ Pct = 89.5; Whole = 90; Alarm = $true }
+        @{ Pct = 89.6; Whole = 90; Alarm = $true }
+        @{ Pct = 89.9; Whole = 90; Alarm = $true }
+        @{ Pct = 90.0; Whole = 90; Alarm = $true }
+        @{ Pct = 90.5; Whole = 90; Alarm = $true }
+        @{ Pct = 91.5; Whole = 92; Alarm = $true })) {
+    foreach ($size in @(200000, 1000000)) {
+        $rawPct = $row.Pct.ToString([cultureinfo]::InvariantCulture)
+        $d = Get-JsonPayload 'context_window' ('{"used_percentage":' + $rawPct + ',"context_window_size":' + $size + '}')
+        $seg = Get-ContextSegment $d $agreeCfg
+        $agreeLabel = "$rawPct% on a $size window"
+        Confirm-True ($seg.Text.StartsWith("$iconCtx $($row.Whole)%")) "${agreeLabel}: the meter prints $($row.Whole)%"
+        Confirm-Equal (Test-AlarmState $d $agreeCfg) $row.Alarm "${agreeLabel}: the 90 alarm agrees with the printed $($row.Whole)%"
+        # And the segment's own band is read against that same number, so a red meter beside a cyan
+        # model, or the other way round, cannot happen at the line the alarm sits on.
+        Confirm-Equal ($seg.Role -eq 'bad') $row.Alarm "${agreeLabel}: the meter's own colour and the alarm reach 90 together"
+    }
+}
 
 Write-Host '== unit: model' -ForegroundColor Cyan
 function Get-ModelPayload($Size, $Exceeds) {
@@ -4064,6 +4121,40 @@ $alarmRaw = $r.Lines -join "`n"
 Confirm-True ($alarmRaw.Contains("$esc[0;1;48;5;160;38;5;231m $iconModel Sonnet 5 ")) 'render alarm powerline: the model block is 231 on 160'
 Confirm-True ($alarmRaw.Contains("$esc[38;5;160;48;5;")) 'render alarm powerline: the arrow after it carries 160'
 Confirm-True (-not $alarmRaw.Contains("$esc[0;1;48;5;31;38;5;231m")) 'render alarm powerline: no bold block on the model background'
+# The boundary end to end. A fractional percentage is where a raw comparison and a printed figure come
+# apart: 89.6 prints as 90% and has to alarm, or the line shows a red 90% meter beside a cyan model.
+# Both window sizes, because a 1M window keeps its own fixed 90 band, and both styles, because the
+# alarm is an SGR code in one and a block background in the other. The payload carries no workspace, so
+# there is no folder, no branch and no git probe: this is the meter and the model on their own.
+foreach ($style in @('plain', 'powerline')) {
+    $boundaryConfig = Write-TempConfig "render-alarm-boundary-$style.json" ('{ "style": "' + $style + '" }')
+    foreach ($size in @(200000, 1000000)) {
+        foreach ($row in @(
+                @{ Pct = 89.4; Whole = 89; Red = $false }
+                @{ Pct = 89.5; Whole = 90; Red = $true }
+                @{ Pct = 89.6; Whole = 90; Red = $true }
+                @{ Pct = 89.9; Whole = 90; Red = $true })) {
+            $rawPct = $row.Pct.ToString([cultureinfo]::InvariantCulture)
+            $boundaryPayload = '{ "model": { "display_name": "Sonnet 5" }, "context_window": { "used_percentage": ' +
+                $rawPct + ', "context_window_size": ' + $size + ' } }'
+            $r = Invoke-StatusLine $boundaryPayload $boundaryConfig 0
+            $boundaryLabel = "render alarm boundary $style $size $rawPct%"
+            Confirm-True ($r.ExitCode -eq 0) "${boundaryLabel}: exit code $($r.ExitCode)"
+            Confirm-True ($r.Err.Count -eq 0) "${boundaryLabel}: stderr empty, got '$($r.Err -join ' | ')'"
+            $alarmRaw = $r.Lines -join "`n"
+            Confirm-True ((ConvertTo-PlainText $alarmRaw).Contains("$iconCtx $($row.Whole)%")) "${boundaryLabel}: the meter prints $($row.Whole)%"
+            $want = if ($style -eq 'plain') {
+                if ($row.Red) { "$esc[31m$iconModel" } else { "$esc[1;36m$iconModel" }
+            } elseif ($row.Red) { "$esc[0;1;48;5;160;38;5;231m $iconModel" } else { "$esc[0;1;48;5;31;38;5;231m $iconModel" }
+            $other = if ($style -eq 'plain') {
+                if ($row.Red) { "$esc[1;36m$iconModel" } else { "$esc[31m$iconModel" }
+            } elseif ($row.Red) { "$esc[0;1;48;5;31;38;5;231m $iconModel" } else { "$esc[0;1;48;5;160;38;5;231m $iconModel" }
+            $shown = if ($row.Red) { 'red' } else { 'its own colour' }
+            Confirm-True ($alarmRaw.Contains($want)) "${boundaryLabel}: the model segment is $shown, agreeing with the printed $($row.Whole)%"
+            Confirm-True (-not $alarmRaw.Contains($other)) "${boundaryLabel}: and it is in no other colour"
+        }
+    }
+}
 # 20 columns: everything but the model has been shed, and the alarm colour is still there.
 $r = Invoke-StatusLine $payload12 (Write-TempConfig 'render-alarm-narrow.json' '{}') 20
 Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render alarm 20 columns: exit code 0, stderr empty'

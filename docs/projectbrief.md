@@ -116,7 +116,11 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   config, but not the fixed 70 and 90 of a 1M window, which belong to the window size. `alarm` is a
   step away from both: `Test-AlarmState` reads the payload and the config directly rather than any
   segment record, so the model segment can carry the warning whether or not the context and limits
-  segments are enabled, and it compares the same figure whatever the window size. `icons` maps a
+  segments are enabled, and it compares the same figure whatever the window size. What all three
+  compare is one number: `Get-WholePercent` turns a payload figure into the percentage that is printed,
+  banded and alarmed on, rounding half to even, so a meter reading 90% cannot sit beside a model that
+  thinks the window is at 89. The subagent panel is the deliberate exception - it derives a percentage
+  from token counts and floors it, so a partly used window never reads as a full one. `icons` maps a
   name to a code point, and the `$icon*` constants are assigned from `Get-IconSet` after the config
   is read and before the payload is parsed, so the fallback line and every builder see one set of
   glyphs. The fitting order stays in the table: it is a property of what each segment can shed, not

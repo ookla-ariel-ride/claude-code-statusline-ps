@@ -1120,21 +1120,42 @@ if (-not $payloadOk) { Write-Host (C '36' "$iconModel claude"); exit 0 }
 # No defaults here: a caller that forgot the config would bind 0 and 0 and colour everything red.
 function Get-ThresholdRole([int] $pct, [int] $Warn, [int] $Bad) { if ($pct -ge $Bad) { 'bad' } elseif ($pct -ge $Warn) { 'warn' } else { 'ok' } }
 
+# The one percentage a payload figure turns into: the whole number that goes on the line, that the
+# threshold bands are read against, and that an alarm is compared with. One function for all three so
+# two segments can never disagree about whether 90% has been reached - the context meter printing a red
+# 90% while the model stays cyan because it looked at 89.6 is the kind of contradiction this rules out.
+# The rule is round half to even (89.5 and 90.5 both give 90, 91.5 gives 92), stated here rather than
+# left implicit: it is what an [int] cast of a double and a bare [math]::Round have always done in this
+# script, so writing it down changes no figure that has ever been printed - it just gives the rule a
+# name and one home. A number too large for an Int32 is pinned to its ends rather than throwing, so a
+# payload's absurd figure ends as a clamped percentage instead of a broken render; every caller then
+# applies its own range rule, and only the context meter clamps to 0..100, because a rate limit that
+# really is at 105% should say so.
+function Get-WholePercent([double] $n) {
+    $r = [math]::Round($n, [System.MidpointRounding]::ToEven)
+    if ($r -ge [int]::MaxValue) { return [int]::MaxValue }
+    if ($r -le [int]::MinValue) { return [int]::MinValue }
+    return [int] $r
+}
+
 # The one window size that gets the 1M marker and the wider bands. Claude Code reports it as exactly 1000000.
 function Test-WideWindow($size) { return $size -eq 1000000 }
 
-# One percentage against one alarm level: $true only when the level is a number above 0 and the value is
-# a number at or above it. Both arguments come straight from the payload and the config and are untyped,
-# so every way of saying "no alarm here" ends in $false rather than an error: a level of 0 (the alarm is
-# off), a missing level, a used_percentage that is null because the first API response has not landed,
-# or a value of any other shape. The comparison is on the raw percentage, not the rounded one the
-# segments print, so 89.6 does not fire a 90 alarm.
+# One percentage against one alarm level: $true only when the level is above 0 and the value is at or
+# above it. Both sides go through Get-WholePercent first, so the alarm compares the same whole number
+# the segments print: at 89.6 the context meter shows 90% and the alarm fires, rather than the meter
+# reading red 90% beside a model that thinks it is still under the line. Both arguments come straight
+# from the payload and the config and are untyped, so every way of saying "no alarm here" ends in $false
+# rather than an error: a level of 0 or below (that alarm is off), a missing level, a used_percentage
+# that is null because the first API response has not landed, or a value of any other shape.
 function Test-AlarmLevel($Value, $Level) {
     $at = Get-FiniteNumber $Level
-    if ($null -eq $at -or $at -le 0) { return $false }
+    if ($null -eq $at) { return $false }
+    $at = Get-WholePercent $at
+    if ($at -le 0) { return $false }
     $pct = Get-FiniteNumber $Value
     if ($null -eq $pct) { return $false }
-    return ($pct -ge $at)
+    return ((Get-WholePercent $pct) -ge $at)
 }
 
 # Whether this payload is in an alarm state: the context window at or above alarm.context, or either
@@ -1177,7 +1198,9 @@ function Get-ModelSegment($d, $cfg) {
 function Get-ContextSegment($d, $cfg) {
     $pct = $d.context_window.used_percentage
     if ($null -eq $pct) { return $null }
-    $pct = [int] $pct
+    # Get-WholePercent is the shared rule, so this figure, the band it is read against and the model's
+    # alarm are all the same number. The 0..100 clamp is this segment's own: the bar has ten blocks.
+    $pct = Get-WholePercent $pct
     $pct = [math]::Max(0, [math]::Min(100, $pct))
     $filled = [math]::Round($pct / 10)
     $bar = ((G 0x2588) * $filled) + ((G 0x2591) * (10 - $filled))
@@ -1265,7 +1288,7 @@ function Get-LimitsSegment($d, $cfg) {
     foreach ($row in @(@('5h', $rl.five_hour, $true), @('7d', $rl.seven_day, $false), @('$', $rl.spend_limit, $false))) {
         $pct = $row[1].used_percentage
         if ($null -eq $pct) { continue }
-        $pct = [int] [math]::Round([double] $pct)
+        $pct = Get-WholePercent $pct
         $bit = "$($row[0]) $pct%"
         if ($null -eq $first) { $first = $bit }
         # A strict comparison keeps the earlier figure on a tie, so 5h beats 7d beats spend.
