@@ -1083,12 +1083,15 @@ function Read-SessionState([string] $SessionId) {
     } catch { Write-StatusDiag "state read failed: $($_.Exception.Message)"; return $null }
 }
 
-# The next state for a session: the payload's figures now, and the history ring carried over from the
-# previous state with a new entry when the cost moved (a first render counts as moved). The ring keeps
-# the newest 20. Keys are in schema order so the file always reads the same way.
-# The comparison is against the last entry in the ring, not against the previous record's cost_usd: a
-# payload can arrive with no cost object at all (the minimal sample is that shape), which stores a null
-# cost, and comparing against that null would re-append an unchanged cost on the render after it.
+# The next state for a session: the payload's figures now, the counters the payload did not carry kept
+# from the previous state (see the block above the record), and the history ring carried over with a
+# new entry when the cost moved (a first render counts as moved). The ring keeps the newest 20. Keys
+# are in schema order so the file always reads the same way.
+# The comparison is against the last entry in the ring, not against the record's cost_usd: the ring
+# holds only figures a payload actually carried, so it is the honest answer to "has the cost moved
+# since it was last seen", while cost_usd may be one carried forward across a payload that had none.
+# A payload can arrive with no cost object at all - the minimal sample is that shape - and comparing
+# against a carried figure would be comparing against a reading that never happened.
 function Merge-SessionState($Previous, $Payload, [long] $Now) {
     $cost = Get-StateNumber $Payload.cost.total_cost_usd
     $history = [System.Collections.Generic.List[hashtable]]::new()
@@ -1099,12 +1102,26 @@ function Merge-SessionState($Previous, $Payload, [long] $Now) {
     if ($null -ne $cost -and $cost -ne $last) { $history.Add(@{ t = $Now; cost_usd = $cost }) }
     while ($history.Count -gt 20) { $history.RemoveAt(0) }
     $ctx = $Payload.context_window
+    # A payload that does not carry a figure is not a session that lost it, so the three counters keep
+    # what the record holds rather than being overwritten with nothing. They count up over a session -
+    # dollars spent, tokens in, tokens out - and the next render measures its delta from them, so one
+    # payload without a cost object would otherwise erase the total a rise is measured against and that
+    # rise would never be shown on any line. This is the rule the history ring above already follows;
+    # the two disagreed until now. A figure that is present but is not a number is a figure the payload
+    # did not carry and carries the same way, while a real zero is a figure and replaces the one before.
+    # The two percentages are gauges, not counters: how full the window is now, how much of this
+    # five-hour window has gone. A carried-forward gauge is worse than none, because a compaction, a
+    # fresh window or a changed model makes the old figure a confident lie about the present, and the
+    # five-hour figure drops to zero at its own boundary, so a stale one reads as usage that has not
+    # happened. Both are read fresh every render and are simply absent when the payload is silent -
+    # which is what the pace arrow's optional fallback wants, since no figure is a fallback it can
+    # decline and a wrong one is not.
     return [ordered]@{
         v = 1
         updated_at = $Now
-        cost_usd = $cost
-        input_tokens = Get-StateNumber $ctx.total_input_tokens -Whole
-        output_tokens = Get-StateNumber $ctx.total_output_tokens -Whole
+        cost_usd = $cost ?? (Get-StateNumber $Previous.cost_usd)
+        input_tokens = (Get-StateNumber $ctx.total_input_tokens -Whole) ?? (Get-StateNumber $Previous.input_tokens -Whole)
+        output_tokens = (Get-StateNumber $ctx.total_output_tokens -Whole) ?? (Get-StateNumber $Previous.output_tokens -Whole)
         used_percentage = Get-StateNumber $ctx.used_percentage
         five_hour_percentage = Get-StateNumber $Payload.rate_limits.five_hour.used_percentage
         history = @($history)

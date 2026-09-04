@@ -344,7 +344,10 @@ what changed, the script keeps one small JSON file per session in `claude-status
 your temp folder (`%TEMP%` on Windows, `~/.claude/statusline-state` when there is no temp folder).
 The file is named after the session id and holds numbers only: the last cost, input and output token
 totals, context and 5-hour usage percentages, and up to twenty timestamped cost readings. No prompt
-text, path or file name is written. Files not touched for a day are deleted on a later render.
+text, path or file name is written. Files not touched for a day are deleted on a later render. A
+payload that does not carry the cost or the token totals leaves the stored ones alone, so a figure is
+never replaced by nothing; the two percentages are read fresh each render and are simply absent when
+the payload is silent, because a carried-forward percentage would say something false about now.
 The cost segment uses it, for the change since the previous render: the file is read once, before the
 line is built, and written after it is printed. Set `state` to `false` and the script neither reads nor
 writes it, and the cost segment shows the session total alone. Upgrading over an existing

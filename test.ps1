@@ -1166,21 +1166,45 @@ Confirm-Equal @($next.history).Count 2 'state merge: changed cost adds an entry'
 Confirm-Equal $next.history[0].cost_usd 1.07 'state merge: old entry kept first'
 Confirm-Equal $next.history[1].cost_usd 1.2 'state merge: new entry last'
 Confirm-Equal $next.history[1].t 1767225720 'state merge: new entry carries the clock'
+# A payload that does not carry a figure is not a session that lost it. The three counters - the cost
+# and the two token totals - count up over a session, so a payload with no cost object or no context
+# window keeps the figure the record holds instead of replacing it with nothing. Without this one such
+# payload erases the total the next delta is measured from, and a real rise across it is never shown.
+# The two percentages are gauges rather than counters, so they are read fresh and left null: see the
+# checks below them.
 $noCost = Merge-SessionState $back ([pscustomobject]@{ session_id = 'abc' }) 1767225780
-Confirm-Equal $noCost.cost_usd $null 'state merge: payload without cost gives null cost'
-Confirm-Equal $noCost.input_tokens $null 'state merge: payload without context gives null tokens'
+Confirm-Equal $noCost.cost_usd 1.07 'state merge: a payload without cost keeps the total the record holds'
+Confirm-Equal $noCost.input_tokens 60000 'state merge: a payload without context keeps the input tokens'
+Confirm-Equal $noCost.output_tokens 4000 'state merge: a payload without context keeps the output tokens'
 Confirm-Equal @($noCost.history).Count 1 'state merge: payload without cost adds no entry'
+# The percentages are not carried: how full the window is now, and how much of this five-hour window
+# has gone, are both answers about this moment. A compaction, a new window or a changed model makes a
+# carried-forward percentage a confident lie, and the five-hour figure resets to zero at its boundary,
+# so a stale one reads as usage that has not happened. A reader that gets null knows it has nothing.
+Confirm-Equal $noCost.used_percentage $null 'state merge: the context percentage is read fresh, not carried forward'
+Confirm-Equal $noCost.five_hour_percentage $null 'state merge: the five-hour percentage is read fresh, not carried forward'
+# Carrying needs something to carry: with no previous record every missing figure is still null.
+$firstNoCost = Merge-SessionState $null ([pscustomobject]@{ session_id = 'abc' }) 1767225780
+Confirm-Equal $firstNoCost.cost_usd $null 'state merge: with no previous record a missing cost is null'
+Confirm-Equal $firstNoCost.input_tokens $null 'state merge: with no previous record missing tokens are null'
+# A figure that is there but is not a number is a figure the payload did not carry, so it carries the
+# same way. A real zero is a figure and replaces the one before it.
+$badCarry = Merge-SessionState $back ([pscustomobject]@{ cost = [pscustomobject]@{ total_cost_usd = 'lots' } }) 1767225790
+Confirm-Equal $badCarry.cost_usd 1.07 'state merge: a cost that is not a number keeps the one the record holds'
+Confirm-Equal @($badCarry.history).Count 1 'state merge: a cost that is not a number adds no entry'
+$zeroCost = Merge-SessionState $back (Get-StatePayload 0) 1767225800
+Confirm-Equal $zeroCost.cost_usd 0 'state merge: a cost of zero is a figure and replaces the one before it'
 $badCost = Merge-SessionState $null ([pscustomobject]@{ cost = [pscustomobject]@{ total_cost_usd = 'lots' } }) 1
 Confirm-Equal $badCost.cost_usd $null 'state merge: string cost is not a number'
 Confirm-Equal @($badCost.history).Count 0 'state merge: string cost starts no history'
 
-# A payload can arrive with no cost object at all (the minimal sample is that shape), which stores a
-# null cost. The comparison is against the last history entry, not that null, so the render after the
-# gap does not re-append a cost that never moved.
+# A payload can arrive with no cost object at all (the minimal sample is that shape). The record keeps
+# the total it had, and the ring is compared against its own last entry rather than against that
+# carried figure, so the render after the gap does not re-append a cost that never moved.
 $run = Merge-SessionState $null (Get-StatePayload 1.07) 1
 Confirm-Equal @($run.history).Count 1 'state merge: gap run starts with one entry'
 $run = Merge-SessionState $run ([pscustomobject]@{ session_id = 'abc' }) 2
-Confirm-Equal $run.cost_usd $null 'state merge: gap run stores a null cost'
+Confirm-Equal $run.cost_usd 1.07 'state merge: gap run keeps the cost it had'
 Confirm-Equal @($run.history).Count 1 'state merge: gap run keeps the entry it had'
 $run = Merge-SessionState $run (Get-StatePayload 1.07) 3
 Confirm-Equal @($run.history).Count 1 'state merge: the same cost after a gap adds no entry'
@@ -1193,6 +1217,7 @@ Write-SessionState 'gap' (Merge-SessionState (Read-SessionState 'gap') (Get-Stat
 $gap = Read-SessionState 'gap'
 Confirm-Equal @($gap.history).Count 1 'state merge: 1.07, no cost, 1.07 through the file leaves one entry'
 Confirm-Equal $gap.history[0].cost_usd 1.07 'state merge: and that entry is the first cost'
+Confirm-Equal $gap.cost_usd 1.07 'state merge: and the file still holds the total across the gap'
 
 # Twenty-five renders with a rising cost through the file: the ring keeps the newest twenty.
 $ring = $null
@@ -3927,6 +3952,19 @@ $r8 = Invoke-StatusLine (Get-StatePayloadJson 1.9) $stateOffConfig 0
 Confirm-NormalRender $r8 '1.90' 'state stale: a render with the state file off shows no delta of its own'
 $r9 = Invoke-StatusLine (Get-StatePayloadJson 2.0) $null 0
 Confirm-NormalRender $r9 '2.00 (+$0.14)' 'state stale: the next delta spans both turns, from the last total the file holds'
+
+# A payload with no cost object at all: the line shows no cost segment, the render still writes state,
+# and the total the next delta is measured from survives it. This is the three-render shape the delta
+# has to hold up under - cost, no cost, cost - and without the carry in Merge-SessionState the middle
+# render would erase the total and the rise across the gap would never be shown.
+$noCostJson = ([ordered]@{ model = @{ display_name = 'M' }; session_id = 'sess-1'
+                           git = @{ branch = 'main'; status = 'clean' } } | ConvertTo-Json -Compress)
+$r10 = Invoke-StatusLine $noCostJson $null 0
+Confirm-Equal (ConvertTo-PlainText ($r10.Lines -join "`n")) "$iconModel M $chevron $iconHome main" 'state gap: a payload with no cost renders no cost segment'
+$file = Get-Content -LiteralPath (Join-Path $renderStateDir 'sess-1.json') -Raw | ConvertFrom-Json
+Confirm-Equal $file.cost_usd 2 'state gap: the stored total survives a payload that carries none'
+$r11 = Invoke-StatusLine (Get-StatePayloadJson 2.2) $null 0
+Confirm-NormalRender $r11 '2.20 (+$0.20)' 'state gap: the next delta is measured from the last real total'
 
 # A truncated or empty file is read as no state, the line is normal, and the file is replaced.
 foreach ($case in @(@{ Name = 'truncated'; Text = '{ "v": 1, "cost' }, @{ Name = 'empty'; Text = '' })) {
