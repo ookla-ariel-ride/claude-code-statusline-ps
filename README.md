@@ -430,8 +430,11 @@ the counts and the pencil. Sessions outside a worktree print what they always pr
 The name comes from the payload, not from git, so it costs no extra work: `worktree.name` when
 Claude Code sends one, otherwise the last segment of `worktree.path` when `workspace.git_worktree` is
 true. In a worktree that gives neither, the glyph stands on its own. The name goes through the same
-guard as the branch and repository names, so a directory named with an escape sequence in it is
-refused rather than allowed to recolour or break the line.
+guard as the branch and repository names: a directory named with an escape sequence in it is refused
+outright, and the invisible characters that reorder a line rather than break it - a right-to-left
+override, a directional isolate, a zero-width joiner - are taken out of the name instead, so one of
+them costs the character and not the badge. A name with nothing visible left in it is not a name, and
+falls through to the path leaf, then to the glyph on its own, the same as a blank one.
 
 The badge is not in the segment's short form. On a narrow line it is shed with the counts, leaving
 the icon, the branch name and the pencil, before any whole segment is dropped. `segments.branch` in
