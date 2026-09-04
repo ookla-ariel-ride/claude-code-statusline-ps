@@ -120,6 +120,22 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   the real one, so an interrupted write costs nothing. The file holds numbers and one id, nothing from
   the prompt or the file system. Cleanup is a stamped sweep, so the common render is one read and one
   write.
+- **The silence is switchable.** Every failure in the git probe, the probe cache and the state file is
+  swallowed on purpose, which leaves a bug report with nothing in it. `Write-StatusDiag` appends one
+  line - UTC time, process id, reason - per swallowed catch, per cache branch and per state read and
+  write to `claude-statusline-diag.log` in the temp folder, and only while `CLAUDE_STATUSLINE_DEBUG`
+  is set to something other than `0`, `false`, `no` or `off`. Unset, the helper reads one
+  environment variable and returns, so the render pays nothing for it. The log is written the way the
+  catch behaves: it never reaches the pipeline, a failure to write it is swallowed in turn, and the
+  rendered line is identical with the variable set and unset. The log rolls over into a `.log.1`
+  sibling once an append would take it past 4 MB, from inside that same `try`, so a variable left set
+  in a profile cannot fill the temp volume and a rollover that fails costs the line and nothing more.
+  One record is cut at 1000 characters, so no single reason can outgrow the cap by itself. The move is
+  taken under a named mutex with a zero wait, and the size is read again while it is held, so two
+  renders cannot rotate over each other's archive; one that cannot take the mutex at once skips the
+  rollover and appends. Nothing waits, and the append itself is unlocked, which makes the cap
+  approximate rather than exact: overlapping renders can leave the file a little over it or lose a
+  line. That is the right trade for a log that must never delay a render and is off by default.
 
 ## Constraints
 
@@ -132,7 +148,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 ## Success criteria
 
-- `.\test.ps1` passes: the unit checks, every payload in `samples/` across seven configs and four widths (120, 60, 20 and unset) with content checks at the unset width, the git cases with the probe cache, the state file cases, and the install cases.
+- `.\test.ps1` passes: the unit checks, every payload in `samples/` across seven configs and four widths (120, 60, 20 and unset) with content checks at the unset width, the git cases with the probe cache, the state file cases, the diagnostics log cases, and the install cases.
 - `.\install.ps1` on a fresh machine produces a working status line in Claude Code after one session restart.
 - `.\install.ps1 -Uninstall` returns `settings.json` to its prior state minus the `statusLine` key.
 - `.\install.ps1` leaves an existing `~/.claude/statusline.json` untouched.
@@ -147,7 +163,8 @@ segment shows the spend limit (#7), and the folder segment shows `owner/name` (#
 pull-request segment (#12) links `#N` to the PR with OSC 8. Segment order, the two rows, the colour
 thresholds and the glyphs are `statusline.json` keys over the segment registry (#20). The installer
 writes `hideVimModeIndicator` and, on request, `refreshInterval` (#26). A state file per session
-(#4) is written but nothing on the line reads it yet. A light palette is still a constant in the
+(#4) is written but nothing on the line reads it yet. Every silent catch can be traced through an
+optional log behind `CLAUDE_STATUSLINE_DEBUG` (#43). A light palette is still a constant in the
 script.
 
 ## Future work
@@ -163,7 +180,7 @@ cache (#18). The intended order for the rest:
 3. Style and terminal: an ASCII style, a light palette, a right-aligned group with a clock, taskbar
    progress, a subagent status line (#15, #24, #25, #27, #28).
 4. Small fixes from review: the zero-segment fallback line should respect the model toggle and the
-   configured order (#42), and an optional diagnostics log for the silent catch blocks (#43).
+   configured order (#42).
 
 ## License
 
