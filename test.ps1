@@ -165,7 +165,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-CacheShare', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
 # these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
@@ -1461,6 +1461,8 @@ Confirm-Equal $pal.Roles.warn.Sgr '33' 'palette warn sgr'
 Confirm-Equal $pal.Roles.warn.Fg 16 'palette warn fg'
 Confirm-Equal $pal.Roles.branch.Bg 90 'palette branch bg'
 Confirm-Equal $pal.Inline.added.Fg 46 'palette inline added fg'
+Confirm-Equal $pal.Inline.cached.Sgr '90' 'palette inline cached sgr'
+Confirm-Equal $pal.Inline.cached.Fg 244 'palette inline cached fg'
 
 Write-Host '== unit: fitting' -ForegroundColor Cyan
 function Get-FitSegmentSet {
@@ -1728,6 +1730,108 @@ $seg = Get-ContextSegment (Get-WideContextPayload 75) $quietWide
 Confirm-Equal $seg.Role 'warn' 'context quiet 80 on a 1M window: 75% is warn on the fixed bands'
 Confirm-True ($null -ne $seg) 'context quiet 80 on a 1M window: the warn meter is kept'
 Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 65) $quietWide) $null 'context quiet 80 on a 1M window: 65% is ok there, so the threshold hides it'
+
+# ---- The cached suffix ----
+# How much of this turn's input the prompt cache served, appended to the token counts. It is built
+# from three token counts rather than read as a percentage, so these cases pin the arithmetic, the
+# rounding rule and every way the block can be missing or malformed. The block is absent on older
+# Claude Code versions and before the first API response, and then the segment has to render exactly
+# the text it rendered before this feature existed.
+$cacheCfg = @{ Style = 'plain'; Thresholds = @{ Warn = 60; Bad = 85 } }
+$cachePl = @{ Style = 'powerline'; Thresholds = @{ Warn = 60; Bad = 85 } }
+$barCache = ($blockFull * 3) + ($blockLight * 7)
+# A 32% window with 64k of 200k used, so everything before the suffix is fixed and the assertions
+# below can pin the whole rendered string. A $null field is left off the object rather than set to
+# null, which is what a payload from an older Claude Code looks like.
+function Get-CachePayload($Fresh, $Written, $Served, $Used) {
+    $usage = [pscustomobject]@{}
+    if ($null -ne $Fresh) { $usage | Add-Member -NotePropertyName input_tokens -NotePropertyValue $Fresh }
+    if ($null -ne $Written) { $usage | Add-Member -NotePropertyName cache_creation_input_tokens -NotePropertyValue $Written }
+    if ($null -ne $Served) { $usage | Add-Member -NotePropertyName cache_read_input_tokens -NotePropertyValue $Served }
+    $tokens = if ($null -eq $Used) { 60000 } else { $Used }
+    $out = if ($tokens -gt 0) { 4000 } else { 0 }
+    return [pscustomobject]@{ context_window = [pscustomobject]@{
+            used_percentage = 32; total_input_tokens = $tokens; total_output_tokens = $out
+            context_window_size = 200000; current_usage = $usage
+        }
+    }
+}
+# The same window with no current_usage at all: the payload an older Claude Code sends.
+function Get-NoUsagePayload {
+    return [pscustomobject]@{ context_window = [pscustomobject]@{
+            used_percentage = 32; total_input_tokens = 60000; total_output_tokens = 4000
+            context_window_size = 200000
+        }
+    }
+}
+$counts32 = " $(K 64000)/$(K 200000)"
+$plain32 = "$iconCtx 32% $barCache"
+
+# 57500 of 62500, which is 92%. The suffix is a foreground-only run that hands the segment's own
+# colour back, so a powerline background is not broken by a reset, and the whole string is pinned
+# because Confirm-Equal compares ordinally: a stray format character between the counts and the
+# suffix would slip past a culture comparison.
+$seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500) $cacheCfg
+Confirm-Equal $seg.Text "$plain32$counts32 $esc[90m92% cached$esc[32m" 'context cached 92: the whole rendered text'
+Confirm-Equal $seg.Text "$plain32$counts32 $(Format-Inline 'cached' '92% cached' 'ok' 'plain')" 'context cached 92: the suffix is the cached inline role'
+Confirm-Equal $seg.Short $plain32 'context cached 92: the suffix never reaches Short'
+Confirm-Equal $seg.Role 'ok' 'context cached 92: the suffix does not touch the role'
+$seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500) $cachePl
+Confirm-Equal $seg.Text "$plain32$counts32 $esc[38;5;244m92% cached$esc[38;5;231m" 'context cached 92 in powerline: the suffix restores the segment foreground'
+Confirm-Equal $seg.Short $plain32 'context cached 92 in powerline: the suffix never reaches Short'
+# The same payload as JSON: ConvertFrom-Json hands the counts over as Int64 or Double, not Int32.
+$seg = Get-ContextSegment (Get-JsonPayload 'context_window' '{"used_percentage":32,"total_input_tokens":60000,"total_output_tokens":4000,"context_window_size":200000,"current_usage":{"input_tokens":2000,"cache_creation_input_tokens":3000,"cache_read_input_tokens":57500}}') $cacheCfg
+Confirm-Equal $seg.Text "$plain32$counts32 $esc[90m92% cached$esc[32m" 'context cached 92: a payload parsed from JSON renders the same text'
+
+# The share goes through Get-WholePercent, the one rule behind every percentage this script prints,
+# so it rounds half to even like the meter beside it: 92.5 gives 92 and 97.5 gives 98.
+Confirm-True (Get-ContextSegment (Get-CachePayload 15 0 185) $cacheCfg).Text.EndsWith("92% cached$esc[32m") 'context cached: 92.5% rounds half to even, to 92'
+Confirm-True (Get-ContextSegment (Get-CachePayload 5 0 195) $cacheCfg).Text.EndsWith("98% cached$esc[32m") 'context cached: 97.5% rounds half to even, to 98'
+
+# Nothing served is the interesting case rather than one to hide: a cache that is not helping is why
+# a small turn suddenly cost several cents. Everything served says so exactly.
+Confirm-True (Get-ContextSegment (Get-CachePayload 0 5000 0) $cacheCfg).Text.EndsWith("0% cached$esc[32m") 'context cached: 5000 written and nothing read prints 0% cached'
+Confirm-True (Get-ContextSegment (Get-CachePayload $null $null 1000) $cacheCfg).Text.EndsWith("100% cached$esc[32m") 'context cached: reads alone print 100% cached'
+
+# Every way there is nothing to report renders exactly the segment this script printed before the
+# suffix existed, Short form included.
+foreach ($row in @(
+        @{ Label = 'the three fields are all zero'; Payload = (Get-CachePayload 0 0 0) }
+        @{ Label = 'current_usage is an empty object'; Payload = (Get-CachePayload $null $null $null) }
+        @{ Label = 'current_usage is absent'; Payload = (Get-NoUsagePayload) }
+        @{ Label = 'the fields are text'; Payload = (Get-CachePayload 'lots' 'some' 'many') }
+        @{ Label = 'the fields are booleans'; Payload = (Get-CachePayload $true $true $true) }
+        @{ Label = 'the fields are arrays'; Payload = (Get-CachePayload @(1, 2) @(3) @(4)) }
+        # The parentheses are load-bearing. A bare -500 in an argument position is a generic token,
+        # not a number: PowerShell hands it over as the string "-500", Get-FiniteNumber refuses it,
+        # and the case would silently become "this field is text" - which the row above already
+        # covers - instead of the negative count it is meant to be.
+        @{ Label = 'the counts cancel to a zero total'; Payload = (Get-CachePayload (-500) 0 500) }
+        @{ Label = 'the total is negative'; Payload = (Get-CachePayload (-900) 0 100) })) {
+    $seg = Get-ContextSegment $row.Payload $cacheCfg
+    Confirm-Equal $seg.Text "$plain32$counts32" "context cached: no suffix when $($row.Label)"
+    Confirm-Equal $seg.Short $plain32 "context cached: the Short form is untouched when $($row.Label)"
+}
+
+# A share above 100, which only a payload with a negative fresh count can produce, is clamped rather
+# than printed: the bar beside it clamps the same way.
+Confirm-True (Get-ContextSegment (Get-CachePayload (-100) 0 200) $cacheCfg).Text.EndsWith("100% cached$esc[32m") 'context cached: a share above 100 is clamped to 100'
+
+# Short is what stage 1 of the fitting swaps in, so a segment carrying a suffix has to have one even
+# when the payload gives it no token counts at all. Without this the suffix could never be shed.
+$seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500 0) $cacheCfg
+Confirm-Equal $seg.Text "$plain32 $esc[90m92% cached$esc[32m" 'context cached with no token counts: the suffix still renders'
+Confirm-Equal $seg.Short $plain32 'context cached with no token counts: there is still a Short form to shed it'
+Confirm-Equal (Get-ContextSegment (Get-CachePayload 0 0 0 0) $cacheCfg).Short $null 'context cached: no counts and no suffix leaves no Short form'
+
+# ORDER MATTERS in Get-ContextSegment: the percentage is normalised, the role is read from it, and
+# only then does the quiet guard run. A suffix appended after all three cannot move any of them.
+$quietCache = @{ Style = 'plain'; Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 0.0; context = 50.0; limits = 0.0 } }
+Confirm-Equal (Get-ContextSegment (Get-CachePayload 2000 3000 57500) $quietCache) $null 'context cached: a cached suffix does not save a meter the quiet threshold hides'
+$quietBands = @{ Style = 'plain'; Thresholds = @{ Warn = 20; Bad = 40 }; Quiet = @{ cost = 0.0; context = 50.0; limits = 0.0 } }
+$seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500) $quietBands
+Confirm-Equal $seg.Role 'warn' 'context cached: the role is still read from the normalised percentage'
+Confirm-True $seg.Text.EndsWith("92% cached$esc[33m") 'context cached: a warn meter hands its own colour back after the suffix'
 
 Write-Host '== unit: cost' -ForegroundColor Cyan
 $iconCost = [char]::ConvertFromUtf32(0xF0155)
@@ -4263,8 +4367,12 @@ $sampleMarkers = @{
     '05-no-git.json'                        = @{
         model = "$iconModel Sonnet 5"; context = "$iconCtx 25%"; folder = "$iconFolder Downloads"
     }
+    # 06's context marker is the whole segment text rather than the percentage: nothing in it moves,
+    # every part is fixed at 32% of a 200k window, and the payload's current_usage is 57500 read of
+    # 62500, so it is what pins the cached suffix to the end of the segment at the unset width.
     '06-limits-badges-lines.json'           = @{
-        model  = "$iconModel Fable 5.1"; context = "$iconCtx 32%"; cost = "$iconCost `$$('{0:N2}' -f 1.07)"
+        model  = "$iconModel Fable 5.1"; cost = "$iconCost `$$('{0:N2}' -f 1.07)"
+        context = "$iconCtx 32% $(($blockFull * 3) + ($blockLight * 7)) $(K 64000)/$(K 200000) 92% cached"
         lines  = "$iconLines +156 ${minus}23"; limits = "$iconLimit 5h 24%"
         badges = "$iconFast $iconThink $iconEffort xhigh $iconVim NORMAL"
         folder = "$iconFolder my-project"; branch = "$iconHome main"
