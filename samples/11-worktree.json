@@ -1,0 +1,19 @@
+{
+  "model": { "display_name": "Sonnet 5" },
+  "context_window": {
+    "total_input_tokens": 40000,
+    "total_output_tokens": 2000,
+    "context_window_size": 200000,
+    "used_percentage": 21
+  },
+  "cost": { "total_cost_usd": 0.75 },
+  "workspace": { "current_dir": "C:\\Users\\jim\\src\\wt-review", "git_worktree": true },
+  "worktree": {
+    "name": "wt-review",
+    "path": "C:\\Users\\jim\\src\\wt-review",
+    "branch": "review/x",
+    "original_cwd": "C:\\Users\\jim\\src\\my-project",
+    "original_branch": "main"
+  },
+  "git": { "branch": "review/x", "status": { "modified": 2 } }
+}
