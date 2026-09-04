@@ -1822,6 +1822,16 @@ foreach ($row in @(
     Confirm-Equal $seg.Short $plain32 "context cached: the Short form is untouched when $($row.Label)"
 }
 
+# The scale has to happen after the division, not before it. Written as 100 * read / total, a read
+# above about 1.8e306 overflows the multiply to Infinity before the divide runs, and Get-WholePercent's
+# Int32 guard turns that into 2147483647% cached - a number no share can be, printed with confidence.
+# These two rows sit either side of that boundary. The comment above Get-CacheShare once claimed the
+# result was in range by arithmetic and no test covered the range, which is how it shipped.
+$seg = Get-ContextSegment (Get-CachePayload 1 0 1e307) $cacheCfg
+Confirm-Equal $seg.Text "$plain32$counts32 $esc[90m100% cached$esc[32m" 'context cached: a read past the overflow boundary still divides to 100, not to the Int32 ceiling'
+$seg = Get-ContextSegment (Get-CachePayload 1 0 1e306) $cacheCfg
+Confirm-Equal $seg.Text "$plain32$counts32 $esc[90m100% cached$esc[32m" 'context cached: and just under the boundary, unchanged'
+
 # Short is what stage 1 of the fitting swaps in, so a segment carrying a suffix has to have one even
 # when the payload gives it no token counts at all. Without this the suffix could never be shed.
 $seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500 0) $cacheCfg
