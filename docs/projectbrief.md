@@ -53,7 +53,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | Segment | Source field | Rendering |
 |---|---|---|
 | Model | `model.display_name`, `context_window.context_window_size`, `exceeds_200k_tokens`, and, for the alarm, `context_window.used_percentage` and `rate_limits.five_hour`, `seven_day` | Bold cyan, robot glyph. On a 1M window `1M` follows the name in a lighter cyan, then the warning triangle when Claude Code reports `exceeds_200k_tokens` as true. Red instead of cyan, text unchanged, once the context window or a rate limit reaches the `alarm` percentage (90 by default, `0` off). `Test-AlarmState` decides that from the payload and the config alone, and the role is picked before the text is built so the `1M` marker restores the right foreground |
-| Context | `context_window.used_percentage`, `total_input_tokens`, `total_output_tokens`, `context_window_size` | Percent, ten-block bar, used/total in k or M. Green below 60%, yellow below 85%, red above. A 1M window uses 70% and 90%, so red still means about 100k tokens of room |
+| Context | `context_window.used_percentage`, `total_input_tokens`, `total_output_tokens`, `context_window_size`, `current_usage.{input_tokens, cache_creation_input_tokens, cache_read_input_tokens}` | Percent, ten-block bar, used/total in k or M, then the cached share as a dim `92% cached`. Green below 60%, yellow below 85%, red above. A 1M window uses 70% and 90%, so red still means about 100k tokens of room. The share is the cache read over the whole of `current_usage`, rounded by `Get-WholePercent` like every other percentage; a missing block, a missing field, a zero total or any negative count leaves it off. A negative count is refused rather than repaired, because a negative `input_tokens` beside a positive read divides out above 100 and would print as a confident `100% cached`; "we cannot tell" is the honest answer and the one a missing block already gets. With every count non-negative the share is in range by arithmetic, so there is no clamp. It lives in `Text` and not in `Short`, so the fitting sheds it with the token counts |
 | Cost | `cost.total_cost_usd` | Dimmed, two decimals |
 | Lines | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
 | Limits | `rate_limits.five_hour`, `seven_day`, `spend_limit` | Coloured by the worst of the figures. A pace arrow follows the 5-hour figure, before its countdown: `→` while the current rate lands inside the window, `↑` when it overruns, red through the `removed` inline role once the projection reaches 120%. The elapsed fraction comes from `resets_at` and the fixed five-hour window, so there is no arrow without a reset time, after one, inside the first tenth of a window, or before anything has been used. The arrow never reaches the short form. The spend figure is `$ 62%`, a literal dollar sign, shown only when the payload carries `spend_limit`, which Claude Code sends behind a Claude apps gateway with a spend limit (2.1.251 or later); its reset time is not shown |
@@ -121,7 +121,11 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   compare is one number: `Get-WholePercent` turns a payload figure into the percentage that is printed,
   banded and alarmed on, rounding half to even, so a meter reading 90% cannot sit beside a model that
   thinks the window is at 89. The subagent panel is the deliberate exception - it derives a percentage
-  from token counts and floors it, so a partly used window never reads as a full one. `quiet` is the
+  from token counts and floors it, so a partly used window never reads as a full one. Deriving a
+  figure from token counts is not itself what earns that exception: the context segment's cached
+  share is derived the same way and still rounds, because nothing bands or alarms on it and it
+  prints beside the meter's own rounded percentage, where two rules on one segment is exactly the
+  disagreement `Get-WholePercent` exists to rule out. `quiet` is the
   same idea one step earlier: a threshold per segment below which the builder returns `$null` and the
   segment is never built, so a four-cent cost or a 3% meter costs nothing on the line. It extends the
   rule the lines and badges segments already follow, that a segment with nothing to say disappears, from

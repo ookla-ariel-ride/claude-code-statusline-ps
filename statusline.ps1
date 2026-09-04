@@ -613,6 +613,7 @@ function Get-Palette {
             removed = @{ Sgr = '31'; Fg = 203 }
             track   = @{ Sgr = '90'; Fg = 245 }
             muted   = @{ Sgr = '22;36'; Fg = 152 }
+            cached  = @{ Sgr = '90'; Fg = 244 }
         }
     }
 }
@@ -1295,6 +1296,47 @@ function Test-QuietValue($cfg, [string] $Name, $Value) {
     return $n -lt $min
 }
 
+# How much of this turn's input the prompt cache served, as a whole percentage, or $null when there is
+# nothing to report. The three counts are context_window.current_usage.{input_tokens,
+# cache_creation_input_tokens, cache_read_input_tokens}: input sent fresh, input written into the cache,
+# and input read back out of it. The three together are the whole input, so the read is the share of it
+# that cost almost nothing, and a number that falls after an edit to a large file is the cache being
+# invalidated - the usual reason a small turn suddenly costs several cents.
+# The whole block is absent on older Claude Code versions and before the first API response, and every
+# field goes through Get-FiniteNumber, so a missing block, a missing field, and a field carrying text, a
+# bool or an array all count as 0 rather than throwing.
+# THE ONE RULE THAT MAKES THIS FIGURE HONEST: a count that is negative is not a count, and a payload
+# carrying one is refused outright rather than repaired. Three counts of tokens cannot be negative, so
+# a negative one says the block cannot be trusted, and every way of salvaging a number from it invents
+# a claim the payload does not support - most sharply an input_tokens of -100 beside a read of 200,
+# which is a raw 200% and reads on the line as a confident "100% cached", a perfect cache hit
+# manufactured out of a malformed block. Refusing is the same answer this function already gives for a
+# current_usage that is absent, and it is the honest one: not "everything was cached" but "we cannot
+# tell". A total of 0 or less is refused for the same reason, and because PowerShell throws on a
+# division by zero between doubles as readily as between integers.
+# There is no clamp on the result and it does not need one. With all three counts non-negative and a
+# positive total, the read is one of the terms of its own denominator, so the share is between 0 and
+# 100 by arithmetic rather than by correction. A clamp was here and it is what hid the 200% case above,
+# turning a payload this function should have refused into the most reassuring number on the line - so
+# whoever relaxes the refusal above has to put a clamp back, and should ask first why the payload is
+# being trusted at all.
+# The rounding is Get-WholePercent, the script's one percentage rule, and not a rule of its own. This
+# figure is printed as a whole percentage beside another whole percentage built by the same function,
+# and two rounding rules on one segment is exactly the disagreement that function exists to rule out.
+# The choice is deliberate rather than a reflex: subagent-statusline.ps1 floors its derived percentage,
+# and the case for flooring there is that the figure feeds a colour band, where overstating is what
+# matters. Nothing bands or alarms on this one, so the nearest whole number is simply the truest one to
+# print.
+function Get-CacheShare($usage) {
+    $read = (Get-FiniteNumber $usage.cache_read_input_tokens) ?? 0
+    $fresh = (Get-FiniteNumber $usage.input_tokens) ?? 0
+    $written = (Get-FiniteNumber $usage.cache_creation_input_tokens) ?? 0
+    if ($read -lt 0 -or $fresh -lt 0 -or $written -lt 0) { return $null }
+    $total = $read + $fresh + $written
+    if ($total -le 0) { return $null }
+    return Get-WholePercent (100 * $read / $total)
+}
+
 function Get-ContextSegment($d, $cfg) {
     $pct = $d.context_window.used_percentage
     if ($null -eq $pct) { return $null }
@@ -1318,8 +1360,15 @@ function Get-ContextSegment($d, $cfg) {
     $bar = ((G 0x2588) * $filled) + ((G 0x2591) * (10 - $filled))
     $used = [double] ($d.context_window.total_input_tokens ?? 0) + [double] ($d.context_window.total_output_tokens ?? 0)
     $counts = if ($used -gt 0 -and $size) { " $(K $used)/$(K $size)" } elseif ($used -gt 0) { " $(K $used)" } else { '' }
+    # The cached share hangs off the counts, and both live in Text alone. Short is what stage 1 of the
+    # fitting swaps in, so leaving them out of it sheds the counts and the suffix together and keeps the
+    # percentage and the bar on a narrow line. It is built last, after the role is settled, because
+    # Format-Inline hands the segment's own foreground back after the dim run: a role decided later
+    # would leave the suffix restoring an ok green on a segment the meter has since turned red.
+    $share = Get-CacheShare $d.context_window.current_usage
+    $tail = $counts + $(if ($null -ne $share) { ' ' + (Format-Inline 'cached' "$share% cached" $role $cfg.Style) } else { '' })
     $short = "$iconCtx $pct% $bar"
-    return @{ Name = 'context'; Text = "$short$counts"; Short = $(if ($counts) { $short } else { $null }); Role = $role; Bold = $false }
+    return @{ Name = 'context'; Text = "$short$tail"; Short = $(if ($tail) { $short } else { $null }); Role = $role; Bold = $false }
 }
 
 # Session cost in dollars, two decimals. quiet.cost is tested on the raw figure rather than on the text,
