@@ -37,7 +37,10 @@ function G([int] $cp) { [char]::ConvertFromUtf32($cp) }
 $e = [char]27
 function C([string] $code, [string] $text) { "$e[${code}m$text$e[0m" }
 
-# Visible cell width of a rendered line: escapes stripped, combining marks 0, CJK and emoji 2, else 1.
+# Visible cell width of a rendered line: escapes stripped, combining marks and the Unicode Format
+# characters 0, CJK and emoji 2, else 1. Format is the whole category rather than the U+200B to U+200D
+# range it used to be: a zero-width joiner, a bidi override, a directional isolate and a byte order
+# mark all draw nothing, and counting one as a cell measures a line wider than it renders.
 # A small wcwidth approximation; Nerd Font glyphs count as 1. The OSC 8 hyperlink wrappers go first,
 # with either terminator (ESC \ or BEL), so a URL is never counted as text; then the SGR colour codes.
 function Get-VisibleWidth([string] $Text) {
@@ -53,7 +56,7 @@ function Get-VisibleWidth([string] $Text) {
         if ($cat -eq [System.Globalization.UnicodeCategory]::NonSpacingMark -or
             $cat -eq [System.Globalization.UnicodeCategory]::SpacingCombiningMark -or
             $cat -eq [System.Globalization.UnicodeCategory]::EnclosingMark -or
-            ($cp -ge 0x200B -and $cp -le 0x200D) -or $cp -eq 0xFE0F) { continue }
+            $cat -eq [System.Globalization.UnicodeCategory]::Format -or $cp -eq 0xFE0F) { continue }
         if (($cp -ge 0x1100 -and $cp -le 0x115F) -or ($cp -ge 0x2E80 -and $cp -le 0xA4CF) -or
             ($cp -ge 0xAC00 -and $cp -le 0xD7A3) -or ($cp -ge 0xF900 -and $cp -le 0xFAFF) -or
             ($cp -ge 0xFE30 -and $cp -le 0xFE4F) -or ($cp -ge 0xFF00 -and $cp -le 0xFF60) -or
@@ -117,12 +120,22 @@ function Get-PayloadNumber($v) {
     return [int] $d
 }
 
-# Whether a payload value is text: a string with visible content and no control character. Numbers,
-# arrays, objects, nulls, blank strings and strings carrying an escape (any Unicode Cc character, so
-# the C0 range, DEL and the C1 range where U+009B, U+009C and U+009D are CSI, ST and OSC in their
-# 8-bit forms) are not, so a subagent name cannot smuggle an escape sequence onto a panel row.
+# The two families of invisible character a panel row may not carry, and the two different answers to
+# them. Cc, the C0 range, DEL and the C1 range where U+009B, U+009C and U+009D are CSI, ST and OSC in
+# their 8-bit forms, is an escape: a value carrying one is refused outright and the caller falls through
+# to its next field. Cf, the Unicode Format category, is a right-to-left override, a directional
+# isolate, a zero-width joiner or a byte order mark: ConvertTo-Json escapes U+2028 and U+2029 but emits
+# these raw, and one of them reorders or hides the rest of the row without being an escape at all. Those
+# are stripped rather than refused, so a name keeps its text and loses only the character. Between them:
+# a subagent name reaches a row as visible text and nothing else - no escape sequence, and no character
+# that moves what is already on the row. Numbers, arrays, objects, nulls and blank strings are not text.
+function Format-PayloadText([string] $Text) {
+    return [regex]::Replace($Text, '\p{Cf}', '')
+}
+
 function Test-PayloadText($v) {
-    return ($v -is [string] -and -not [string]::IsNullOrWhiteSpace($v) -and $v -notmatch '\p{Cc}')
+    return ($v -is [string] -and -not [string]::IsNullOrWhiteSpace($v) -and $v -notmatch '\p{Cc}' -and
+            -not [string]::IsNullOrWhiteSpace((Format-PayloadText $v)))
 }
 
 # ---- Row parts ----
@@ -136,7 +149,7 @@ $ellipsis = G 0x2026
 # none of them is usable text, which leaves the row as the glyph and its progress.
 function Get-RowIdentity($task) {
     foreach ($v in @($task.name, $task.label, $task.description, $task.type)) {
-        if (Test-PayloadText $v) { return ([string] $v).Trim() }
+        if (Test-PayloadText $v) { return (Format-PayloadText ([string] $v)).Trim() }
     }
     return $null
 }
@@ -161,7 +174,7 @@ function Get-RowProgress($task) {
     if ($null -ne $tokens -and $tokens -ge 1000) {
         $parts += @{ Role = 'dim'; Text = (K $tokens) }
     } elseif ($parts.Count -eq 0 -and (Test-PayloadText $task.status)) {
-        $parts += @{ Role = 'dim'; Text = ([string] $task.status).Trim() }
+        $parts += @{ Role = 'dim'; Text = (Format-PayloadText ([string] $task.status)).Trim() }
     }
     return $parts
 }
@@ -235,13 +248,17 @@ if ($width -eq 0) { exit 0 }
 
 # A row only renders when its id comes back, so a task without usable text for an id is skipped, and a
 # repeated id is answered once: the panel keys its map by id and a second line would only overwrite.
-$seen = @{}
+# The id is echoed exactly as it arrived, Format characters and all: it is the key the panel matches a
+# row against, not text it draws, and a sanitised copy of it would match nothing.
+# An ordinal set, not a hashtable: PowerShell's hashtables compare keys case-insensitively, so two live
+# tasks whose ids differ only in case - T1 and t1, two distinct keys in the panel's own map - would
+# collide here and the second one would silently never get a row.
+$seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 foreach ($task in $tasks) {
     if ($task -isnot [System.Management.Automation.PSCustomObject]) { continue }
     $id = $task.id
     if (-not (Test-PayloadText $id)) { continue }
-    if ($seen[$id]) { continue }
-    $seen[$id] = $true
+    if (-not $seen.Add([string] $id)) { continue }
     $content = try { Format-SubagentRow $task $width } catch { C $palette.Roles.model.Sgr $iconModel }
     if (-not $content) { $content = C $palette.Roles.model.Sgr $iconModel }
     Write-Host ([pscustomobject]@{ id = $id; content = $content } | ConvertTo-Json -Compress -Depth 3)

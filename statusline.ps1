@@ -185,7 +185,10 @@ function Get-ConfigInteger($v, [int] $Default, [int] $Min, [int] $Max) {
     return [int] [math]::Min([math]::Max($n, [double] $Min), [double] $Max)
 }
 
-# Visible cell width of a rendered line: escapes stripped, combining marks 0, CJK and emoji 2, else 1.
+# Visible cell width of a rendered line: escapes stripped, combining marks and the Unicode Format
+# characters 0, CJK and emoji 2, else 1. Format is the whole category rather than the U+200B to U+200D
+# range it used to be: a zero-width joiner, a bidi override, a directional isolate and a byte order
+# mark all draw nothing, and counting one as a cell measures a line wider than it renders.
 # A small wcwidth approximation; Nerd Font glyphs count as 1. The OSC 8 hyperlink wrappers go first,
 # with either terminator (ESC \ or BEL), so a URL is never counted as text; then the SGR colour codes.
 function Get-VisibleWidth([string] $Text) {
@@ -201,7 +204,7 @@ function Get-VisibleWidth([string] $Text) {
         if ($cat -eq [System.Globalization.UnicodeCategory]::NonSpacingMark -or
             $cat -eq [System.Globalization.UnicodeCategory]::SpacingCombiningMark -or
             $cat -eq [System.Globalization.UnicodeCategory]::EnclosingMark -or
-            ($cp -ge 0x200B -and $cp -le 0x200D) -or $cp -eq 0xFE0F) { continue }
+            $cat -eq [System.Globalization.UnicodeCategory]::Format -or $cp -eq 0xFE0F) { continue }
         if (($cp -ge 0x1100 -and $cp -le 0x115F) -or ($cp -ge 0x2E80 -and $cp -le 0xA4CF) -or
             ($cp -ge 0xAC00 -and $cp -le 0xD7A3) -or ($cp -ge 0xF900 -and $cp -le 0xFAFF) -or
             ($cp -ge 0xFE30 -and $cp -le 0xFE4F) -or ($cp -ge 0xFF00 -and $cp -le 0xFF60) -or
@@ -660,7 +663,9 @@ function Read-PorcelainStatus([string] $Text) {
         if ($y -ne ' ') { $modified++ }
     }
     $dirty = ($staged + $modified + $untracked + $conflicts) -gt 0
-    return @{ Branch = $branch; Dirty = $dirty; Ahead = $ahead; Behind = $behind
+    # git permits a right-to-left override in a ref name, so the Format characters come out of the
+    # branch here, at the source, rather than being left to whatever renders it.
+    return @{ Branch = (Format-PayloadText $branch); Dirty = $dirty; Ahead = $ahead; Behind = $behind
               Staged = $staged; Modified = $modified; Untracked = $untracked; Conflicts = $conflicts }
 }
 
@@ -829,6 +834,9 @@ function Read-CachedRecord($r) {
     if (-not (Test-PayloadText $r.Branch) -or $r.Dirty -isnot [bool]) { return $null }
     $info = @{}
     foreach ($prop in $r.PSObject.Properties) { $info[$prop.Name] = $prop.Value }
+    # Stripped again on the way out of the file. A cache entry written by this script is already clean,
+    # but the file is on disk and this is the path an edited one comes back through.
+    $info.Branch = Format-PayloadText ([string] $r.Branch)
     foreach ($key in @('Ahead', 'Behind', 'Staged', 'Modified', 'Untracked', 'Conflicts')) {
         $n = Get-PayloadNumber $r.$key
         if ($null -eq $n -or $n -lt 0) { return $null }
@@ -1280,12 +1288,16 @@ function Get-PrSegment($d) {
 function Get-FolderSegment($d, $cfg) {
     $dir = [string] $d.workspace.current_dir
     if (-not $dir) { return $null }
-    $leaf = Split-Path $dir -Leaf
+    # Every piece of text this segment draws comes from outside it - a directory name, a repo owner -
+    # and each one is stripped of its Format characters, so none of them can reorder the rest of the line.
+    $leaf = Format-PayloadText (Split-Path $dir -Leaf)
     $owner = $d.workspace.repo.owner
     $name = $d.workspace.repo.name
     if ($cfg.Folder -eq 'leaf' -or -not (Test-PayloadText $owner) -or -not (Test-PayloadText $name)) {
         return @{ Name = 'folder'; Text = "$iconFolder $leaf"; Short = $null; Role = 'folder'; Bold = $false }
     }
+    $owner = Format-PayloadText ([string] $owner)
+    $name = Format-PayloadText ([string] $name)
     $root = [string] $d.workspace.project_dir
     $here = ($dir -replace '/', '\').TrimEnd('\')
     $there = ($root -replace '/', '\').TrimEnd('\')
@@ -1305,12 +1317,26 @@ function Get-PayloadNumber($v) {
     return [int] $d
 }
 
-# Whether a payload value is text: a string with visible content and no control character. Numbers,
-# arrays, objects, nulls, blank strings and strings carrying an escape (any Unicode Cc character) are
-# not, so a field that should name something cannot be rendered from one of those, and a repo owner or
-# name cannot smuggle an escape sequence onto the line.
+# The two families of invisible character a rendered value may not carry, and the two different answers
+# to them. Cc, the C0 range, DEL and the C1 range, is an escape: U+001B, and U+009B, U+009C and U+009D
+# which are CSI, ST and OSC in their 8-bit forms. A value carrying one is refused outright, because half
+# an escape sequence is not a name and its presence is evidence the value is hostile rather than
+# careless. Cf, the Unicode Format category, is a right-to-left override, a directional isolate, a
+# zero-width joiner or a byte order mark: none of them breaks the escape syntax and ConvertTo-Json emits
+# them raw, but each one reorders or hides the rest of the line, which is exactly the reasoning
+# Get-IconRefusedCategory already applies to an icon code point. Those are stripped rather than refused,
+# because one stray override in a branch name - and git permits one in a ref name - should cost the
+# character, not the segment that says which branch the session is on. Format-PayloadText takes them
+# out; Test-PayloadText answers whether anything visible is left once they are gone, so a value that is
+# nothing but overrides is not text and a caller with a fallback list moves on to the next field.
+# Numbers, arrays, objects, nulls and blank strings are not text either.
+function Format-PayloadText([string] $Text) {
+    return [regex]::Replace($Text, '\p{Cf}', '')
+}
+
 function Test-PayloadText($v) {
-    return ($v -is [string] -and -not [string]::IsNullOrWhiteSpace($v) -and $v -notmatch '\p{Cc}')
+    return ($v -is [string] -and -not [string]::IsNullOrWhiteSpace($v) -and $v -notmatch '\p{Cc}' -and
+            -not [string]::IsNullOrWhiteSpace((Format-PayloadText $v)))
 }
 
 # Dirty flag from a payload git.status value: "clean"/other string, or an object of counts/booleans.
@@ -1343,9 +1369,12 @@ function Get-PayloadCount($status) {
 # carries no upstream data. $null when the object names no branch, which means "no branch", not "go
 # and look".
 function Read-PayloadStatus($git) {
-    if (-not $git.branch) { return $null }
+    # Stripped rather than refused: a name that is nothing but Format characters leaves no branch to
+    # put on the line, but one carrying a stray override keeps the rest of its text.
+    $branch = Format-PayloadText "$($git.branch)"
+    if (-not $branch) { return $null }
     $info = Get-PayloadCount $git.status
-    $info.Branch = "$($git.branch)"
+    $info.Branch = $branch
     $info.Dirty = Test-PayloadDirty $git.status
     $info.Ahead = 0
     $info.Behind = 0

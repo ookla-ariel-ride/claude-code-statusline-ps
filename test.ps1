@@ -33,8 +33,12 @@ $ansiPattern = "$esc\]8;[^\a$esc]*(?:\a|$esc\\)|$esc\[[0-9;]*m"
 $script:passed = 0
 $script:failed = 0
 
+# Ordinal, not -ceq. PowerShell's string operators compare by culture, and a culture comparison gives
+# the Unicode Format characters no collation weight at all: "oc<U+202E>to" -ceq "octo" is $true. Every
+# check in this file that pins a rendered string would therefore have said nothing about a right-to-left
+# override sitting in the middle of it, which is exactly the thing those checks exist to catch.
 function Confirm-Equal($Actual, $Expected, [string] $Label) {
-    if ("$Actual" -ceq "$Expected") { $script:passed++; return }
+    if ([string]::Equals("$Actual", "$Expected", [System.StringComparison]::Ordinal)) { $script:passed++; return }
     $script:failed++
     Write-Host "FAIL $Label" -ForegroundColor Red
     Write-Host "  expected: $("$Expected" -replace $esc, '<ESC>')"
@@ -77,7 +81,7 @@ function Measure-VisibleWidth([string] $Text) {
         $zero = $cat -eq [System.Globalization.UnicodeCategory]::NonSpacingMark -or
                 $cat -eq [System.Globalization.UnicodeCategory]::SpacingCombiningMark -or
                 $cat -eq [System.Globalization.UnicodeCategory]::EnclosingMark -or
-                ($cp -ge 0x200B -and $cp -le 0x200D) -or $cp -eq 0xFE0F
+                $cat -eq [System.Globalization.UnicodeCategory]::Format -or $cp -eq 0xFE0F
         if ($zero) { continue }
         $wide = ($cp -ge 0x1100 -and $cp -le 0x115F) -or ($cp -ge 0x2E80 -and $cp -le 0xA4CF) -or
                 ($cp -ge 0xAC00 -and $cp -le 0xD7A3) -or ($cp -ge 0xF900 -and $cp -le 0xFAFF) -or
@@ -141,7 +145,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
 # these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
@@ -184,6 +188,10 @@ $widthTable = @(
     @{ Text = "$esc]8;;https://example.com$esc\$esc[32mab$esc[0m$esc]8;;$esc\"; Width = 2 }  # link around coloured text
     @{ Text = "$esc]8;;$esc\"; Width = 0 }                                              # a bare link terminator
     @{ Text = "$esc]8;;https://example.com`aabcd$esc]8;;`a"; Width = 4 }               # BEL-terminated link
+    @{ Text = [string][char]0x202E; Width = 0 }                                        # right-to-left override
+    @{ Text = 'ab' + [string][char]0x2066 + 'cd'; Width = 4 }                          # directional isolate
+    @{ Text = [string][char]0xFEFF + 'ab'; Width = 2 }                                 # byte order mark
+    @{ Text = 'a' + [string][char]0x00AD + 'b'; Width = 2 }                            # soft hyphen
 )
 foreach ($row in $widthTable) {
     $shown = $row.Text -replace $esc, '<ESC>'
@@ -1202,6 +1210,17 @@ Confirm-Equal $seg.Short $null 'folder leaf mode: no short form'
 $seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo' 'C:\src\demo' 'octo' 'demo') $cfgLeaf
 Confirm-Equal $seg.Text "$iconFolder demo" 'folder leaf mode at root: the leaf'
 
+# A repo owner, a repo name and a directory name all come from outside this script, and any of the three
+# can carry a right-to-left override that reorders the whole line. The character goes; the text stays.
+$fRlo = [string][char]0x202E
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo' 'C:\src\demo' "oc${fRlo}to" "de${fRlo}mo") $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder override: the override is stripped from owner and name'
+Confirm-Equal $seg.Short "$iconFolder demo" 'folder override: the short form is stripped too'
+$seg = Get-FolderSegment (Get-FolderPayload "C:\src\de${fRlo}mo\to${fRlo}ols" "C:\src\de${fRlo}mo") $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder tools" 'folder override: the directory leaf is stripped as well'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' $fRlo 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder tools" 'folder override: an owner that is nothing but an override is not text, so the leaf stands in'
+
 Write-Host '== unit: renderer' -ForegroundColor Cyan
 $arrow = [char]::ConvertFromUtf32(0xE0B0)
 $chevron = [char]::ConvertFromUtf32(0xE0B1)
@@ -1766,6 +1785,10 @@ Confirm-Equal $r.Ahead 0 'porcelain: unborn with upstream ahead 0'
 Confirm-Equal $r.Behind 0 'porcelain: unborn with upstream behind 0'
 $r = Read-PorcelainStatus "## HEAD (no branch)`n"
 Confirm-Equal $r.Branch 'detached' 'porcelain: detached'
+# git permits a right-to-left override in a ref name, so a repository can ship a branch whose name
+# reorders the status line. It is taken out at the source, where the probe reads it.
+$r = Read-PorcelainStatus ("## fea$([char]0x202E)ture...origin/feature`n")
+Confirm-Equal $r.Branch 'feature' 'porcelain: an override in a ref name is stripped where the branch is read'
 Confirm-Equal (Read-PorcelainStatus "fatal: not a git repository`n") $null 'porcelain: no header'
 Confirm-Equal (Read-PorcelainStatus '') $null 'porcelain: empty'
 
@@ -1781,6 +1804,23 @@ Confirm-Equal (Test-PayloadText @('octo')) $false 'payload text: an array is not
 Confirm-Equal (Test-PayloadText "oc${esc}[31mto") $false 'payload text: a string with ESC inside is not'
 Confirm-Equal (Test-PayloadText "octo$([char]0x9B)") $false 'payload text: a string with a C1 control is not'
 Confirm-Equal (Test-PayloadText "oct$([char]0xE9)") $true 'payload text: a non-control non-ASCII character is still text'
+# The Unicode Format characters are the other half of the rule, and they get the other answer. A
+# right-to-left override reorders everything drawn after it without being an escape at all, so it may
+# never reach the line; but it is taken out of the value rather than costing the whole value, because a
+# branch name is worth more with one invisible character missing than it is missing altogether. What
+# Test-PayloadText answers is whether anything visible is left once they are gone.
+$rlo = [string][char]0x202E
+$isolate = [string][char]0x2066
+Confirm-Equal (Format-PayloadText 'octo') 'octo' 'payload strip: a clean value comes back unchanged'
+Confirm-Equal (Format-PayloadText "oc${rlo}to") 'octo' 'payload strip: a right-to-left override comes out'
+Confirm-Equal (Format-PayloadText ("a$([char]0x200D)b$([char]0xFEFF)c" + $isolate + 'd')) 'abcd' 'payload strip: joiner, byte order mark and isolate all come out'
+Confirm-Equal (Format-PayloadText "oct$([char]0xE9)") "oct$([char]0xE9)" 'payload strip: an accented letter is not a format character'
+Confirm-Equal (Format-PayloadText "oc${esc}to") "oc${esc}to" 'payload strip: an escape is not a format character, Test-PayloadText refuses it instead'
+Confirm-Equal (Format-PayloadText '') '' 'payload strip: an empty string strips to an empty string'
+Confirm-Equal (Test-PayloadText "oc${rlo}to") $true 'payload text: a value with an override in it is still text, the override is what goes'
+Confirm-Equal (Test-PayloadText $rlo) $false 'payload text: a value that is nothing but an override is not text'
+Confirm-Equal (Test-PayloadText ($rlo + '  ' + $isolate)) $false 'payload text: format characters around whitespace are not text either'
+Confirm-Equal (Test-PayloadText ("$([char]0x200B)$([char]0xFEFF)")) $false 'payload text: a zero width space and a byte order mark leave nothing visible'
 
 Write-Host '== unit: payload counts' -ForegroundColor Cyan
 # ConvertFrom-Json hands the sample counts over as Int64, so the object cases go through it.
@@ -1832,6 +1872,9 @@ $s = Read-PayloadStatus ('{"branch":"main","status":"clean"}' | ConvertFrom-Json
 Confirm-Equal $s.Branch 'main' 'payload status: string status branch'
 Confirm-Equal $s.Dirty $false 'payload status: string status clean'
 Confirm-Equal (@($s.Keys | Sort-Object) -join ',') $porcelainKeys 'payload status: string status has the full record'
+$s = Read-PayloadStatus ('{"branch":"fea\u202eture","status":"clean"}' | ConvertFrom-Json)
+Confirm-Equal $s.Branch 'feature' 'payload status: an override in the branch is stripped, the name survives'
+Confirm-Equal (Read-PayloadStatus ('{"branch":"\u202e\u2066"}' | ConvertFrom-Json)) $null 'payload status: a branch that is nothing but format characters is no branch'
 Confirm-Equal (Read-PayloadStatus ('{"branch":""}' | ConvertFrom-Json)) $null 'payload status: empty branch gives null'
 Confirm-Equal (Read-PayloadStatus ('{}' | ConvertFrom-Json)) $null 'payload status: no branch gives null'
 
@@ -1878,6 +1921,10 @@ Confirm-Equal $seg.Role 'warn' 'branch payload conflict: role'
 
 Confirm-True ($null -eq (Get-BranchSegment ([pscustomobject]@{ git = @{} }))) 'branch payload git object with no branch: segment omitted'
 Confirm-True ($null -eq (Get-BranchSegment ([pscustomobject]@{ git = @{ branch = '' } }))) 'branch payload empty branch: segment omitted'
+$seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = "fea$([char]0x202E)ture"; status = 'clean' } }) $branchCfg
+Confirm-Equal $seg.Text "$iconBranch feature" 'branch override: the override never reaches the line and the name still names the branch'
+Confirm-True ($seg.Text -notmatch '\p{Cf}') 'branch override: nothing of the format category is left in the rendered text'
+Confirm-True ($null -eq (Get-BranchSegment ([pscustomobject]@{ git = @{ branch = "$([char]0x202E)$([char]0x2066)" } }) $branchCfg)) 'branch override: a name that is nothing but format characters is no branch at all'
 
 # Ahead and behind counts only ever come from the git probe, so stand in for Get-GitBranch here and put
 # the real one back afterwards. The "not a repo" checks below then double as proof the restore worked.
@@ -2309,6 +2356,10 @@ Confirm-Equal (Read-CachedRecord $null) $null 'cached record: null is not a reco
 Confirm-Equal (Read-CachedRecord 'main') $null 'cached record: a string is not a record'
 Confirm-Equal (Read-CachedRecord ('{"Branch":"x","Dirty":true,"Ahead":0,"Behind":0,"Staged":0,"Modified":0,"Untracked":0,"Conflicts":"0"}' | ConvertFrom-Json)) $null 'cached record: one string count fails the whole record'
 Confirm-Equal (Read-CachedRecord ('{"Branch":"x","Dirty":true,"Ahead":0,"Behind":0,"Staged":0,"Modified":0,"Untracked":0,"Conflicts":0}' | ConvertFrom-Json)).Branch 'x' 'cached record: a good record passes'
+# The cache file is on disk, so it is the one branch source a hand edit can reach. It gets the same
+# treatment as the other two on the way out of the file.
+Confirm-Equal (Read-CachedRecord ('{"Branch":"ma\u202ein","Dirty":true,"Ahead":0,"Behind":0,"Staged":0,"Modified":0,"Untracked":0,"Conflicts":0}' | ConvertFrom-Json)).Branch 'main' 'cached record: an override in a cached branch is stripped'
+Confirm-Equal (Read-CachedRecord ('{"Branch":"\u202e","Dirty":true,"Ahead":0,"Behind":0,"Staged":0,"Modified":0,"Untracked":0,"Conflicts":0}' | ConvertFrom-Json)) $null 'cached record: a branch that is nothing but an override is not a record'
 # An entry whose root differs only in case is the same file and the same repository on Windows.
 Edit-CacheEntry $cacheEntry { param($j) $j.root = $j.root.ToUpperInvariant() }
 $before = $script:probeCalls
@@ -3944,7 +3995,9 @@ $ellipsis = [char]::ConvertFromUtf32(0x2026)
 # replies in the order they arrived; Bad counts the lines Claude Code would have thrown away.
 function Invoke-SubagentLine([string] $Payload) {
     $r = Invoke-ChildPwsh $subScript @() $Payload
-    $rows = [ordered]@{}
+    # Ordinal, because two live tasks can have ids that differ only in case and the panel keeps them
+    # apart. A plain [ordered] hashtable would fold them together here and hide the very bug below.
+    $rows = [System.Collections.Specialized.OrderedDictionary]::new([System.StringComparer]::Ordinal)
     $bad = 0
     foreach ($line in $r.Lines) {
         if (-not "$line".Trim()) { continue }
@@ -4030,6 +4083,38 @@ $r = Invoke-SubagentLine (Get-SubagentSample '05-wide-window.json')
 Confirm-Equal (ConvertTo-PlainText $r.Rows['wide_01']) "$iconRobot in-process teammate  65%  655k" 'subagent 05: no columns key means nothing is cut'
 Confirm-True ($r.Rows['wide_01'].Contains("$esc[32m65%$esc[0m")) 'subagent 05: 65% of a 1M window is still green'
 
+# Two ids that differ only in case are two tasks. The panel keeps them apart, so this script has to as
+# well: its own id map used to be a PowerShell hashtable, which compares keys case-insensitively, and
+# the second row was silently dropped - that subagent showed nothing at all.
+$r = Invoke-SubagentLine '{ "columns": 60, "tasks": [ { "id": "T1", "name": "upper", "status": "running" }, { "id": "t1", "name": "lower", "status": "running" } ] }'
+Confirm-Equal (@($r.Rows.Keys) -join ',') 'T1,t1' 'subagent case ids: both ids get a row'
+Confirm-Equal (ConvertTo-PlainText $r.Rows['T1']) "$iconRobot upper  running" 'subagent case ids: the upper case id gets its own task'
+Confirm-Equal (ConvertTo-PlainText $r.Rows['t1']) "$iconRobot lower  running" 'subagent case ids: the lower case id gets its own task'
+# And the same id twice, in the same case, is still answered once.
+$r = Invoke-SubagentLine '{ "columns": 60, "tasks": [ { "id": "d1", "name": "first", "status": "running" }, { "id": "d1", "name": "second", "status": "running" } ] }'
+Confirm-Equal (@($r.Lines | Where-Object { "$_".Trim() }).Count) 1 'subagent repeat id: an exact repeat is still answered once'
+Confirm-Equal (ConvertTo-PlainText $r.Rows['d1']) "$iconRobot first  running" 'subagent repeat id: the first one is the one answered'
+
+# A name carrying a right-to-left override is not an escape sequence, so nothing about the escape rule
+# catches it, and ConvertTo-Json emits it raw. It reorders whatever the panel draws after it. The
+# character is stripped and the name is still the name: falling through to the label would throw away a
+# perfectly good name over one invisible character.
+$r = Invoke-SubagentLine '{ "columns": 60, "tasks": [ { "id": "b1", "name": "sa\u202efe", "label": "fallback", "status": "running" } ] }'
+Confirm-Equal (ConvertTo-PlainText $r.Rows['b1']) "$iconRobot safe  running" 'subagent bidi: the override is stripped and the name still names the row'
+Confirm-True ($r.Rows['b1'] -notmatch '\p{Cf}') 'subagent bidi: no format character reaches the row'
+# A name that is nothing but format characters would draw nothing at all, so it is not text and the
+# label takes over, the same way an escape in a name hands over to the label.
+$r = Invoke-SubagentLine '{ "columns": 60, "tasks": [ { "id": "b2", "name": "\u202e\u2066", "label": "fallback", "status": "running" } ] }'
+Confirm-Equal (ConvertTo-PlainText $r.Rows['b2']) "$iconRobot fallback  running" 'subagent bidi: a name that is only overrides falls through to the label'
+# The status word is the other payload string that reaches a row.
+$r = Invoke-SubagentLine '{ "columns": 60, "tasks": [ { "id": "b3", "type": "local_bash", "status": "run\u202ening" } ] }'
+Confirm-Equal (ConvertTo-PlainText $r.Rows['b3']) "$iconRobot local_bash  running" 'subagent bidi: the status word is stripped too'
+Confirm-True ($r.Rows['b3'] -notmatch '\p{Cf}') 'subagent bidi: no format character reaches the row through the status'
+# The id is the panel's key, not text it draws, so it is echoed exactly as it arrived: a sanitised copy
+# would match no task and the row would never appear.
+$r = Invoke-SubagentLine '{ "columns": 60, "tasks": [ { "id": "id\u202ex", "name": "keyed", "status": "running" } ] }'
+Confirm-Equal (@($r.Rows.Keys) -join ',') "id$([char]0x202E)x" 'subagent bidi: the id is echoed exactly as the panel sent it'
+
 # Anything the script cannot read prints nothing and exits 0. A bare glyph could not stand in here the
 # way the main script's fallback line does: it is not JSON, so the panel would log it and drop it.
 foreach ($case in @(
@@ -4094,7 +4179,7 @@ foreach ($bad in @('"columns": "80"', '"columns": 20.5', '"columns": true', '"co
 # The helpers the subagent script copies out of statusline.ps1. Both copies are pulled from the source
 # by the parser and compared as text, so a fix made to one and not the other fails here instead of
 # turning into two scripts that measure a line or colour a percentage differently.
-$sharedHelpers = @('G', 'C', 'Get-VisibleWidth', 'Get-Palette', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Test-PayloadText')
+$sharedHelpers = @('G', 'C', 'Get-VisibleWidth', 'Get-Palette', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText')
 foreach ($name in $sharedHelpers) {
     $a = try { "$(Import-ScriptFunction $script @($name))" } catch { "not found in statusline.ps1" }
     $b = try { "$(Import-ScriptFunction $subScript @($name))" } catch { "not found in subagent-statusline.ps1" }
@@ -4410,11 +4495,22 @@ Confirm-True ((Get-Content -LiteralPath $subScript -Raw).Contains('claude-code-s
 $foreignInstall = '# someone elses subagent line'
 Set-Content -LiteralPath $installedSub -Value $foreignInstall -Encoding utf8NoBOM
 $settingsBefore = Get-Content -LiteralPath $subSettings -Raw
+# The refusal says "Nothing was installed", so nothing may have been. Sentinels in the two files the
+# installer writes before it ever looks at the subagent script prove it: this used to refuse only after
+# statusline.ps1 had already been copied over the top, and the message was untrue. Checking the settings
+# alone, which is all this case used to check, cannot see that.
+$subInstalledMain = Join-Path $subHome '.claude\statusline.ps1'
+$subInstalledConfig = Join-Path $subHome '.claude\statusline.json'
+$mainSentinel = '# not this installer, and not to be replaced by a run that refuses'
+Set-Content -LiteralPath $subInstalledMain -Value $mainSentinel -Encoding utf8NoBOM
+Remove-Item -LiteralPath $subInstalledConfig -Force -ErrorAction SilentlyContinue
 $r = Invoke-Installer 'install -Subagents over an unowned file' @('-Subagents', '-SettingsPath', $subSettings)
 Confirm-True ($r.ExitCode -ne 0) "install over unowned: exit code $($r.ExitCode) is non-zero"
 Confirm-True ((($r.Lines + $r.Err) -join ' ') -match 'is not this project') "install over unowned: the message names the file and says why, got '$(($r.Lines + $r.Err) -join ' | ')'"
 Confirm-Equal (Get-Content -LiteralPath $installedSub -Raw).Trim() $foreignInstall 'install over unowned: the file is not replaced'
 Confirm-Equal (Get-Content -LiteralPath $subSettings -Raw) $settingsBefore 'install over unowned: the settings are not written either'
+Confirm-Equal (Get-Content -LiteralPath $subInstalledMain -Raw).Trim() $mainSentinel 'install over unowned: statusline.ps1 is not copied over, so "Nothing was installed" is the truth'
+Confirm-True (-not (Test-Path -LiteralPath $subInstalledConfig)) 'install over unowned: statusline.json is not written either'
 Confirm-Equal (@(Get-ChildItem -LiteralPath (Join-Path $subHome '.claude') -Filter '*.tmp-*' -Force).Count) 0 'install over unowned: nothing is staged and left behind'
 Remove-Item -LiteralPath $installedSub -Force
 
@@ -4465,6 +4561,44 @@ Confirm-True (Test-Path -LiteralPath $installedRollback) 'foreign rollback: an u
 Confirm-Equal (Get-Content -LiteralPath $installedRollback -Raw).Trim() $foreignRollbackText 'foreign rollback: its content is untouched throughout'
 Confirm-True ((($r.Lines + $r.Err) -join ' ') -match "Kept:.+rollback.+marker line") "foreign rollback: the uninstall says it was left alone, got '$(($r.Lines + $r.Err) -join ' | ')'"
 Remove-Item -LiteralPath $installedRollback -Force
+
+# The subagent script goes into place before settings.json is written, not after it. A move that cannot
+# happen therefore leaves no subagentStatusLine key naming a file that is not on disk - which is what
+# Claude Code would then launch on every panel tick. The destination is held open here with a share mode
+# that forbids a replace, the same thing an antivirus scan or another reader does to a file, and
+# File.Move fails on it; the ownership read and the rollback copy in front of it still succeed, so the
+# run really does reach the move.
+$r = Invoke-Installer 'install -Subagents before the failing move' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'move failure: the install that seeds the destination is clean'
+Set-Content -LiteralPath $subSettings -Value '{ "theme": "dark" }' -Encoding utf8NoBOM
+Remove-Item -LiteralPath "$subSettings.bak" -Force -ErrorAction SilentlyContinue
+$movedBefore = Get-Content -LiteralPath $installedSub -Raw
+$settingsBefore = Get-Content -LiteralPath $subSettings -Raw
+$blocked = $null
+try {
+    $blocked = [System.IO.File]::Open($installedSub, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+} catch {
+    $blocked = $null
+}
+Confirm-True ($null -ne $blocked) 'move failure: the test can hold the destination open against a replace'
+if ($null -ne $blocked) {
+    $r = Invoke-Installer 'install -Subagents while the move fails' @('-Subagents', '-SettingsPath', $subSettings)
+    $blocked.Dispose()
+    Confirm-True ($r.ExitCode -ne 0) "move failure: exit code $($r.ExitCode) is non-zero"
+    Confirm-Equal (Get-Content -LiteralPath $subSettings -Raw) $settingsBefore 'move failure: settings.json is exactly what it was, so no key names a file that is not there'
+    Confirm-True (-not (Test-Path -LiteralPath "$subSettings.bak")) 'move failure: settings.json was never rewritten, so there is no .bak from this run'
+    Confirm-Equal (Get-Content -LiteralPath $installedSub -Raw) $movedBefore 'move failure: the destination still holds the version it held'
+    Confirm-Equal (@(Get-ChildItem -LiteralPath (Join-Path $subHome '.claude') -Filter '*.tmp-*' -Force).Count) 0 'move failure: the staged copy is cleaned up'
+    # And with the handle gone the same command goes through: the key and the file it names arrive together.
+    $r = Invoke-Installer 'install -Subagents once the move can happen' @('-Subagents', '-SettingsPath', $subSettings)
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'move failure: the install goes through once the destination is free'
+    $s = Read-SettingFile $subSettings
+    Confirm-Equal $s.subagentStatusLine.command $expectSubCommand 'move failure: the key is written once the file is really in place'
+    Confirm-True (Test-Path -LiteralPath $installedSub) 'move failure: and the file that key names is on disk'
+}
+$r = Invoke-Installer 'uninstall after the move failure case' @('-Uninstall', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'move failure: the uninstall that clears up after it is clean'
+Remove-Item -LiteralPath $installedRollback -Force -ErrorAction SilentlyContinue
 
 # A second installer holding the lock. The settings write waits for it, and when it cannot have the
 # lock it writes nothing at all rather than racing the other one. This is the interprocess half of the

@@ -327,6 +327,16 @@ if ($Uninstall) {
     return
 }
 
+# The one thing that can refuse an install outright is whether the file already at $subagentTarget is
+# this project's, and answering it is a read, so it is answered here: above the New-Item below, which is
+# the first line of this script that writes anything at all. The refusal therefore leaves every
+# destination file exactly as it was, which is what its message says. Everything below this line writes;
+# a failure down there can leave statusline.ps1 and statusline.json in place, but both are this
+# project's own files at their own names, so re-running the installer finishes the job.
+if ($Subagents -and (Test-Path -LiteralPath $subagentTarget) -and -not (Test-OwnSubagentScript $subagentTarget)) {
+    throw "$subagentTarget already exists and is not this project's file: it carries no '$subagentMarkerLine' line in its first $subagentMarkerWithin lines. Nothing was installed. Move or delete that file yourself if you want the subagent status line there."
+}
+
 New-Item -ItemType Directory -Force -Path $claudeDir | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'statusline.ps1') -Destination $target -Force
 Write-Host "Installed $target"
@@ -348,16 +358,12 @@ if ($claudeDir -match '[$`]') {
     Write-Warning "$claudeDir contains a dollar sign or a backtick. The command written to settings.json is quoted for cmd, but Git Bash expands both inside double quotes; move the profile or edit the command by hand if the status line does not appear."
 }
 
-# Everything that can refuse the install happens before any destination file changes. The subagent
-# script is checked for ownership and then staged beside its destination under a temporary name, so a
-# file somebody else wrote is never replaced, a directory that cannot be written fails here rather than
-# after the settings are committed, and the destination still holds whatever it held until the settings
-# write has gone through.
+# The subagent script is staged beside its destination under a temporary name. A directory that cannot
+# be written fails here, before either the file or the settings are committed, and the destination still
+# holds whatever it held until the move below. Whether it may be replaced at all was settled at the top
+# of the script, before anything was written.
 $subagentStaged = $null
 if ($Subagents) {
-    if ((Test-Path -LiteralPath $subagentTarget) -and -not (Test-OwnSubagentScript $subagentTarget)) {
-        throw "$subagentTarget already exists and is not this project's file: it carries no '$subagentMarkerLine' line in its first $subagentMarkerWithin lines. Nothing was installed. Move or delete that file yourself if you want the subagent status line there."
-    }
     $subagentStaged = "$subagentTarget.tmp-$([System.IO.Path]::GetRandomFileName())"
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'subagent-statusline.ps1') -Destination $subagentStaged -Force
 }
@@ -384,15 +390,17 @@ if ($Subagents) {
     if ($s.PSObject.Properties['subagentStatusLine']) { $s.subagentStatusLine = $subagentEntry }
     else { $s | Add-Member -NotePropertyName subagentStatusLine -NotePropertyValue $subagentEntry }
 }
-# The settings go in first. A conflict or a failed write throws here, with the staged file still under
-# its temporary name and the destination untouched, so a failed install changes nothing.
-Write-UserSetting $s $settingsPath
-Write-Host "Configured statusLine in $settingsPath (hideVimModeIndicator on$(if ($wantRefresh) { ", refreshInterval $RefreshInterval s" }))"
+# The file goes in before the settings that name it, not after. The two failures are not the same size:
+# a subagent script sitting at its own path with no key naming it is inert, because Claude Code runs
+# only what settings.json points at, while a subagentStatusLine key naming a file that is not there
+# launches a missing script on every panel tick. So the move, the rollback copy in front of it, and
+# every permission error, lock and full disk either of them can raise happen while settings.json still
+# says nothing about a subagent line.
 if ($Subagents) {
-    # The version being replaced, which the check above proved is ours, is kept so an install can be
-    # undone. Anything already sitting at the rollback name that is not ours is left alone and the copy
-    # is skipped: losing the ability to roll back is a smaller harm than overwriting someone's file, and
-    # the install itself is unaffected either way.
+    # The version being replaced, which the check at the top of the script proved is ours, is kept so an
+    # install can be undone. Anything already sitting at the rollback name that is not ours is left
+    # alone and the copy is skipped: losing the ability to roll back is a smaller harm than overwriting
+    # someone's file, and the install itself is unaffected either way.
     if (Test-Path -LiteralPath $subagentTarget) {
         if ((Test-Path -LiteralPath $subagentRollback) -and -not (Test-OwnSubagentScript $subagentRollback)) {
             Write-Warning "Kept: $subagentRollback does not carry this project's marker line, so the copy of the version being replaced was not written."
@@ -403,8 +411,12 @@ if ($Subagents) {
     [System.IO.File]::Move($subagentStaged, $subagentTarget, $true)
     $subagentStaged = $null
     Write-Host "Installed $subagentTarget"
-    Write-Host "Configured subagentStatusLine in $settingsPath"
 }
+# Both entries are in one object and one write, so a conflict or a failed write throws here having
+# changed no key at all, and every path settings.json names is already a file on disk.
+Write-UserSetting $s $settingsPath
+Write-Host "Configured statusLine in $settingsPath (hideVimModeIndicator on$(if ($wantRefresh) { ", refreshInterval $RefreshInterval s" }))"
+if ($Subagents) { Write-Host "Configured subagentStatusLine in $settingsPath" }
 } finally {
     # A staged file still under its temporary name means the install did not finish; it is this script's
     # to clean up either way.
