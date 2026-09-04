@@ -33,10 +33,30 @@ $ansiPattern = "$esc\]8;[^\a$esc]*(?:\a|$esc\\)|$esc\[[0-9;]*m"
 $script:passed = 0
 $script:failed = 0
 
-# Ordinal, not -ceq. PowerShell's string operators compare by culture, and a culture comparison gives
-# the Unicode Format characters no collation weight at all: "oc<U+202E>to" -ceq "octo" is $true. Every
-# check in this file that pins a rendered string would therefore have said nothing about a right-to-left
-# override sitting in the middle of it, which is exactly the thing those checks exist to catch.
+# A note about string comparison, because this file learned it twice.
+#
+# PowerShell's string operators compare by CULTURE, and a culture comparison gives the Unicode Format
+# characters no collation weight at all. "oc<U+202E>to" -ceq "octo" is $true; so is a comparison against
+# a string carrying a zero-width joiner or a byte order mark. -ceq and -cne are case-sensitive, which is
+# not the same thing as ordinal, and the c is easy to read as "exact".
+#
+# So every comparison in this file falls into one of two categories, and a new one has to be put in the
+# right one deliberately:
+#
+#   Rendered or payload-derived text - a status line, a panel row, a branch or worktree name, a repo
+#   owner, anything that came out of a payload or went onto a terminal. These MUST compare ordinally,
+#   with [string]::Equals(a, b, [System.StringComparison]::Ordinal). A format character in one of these
+#   is the bug the check is there to find, and -ceq cannot see it. Confirm-Equal does this for every
+#   caller; the two places that compare outside Confirm-Equal - the worktree name table and the
+#   model-only fallback oracle - each say so at the call.
+#
+#   Hash and stamp values - Get-StateFileName results, git stamp strings. These are hex digits and
+#   digits produced by this project's own code, where no format character can occur, so raw -ceq/-cne
+#   is safe and is left alone; one of them is deliberately testing a difference of case.
+#
+# Ordinal, not -ceq, for the reason above: every check in this file that pins a rendered string would
+# otherwise have said nothing about a right-to-left override sitting in the middle of it, which is
+# exactly the thing those checks exist to catch.
 function Confirm-Equal($Actual, $Expected, [string] $Label) {
     if ([string]::Equals("$Actual", "$Expected", [System.StringComparison]::Ordinal)) { $script:passed++; return }
     $script:failed++
@@ -3978,7 +3998,9 @@ foreach ($cfg in $configSet) {
                 $only = Invoke-StatusLine $payload $modelOnlyPath[$cfg.Style] $c
                 Confirm-True ($only.ExitCode -eq 0) "${label}: model-only oracle exit code $($only.ExitCode)"
                 Confirm-True ($only.Err.Count -eq 0) "${label}: model-only oracle stderr empty"
-                $isModelOnly = (ConvertTo-PlainText $line) -ceq (ConvertTo-PlainText ($only.Lines -join ''))
+                # Ordinal, not -ceq: these two are rendered lines, so a format character in one of them
+                # is exactly what this comparison must not wave through as "the same text".
+                $isModelOnly = [string]::Equals((ConvertTo-PlainText $line), (ConvertTo-PlainText ($only.Lines -join '')), [System.StringComparison]::Ordinal)
                 Confirm-True $isModelOnly "${label}: width $w exceeds $($c - 1) and the line is not the model-only fallback"
             }
             if ($c -gt 0 -and $sampleShortForms.ContainsKey($sample.Name)) {
