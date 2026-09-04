@@ -141,7 +141,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
 # these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
@@ -456,6 +456,101 @@ $c = Read-StatusConfig (Write-TempConfig 'icons-good-thresholds-bad.json' '{ "ic
 Confirm-Equal $c.Icons.model 0xF0E7 'config icons: kept when thresholds is invalid'
 Confirm-Equal (Get-ThresholdText $c) '60/85' 'config icons: the invalid thresholds fall back on their own'
 
+# The preset key: one name standing for a layout, a style and every segment toggle. Get-ConfigPreset
+# holds the three shapes; a name it does not have, or a value that is not a string, returns $null and
+# changes nothing. A preset is expanded before the rest of the file it is named in, so any key beside it
+# wins whatever order the file spells them in, and it touches nothing but layout, style and segments.
+function Get-SegmentText($c) { return (@($allSegments | Where-Object { $c.Segments[$_] }) -join ',') }
+$presetShape = @(
+    @{ Name = 'minimal'; Layout = 'one'; Style = 'plain'; On = 'model,context,folder,branch' }
+    @{ Name = 'cost'; Layout = 'one'; Style = 'plain'; On = 'model,context,cost,lines,limits' }
+    @{ Name = 'full'; Layout = 'two'; Style = 'powerline'; On = ($allSegments -join ',') }
+)
+foreach ($want in $presetShape) {
+    $n = $want.Name
+    $p = Get-ConfigPreset $n
+    Confirm-True ($null -ne $p) "preset ${n}: the name is known"
+    Confirm-Equal $p.Layout $want.Layout "preset ${n}: layout $($want.Layout)"
+    Confirm-Equal $p.Style $want.Style "preset ${n}: style $($want.Style)"
+    # Every preset states the whole registry and nothing beyond it, so a segment added later has to be
+    # placed in all three by hand rather than appearing in `minimal` because no one said otherwise.
+    Confirm-Equal (@($allSegments | Where-Object { -not $p.Segments.ContainsKey($_) }) -join ',') '' "preset ${n}: every registry segment is named"
+    Confirm-Equal $p.Segments.Count $allSegments.Count "preset ${n}: it names nothing the registry does not have"
+    # The same shape through a whole config file.
+    $c = Read-StatusConfig (Write-TempConfig "preset-$n.json" ('{ "preset": "' + $n + '" }'))
+    Confirm-Equal $c.Layout $want.Layout "preset ${n}: config layout $($want.Layout)"
+    Confirm-Equal $c.Style $want.Style "preset ${n}: config style $($want.Style)"
+    Confirm-Equal (Get-SegmentText $c) $want.On "preset ${n}: config segments $($want.On)"
+    # A preset sets layout, style and the toggles and nothing else: order, rows, thresholds, icons, the
+    # state toggle and the git block all stay where the defaults left them.
+    Confirm-Equal ($c.Order -join ',') $registryOrder "preset ${n}: the order is untouched"
+    Confirm-Equal (Get-RowText $c) $registryRows "preset ${n}: the rows are untouched"
+    Confirm-Equal (Get-ThresholdText $c) '60/85' "preset ${n}: the thresholds are untouched"
+    Confirm-Equal $c.Icons.Count 0 "preset ${n}: the icons are untouched"
+    Confirm-Equal $c.State $true "preset ${n}: the state toggle is untouched"
+    Confirm-Equal $c.Git.TimeoutMs 1500 "preset ${n}: the git block is untouched"
+    Confirm-Equal $c.Folder 'repo' "preset ${n}: the folder mode is untouched"
+}
+# A fresh table every call, the segment table included, so a caller that changes its copy cannot reach
+# the next caller's the way Get-DefaultStatusConfig cannot.
+$p = Get-ConfigPreset 'minimal'
+$p.Layout = 'two'; $p.Segments.cost = $true
+$p2 = Get-ConfigPreset 'minimal'
+Confirm-Equal $p2.Layout 'one' 'preset: a changed copy does not change the next table'
+Confirm-Equal $p2.Segments.cost $false 'preset: the segment table is fresh too'
+# The name is folded like layout and style are.
+foreach ($spelling in @('FULL', 'Full', 'fUlL')) {
+    Confirm-Equal (Get-ConfigPreset $spelling).Style 'powerline' "preset: $spelling names the full preset"
+}
+$c = Read-StatusConfig (Write-TempConfig 'preset-case.json' '{ "preset": "FULL" }')
+Confirm-Equal (Get-SegmentText $c) ($allSegments -join ',') 'preset: a name in capitals matches through a config file'
+Confirm-Equal $c.Style 'powerline' 'preset: a name in capitals takes the full style'
+# Anything the table does not have returns $null and leaves the defaults standing. The helper is untyped
+# so a number, an array or a boolean is refused rather than turned into a name.
+$defaultSegments = ($allSegments -join ',')
+$presetBadIndex = 0
+foreach ($case in @(
+        @{ Label = 'an unknown name'; Value = 'nope'; Json = '"nope"' }
+        @{ Label = 'an empty string'; Value = ''; Json = '""' }
+        @{ Label = 'a number'; Value = 5; Json = '5' }
+        @{ Label = 'a boolean'; Value = $true; Json = 'true' }
+        @{ Label = 'null'; Value = $null; Json = 'null' }
+        @{ Label = 'an array'; Value = @('minimal'); Json = '["minimal"]' }
+        @{ Label = 'an object'; Value = @{ name = 'minimal' }; Json = '{ "name": "minimal" }' })) {
+    Confirm-True ($null -eq (Get-ConfigPreset $case.Value)) "preset: $($case.Label) is not a preset"
+    $presetBadIndex++
+    $c = Read-StatusConfig (Write-TempConfig "preset-bad-$presetBadIndex.json" ('{ "preset": ' + $case.Json + ' }'))
+    Confirm-Equal $c.Layout 'one' "preset: $($case.Label) leaves the default layout"
+    Confirm-Equal $c.Style 'plain' "preset: $($case.Label) leaves the default style"
+    Confirm-Equal (Get-SegmentText $c) $defaultSegments "preset: $($case.Label) leaves every segment on"
+}
+# A key beside a preset is written over it, whichever order the file spells the two in. JSON has no
+# ordering rule and a person writing one may well put the preset last, so both orders are pinned here.
+foreach ($case in @(
+        @{ Where = 'after the preset'; Json = '{ "preset": "minimal", "style": "powerline" }' }
+        @{ Where = 'before the preset'; Json = '{ "style": "powerline", "preset": "minimal" }' })) {
+    $c = Read-StatusConfig (Write-TempConfig "preset-style-$($case.Where -replace ' ', '-').json" $case.Json)
+    Confirm-Equal $c.Style 'powerline' "preset: a style $($case.Where) wins"
+    Confirm-Equal $c.Layout 'one' "preset: a style $($case.Where) leaves the preset layout"
+    Confirm-Equal (Get-SegmentText $c) 'model,context,folder,branch' "preset: a style $($case.Where) leaves the minimal segments"
+}
+$c = Read-StatusConfig (Write-TempConfig 'preset-segment-on.json' '{ "preset": "cost", "segments": { "branch": true } }')
+Confirm-Equal (Get-SegmentText $c) 'model,context,cost,lines,limits,branch' 'preset: a segment turned back on beside it'
+$c = Read-StatusConfig (Write-TempConfig 'preset-segment-off.json' '{ "preset": "cost", "segments": { "cost": false } }')
+Confirm-Equal (Get-SegmentText $c) 'model,context,lines,limits' 'preset: a segment turned off beside it'
+$c = Read-StatusConfig (Write-TempConfig 'preset-layout.json' '{ "preset": "full", "layout": "one" }')
+Confirm-Equal $c.Layout 'one' 'preset: the layout beside it wins'
+Confirm-Equal $c.Style 'powerline' 'preset: the style it sets is kept'
+# A preset beside a key it does not set: both apply.
+$c = Read-StatusConfig (Write-TempConfig 'preset-thresholds.json' '{ "preset": "minimal", "thresholds": { "warn": 20, "bad": 40 }, "order": ["branch", "model"] }')
+Confirm-Equal (Get-SegmentText $c) 'model,context,folder,branch' 'preset: the segments are set beside a threshold'
+Confirm-Equal (Get-ThresholdText $c) '20/40' 'preset: the thresholds beside it are applied'
+Confirm-Equal ($c.Order -join ',') 'branch,model' 'preset: the order beside it is applied'
+# An invalid key beside a preset falls back to the preset, not to the built-in default.
+$c = Read-StatusConfig (Write-TempConfig 'preset-bad-key.json' '{ "preset": "full", "style": 5, "layout": "three" }')
+Confirm-Equal $c.Style 'powerline' 'preset: an invalid style falls back to the preset style'
+Confirm-Equal $c.Layout 'two' 'preset: an invalid layout falls back to the preset layout'
+
 # ---- The project config: a second file merged over the user file, key by key ----
 # Read-StatusConfig builds the defaults, merges the user file, then merges the project file when the
 # payload named a project directory holding .claude\statusline.json. The merge is per key, so a project
@@ -544,6 +639,26 @@ Confirm-Equal ($c.Order -join ',') 'model,cost' 'project config: an order naming
 $c = Read-StatusConfig $orderUser (Write-TempProjectDir 'proj-rows' '{ "rows": [["branch"], ["limits"]] }')
 Confirm-Equal (Get-RowText $c) 'branch|limits' 'project config: the project rows are applied'
 Confirm-Equal ($c.Order -join ',') 'model,cost' 'project config: the user order beside them is kept'
+# preset: expanded inside the file that names it, so it sits at that file's place in the chain. A user
+# preset is a starting point the user's own keys and then the whole project file are written over; a
+# project preset outranks the user file entirely, which is the same rule every other project key follows.
+# The preset table is built into the script, so naming one from a project config opens no path and reads
+# no second file: an untrusted config can pick one of three shapes and nothing else.
+$c = Read-StatusConfig (Write-TempConfig 'preset-project-user.json' '{ "preset": "minimal" }') (Write-TempProjectDir 'proj-preset-key' '{ "segments": { "cost": true } }')
+Confirm-Equal (Get-SegmentText $c) 'model,context,cost,folder,branch' 'project config: a project toggle lands on the user preset'
+Confirm-Equal $c.Layout 'one' 'project config: the user preset layout is kept'
+$c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-preset' '{ "preset": "cost" }')
+Confirm-Equal (Get-SegmentText $c) 'model,context,cost,lines,limits' 'project config: a project preset outranks the user segment toggles'
+Confirm-Equal $c.Style 'plain' 'project config: a project preset outranks the user style'
+$c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-preset-and-key' '{ "preset": "cost", "style": "powerline" }')
+Confirm-Equal $c.Style 'powerline' 'project config: a key beside the project preset wins'
+Confirm-Equal (Get-SegmentText $c) 'model,context,cost,lines,limits' 'project config: the project preset segments are kept'
+$c = Read-StatusConfig (Write-TempConfig 'preset-project-user-full.json' '{ "preset": "full" }') (Write-TempProjectDir 'proj-preset-over' '{ "preset": "minimal" }')
+Confirm-Equal (Get-SegmentText $c) 'model,context,folder,branch' 'project config: the project preset wins the one the user file names'
+Confirm-Equal $c.Layout 'one' 'project config: the project preset layout wins'
+$c = Read-StatusConfig (Write-TempConfig 'preset-project-user-min.json' '{ "preset": "minimal" }') (Write-TempProjectDir 'proj-preset-unknown' '{ "preset": "nope" }')
+Confirm-Equal (Get-SegmentText $c) 'model,context,folder,branch' 'project config: a preset name the project gets wrong keeps the user preset'
+
 # A project file that cannot be read leaves the user config in force.
 foreach ($case in @(
         @{ Name = 'proj-broken'; Json = '{ "layout": '; Label = 'broken JSON' }
@@ -3843,6 +3958,52 @@ $r = Invoke-StatusLine $payload01 (Write-TempConfig 'render-icons-surrogate.json
 Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains("$iconModel Fable 5.1")) 'render icons: a surrogate falls back to the robot'
 $r = Invoke-StatusLine 'not json' (Write-TempConfig 'render-icons-bolt.json' '{ "icons": { "model": "F0E7" } }') 0
 Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) "$bolt claude" 'render icons: the bad-payload fallback line carries the override too'
+
+# The presets through the whole script, against the sample that carries every segment's data. What is
+# checked is glyphs on the line rather than a config table, so a preset that parsed and then failed to
+# reach the render would show up here. 06 has no pull-request block, so `pr` prints nothing whatever the
+# toggle says and is not asserted either way.
+Write-Host ''
+Write-Host '== render: presets' -ForegroundColor Cyan
+$presetArrow = [char]::ConvertFromUtf32(0xE0B0)
+$presetGlyph = @{
+    model = $iconModel; context = $iconCtx; cost = $iconCost; lines = $iconLines; limits = $iconLimit
+    fast = $iconFast; think = $iconThink; effort = $iconEffort; vim = $iconVim; folder = $iconFolder; branch = $iconHome
+}
+function Get-PresetRender([string] $Name, [string] $Json) {
+    $r = Invoke-StatusLine $payload06 (Write-TempConfig "render-preset-$Name.json" $Json) 0
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) "render preset ${Name}: exit code 0, stderr empty"
+    return $r
+}
+function Confirm-PresetGlyph([string] $Label, [string] $Text, [string[]] $Present, [string[]] $Absent) {
+    foreach ($g in $Present) { Confirm-True ($Text.Contains($presetGlyph[$g])) "render preset ${Label}: the $g glyph is on the line" }
+    foreach ($g in $Absent) { Confirm-True (-not $Text.Contains($presetGlyph[$g])) "render preset ${Label}: the $g glyph is gone" }
+}
+$r = Get-PresetRender 'minimal' '{ "preset": "minimal" }'
+$text = ConvertTo-PlainText ($r.Lines -join "`n")
+Confirm-Equal $r.Lines.Count 1 'render preset minimal: one line'
+Confirm-True (-not $text.Contains($presetArrow)) 'render preset minimal: plain style, no powerline arrow'
+Confirm-PresetGlyph 'minimal' $text @('model', 'context', 'folder', 'branch') @('cost', 'lines', 'limits', 'fast', 'think', 'effort', 'vim')
+$r = Get-PresetRender 'cost' '{ "preset": "cost" }'
+$text = ConvertTo-PlainText ($r.Lines -join "`n")
+Confirm-Equal $r.Lines.Count 1 'render preset cost: one line'
+Confirm-PresetGlyph 'cost' $text @('model', 'context', 'cost', 'lines', 'limits') @('fast', 'think', 'effort', 'vim', 'folder', 'branch')
+$r = Get-PresetRender 'full' '{ "preset": "full" }'
+$text = ConvertTo-PlainText ($r.Lines -join "`n")
+Confirm-Equal $r.Lines.Count 2 'render preset full: two lines'
+Confirm-True (($r.Lines -join "`n").Contains($presetArrow)) 'render preset full: powerline arrows between the blocks'
+Confirm-PresetGlyph 'full' $text @('model', 'context', 'cost', 'lines', 'limits', 'fast', 'think', 'effort', 'vim', 'folder', 'branch') @()
+# A segment turned off beside the preset it belongs to, through the whole script.
+$r = Get-PresetRender 'cost-no-cost' '{ "preset": "cost", "segments": { "cost": false } }'
+$text = ConvertTo-PlainText ($r.Lines -join "`n")
+Confirm-PresetGlyph 'cost-no-cost' $text @('lines', 'limits') @('cost')
+# An unknown preset renders the same bytes as an empty config, and the shipped statusline.json still
+# renders what it always did: a preset is a starting point, not a change to the defaults.
+$plainRender = (Get-PresetRender 'none' '{}').Lines -join "`n"
+Confirm-Equal ((Get-PresetRender 'unknown' '{ "preset": "nope" }').Lines -join "`n") $plainRender 'render preset: an unknown name renders the empty config byte for byte'
+Confirm-Equal ((Get-PresetRender 'number' '{ "preset": 5 }').Lines -join "`n") $plainRender 'render preset: a non-string name renders the empty config byte for byte'
+$r = Invoke-StatusLine $payload06 (Join-Path $PSScriptRoot 'statusline.json') 0
+Confirm-Equal ($r.Lines -join "`n") $plainRender 'render preset: the shipped statusline.json still renders the default line'
 
 # The project config through the whole script, at the unset width. 06 carries a cost figure, and the
 # payload names a project directory holding a .claude\statusline.json that turns the cost segment off.
