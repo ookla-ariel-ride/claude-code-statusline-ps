@@ -88,6 +88,15 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 - **Segment records and one renderer.** Each segment is a small record (name, text, short text,
   colour role, bold); one function renders a line in plain or powerline style, and width fitting
   shrinks then drops records in a fixed order.
+- **Width is counted per grapheme, and over-counting is the safe direction.** `Get-VisibleWidth` walks
+  text elements rather than characters and is a small wcwidth approximation, not a full one. Most
+  graphemes are classified by their first code point against a list of wide ranges, but two are not
+  described by their first code point at all: a flag is a pair of regional indicators and a keycap is
+  an ordinary digit, `#` or `*` carrying U+20E3, and both draw two columns. They are classified
+  explicitly, because the failure is one-sided — a string measured wider than it draws is only
+  shortened early, while one measured narrower passes a width cap it does not fit and then overruns
+  the line. `test.ps1` holds a table of grapheme to expected cells, written from what a terminal
+  reserves, and checks both the script's rule and its own separate copy against it.
 - **Silent config.** Any missing or invalid value in `statusline.json` falls back with no output, and
   each key falls back on its own: a valid `order` beside a broken `thresholds` keeps the order. The
   files are merged in precedence order, defaults then user then project, so what a key falls back to

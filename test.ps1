@@ -103,13 +103,22 @@ function Measure-VisibleWidth([string] $Text) {
                 $cat -eq [System.Globalization.UnicodeCategory]::EnclosingMark -or
                 $cat -eq [System.Globalization.UnicodeCategory]::Format -or $cp -eq 0xFE0F
         if ($zero) { continue }
+        # Emoji graphemes, decided before the ranges because the ranges only ever see the first code
+        # point: a regional indicator opens a flag or stands alone as one boxed letter, and a U+20E3
+        # anywhere in the grapheme makes it a keycap. Both are two columns.
+        # Honest note on independence: this is the same fact statusline.ps1 encodes, and there is no
+        # second way to state it, so for these two shapes this function is NOT an independent check -
+        # the width table is. What stays independent here is everything else: the twelve wide ranges,
+        # the zero-width categories and the escape stripping, all transcribed separately, which is
+        # what catches a typo in one copy that the other does not share.
+        $emoji = ($cp -ge 0x1F1E6 -and $cp -le 0x1F1FF) -or ($el.IndexOf([char] 0x20E3) -ge 0)
         $wide = ($cp -ge 0x1100 -and $cp -le 0x115F) -or ($cp -ge 0x2E80 -and $cp -le 0xA4CF) -or
                 ($cp -ge 0xAC00 -and $cp -le 0xD7A3) -or ($cp -ge 0xF900 -and $cp -le 0xFAFF) -or
                 ($cp -ge 0xFE30 -and $cp -le 0xFE4F) -or ($cp -ge 0xFF00 -and $cp -le 0xFF60) -or
                 ($cp -ge 0xFFE0 -and $cp -le 0xFFE6) -or ($cp -ge 0x20000 -and $cp -le 0x3FFFD) -or
                 ($cp -ge 0x1F300 -and $cp -le 0x1F64F) -or ($cp -ge 0x1F680 -and $cp -le 0x1F6FF) -or
                 ($cp -ge 0x1F900 -and $cp -le 0x1FAFF) -or ($cp -ge 0x2600 -and $cp -le 0x27BF)
-        $width += if ($wide) { 2 } else { 1 }
+        $width += if ($emoji -or $wide) { 2 } else { 1 }
     }
     return $width
 }
@@ -203,6 +212,13 @@ function Get-JsonPayload([string] $Key, [string] $Json) {
 }
 
 Write-Host '== unit: width' -ForegroundColor Cyan
+# Emoji graphemes built from their code points, so this file stays ASCII and says what it means.
+# A flag is one grapheme made of two regional indicators; a keycap is one grapheme made of a base
+# character and U+20E3, with the U+FE0F presentation selector optional.
+$flagGb = [char]::ConvertFromUtf32(0x1F1EC) + [char]::ConvertFromUtf32(0x1F1E7)
+$flagJp = [char]::ConvertFromUtf32(0x1F1EF) + [char]::ConvertFromUtf32(0x1F1F5)
+$loneRegional = [char]::ConvertFromUtf32(0x1F1EC)
+$keycap1 = '1' + [string][char]0xFE0F + [string][char]0x20E3
 $widthTable = @(
     @{ Text = 'abc'; Width = 3 }
     @{ Text = ''; Width = 0 }
@@ -224,6 +240,27 @@ $widthTable = @(
     @{ Text = 'ab' + [string][char]0x2066 + 'cd'; Width = 4 }                          # directional isolate
     @{ Text = [string][char]0xFEFF + 'ab'; Width = 2 }                                 # byte order mark
     @{ Text = 'a' + [string][char]0x00AD + 'b'; Width = 2 }                            # soft hyphen
+    # Emoji graphemes whose FIRST code point does not say how wide the grapheme draws, which is all
+    # either implementation looks at. The expected cells below are what a terminal reserves for the
+    # whole grapheme, written down from that behaviour rather than read back off either function: a
+    # flag is one cluster and gets two columns, an unpaired regional indicator is drawn as one boxed
+    # letter and gets two, and a keycap is one cluster and gets two whether or not U+FE0F is in it.
+    # Over-counting is the safe direction and the reason these are pinned at two: a name measured
+    # wider than it draws is only clipped early, while one measured narrower passes a width cap it
+    # does not fit and then overruns the line. The last three rows are the negative controls - a bare
+    # enclosing keycap on its own is still zero, and a bare digit and hash are still one, so the rule
+    # has to key on U+20E3 being present in the grapheme and not on the base character.
+    @{ Text = $flagGb; Width = 2 }                                                     # one flag
+    @{ Text = $flagGb + $flagJp; Width = 4 }                                           # two flags
+    @{ Text = $loneRegional; Width = 2 }                                               # unpaired regional indicator
+    @{ Text = 'a' + $flagGb + 'b'; Width = 4 }                                         # a flag between letters
+    @{ Text = $flagGb + [char]::ConvertFromUtf32(0x1F680); Width = 4 }                 # flag beside an in-range emoji
+    @{ Text = $keycap1; Width = 2 }                                                    # keycap with the selector
+    @{ Text = '7' + [string][char]0x20E3; Width = 2 }                                  # keycap without it
+    @{ Text = '#' + [string][char]0xFE0F + [string][char]0x20E3; Width = 2 }           # hash keycap
+    @{ Text = [string][char]0x20E3; Width = 0 }                                        # lone enclosing keycap
+    @{ Text = '1'; Width = 1 }                                                         # the keycap base alone
+    @{ Text = '#'; Width = 1 }                                                         # the hash base alone
 )
 foreach ($row in $widthTable) {
     $shown = $row.Text -replace $esc, '<ESC>'
@@ -261,6 +298,26 @@ Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'limits,context,branch
 Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,badges,cost,limits,pr,folder,branch,context' 'registry: drop order'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 1) -join ',') 'model,folder,branch,pr,badges' 'registry: layout two row 1'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 2) -join ',') 'context,limits,cost,lines' 'registry: layout two row 2'
+# The four assertions above pin what the order function returned; these pin the property that makes it
+# right. Get-SegmentOrder drops each record into a hashtable slot keyed by its rank number and then
+# reads slots 1..Count back, so a rank used twice silently OVERWRITES the earlier record - the loser
+# disappears from the order and stops shrinking or stops being dropped - and a gap in the numbering
+# leaves a $null in the list and strands the record above the gap. Neither is visible from a builder;
+# both are visible here. This matters most to whoever next edits the table, because the expected-order
+# strings above are hand-written from what the function returns, so a rank collision introduced and
+# then "fixed" by pasting in the new output would bake the broken order in as the expectation.
+# Ranks are dense 1..N within each key, and RowRank is dense within each row rather than overall.
+foreach ($rank in 'ShrinkRank', 'DropRank') {
+    $ranked = @(Get-SegmentRegistry | ForEach-Object { $_[$rank] } | Where-Object { $null -ne $_ } | Sort-Object)
+    Confirm-Equal ($ranked -join ',') ((1..$ranked.Count) -join ',') "registry: $rank is 1..$($ranked.Count) with no repeat and no gap"
+    Confirm-Equal (@(Get-SegmentOrder $rank | Where-Object { $null -eq $_ }).Count) 0 "registry: the $rank order has no empty slot"
+    Confirm-Equal (@(Get-SegmentOrder $rank).Count) $ranked.Count "registry: the $rank order lists every ranked segment"
+}
+foreach ($row in 1, 2) {
+    $ranked = @(Get-SegmentRegistry | Where-Object { $_.Row -eq $row } | ForEach-Object { $_.RowRank } | Where-Object { $null -ne $_ } | Sort-Object)
+    Confirm-Equal ($ranked -join ',') ((1..$ranked.Count) -join ',') "registry: row $row RowRank is 1..$($ranked.Count) with no repeat and no gap"
+    Confirm-Equal (@(Get-SegmentOrder 'RowRank' $row).Count) $ranked.Count "registry: row $row lists every segment on it"
+}
 
 Write-Host '== unit: config' -ForegroundColor Cyan
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "statusline-test-$PID"
@@ -2341,6 +2398,26 @@ Confirm-Equal $accentCut.Length 39 'clip: the cut keeps nineteen letters with th
 Confirm-Equal (Get-ClippedText 'abc' 0) '' 'clip: no cells at all gives nothing'
 Confirm-Equal (Get-ClippedText 'abc' (-3)) '' 'clip: a negative limit gives nothing'
 Confirm-Equal (Get-ClippedText $cjkName 1) $ellipsis 'clip: one cell leaves room for the ellipsis alone'
+# The emoji-grapheme gap, which the rocket above could never have found because it sits inside a range
+# the width rule already called wide. A flag and a keycap are each one grapheme drawing two columns
+# whose first code point is not in any wide range, so both used to measure one cell: a name of twenty
+# flags measured exactly twenty, passed the cap untouched, and then drew at forty. These assert the
+# property rather than the classification - whatever a grapheme is decided to be, the clipped name may
+# never draw wider than the limit it was given.
+Confirm-Equal (Get-VisibleWidth $flagGb) 2 'clip: a flag is two cells before anything is cut'
+Confirm-Equal (Get-VisibleWidth $keycap1) 2 'clip: a keycap is two cells before anything is cut'
+$flagName = $flagGb * 15
+Confirm-Equal (Get-VisibleWidth $flagName) 30 'clip: fifteen flags are thirty cells'
+$flagCut = Get-ClippedText $flagName $badgeNameCells
+Confirm-True ((Get-VisibleWidth $flagCut) -le $badgeNameCells) 'clip: a name of flags never draws wider than the limit'
+Confirm-Equal (Get-VisibleWidth $flagCut) 19 'clip: fifteen flags are cut to nine flags and an ellipsis'
+$keycapName = $keycap1 * 25
+Confirm-Equal (Get-VisibleWidth $keycapName) 50 'clip: twenty-five keycaps are fifty cells'
+$keycapCut = Get-ClippedText $keycapName $badgeNameCells
+Confirm-True ((Get-VisibleWidth $keycapCut) -le $badgeNameCells) 'clip: a name of keycaps never draws wider than the limit'
+Confirm-Equal (Get-VisibleWidth $keycapCut) 19 'clip: twenty-five keycaps are cut to nine keycaps and an ellipsis'
+$mixedName = ($flagGb + 'ab' + $keycap1) * 8
+Confirm-True ((Get-VisibleWidth (Get-ClippedText $mixedName $badgeNameCells)) -le $badgeNameCells) 'clip: a mixed name never draws wider than the limit'
 
 # The builder. The mode badges are unchanged; what is new is that agent.name and session_name each add
 # a badge, that either one alone is enough to give the segment, and that the modes become the Short
@@ -2401,6 +2478,15 @@ Confirm-True (-not $b.Text.Contains([string][char]0x2066)) 'badges: no direction
 # took on the line in the first place.
 $b = Get-BadgesSegment (('{"session_name":"' + ('\u202e' * 30) + 'quiet"}') | ConvertFrom-Json)
 Confirm-True ([string]::Equals($b.Text, "$iconSession quiet", [System.StringComparison]::Ordinal)) 'badges: thirty stripped overrides leave a five-cell name uncut'
+# The same emoji-grapheme regression through the builder, which is where the cap is actually applied
+# and where a name arrives from a real payload as surrogate pairs. The badge is the glyph, a space and
+# at most $badgeNameCells cells, so the whole thing may never exceed that plus two.
+$b = Get-BadgesSegment (('{"session_name":"' + ('\ud83c\uddec\ud83c\udde7' * 15) + '"}') | ConvertFrom-Json)
+Confirm-True ((Get-VisibleWidth $b.Text) -le ($badgeNameCells + 2)) 'badges: a session name of flags fits the badge allowance'
+Confirm-Equal (Get-VisibleWidth $b.Text) 21 'badges: the flag session badge is the glyph, a space, nine flags and the ellipsis'
+$b = Get-BadgesSegment (('{"agent":{"name":"' + ('1\ufe0f\u20e3' * 25) + '"}}') | ConvertFrom-Json)
+Confirm-True ((Get-VisibleWidth $b.Text) -le ($badgeNameCells + 2)) 'badges: an agent name of keycaps fits the badge allowance'
+Confirm-Equal (Get-VisibleWidth $b.Text) 21 'badges: the keycap agent badge is the glyph, a space, nine keycaps and the ellipsis'
 
 Write-Host '== unit: porcelain' -ForegroundColor Cyan
 $r = Read-PorcelainStatus "## main...origin/main [ahead 1]`n"
