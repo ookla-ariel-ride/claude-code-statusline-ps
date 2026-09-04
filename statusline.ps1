@@ -286,7 +286,8 @@ function Get-DefaultStatusConfig {
 # takes a string that Allowed lists, folded to lower case; Bool takes a boolean. A value of any other
 # shape leaves the key at the value beneath it. A new one-value key is one row here and nothing else; a
 # key carrying an object or a list of its own gets a block of its own in Merge-StatusConfigFile, beside
-# segments, order, rows, thresholds, icons and git.
+# preset, segments, order, rows, thresholds, icons and git. `preset` is one of those: it is a string,
+# but it stands for several keys at once rather than landing in one.
 function Get-StatusConfigKey {
     return @(
         @{ Json = 'layout'; Key = 'Layout'; Kind = 'Enum'; Allowed = @('one', 'two') }
@@ -294,6 +295,48 @@ function Get-StatusConfigKey {
         @{ Json = 'folder'; Key = 'Folder'; Kind = 'Enum'; Allowed = @('repo', 'leaf') }
         @{ Json = 'state';  Key = 'State';  Kind = 'Bool'; Allowed = $null }
     )
+}
+
+# A named starting point: one word standing for a layout, a style and the whole set of segment toggles,
+# so a config that wants a common shape is {"preset": "minimal"} rather than nine booleans. The three
+# names are built into this table and nothing here opens a path, so a preset named by a project config
+# reads no file and needs no budget; it can only pick one of the shapes below.
+#   minimal - which model, how full, where am I. One plain line.
+#   cost    - the spend line, for watching a budget or a rate limit.
+#   full    - everything, split across two powerline rows.
+# $Name is untyped and gated here rather than declared [string], because a config file spells the value
+# however it likes and a [string] parameter would turn a number or an array into a name instead of
+# refusing it. An unknown name returns $null, which leaves the config exactly as it was.
+# Each preset states every segment in the registry rather than only the ones it turns on, so a segment
+# added later has to be placed in all three by hand; the test that compares these tables to the registry
+# is what makes that a failure rather than a silent appearance in `minimal`. A fresh table every call,
+# the nested one included, so a caller that changes its copy cannot reach the next caller's.
+function Get-ConfigPreset($Name) {
+    if ($Name -isnot [string]) { return $null }
+    switch ($Name.ToLowerInvariant()) {
+        'minimal' {
+            return @{ Layout = 'one'; Style = 'plain'; Segments = @{
+                    model = $true; context = $true; cost = $false; lines = $false; limits = $false
+                    badges = $false; pr = $false; folder = $true; branch = $true
+                }
+            }
+        }
+        'cost' {
+            return @{ Layout = 'one'; Style = 'plain'; Segments = @{
+                    model = $true; context = $true; cost = $true; lines = $true; limits = $true
+                    badges = $false; pr = $false; folder = $false; branch = $false
+                }
+            }
+        }
+        'full' {
+            return @{ Layout = 'two'; Style = 'powerline'; Segments = @{
+                    model = $true; context = $true; cost = $true; lines = $true; limits = $true
+                    badges = $true; pr = $true; folder = $true; branch = $true
+                }
+            }
+        }
+    }
+    return $null
 }
 
 # What a project config may cost to read. A config a person wrote is a few hundred bytes, so 64 KiB is
@@ -422,6 +465,20 @@ function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Boun
         if (-not $text) { return $Cfg }
         $j = $text | ConvertFrom-Json -ErrorAction Stop
         if ($j -isnot [System.Management.Automation.PSCustomObject]) { return $Cfg }
+        # preset: a name standing for a layout, a style and every segment toggle, expanded first so that
+        # every other key in this same file is written over it whatever order the file spells them in.
+        # A preset therefore sits at the precedence of the file naming it: defaults, then the user file's
+        # preset and the user file's own keys, then the project file's preset and the project file's own
+        # keys. A project preset outranking a user toggle is the same rule as any other project key.
+        # A name no preset has, or a value that is not a string, leaves everything as it was.
+        $preset = Get-ConfigPreset $j.preset
+        if ($null -ne $preset) {
+            $Cfg.Layout = $preset.Layout
+            $Cfg.Style = $preset.Style
+            foreach ($n in @($Cfg.Segments.Keys)) {
+                if ($preset.Segments.ContainsKey($n)) { $Cfg.Segments[$n] = $preset.Segments[$n] }
+            }
+        }
         foreach ($rec in Get-StatusConfigKey) {
             $v = $j.($rec.Json)
             if ($rec.Kind -eq 'Bool') {
