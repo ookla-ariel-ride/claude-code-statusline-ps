@@ -365,8 +365,10 @@ read and write appends a line to `claude-statusline-diag.log` in your temp folde
 
 The printed line is the same either way, and a log that cannot be written is as silent as the failure
 it records. The log rolls over into `claude-statusline-diag.log.1` once it would pass 4 MB, so
-leaving the variable set costs two files of that size at most - but unset it when you are done (`0`,
-`false`, `no` and `off` also count as off) and delete both.
+leaving the variable set costs two files of that size at most. Treat the 4 MB as approximate: the log
+is best-effort and never waits on anything, so two renders that overlap can leave the file a little
+over the cap, or lose one of their lines to each other. Unset the variable when you are done (`0`,
+`false`, `no` and `off` also count as off) and delete both files.
 
 ## Contributing
 

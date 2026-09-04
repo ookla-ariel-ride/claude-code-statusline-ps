@@ -130,6 +130,12 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   rendered line is identical with the variable set and unset. The log rolls over into a `.log.1`
   sibling once an append would take it past 4 MB, from inside that same `try`, so a variable left set
   in a profile cannot fill the temp volume and a rollover that fails costs the line and nothing more.
+  One record is cut at 1000 characters, so no single reason can outgrow the cap by itself. The move is
+  taken under a named mutex with a zero wait, and the size is read again while it is held, so two
+  renders cannot rotate over each other's archive; one that cannot take the mutex at once skips the
+  rollover and appends. Nothing waits, and the append itself is unlocked, which makes the cap
+  approximate rather than exact: overlapping renders can leave the file a little over it or lose a
+  line. That is the right trade for a log that must never delay a render and is off by default.
 
 ## Constraints
 

@@ -141,7 +141,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Write-StatusDiag'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
 # these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
@@ -2165,6 +2165,70 @@ try {
     Confirm-True (-not $diagRollThrew) 'diag rollover failure: the helper does not throw'
     Confirm-Equal $diagRollOut.Count 0 'diag rollover failure: nothing reaches the pipeline'
     Confirm-Equal (Get-DiagLogSize) $diagCap 'diag rollover failure: the log is left exactly as it was'
+    Clear-DiagRollover
+
+    # One record cannot set the size of the file on its own: a reason of any length is cut and marked,
+    # so a pathological exception message cannot land in the file the rollover has just emptied and
+    # leave the log over the cap again.
+    Clear-DiagLog
+    Clear-DiagRollover
+    Write-StatusDiag ('q' * 5000)
+    $diagLines = Get-DiagLine
+    Confirm-Equal $diagLines.Count 1 'diag record cap: an enormous reason is still one line'
+    Confirm-Equal $diagLines[0].Split(' ', 3)[2] (('q' * 1000) + ' [cut]') 'diag record cap: the reason is cut at 1000 characters and marked'
+    Confirm-True ((Get-DiagLogSize) -lt 1200) "diag record cap: the record is bounded, size $(Get-DiagLogSize)"
+    [System.IO.File]::WriteAllText($diagLog, ('y' * $diagCap))
+    Write-StatusDiag ('r' * 5000)
+    Confirm-True ((Get-DiagLogSize) -le $diagCap) 'diag record cap: an enormous reason on a full log still leaves the log at or under the cap'
+
+    # The rollover is taken under a named mutex with no wait at all, so a render that finds another one
+    # already rotating appends rather than waiting on it. A mutex belongs to a thread and is reentrant,
+    # so only another process can hold it against this one: a child pwsh takes it, says so by writing a
+    # file, and keeps it until this one says to let go. The name is spelled out here rather than read
+    # from the script, so the two cannot agree with each other about the wrong one.
+    Clear-DiagLog
+    Clear-DiagRollover
+    [System.IO.File]::WriteAllText($diagLog, ('y' * $diagCap))
+    $diagReady = Join-Path $tmp 'diag-lock-ready'
+    $diagGo = Join-Path $tmp 'diag-lock-go'
+    foreach ($diagSignal in @($diagReady, $diagGo)) { if (Test-Path -LiteralPath $diagSignal) { Remove-Item -LiteralPath $diagSignal -Force } }
+    $diagHoldFile = Join-Path $tmp 'diag-hold-mutex.ps1'
+    [System.IO.File]::WriteAllText($diagHoldFile, @'
+param([string] $Ready, [string] $Go)
+$m = [System.Threading.Mutex]::new($false, 'claude-code-statusline-diag-rollover')
+[void] $m.WaitOne()
+[System.IO.File]::WriteAllText($Ready, 'held')
+$deadline = [DateTime]::UtcNow.AddSeconds(30)
+while (-not [System.IO.File]::Exists($Go) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 20 }
+$m.ReleaseMutex()
+$m.Dispose()
+'@)
+    $diagPsi = [System.Diagnostics.ProcessStartInfo]::new((Get-Command pwsh -CommandType Application | Select-Object -First 1).Source)
+    foreach ($diagArg in @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', $diagHoldFile, $diagReady, $diagGo)) { $diagPsi.ArgumentList.Add($diagArg) }
+    $diagPsi.UseShellExecute = $false
+    $diagPsi.CreateNoWindow = $true
+    $diagHolder = [System.Diagnostics.Process]::Start($diagPsi)
+    try {
+        $diagDeadline = [DateTime]::UtcNow.AddSeconds(30)
+        while (-not [System.IO.File]::Exists($diagReady) -and [DateTime]::UtcNow -lt $diagDeadline) { Start-Sleep -Milliseconds 20 }
+        Confirm-True ([System.IO.File]::Exists($diagReady)) 'diag rollover lock: another process holds the mutex the rollover takes'
+        $diagLockThrew = $false
+        $diagLockOut = @('not run')
+        try { $diagLockOut = @(Write-StatusDiag 'another render is rotating') } catch { $diagLockThrew = $true }
+        Confirm-True (-not $diagLockThrew) 'diag rollover lock: a rollover it cannot take does not throw'
+        Confirm-Equal $diagLockOut.Count 0 'diag rollover lock: and nothing reaches the pipeline'
+        Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover lock: the file the other render is rotating is left alone'
+        Confirm-True ((Get-DiagLogSize) -gt $diagCap) 'diag rollover lock: the line is appended anyway rather than waited for, which is what makes the cap approximate'
+    } finally {
+        [System.IO.File]::WriteAllText($diagGo, 'go')
+        [void] $diagHolder.WaitForExit(30000)
+        $diagHolder.Dispose()
+    }
+    # With the mutex free again the next record rotates as it always did.
+    Write-StatusDiag 'the other render has finished'
+    Confirm-True (Test-Path -LiteralPath $diagRolled) 'diag rollover lock: once the mutex is free the rollover happens'
+    Confirm-Equal (Get-DiagLine).Count 1 'diag rollover lock: and the fresh log holds only the new record'
+    Clear-DiagLog
     Clear-DiagRollover
 
     # The whole script, run twice on one payload: the log changes nothing a terminal would show, and

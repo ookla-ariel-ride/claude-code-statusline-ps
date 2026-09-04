@@ -34,12 +34,36 @@ function C([string] $code, [string] $text) { "$e[${code}m$text$e[0m" }
 # The reason is folded onto one line, because an exception message can carry newlines and one call has
 # to stay one line. Nothing here reaches the pipeline, so a call can sit in front of a return without
 # changing what the caller returns.
-# The log is rolled over rather than left to grow. An append that would take the file past 4 MB moves
-# it over claude-statusline-diag.log.1 first, so a variable left set in a profile costs two files of
-# that size at most rather than the temp volume - and the size is counted in the bytes about to be
-# written, so the file never ends a call larger than the cap. The move sits inside the same try as the
-# append: a rollover that cannot happen, because the sibling name is taken by a directory or a reader
-# holds the file, costs the line exactly as a failed append does. Both files are safe to delete.
+# The log is rolled over rather than left to grow, and one record is bounded so that a reason of any
+# length cannot set the size of the file on its own. The 4 MB cap is a target rather than a promise;
+# Invoke-StatusDiagRollover has the reason why.
+
+# Moves a log with no room left for the next record over claude-statusline-diag.log.1, so a variable
+# left set in a profile costs two files of the cap's size at most rather than the temp volume.
+# Two renders can be printing at once and would both see the same full file, so the move is taken
+# under a named mutex and the size is read again with the mutex in hand: the second render then finds
+# the small file the first one left and does nothing, rather than moving that over the archive the
+# first one just made. The wait is zero. A render that cannot have the mutex at once skips the
+# rollover and appends, because the file it would have moved is about to shrink under it anyway, so
+# nothing here ever waits on another process - which is the point of a log that must not delay a
+# render. The append itself is not locked at all. That leaves the cap approximate: two renders that
+# overlap can leave the file a little over it, or lose a line to each other, which is the right trade
+# for a diagnostic that is off by default and read by a person. Anything that throws is
+# Write-StatusDiag's to swallow, and nothing here reaches the pipeline.
+function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap) {
+    $mutex = [System.Threading.Mutex]::new($false, 'claude-code-statusline-diag-rollover')
+    try {
+        $held = $false
+        # An abandoned mutex is one this process now owns: the render holding it died mid-move.
+        try { $held = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $held = $true }
+        if (-not $held) { return }
+        try {
+            $fi = [System.IO.FileInfo]::new($Path)
+            if ($fi.Exists -and $fi.Length + $Need -gt $Cap) { [System.IO.File]::Move($Path, $Path + '.1', $true) }
+        } finally { $mutex.ReleaseMutex() }
+    } finally { $mutex.Dispose() }
+}
+
 function Write-StatusDiag([string] $Reason) {
     $flag = $env:CLAUDE_STATUSLINE_DEBUG
     if (-not $flag -or $flag.Trim() -in @('0', 'false', 'no', 'off')) { return }
@@ -47,10 +71,16 @@ function Write-StatusDiag([string] $Reason) {
         $base = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { [System.IO.Path]::GetTempPath() }
         $path = [System.IO.Path]::Combine($base, 'claude-statusline-diag.log')
         $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [System.Globalization.CultureInfo]::InvariantCulture)
-        $line = "$stamp $PID $([regex]::Replace($Reason, '\s+', ' ').Trim())`n"
+        $text = [regex]::Replace($Reason, '\s+', ' ').Trim()
+        # A record is one line a person reads, and an exception message has no length limit, so a reason
+        # past 1000 characters is cut and marked. Without this one record could be larger than the whole
+        # cap and land in the file the rollover had just emptied, leaving the log over the cap again.
+        if ($text.Length -gt 1000) { $text = $text.Substring(0, 1000) + ' [cut]' }
+        $line = "$stamp $PID $text`n"
         $utf8 = [System.Text.UTF8Encoding]::new($false)
+        $need = $utf8.GetByteCount($line)
         $fi = [System.IO.FileInfo]::new($path)
-        if ($fi.Exists -and $fi.Length + $utf8.GetByteCount($line) -gt 4MB) { [System.IO.File]::Move($path, $path + '.1', $true) }
+        if ($fi.Exists -and $fi.Length + $need -gt 4MB) { Invoke-StatusDiagRollover $path $need 4MB }
         [System.IO.File]::AppendAllText($path, $line, $utf8)
     } catch { $null = $_ }
 }
