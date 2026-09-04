@@ -141,7 +141,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-PaceArrow', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
 # these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
@@ -1186,6 +1186,87 @@ foreach ($odd in @(@{ Label = 'string true'; Value = 'true' }, @{ Label = 'numbe
     Confirm-Equal (Get-ModelSegment $p $plainCfg).Text "$iconModel Fable 5.1" "model exceeds as $($odd.Label): no glyph"
 }
 Confirm-Equal (Get-ModelSegment ([pscustomobject]@{ model = [pscustomobject]@{ display_name = '' } }) $plainCfg) $null 'model: empty name omits the segment'
+
+Write-Host '== unit: pace' -ForegroundColor Cyan
+# Get-PaceArrow takes the current epoch as a third parameter defaulting to the clock, so the arithmetic
+# can be pinned to the second here. That matters: an epoch derived from an earlier reading of the clock
+# is one second out whenever the second ticks in between, so a case meant to sit on 16200 seconds left
+# would quietly exercise 16199 instead and pass either way. Every eligibility limit is a whole second,
+# and the fraction it stands for is not exact in binary - 1 - 16200 / 18000 is 0.09999999999999998 - so
+# these are the boundaries a regression moves. Cases are written as the seconds still to run, which is
+# what the function tests: 16200 left is a tenth of the 18000-second window gone, the earliest reading
+# worth anything, and 0 left is the window spent. The default clock is covered on its own at the end.
+$paceUp = [char]::ConvertFromUtf32(0x2191)
+$paceFlat = [char]::ConvertFromUtf32(0x2192)
+$paceClock = 1700000000
+Confirm-Equal (Get-VisibleWidth $paceUp) 1 'pace: the up arrow is a plain character, one cell wide'
+Confirm-Equal (Get-VisibleWidth $paceFlat) 1 'pace: the right arrow is a plain character, one cell wide'
+$paceTable = @(
+    @{ Label = '16201s left, one second short of a tenth gone'; Left = 16201; Used = 5; Arrow = $null }
+    @{ Label = '16200s left, exactly a tenth gone: the earliest reading there is'; Left = 16200; Used = 5; Arrow = $paceFlat; Red = $false }
+    @{ Label = '16200s left, 10% used: exactly 100% projected holds'; Left = 16200; Used = 10; Arrow = $paceFlat; Red = $false }
+    @{ Label = '16200s left, 10.1% used: 101% projected points up'; Left = 16200; Used = 10.1; Arrow = $paceUp; Red = $false }
+    @{ Label = '16200s left, 11.9% used: 119% projected is not red yet'; Left = 16200; Used = 11.9; Arrow = $paceUp; Red = $false }
+    @{ Label = '16200s left, 12% used: exactly 120% projected turns red'; Left = 16200; Used = 12; Arrow = $paceUp; Red = $true }
+    @{ Label = 'half gone, 40% used: 80% projected'; Left = 9000; Used = 40; Arrow = $paceFlat; Red = $false }
+    @{ Label = 'half gone, 50% used: exactly on pace holds'; Left = 9000; Used = 50; Arrow = $paceFlat; Red = $false }
+    @{ Label = 'half gone, 51% used: 102% projected points up'; Left = 9000; Used = 51; Arrow = $paceUp; Red = $false }
+    @{ Label = 'half gone, 59.9% used: 119.8% projected is not red yet'; Left = 9000; Used = 59.9; Arrow = $paceUp; Red = $false }
+    @{ Label = 'half gone, 60% used: exactly 120% projected turns red'; Left = 9000; Used = 60; Arrow = $paceUp; Red = $true }
+    @{ Label = 'half gone, 80% used: 160% projected'; Left = 9000; Used = 80; Arrow = $paceUp; Red = $true }
+    @{ Label = 'half gone, 80% as a JSON double'; Left = 9000; Used = 80.0; Arrow = $paceUp; Red = $true }
+    @{ Label = '1s left, the last reading of a window'; Left = 1; Used = 50; Arrow = $paceFlat; Red = $false }
+    @{ Label = '0s left, the window spent to the second'; Left = 0; Used = 50; Arrow = $null }
+    @{ Label = '1s past the reset'; Left = -1; Used = 50; Arrow = $null }
+    @{ Label = '100s past the reset'; Left = -100; Used = 80; Arrow = $null }
+    @{ Label = '17500s left, inside the first half hour'; Left = 17500; Used = 90; Arrow = $null }
+    @{ Label = "sample 06's 2100 epoch, a window that has not opened"; Left = 4102444800 - 1700000000; Used = 80; Arrow = $null }
+)
+foreach ($paceRow in $paceTable) {
+    $pace = Get-PaceArrow ($paceClock + $paceRow.Left) $paceRow.Used $paceClock
+    if ($null -eq $paceRow.Arrow) {
+        Confirm-True ($null -eq $pace) "pace: $($paceRow.Label) gives no arrow"
+        continue
+    }
+    Confirm-Equal $pace.Arrow $paceRow.Arrow "pace: $($paceRow.Label) - arrow"
+    Confirm-Equal $pace.Red $paceRow.Red "pace: $($paceRow.Label) - red flag"
+}
+# A reset or a usage figure that is not a number at all. Get-FiniteNumber is the type gate, so a string
+# that would cast, a boolean, an array, NaN and infinity all fall out here, as does a usage figure that
+# is absent, zero or negative, where every projection is zero or worse and an arrow would be noise.
+$noPaceTable = @(
+    @{ Label = 'no reset at all'; Reset = $null; Used = 80 }
+    @{ Label = 'a reset as text'; Reset = "$($paceClock + 9000)"; Used = 80 }
+    @{ Label = 'a reset as a boolean'; Reset = $true; Used = 80 }
+    @{ Label = 'a reset as an array'; Reset = @($paceClock + 9000); Used = 80 }
+    @{ Label = 'a reset as NaN'; Reset = [double]::NaN; Used = 80 }
+    @{ Label = 'a reset as infinity'; Reset = [double]::PositiveInfinity; Used = 80 }
+    @{ Label = 'no usage figure'; Reset = $paceClock + 9000; Used = $null }
+    @{ Label = 'nothing used yet'; Reset = $paceClock + 9000; Used = 0 }
+    @{ Label = 'a negative usage figure'; Reset = $paceClock + 9000; Used = -5 }
+    @{ Label = 'usage as text'; Reset = $paceClock + 9000; Used = '80' }
+    @{ Label = 'usage as a boolean'; Reset = $paceClock + 9000; Used = $true }
+    @{ Label = 'usage as an array'; Reset = $paceClock + 9000; Used = @(80) }
+    @{ Label = 'usage as NaN'; Reset = $paceClock + 9000; Used = [double]::NaN }
+)
+foreach ($paceRow in $noPaceTable) {
+    Confirm-True ($null -eq (Get-PaceArrow $paceRow.Reset $paceRow.Used $paceClock)) "pace: $($paceRow.Label) gives no arrow"
+}
+# The default clock, which is the only path the script itself ever takes, so the parameter above cannot
+# become the only thing under test. Real time moves on between the epoch being built here and
+# Get-PaceArrow reading it, always forward, which only raises the elapsed fraction and only lowers the
+# projection. Every case below therefore sits clear of its threshold on the side drift carries it
+# towards, well outside a second's worth of movement. The boundaries themselves are pinned above.
+$pace = Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) 80
+Confirm-Equal $pace.Arrow $paceUp 'pace on the default clock: half a window gone at 80% points up'
+Confirm-Equal $pace.Red $true 'pace on the default clock: 160% projected is red'
+$pace = Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) 40
+Confirm-Equal $pace.Arrow $paceFlat 'pace on the default clock: half a window gone at 40% holds'
+Confirm-Equal $pace.Red $false 'pace on the default clock: 80% projected is not red'
+Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 100) 80)) 'pace on the default clock: a reset already past gives no arrow'
+Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 16400) 90)) 'pace on the default clock: the first half hour gives no arrow'
+Confirm-True ($null -eq (Get-PaceArrow 4102444800 80)) 'pace on the default clock: a far-future reset gives no arrow'
+
 Write-Host '== unit: limits' -ForegroundColor Cyan
 # Resets in the past keep TimeLeft empty, so the text is deterministic. Every call passes a config,
 # because the builder reads its colour bands from it.
@@ -1268,6 +1349,49 @@ Confirm-Equal (Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"seven_day":{"used_percentage":15,"resets_at":1700000000}}') $lowCfg
 Confirm-Equal $seg.Role 'ok' 'limits 10 and 15 at 20/40: ok'
 Confirm-Equal $seg.Short "$iconLimit 5h 10%" 'limits 10 and 15 at 20/40: short is the first figure'
+
+# The pace arrow rides on the 5-hour figure alone, between the percentage and the countdown. Every case
+# below is clock-relative for the reason the pace group gives, and each epoch is taken on the line that
+# uses it so drift stays under a second. A live reset is what makes the arrow appear at all, which is
+# why none of the fixed-epoch cases above grew one: 1700000000 is long past and 4102444800 is a window
+# that has not opened.
+$paceCfg = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Style = 'plain' }
+$pacePlCfg = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Style = 'powerline' }
+$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":40,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $paceCfg
+Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 40% $paceFlat (") -and $seg.Text.EndsWith(') 7d 12%')) 'limits on pace: the right arrow sits after the figure and before the countdown'
+Confirm-Equal $seg.Short "$iconLimit 5h 40%" 'limits on pace: the short form drops the arrow with the countdown'
+Confirm-Equal $seg.Role 'ok' 'limits on pace: the arrow does not touch the role'
+
+$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":55,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $paceCfg
+Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 55% $paceUp (")) 'limits overrunning under 120: a plain up arrow, no colour'
+Confirm-Equal $seg.Role 'ok' 'limits overrunning under 120: the role is still the worse of the figures'
+
+# At 80% with half the window gone the projection is 160, so the arrow goes through the removed inline
+# role and restores the segment's own foreground - the warn one here, which the 80 earns on its own.
+$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":80,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $paceCfg
+Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'plain') (")) 'limits well over pace: the up arrow is red and hands the warn colour back'
+Confirm-Equal $seg.Role 'warn' 'limits well over pace: the role is the worse figure, not the projection'
+Confirm-Equal $seg.Short "$iconLimit 5h 80%" 'limits well over pace: the short form keeps the figure without the arrow'
+
+$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":80,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $pacePlCfg
+Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'powerline') (")) 'limits well over pace in powerline: the red arrow restores the segment foreground'
+
+# The 7-day figure never gets an arrow, whatever its reset says: one payload cannot pace a week.
+$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"seven_day":{"used_percentage":80,"resets_at":' + $paceLive + '},"spend_limit":{"used_percentage":80,"resets_at":' + $paceLive + '}}')) $paceCfg
+Confirm-Equal $seg.Text "$iconLimit 7d 80% `$ 80%" 'limits without a 5h figure: no arrow on the 7d or the spend figure'
+
+# A reset under a minute out leaves TimeLeft empty, so the arrow is the only thing the Text has that the
+# Short form does not. Fifty seconds is far enough from both ends - past the reset, or past the minute
+# TimeLeft needs - that no plausible drift moves the answer.
+$paceEnd = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 50
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":55,"resets_at":' + $paceEnd + '}}')) $paceCfg
+Confirm-Equal $seg.Text "$iconLimit 5h 55% $paceFlat" 'limits at the end of a window: the arrow with no countdown behind it'
+Confirm-Equal $seg.Short "$iconLimit 5h 55%" 'limits at the end of a window: a short form exists purely to drop the arrow'
 
 Write-Host '== unit: porcelain' -ForegroundColor Cyan
 $r = Read-PorcelainStatus "## main...origin/main [ahead 1]`n"

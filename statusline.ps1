@@ -960,13 +960,43 @@ function TimeLeft([object] $epoch) {
     return ' ({0}h{1:00}m)' -f [int] [math]::Floor($left.TotalHours), $left.Minutes
 }
 
+# How the 5-hour window is being spent, as one plain arrow: U+2192 when carrying on at this rate lands
+# inside the window, U+2191 when it overruns, with Red set once the projection reaches 120% so the caller
+# can colour it. Returned as @{ Arrow; Red }, or $null for no arrow at all - which is the answer whenever
+# there is nothing honest to say: no reset time, a reset already past or one so far out that the window
+# has not opened, less than the first tenth of the window gone (one busy minute swings the projection
+# there), or no usage yet, where every projection is zero and a right arrow would just be noise.
+# The window is a fixed 18000 seconds, so the elapsed fraction follows from the reset alone and no state
+# file is needed. The arithmetic stays in whole seconds rather than DateTimeOffset, which throws on an
+# epoch outside its own range; a payload's absurd number here just falls out as no arrow. The two limits
+# are tested on the seconds left rather than on the fraction, because a tenth of the window is 16200
+# seconds exactly while 1 - 16200 / 18000 is 0.09999999999999998, which would drop the first honest
+# reading of every window.
+# $Now is the current epoch and defaults to the clock, so no caller passes one. It exists for the tests:
+# an epoch derived from an earlier reading of the clock is one second out whenever the second ticks in
+# between, which is enough to miss both of those limits by exactly the margin a regression would move.
+function Get-PaceArrow([object] $resetsAt, [object] $used, [long] $Now = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) {
+    $reset = Get-FiniteNumber $resetsAt
+    $pct = Get-FiniteNumber $used
+    if ($null -eq $reset -or $null -eq $pct -or $pct -le 0) { return $null }
+    $left = $reset - $Now
+    if ($left -le 0 -or $left -gt 16200) { return $null }
+    $projected = $pct * 18000 / (18000 - $left)
+    if ($projected -le 100) { return @{ Arrow = (G 0x2192); Red = $false } }
+    return @{ Arrow = (G 0x2191); Red = ($projected -ge 120) }
+}
+
 # Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets, and the spend limit when
 # the payload carries one (Claude Code sends it behind a Claude apps gateway with a spend limit). The spend
 # figure uses a literal dollar sign, not the cash glyph, so it does not read as a second cost; its resets_at
 # is not shown, one countdown is enough. Every figure that is present joins the worst-of colour, banded by
 # the config's thresholds whatever the window size, and the Short form a narrow terminal falls back to
 # keeps the figure behind that colour: the worst one, or the first present one when nothing is above the
-# warn line. Either way it carries no countdown.
+# warn line. Either way it carries neither the countdown nor the pace arrow.
+# The 5-hour figure also gets the pace arrow, between the percentage and the countdown, because that is
+# the only window one payload can honestly pace. It is added after the loop rather than inside it: a red
+# arrow goes through Format-Inline, which hands the segment's own foreground back afterwards, and which
+# foreground that is depends on every figure the loop has yet to see.
 function Get-LimitsSegment($d, $cfg) {
     $rl = $d.rate_limits
     if (-not $rl) { return $null }
@@ -974,7 +1004,11 @@ function Get-LimitsSegment($d, $cfg) {
     $worst = -1
     $first = $null
     $top = $null
-    # Label, source object and whether the countdown follows, in render order.
+    $pace = $null
+    $paceAt = -1
+    $paceHead = ''
+    $paceTail = ''
+    # Label, source object and whether the pace arrow and the countdown follow, in render order.
     foreach ($row in @(@('5h', $rl.five_hour, $true), @('7d', $rl.seven_day, $false), @('$', $rl.spend_limit, $false))) {
         $pct = $row[1].used_percentage
         if ($null -eq $pct) { continue }
@@ -983,12 +1017,22 @@ function Get-LimitsSegment($d, $cfg) {
         if ($null -eq $first) { $first = $bit }
         # A strict comparison keeps the earlier figure on a tie, so 5h beats 7d beats spend.
         if ($pct -gt $worst) { $top = $bit; $worst = $pct }
-        $tail = if ($row[2]) { TimeLeft $row[1].resets_at } else { '' }
+        $tail = ''
+        if ($row[2]) {
+            $tail = TimeLeft $row[1].resets_at
+            # The raw percentage, not the rounded one: the projection is the arrow's whole point.
+            $pace = Get-PaceArrow $row[1].resets_at $row[1].used_percentage
+            if ($pace) { $paceAt = $bits.Count; $paceHead = $bit; $paceTail = $tail }
+        }
         $bits.Add("$bit$tail")
     }
     if ($bits.Count -eq 0) { return $null }
-    $text = "$iconLimit $($bits -join ' ')"
     $role = Get-ThresholdRole $worst $cfg.Thresholds.Warn $cfg.Thresholds.Bad
+    if ($paceAt -ge 0) {
+        $arrow = if ($pace.Red) { Format-Inline 'removed' $pace.Arrow $role $cfg.Style } else { $pace.Arrow }
+        $bits[$paceAt] = "$paceHead $arrow$paceTail"
+    }
+    $text = "$iconLimit $($bits -join ' ')"
     $short = "$iconLimit " + $(if ($role -eq 'ok') { $first } else { $top })
     if ($short -eq $text) { $short = $null }
     return @{ Name = 'limits'; Text = $text; Short = $short; Role = $role; Bold = $false }
