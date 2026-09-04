@@ -377,6 +377,13 @@ two stages:
 
 The model segment always stays.
 
+When no segment can be built at all — a payload with nothing in it, or an `order` naming only
+segments the payload cannot fill — the script prints the model glyph and the word `claude` in place
+of the model segment. That stand-in follows the same two keys the model segment does: with
+`"segments": {"model": false}`, or with an `order` or `rows` that leave `model` out, there is no
+model segment to stand in for and the script prints nothing at all. A payload that is not JSON is
+the exception and always prints the stand-in, because there is no config reading to trust behind it.
+
 ## What each segment shows
 
 | Segment | Icon | Data | Rendering |

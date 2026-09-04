@@ -1670,7 +1670,22 @@ foreach ($rec in Get-SegmentRegistry) {
     $seg = & $rec.Build $d $cfg
     if ($seg) { $segments.Add($seg) }
 }
-if ($segments.Count -eq 0) { Write-Host (C '36' "$iconModel claude"); exit 0 }
+# Every enabled and listed builder returned nothing. The fallback line is the model glyph and the word
+# claude, so what it really is is the model segment with no name to put in it - the payload that carries
+# no model.display_name is the case it was written for. That makes it the model segment's stand-in, and
+# it is printed under the same two conditions the model segment itself is built under: toggled on, and
+# named by the config's order or, in layout two, by one of its rows. A config that turns model off, or
+# one whose order leaves it out, asked for a line with no model on it; an empty render is that answer,
+# the same answer the fitting loop below already gives when every line shrinks away to nothing.
+# This is the only fallback that reads the config. The bad-payload one above prints whatever the config
+# says, because a payload that is not JSON is the case where the config behind it cannot be trusted:
+# it names no project directory, so the project file was never merged, and there is nothing left to
+# honour. Keeping that one unconditional is what guarantees a render on the path where everything else
+# has failed, so nothing here may be moved above it or made to depend on it.
+if ($segments.Count -eq 0) {
+    if ($cfg.Segments['model'] -and $listed['model']) { Write-Host (C '36' "$iconModel claude") }
+    exit 0
+}
 
 # Claude Code sets COLUMNS before running the script. Leave one column free to avoid the pending-wrap glitch.
 $width = $null

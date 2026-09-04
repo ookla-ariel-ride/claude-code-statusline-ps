@@ -4401,7 +4401,18 @@ foreach ($cfg in $configSet) {
             Confirm-True ($r.ExitCode -eq 0) "${label}: exit code $($r.ExitCode)"
             Confirm-True ($r.Err.Count -eq 0) "${label}: stderr empty"
             $lines = $r.Lines
-            if ([string]::IsNullOrWhiteSpace(($lines -join ''))) { Confirm-True $false "${label}: empty output"; continue }
+            # A -Config that turns model off and leaves this sample nothing else to show is a render with
+            # no line in it at all: the zero-segment fallback stands in for the model segment, so a config
+            # without one prints nothing rather than the claude line. That is the configured answer here
+            # and not a fault, so it is asserted from the other side instead of failing the empty check.
+            # None of the built-in configs reach it - every one of them lists model and leaves it on.
+            $couldShow = @($allSegments | Where-Object { $cfg.Enabled[$_] -and $_ -in @($sampleSegments[$sample.Name]) })
+            $blank = [string]::IsNullOrWhiteSpace(($lines -join ''))
+            if (-not $cfg.Enabled['model'] -and $couldShow.Count -eq 0) {
+                Confirm-True $blank "${label}: model off with nothing else buildable prints nothing"
+                continue
+            }
+            if ($blank) { Confirm-True $false "${label}: empty output"; continue }
             Confirm-True ($lines.Count -le $maxLines) "${label}: $($lines.Count) lines, layout allows $maxLines"
             foreach ($line in $lines) {
                 Confirm-True (-not [string]::IsNullOrWhiteSpace($line)) "${label}: empty line"
@@ -4471,6 +4482,9 @@ foreach ($cfg in $configSet) {
                 if ($visible.Count -eq 0) {
                     # The config turns off everything this sample could show. statusline.ps1 builds no
                     # segments at all then and prints its fallback, the model glyph and the word claude.
+                    # Model is still on and listed here - the case where it is not exits above, with no
+                    # line at all - so the fallback is the model segment's stand-in and belongs on screen.
+                    Confirm-True $cfg.Enabled['model'] "${label}: the claude fallback is only reached with model on"
                     Confirm-Equal $text "$iconModel claude" "${label}: nothing left on gives the claude fallback"
                 } else {
                     foreach ($name in $allSegments) {
@@ -4622,6 +4636,54 @@ $r = Invoke-StatusLine $payload01 (Write-TempConfig 'render-icons-surrogate.json
 Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains("$iconModel Fable 5.1")) 'render icons: a surrogate falls back to the robot'
 $r = Invoke-StatusLine 'not json' (Write-TempConfig 'render-icons-bolt.json' '{ "icons": { "model": "F0E7" } }') 0
 Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) "$bolt claude" 'render icons: the bad-payload fallback line carries the override too'
+
+# The zero-segment fallback through the whole script. Every enabled and listed builder returned nothing,
+# and the fallback line is the model glyph and the word claude: it stands in for the model segment, so it
+# is printed only where a model segment would have been allowed, toggled on and named by order or rows.
+# A config that turns model off, or one whose order or rows leave it out, asked for a line with no model
+# on it, and no output is that answer. Each case renders the whole script, so what is compared is the
+# child's whole output - an empty render included - and not a helper's return value.
+Write-Host ''
+Write-Host '== render: zero-segment fallback' -ForegroundColor Cyan
+$nothingPayload = '{ }'
+$modelOnlyPayload = '{ "model": { "display_name": "Sonnet 5" } }'
+$fallbackLine = "$iconModel claude"
+foreach ($case in @(
+        @{ Name = 'order-unavailable'; Payload = $modelOnlyPayload; Json = '{ "order": ["cost"] }'; Want = ''
+            Label = 'an order naming one segment the payload cannot fill prints nothing' }
+        @{ Name = 'order-available'; Payload = '{ "cost": { "total_cost_usd": 1.5 } }'; Json = '{ "order": ["cost"] }'; Want = "$iconCost `$$('{0:N2}' -f 1.5)"
+            Label = 'the same order with the figure present still renders that segment' }
+        @{ Name = 'model-off-nothing-else'; Payload = $modelOnlyPayload; Json = '{ "segments": { "model": false } }'; Want = ''
+            Label = 'model off with nothing else buildable prints nothing, model name in the payload or not' }
+        @{ Name = 'model-off-empty-payload'; Payload = $nothingPayload; Json = '{ "segments": { "model": false } }'; Want = ''
+            Label = 'model off and an empty payload prints nothing' }
+        @{ Name = 'model-unlisted'; Payload = $nothingPayload; Json = '{ "order": ["cost", "context"] }'; Want = ''
+            Label = 'model left on but out of the order prints nothing' }
+        @{ Name = 'rows-without-model'; Payload = $nothingPayload; Json = '{ "layout": "two", "rows": [["cost"], ["lines"]] }'; Want = ''
+            Label = 'layout two with model on neither row prints nothing' }
+        @{ Name = 'model-on-and-listed'; Payload = $nothingPayload; Json = '{ }'; Want = $fallbackLine
+            Label = 'model on and listed keeps the fallback line when the payload names no model' }
+        @{ Name = 'model-alone-in-order'; Payload = $nothingPayload; Json = '{ "order": ["model"] }'; Want = $fallbackLine
+            Label = 'an order of model alone keeps the fallback line' }
+        @{ Name = 'model-on-second-row'; Payload = $nothingPayload; Json = '{ "layout": "two", "rows": [["cost"], ["model"]] }'; Want = $fallbackLine
+            Label = 'model listed on the second row of layout two keeps the fallback line' }
+        @{ Name = 'config-unusable'; Payload = $nothingPayload; Json = 'this file is not json'; Want = $fallbackLine
+            Label = 'a config that will not parse falls back to the defaults, which keep the fallback line' })) {
+    $r = Invoke-StatusLine $case.Payload (Write-TempConfig "render-zero-$($case.Name).json" $case.Json) 0
+    Confirm-True ($r.ExitCode -eq 0) "render zero $($case.Name): exit code $($r.ExitCode)"
+    Confirm-True ($r.Err.Count -eq 0) "render zero $($case.Name): stderr empty, got '$($r.Err -join ' | ')'"
+    Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) $case.Want "render zero $($case.Name): $($case.Label)"
+}
+# The bad-payload fallback is the one line that is printed whatever the config says, because a payload
+# that is not JSON is the case where nothing behind the config can be trusted to have been read for the
+# right project. Both of the keys that silence the zero-segment fallback are tried against it here.
+foreach ($case in @(
+        @{ Name = 'model-off'; Json = '{ "segments": { "model": false } }'; Label = 'model toggled off' }
+        @{ Name = 'model-unlisted'; Json = '{ "order": ["cost"] }'; Label = 'model left out of the order' })) {
+    $r = Invoke-StatusLine 'not json' (Write-TempConfig "render-zero-bad-$($case.Name).json" $case.Json) 0
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) "render zero bad-payload $($case.Name): exit code 0, stderr empty"
+    Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) $fallbackLine "render zero bad-payload $($case.Name): a payload that is not JSON still prints the fallback with $($case.Label)"
+}
 
 # The alarm key through the whole script, plain style so a segment's colour is the SGR code in front of
 # its text. 12 sits at 92% of a standard window and carries no rate limits, 07 at 5% with a 5-hour limit

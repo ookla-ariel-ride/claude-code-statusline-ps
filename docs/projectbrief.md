@@ -19,7 +19,8 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 - Work out of the box on Windows 11 with PowerShell 7 and Windows Terminal.
 - Zero dependencies beyond PowerShell 7 and a Nerd Font.
-- Degrade gracefully: omit any segment whose data is missing from the payload, and never print nothing.
+- Degrade gracefully: omit any segment whose data is missing from the payload, and never print nothing
+  the config did not ask for — a config with no model segment on it is allowed to render no line.
 - One-command install and uninstall that preserves the rest of `~/.claude/settings.json`.
 - Fit the terminal width rather than wrap.
 - Be configurable from one small JSON file without editing the script.
@@ -142,9 +143,19 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   allowance is gone, and a spend limit is not one of those. With neither window present there is
   nothing to compare and the segment is kept. `icons` maps a
   name to a code point, and the `$icon*` constants are assigned from `Get-IconSet` after the config
-  is read and before the payload is parsed, so the fallback line and every builder see one set of
-  glyphs. The fitting order stays in the table: it is a property of what each segment can shed, not
-  of taste.
+  is read and before the first line is printed, so both fallback lines and every builder see one set
+  of glyphs. The fitting order stays in the table: it is a property of what each segment can shed,
+  not of taste.
+- **Two fallback lines, one of them unconditional.** Both print the model glyph and the word
+  `claude`. The one for a payload that is not JSON is printed whatever the config says, because that
+  is the case where nothing behind the config can be trusted: the payload names no project
+  directory, so no project file was merged, and a config-aware fallback there would depend on the
+  thing that just failed. The one for a render where every enabled and listed builder returned
+  nothing is the model segment's stand-in — a payload with no `model.display_name` is what it was
+  written for — so it is printed under the same two conditions the model segment is built under,
+  toggled on and named by `order` or by a row. A config that turns model off, or whose order leaves
+  it out, asked for a line with no model on it and gets no line, the same answer the fitting loop
+  already gives when every line shrinks away to nothing.
 - **One branch record, two readers.** The porcelain parser and the payload reader return the same
   eight keys (branch, dirty, ahead, behind, staged, modified, untracked, conflicts), so the segment
   builder reads one shape whichever source filled it, and a test pins the two key sets against each
@@ -217,7 +228,9 @@ names three whole shapes of those keys (#21). The installer writes `hideVimModeI
 request, `refreshInterval` (#26), and `-Subagents` installs a
 second script for the agent panel (#15). A state file per session (#4) is written but nothing on the
 line reads it yet. Every silent catch can be traced through an optional log behind
-`CLAUDE_STATUSLINE_DEBUG` (#43). A light palette is still a constant in the script.
+`CLAUDE_STATUSLINE_DEBUG` (#43). The fallback line for a render that built no segments is printed
+only where the config allows a model segment (#42). A light palette is still a constant in the
+script.
 
 ## Future work
 
@@ -234,8 +247,6 @@ ten short functions and a drift test. The intended order for the rest:
    `Merge-StatusConfigFile`.
 3. Style and terminal: an ASCII style, a light palette, a right-aligned group with a clock, taskbar
    progress (#24, #25, #27, #28).
-4. Small fixes from review: the zero-segment fallback line should respect the model toggle and the
-   configured order (#42).
 
 ## License
 
