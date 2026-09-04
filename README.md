@@ -352,6 +352,24 @@ segment prints even when it does not fit.
 
 Colours look wrong: the script assumes a dark terminal theme.
 
+Nothing to go on: the git probe, the probe cache and the state file swallow every failure, so a
+missing branch segment or a cache that never seems to hit leaves nothing behind to look at. Set
+`CLAUDE_STATUSLINE_DEBUG` to `1` and each swallowed failure, each cache hit and miss, and each state
+read and write appends a line to `claude-statusline-diag.log` in your temp folder:
+
+```text
+2026-09-03T09:14:02.118Z 24880 git cache: miss (no entry yet)
+2026-09-03T09:14:02.402Z 24880 git probe: git exited 128
+2026-09-03T09:14:02.415Z 24880 state: written (C:\Users\jim\AppData\Local\Temp\claude-statusline-state\abc.json)
+```
+
+The printed line is the same either way, and a log that cannot be written is as silent as the failure
+it records. The log rolls over into `claude-statusline-diag.log.1` once it would pass 4 MB, so
+leaving the variable set costs two files of that size at most. Treat the 4 MB as approximate: the log
+is best-effort and never waits on anything, so two renders that overlap can leave the file a little
+over the cap, or lose one of their lines to each other. Unset the variable when you are done (`0`,
+`false`, `no` and `off` also count as off) and delete both files.
+
 ## Contributing
 
 Issues and pull requests are welcome. Before opening a PR:
@@ -398,6 +416,7 @@ Done so far:
 - [x] Pull-request segment with a clickable link
 - [x] Segment order, rows, colour cut-offs and glyphs as `statusline.json` keys
 - [x] Cached `git status` with a configurable timeout
+- [x] Optional diagnostics log behind `CLAUDE_STATUSLINE_DEBUG`
 - [x] Pace arrow on the 5-hour rate limit
 
 [Issues #2 to #43](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
