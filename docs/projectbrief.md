@@ -127,7 +127,9 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   rule the lines and badges segments already follow, that a segment with nothing to say disappears, from
   zero to a number the user picks. One guard, `Test-QuietValue`, reads the threshold defensively, so a
   config with no `Quiet` table hides nothing; the comparison is strict, which is what makes the default
-  of `0` mean off, and it is on the raw figure rather than the rounded text. **Quiet never hides a
+  of `0` mean off. What it compares differs by segment: `cost` reads the raw dollar figure, while
+  `context` and `limits` read the same whole percentage `Get-WholePercent` gives the text and the
+  bands, so a cutoff and the number printed beside it can never disagree. **Quiet never hides a
   segment that is carrying a warning or an error**, which is the rule that makes the setting safe to
   turn on: a hide-the-boring-numbers key that also hid the alarm would be worse than no key at all. So
   each builder settles its warning state before it asks the guard — context and limits keep a segment
