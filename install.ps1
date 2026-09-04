@@ -65,9 +65,16 @@ $subagentTarget = Join-Path $claudeDir 'subagent-statusline.ps1'
 if (-not $SettingsPath) { $settingsPath = Join-Path $claudeDir 'settings.json' }
 $fontFace = 'JetBrainsMono NF'
 # The line subagent-statusline.ps1 carries so the uninstaller can tell this project's copy from a file
-# of the same name that someone else put there. Kept short and literal, and checked as a substring, so
-# a version bump or an edit to the rest of the header does not make an installed copy unrecognisable.
-$subagentMarker = 'claude-code-statusline-ps:subagent-statusline'
+# of the same name that someone else put there. It has to be a whole line, on its own, inside the first
+# few lines of the file: the token appearing anywhere in a file is not evidence it is ours, because it
+# can just as easily sit in a comment about this project, in a string literal, or in embedded data.
+$subagentMarkerLine = '# claude-code-statusline-ps:subagent-statusline'
+$subagentMarkerWithin = 10
+
+# How long a settings write waits for another installer to finish before giving up. This is a lock held
+# across a read-modify-write of the user's settings by a command someone runs by hand, so waiting is
+# free; the render path never comes here.
+$settingsLockTimeoutMs = 5000
 
 # The command Claude Code runs for one of the installed scripts. Forward slashes because Claude Code may
 # run the command through Git Bash, which eats backslashes, and the path is double-quoted because a user
@@ -101,6 +108,26 @@ function Read-UserSetting([string] $Path) {
     return [pscustomobject]@{}
 }
 
+# An exclusive handle on <settings>.lock, taken with FileShare::None so a second installer blocks on it
+# rather than interleaving with this one. A lock file rather than a named mutex, because a mutex name is
+# global to a machine and would serialise installs against unrelated settings files, and because .NET
+# named mutexes are not shared between processes on Unix. The file is left behind, empty: deleting it on
+# release would race a process already waiting to open it.
+function Get-SettingLock([string] $Path, [int] $TimeoutMs) {
+    $lockPath = "$Path.lock"
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+    while ($true) {
+        try {
+            return [System.IO.File]::Open($lockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        } catch {
+            if ([DateTime]::UtcNow -ge $deadline) {
+                throw "Could not lock $lockPath after $TimeoutMs ms; another installer is holding it. Nothing was written."
+            }
+            Start-Sleep -Milliseconds 50
+        }
+    }
+}
+
 # Replaces the settings file in one step. The same shape as Write-AtomicJson in statusline.ps1: serialize
 # to a uniquely named sibling, then move it over the destination, which is atomic on Windows and on Linux,
 # so a reader never sees a half-written file and a crash, a full disk or a failed encode leaves the old
@@ -108,10 +135,16 @@ function Read-UserSetting([string] $Path) {
 # runs its whole body on load, so the installer cannot dot-source it, and other branches are open in that
 # file. Consolidate the two when those land.
 # Extra steps the cache and state files do not need, because this one is the user's own settings:
+#   - the whole read-modify-write is finished under an exclusive lock, so a second installer waits its
+#     turn instead of overwriting a change this one has not seen;
+#   - the file is compared with what Read-UserSetting saw, once when the lock is taken and again in the
+#     instant before the replace, so a change made in between is refused rather than silently dropped.
+#     The rename is the only step after that last comparison, which is as small as the window gets
+#     without an atomic compare-and-swap from the filesystem;
 #   - the serialized text is parsed back before anything is replaced, so a broken document never lands;
-#   - the file is compared with what Read-UserSetting saw, so a change made between the read and the
-#     write is refused instead of being silently dropped;
-#   - the .bak is taken from the file as it stands, after that check and before the replace.
+#   - the .bak is taken from the file as it stands, before the replace.
+# A writer that ignores the lock entirely can still be lost, and nothing in a cooperative scheme can stop
+# that. What it cannot do any more is slip in between this installer's check and its write.
 function Write-UserSetting($obj, [string] $Path) {
     $dir = Split-Path $Path -Parent
     if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
@@ -119,16 +152,12 @@ function Write-UserSetting($obj, [string] $Path) {
     $json = ConvertTo-Json -InputObject $obj -Depth 32
     if (-not $json) { throw "Refusing to write $Path : the settings serialized to nothing." }
 
-    $current = $null
-    if (Test-Path -LiteralPath $Path) { $current = Get-Content -LiteralPath $Path -Raw }
-    if ($settingsBaseline.ContainsKey($Path) -and $current -cne $settingsBaseline[$Path]) {
-        throw "Refusing to write $Path : it changed after this installer read it. Nothing was written; run the installer again."
-    }
-
-    # A unique name, so two installers running at once cannot write the same temporary file, and in the
-    # same directory, so the move is a rename on one volume rather than a copy across two.
+    # A unique name, so two installers cannot write the same temporary file, and in the same directory,
+    # so the move is a rename on one volume rather than a copy across two.
     $tmp = "$Path.tmp-$([System.IO.Path]::GetRandomFileName())"
+    $lock = Get-SettingLock $Path $settingsLockTimeoutMs
     try {
+        Confirm-SettingUnchanged $Path
         Set-Content -LiteralPath $tmp -Value $json -Encoding UTF8
         # Read the temporary file back before it replaces anything: an encoding fault or a short write
         # shows up here, while the destination is still the old file.
@@ -137,6 +166,7 @@ function Write-UserSetting($obj, [string] $Path) {
             throw "Refusing to write $Path : the serialized settings did not read back as an object."
         }
         Copy-Item -LiteralPath $Path -Destination "$Path.bak" -Force -ErrorAction SilentlyContinue
+        Confirm-SettingUnchanged $Path
         [System.IO.File]::Move($tmp, $Path, $true)
         # Re-read rather than remembering $json: Set-Content ends the file with a newline that the
         # serialized text does not have, and a second write in the same process would otherwise compare
@@ -144,28 +174,95 @@ function Write-UserSetting($obj, [string] $Path) {
         $settingsBaseline[$Path] = Get-Content -LiteralPath $Path -Raw
     } finally {
         if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+        $lock.Dispose()
     }
 }
 
-# Whether the subagentStatusLine entry in the settings is the one this installer writes: it has to be a
-# command entry whose command names ~/.claude/subagent-statusline.ps1. Compared with slashes normalised
-# and case ignored, because Windows paths are case-insensitive and the entry may have been written by an
-# older version that used backslashes or no quotes. Anything else is somebody else's key.
-function Test-OwnSubagentEntry($Entry, [string] $ScriptPath) {
-    if ($null -eq $Entry -or $Entry -isnot [System.Management.Automation.PSCustomObject]) { return $false }
-    $command = [string] $Entry.command
-    if (-not $command) { return $false }
-    $needle = ($ScriptPath -replace '\\', '/')
-    return $command.Replace('\', '/').IndexOf($needle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+# Throws when the file on disk is no longer the text Read-UserSetting saw. Called twice by the write, so
+# it is a function rather than two copies of the comparison.
+function Confirm-SettingUnchanged([string] $Path) {
+    if (-not $settingsBaseline.ContainsKey($Path)) { return }
+    $current = $null
+    if (Test-Path -LiteralPath $Path) { $current = Get-Content -LiteralPath $Path -Raw }
+    if ($current -cne $settingsBaseline[$Path]) {
+        throw "Refusing to write $Path : it changed after this installer read it. Nothing was written; run the installer again."
+    }
 }
 
-# Whether the file at $Path is this project's subagent status line, by its marker line. A file that
-# cannot be read is not treated as ours, so an unreadable file is kept rather than deleted.
+# Splits a command line into its arguments the way a shell would, for the purpose of recognising one:
+# whitespace separates, double quotes group. Each argument comes back as @{ Text; Quoted }, so a
+# character that means something to a shell can be judged on whether it was inside quotes - the path
+# this installer writes really does contain, say, an ampersand when the profile does. $null when the
+# quoting never closes, which is not a command this installer wrote.
+function Split-CommandArgument([string] $Command) {
+    $parts = [System.Collections.Generic.List[hashtable]]::new()
+    $cur = [System.Text.StringBuilder]::new()
+    $inQuote = $false
+    $started = $false
+    $quoted = $false
+    foreach ($ch in $Command.ToCharArray()) {
+        if ($ch -eq '"') { $inQuote = -not $inQuote; $started = $true; $quoted = $true; continue }
+        if (-not $inQuote -and [char]::IsWhiteSpace($ch)) {
+            if ($started) { $parts.Add(@{ Text = $cur.ToString(); Quoted = $quoted }); [void] $cur.Clear(); $started = $false; $quoted = $false }
+            continue
+        }
+        [void] $cur.Append($ch)
+        $started = $true
+    }
+    if ($inQuote) { return $null }
+    if ($started) { $parts.Add(@{ Text = $cur.ToString(); Quoted = $quoted }) }
+    return $parts
+}
+
+# Two paths naming the same file, as far as this installer can tell: slashes normalised, a trailing
+# separator ignored, case ignored because Windows paths are case-insensitive.
+function Test-SamePath([string] $A, [string] $B) {
+    if (-not $A -or -not $B) { return $false }
+    $na = ($A -replace '\\', '/').TrimEnd('/')
+    $nb = ($B -replace '\\', '/').TrimEnd('/')
+    return [string]::Equals($na, $nb, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+# Whether the subagentStatusLine entry is one this installer wrote. The whole command has to be the form
+# it writes and nothing else: pwsh, then only the switches it passes, then -File, then exactly one more
+# argument, which has to BE the target path rather than merely contain it, and then the end of the
+# string. A substring test would claim `node wrapper.js "C:/.../subagent-statusline.ps1"` as ours and
+# delete it, and that command never runs our script. An unquoted shell operator anywhere disqualifies
+# the command too, because it means something is being chained that this installer did not write.
+# There is no provenance field to lean on instead: the setting's schema is {type, command} and an
+# unknown key in it is not something to rely on surviving.
+function Test-OwnSubagentEntry($Entry, [string] $ScriptPath) {
+    if ($null -eq $Entry -or $Entry -isnot [System.Management.Automation.PSCustomObject]) { return $false }
+    if (([string] $Entry.type) -ne 'command') { return $false }
+    $command = $Entry.command
+    if ($command -isnot [string] -or -not $command) { return $false }
+    $parts = Split-CommandArgument $command
+    if ($null -eq $parts -or $parts.Count -lt 3) { return $false }
+    foreach ($p in $parts) {
+        if (-not $p.Quoted -and $p.Text -match '[&|;<>`$()]') { return $false }
+    }
+    $exe = [System.IO.Path]::GetFileName(($parts[0].Text -replace '\\', '/'))
+    if ($exe.ToLowerInvariant() -notin @('pwsh', 'pwsh.exe')) { return $false }
+    $i = 1
+    while ($i -lt $parts.Count -and $parts[$i].Text.ToLowerInvariant() -in @('-noprofile', '-nologo', '-noninteractive')) { $i++ }
+    if ($i -ge $parts.Count -or $parts[$i].Text.ToLowerInvariant() -ne '-file') { return $false }
+    # Exactly one argument after -File, and nothing at all after that.
+    if ($parts.Count -ne $i + 2) { return $false }
+    return (Test-SamePath $parts[$i + 1].Text $ScriptPath)
+}
+
+# Whether the file at $Path is this project's subagent status line. The marker has to be a whole line of
+# its own, trimmed, within the first few lines of the file. Matching the token anywhere would claim any
+# file that merely mentions this project - a note in a comment, a string literal, a copied header - and
+# then delete it. A file that cannot be read is not ours either, so an unreadable file is kept.
 function Test-OwnSubagentScript([string] $Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return $false }
-    $text = $null
-    try { $text = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop } catch { return $false }
-    return ($null -ne $text -and $text.Contains($subagentMarker))
+    $lines = $null
+    try { $lines = Get-Content -LiteralPath $Path -TotalCount $subagentMarkerWithin -ErrorAction Stop } catch { return $false }
+    foreach ($line in @($lines)) {
+        if (($line -is [string]) -and $line.Trim() -ceq $subagentMarkerLine) { return $true }
+    }
+    return $false
 }
 
 if ($Uninstall) {
@@ -198,8 +295,10 @@ if ($Uninstall) {
         if (Test-OwnSubagentScript $subagentTarget) {
             Remove-Item -LiteralPath $subagentTarget -Force
             Write-Host "Deleted $subagentTarget"
+            # The rollback copy an install leaves is ours too, and is litter once the script is gone.
+            if (Test-Path -LiteralPath "$subagentTarget.bak") { Remove-Item -LiteralPath "$subagentTarget.bak" -Force -ErrorAction SilentlyContinue }
         } else {
-            $kept += "$subagentTarget does not carry this project's marker, so it was left alone"
+            $kept += "$subagentTarget does not carry this project's marker line, so it was left alone"
         }
     }
     foreach ($k in $kept) { Write-Warning "Kept: $k" }
@@ -231,6 +330,21 @@ if ($claudeDir -match '[$`]') {
     Write-Warning "$claudeDir contains a dollar sign or a backtick. The command written to settings.json is quoted for cmd, but Git Bash expands both inside double quotes; move the profile or edit the command by hand if the status line does not appear."
 }
 
+# Everything that can refuse the install happens before any destination file changes. The subagent
+# script is checked for ownership and then staged beside its destination under a temporary name, so a
+# file somebody else wrote is never replaced, a directory that cannot be written fails here rather than
+# after the settings are committed, and the destination still holds whatever it held until the settings
+# write has gone through.
+$subagentStaged = $null
+if ($Subagents) {
+    if ((Test-Path -LiteralPath $subagentTarget) -and -not (Test-OwnSubagentScript $subagentTarget)) {
+        throw "$subagentTarget already exists and is not this project's file: it carries no '$subagentMarkerLine' line in its first $subagentMarkerWithin lines. Nothing was installed. Move or delete that file yourself if you want the subagent status line there."
+    }
+    $subagentStaged = "$subagentTarget.tmp-$([System.IO.Path]::GetRandomFileName())"
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'subagent-statusline.ps1') -Destination $subagentStaged -Force
+}
+
+try {
 $command = Format-ScriptCommand $target
 $s = Read-UserSetting $settingsPath
 # hideVimModeIndicator is always on: the badges segment already shows vim.mode, so Claude Code's own
@@ -248,16 +362,26 @@ if ($old) { $s.statusLine = $entry } else { $s | Add-Member -NotePropertyName st
 # is {type, command}, so no padding and no vim key go with it, and it is written into the same object
 # so both entries land in one write and one .bak.
 if ($Subagents) {
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'subagent-statusline.ps1') -Destination $subagentTarget -Force
     $subagentEntry = [pscustomobject]@{ type = 'command'; command = (Format-ScriptCommand $subagentTarget) }
     if ($s.PSObject.Properties['subagentStatusLine']) { $s.subagentStatusLine = $subagentEntry }
     else { $s | Add-Member -NotePropertyName subagentStatusLine -NotePropertyValue $subagentEntry }
 }
+# The settings go in first. A conflict or a failed write throws here, with the staged file still under
+# its temporary name and the destination untouched, so a failed install changes nothing.
 Write-UserSetting $s $settingsPath
 Write-Host "Configured statusLine in $settingsPath (hideVimModeIndicator on$(if ($wantRefresh) { ", refreshInterval $RefreshInterval s" }))"
 if ($Subagents) {
+    # The previous version, which the check above proved is ours, is kept so an install can be undone.
+    if (Test-Path -LiteralPath $subagentTarget) { Copy-Item -LiteralPath $subagentTarget -Destination "$subagentTarget.bak" -Force }
+    [System.IO.File]::Move($subagentStaged, $subagentTarget, $true)
+    $subagentStaged = $null
     Write-Host "Installed $subagentTarget"
     Write-Host "Configured subagentStatusLine in $settingsPath"
+}
+} finally {
+    # A staged file still under its temporary name means the install did not finish; it is this script's
+    # to clean up either way.
+    if ($subagentStaged -and (Test-Path -LiteralPath $subagentStaged)) { Remove-Item -LiteralPath $subagentStaged -Force -ErrorAction SilentlyContinue }
 }
 
 if ($InstallFont) {

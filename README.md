@@ -148,10 +148,17 @@ those two rather than writing a command that quietly does the wrong thing.
 
 `tools/capture-stdin.ps1` is there if you want to see a payload for yourself. Point
 `subagentStatusLine` at it instead, run a session with a few subagents, and read the file it appends
-to. It prints nothing on stdout, so the panel renders as if the key were not set. The file is
-bounded: at 1 MiB (`-MaxBytes`) it rotates over a single `.1` sibling, so a capture command left in
-place cannot fill the volume. If a write fails, the reason goes to stderr and to a `.error` sidecar
-once, and capture stops until you delete that sidecar.
+to. It prints nothing on stdout, so the panel renders as if the key were not set.
+
+It is bounded in three places, because a capture command left in place ticks every five seconds
+forever. Stdin is read to a ceiling rather than to the end, so one enormous payload cannot be pulled
+into memory whole. The record is then cut to fit `-MaxBytes` (1 MiB by default) on its own, with
+` ...[truncated]` marking where. And the file is rotated over a single `.1` sibling when what is
+already there plus this record would go over, so each of the two generations stays at or under the cap
+rather than one of them ending up above it. The append runs under a lock on a `.lock` sibling so two
+ticks cannot interleave a rotation with an append; a tick that cannot get the lock drops its payload.
+If a write fails, the reason goes to stderr and to a `.error` sidecar once, and capture stops until
+you delete that sidecar.
 
 ### Other terminals
 
@@ -169,14 +176,30 @@ deletes `~/.claude/statusline.ps1`. Fonts and `~/.claude/statusline.json` stay.
 
 It removes `subagentStatusLine` and `~/.claude/subagent-statusline.ps1` too, without needing
 `-Subagents` again, but only when they are this project's. The subagent line is opt-in, so those two
-names may well be something you set up yourself. The key counts as ours when its `command` points at
-`~/.claude/subagent-statusline.ps1`, and the file counts as ours when it carries the marker line in
-its header. Anything else of that name is left where it is and reported as kept.
+names may well be something you set up yourself.
+
+The key counts as ours only when the whole `command` is the form the installer writes: `pwsh`, then
+only the switches it passes, then `-File`, then exactly one more argument that *is* the path to
+`~/.claude/subagent-statusline.ps1`, and nothing after it. A command that merely mentions that path
+somewhere — as an argument to a wrapper, in a comment, behind a `&` — is not ours and is kept, because
+it never runs our script.
+
+The file counts as ours only when the marker line `# claude-code-statusline-ps:subagent-statusline`
+appears as a whole line of its own within the first ten lines. The token turning up inside some other
+line, in a string literal or in a trailing comment does not count.
+
+`-Subagents` applies the same rule on the way in: it refuses to install over a
+`~/.claude/subagent-statusline.ps1` that is not ours, rather than overwriting it. When it does replace
+one of ours it keeps the previous version as `subagent-statusline.ps1.bak`, and `-Uninstall` removes
+that too.
 
 Both entries leave in one write, so the `.bak` beside the settings file still holds them as they were.
-Every settings write goes to a uniquely named file beside the real one and is then moved over it, so
-an interrupted or failed write leaves the previous settings intact rather than a truncated file, and a
-change made by something else between the read and the write is refused instead of overwritten.
+Every settings write is done under an exclusive lock on `settings.json.lock`, goes to a uniquely named
+file beside the real one, and is then moved over it. So an interrupted or failed write leaves the
+previous settings intact rather than a truncated file, a second installer waits its turn instead of
+overwriting what it never read, and a change made by anything else is checked for twice — once when
+the lock is taken and again in the instant before the replace — and refused rather than silently lost.
+A writer that ignores the lock entirely can still be missed; nothing cooperative can prevent that.
 
 ## Configuration
 
@@ -357,11 +380,16 @@ in the payload, every row must be one line carrying the robot glyph, and it must
 `columns` down to a single column. It also checks that malformed, empty, array-shaped and
 task-less payloads print nothing and still exit 0, and that the helpers `subagent-statusline.ps1`
 copies out of `statusline.ps1` are still the same text in both files. Its own install cases run
-`install.ps1 -Subagents` and `-Uninstall` against a second temp home: a foreign `subagentStatusLine`
-and a file without the marker survive an uninstall, a profile whose path holds a space and an `&`
-produces a command that really runs under cmd, a settings write that cannot complete leaves the old
-file intact and no temporary file behind, a file changed between the read and the write is refused,
-and the capture helper rotates rather than growing. The render matrix pipes every payload in
+`install.ps1 -Subagents` and `-Uninstall` against a second temp home. The ownership rules are checked
+against the forms that must not count as ours as well as the ones that must: a command that carries
+the path as a wrapper argument or in a trailing comment, one with something chained after it, one
+using `-Command`, and a file where the marker token appears only inside another line, in a string
+literal, in a trailing comment or below the header window. Beyond that: an install over a file that is
+not ours is refused and changes nothing, a profile whose path holds a space and an `&` produces a
+command that really runs under cmd, a settings write that cannot complete leaves the old file intact
+and no temporary file behind, a file changed between the read and the write is refused, a second
+installer holding the lock makes this one write nothing, and the capture helper bounds a single
+payload larger than its own cap. The render matrix pipes every payload in
 `samples/` through the script for each of seven configs (both layouts and styles, model only, a
 reversed `order`, swapped `rows`) at each width:
 

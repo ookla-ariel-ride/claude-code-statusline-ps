@@ -3353,11 +3353,94 @@ $c = Invoke-ChildPwsh $capScript @('-Path', $capDir) $capRecord
 Confirm-True ($c.ExitCode -eq 0 -and $c.Err.Count -eq 0) 'capture failure: a later run is silent while the sidecar is there'
 Confirm-Equal (Get-Content -LiteralPath "$capDir.error" -Raw) $sidecar 'capture failure: the sidecar is written once, not once per tick'
 
+# One payload bigger than the whole cap. Stdin is read to a ceiling and the record is cut to fit, so
+# neither memory nor the file follows the payload's size.
+$capBigFile = Join-Path $subTmp 'cap-big.jsonl'
+$capBigMax = 2048
+$capBigPayload = '{"x":"' + ('z' * 20000) + '"}'
+$c = Invoke-ChildPwsh $capScript @('-Path', $capBigFile, '-MaxBytes', "$capBigMax") $capBigPayload
+Confirm-True ($c.ExitCode -eq 0) "capture oversize: exit code $($c.ExitCode)"
+Confirm-True ($c.Err.Count -eq 0) "capture oversize: stderr empty, got '$($c.Err -join ' | ')'"
+$capBigLen = (Get-Item -LiteralPath $capBigFile).Length
+Confirm-True ($capBigLen -le $capBigMax) "capture oversize: one payload of $($capBigPayload.Length) bytes left a $capBigLen byte file, under the $capBigMax cap"
+Confirm-True ((Get-Content -LiteralPath $capBigFile -Raw).Contains('...[truncated]')) 'capture oversize: the record says it was cut'
+# And repeated oversize payloads leave both generations under the cap rather than one of them over it.
+for ($i = 0; $i -lt 6; $i++) { $null = Invoke-ChildPwsh $capScript @('-Path', $capBigFile, '-MaxBytes', "$capBigMax") $capBigPayload }
+$capBigLen = (Get-Item -LiteralPath $capBigFile).Length
+$capBigRotated = if (Test-Path -LiteralPath "$capBigFile.1") { (Get-Item -LiteralPath "$capBigFile.1").Length } else { 0 }
+Confirm-True ($capBigLen -le $capBigMax) "capture oversize: the live file stays under the cap at $capBigLen bytes"
+Confirm-True ($capBigRotated -le $capBigMax) "capture oversize: the rotated file stays under the cap at $capBigRotated bytes"
+Confirm-True (($capBigLen + $capBigRotated) -le 2 * $capBigMax) 'capture oversize: both generations together stay under twice the cap'
+Confirm-True (-not (Test-Path -LiteralPath "$capBigFile.2")) 'capture oversize: still only one generation is kept'
+
+
+# The two ownership tests, driven directly. Both decide whether the uninstaller may delete something, so
+# each one is checked against the forms that must NOT count as ours as well as the ones that must.
+. (Import-ScriptFunction $installer @('Split-CommandArgument', 'Test-SamePath', 'Test-OwnSubagentEntry', 'Test-OwnSubagentScript'))
+$subagentMarkerLine = '# claude-code-statusline-ps:subagent-statusline'
+$subagentMarkerWithin = 10
+Confirm-True ((Get-Content -LiteralPath $installer -Raw).Contains("`$subagentMarkerLine = '$subagentMarkerLine'")) 'ownership: the marker the tests use is the one install.ps1 defines'
+Confirm-True ((Get-Content -LiteralPath $installer -Raw).Contains("`$subagentMarkerWithin = $subagentMarkerWithin")) 'ownership: the header window the tests use is the one install.ps1 defines'
+
+# The command has to be the whole form this installer writes, with the target as the -File argument
+# itself. A command that merely carries the path somewhere is somebody else's, and deleting it would be
+# the destructive mistake; a command that runs our script under a different spelling is still ours.
+$ownTarget = 'C:\Users\me\.claude\subagent-statusline.ps1'
+foreach ($case in @(
+        @{ Own = $true;  Command = 'pwsh -NoProfile -NoLogo -NonInteractive -File "C:/Users/me/.claude/subagent-statusline.ps1"'; Label = 'the form the installer writes' }
+        @{ Own = $true;  Command = 'pwsh -NoProfile -NoLogo -NonInteractive -File C:/Users/me/.claude/subagent-statusline.ps1'; Label = 'the older unquoted form' }
+        @{ Own = $true;  Command = 'pwsh -File C:\Users\me\.claude\subagent-statusline.ps1'; Label = 'backslashes and fewer switches' }
+        @{ Own = $true;  Command = 'pwsh.exe -NoProfile -File "c:/users/me/.claude/SUBAGENT-STATUSLINE.PS1"'; Label = 'a different case and an .exe suffix' }
+        @{ Own = $false; Command = 'node wrapper.js "C:/Users/me/.claude/subagent-statusline.ps1"'; Label = 'a foreign wrapper that carries the path as an argument' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File other.ps1 # C:/Users/me/.claude/subagent-statusline.ps1'; Label = 'the path only in a trailing comment' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" --extra'; Label = 'an argument after the script' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" & rm -rf /'; Label = 'a chained command' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" | tee log'; Label = 'a pipeline' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -Command "& C:/Users/me/.claude/subagent-statusline.ps1"'; Label = '-Command rather than -File' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline-2.ps1"'; Label = 'a different file whose name starts the same' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/"'; Label = 'the directory rather than the script' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "$HOME/.claude/subagent-statusline.ps1"'; Label = 'an environment variable standing in for the path' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1'; Label = 'a quote that never closes' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File'; Label = 'no argument after -File' }
+        @{ Own = $false; Command = ''; Label = 'an empty command' })) {
+    $entry = [pscustomobject]@{ type = 'command'; command = $case.Command }
+    Confirm-Equal (Test-OwnSubagentEntry $entry $ownTarget) $case.Own "ownership entry: $($case.Label)"
+}
+# The shape of the entry matters as much as the command inside it.
+Confirm-Equal (Test-OwnSubagentEntry ([pscustomobject]@{ type = 'other'; command = "pwsh -File $ownTarget" }) $ownTarget) $false 'ownership entry: a type that is not command'
+Confirm-Equal (Test-OwnSubagentEntry ([pscustomobject]@{ type = 'command'; command = @('pwsh', '-File', $ownTarget) }) $ownTarget) $false 'ownership entry: a command that is an array, not a string'
+Confirm-Equal (Test-OwnSubagentEntry 'a bare string' $ownTarget) $false 'ownership entry: an entry that is not an object'
+Confirm-Equal (Test-OwnSubagentEntry $null $ownTarget) $false 'ownership entry: no entry at all'
+
+# The marker has to be a line of its own near the top. The token appearing anywhere else is not evidence
+# the file is ours, and treating it as such would delete somebody's script.
+$markerCases = @(
+    @{ Own = $true;  Label = 'the marker on its own line, as installed'; Text = "#Requires -Version 7.0`n$subagentMarkerLine`n# and the rest of the header" }
+    @{ Own = $true;  Label = 'the marker line indented'; Text = "#Requires -Version 7.0`n   $subagentMarkerLine   `n# rest" }
+    @{ Own = $false; Label = 'the token inside a longer comment line'; Text = "# see claude-code-statusline-ps:subagent-statusline for the marker rule" }
+    @{ Own = $false; Label = 'the token inside a string literal'; Text = "`$marker = 'claude-code-statusline-ps:subagent-statusline'" }
+    @{ Own = $false; Label = 'the token in a comment trailing real code'; Text = "Write-Host 'hi'  # claude-code-statusline-ps:subagent-statusline" }
+    @{ Own = $false; Label = 'the marker line below the header window'; Text = ((1..12 | ForEach-Object { "# filler $_" }) -join "`n") + "`n$subagentMarkerLine" }
+    @{ Own = $false; Label = 'the marker in the wrong case'; Text = '# CLAUDE-CODE-STATUSLINE-PS:SUBAGENT-STATUSLINE' }
+    @{ Own = $false; Label = 'the token as embedded data on a line of its own'; Text = "#Requires -Version 7.0`nclaude-code-statusline-ps:subagent-statusline" }
+    @{ Own = $false; Label = 'an empty file'; Text = '' }
+)
+$markerIndex = 0
+foreach ($case in $markerCases) {
+    $markerFile = Join-Path $subTmp "marker-$markerIndex.ps1"
+    $markerIndex++
+    Set-Content -LiteralPath $markerFile -Value $case.Text -Encoding utf8NoBOM
+    Confirm-Equal (Test-OwnSubagentScript $markerFile) $case.Own "ownership file: $($case.Label)"
+}
+Confirm-Equal (Test-OwnSubagentScript (Join-Path $subTmp 'no-such-file.ps1')) $false 'ownership file: a file that is not there'
+Confirm-Equal (Test-OwnSubagentScript $subScript) $true 'ownership file: the repo copy is recognised as ours'
+
 # Read-UserSetting and Write-UserSetting driven directly, so the write path can be failed on purpose
 # without a second process racing this one. $settingsBaseline is the script-scope table install.ps1
 # keeps, and has to exist here for the same reason it does there.
-. (Import-ScriptFunction $installer @('Read-UserSetting', 'Write-UserSetting'))
+. (Import-ScriptFunction $installer @('Read-UserSetting', 'Write-UserSetting', 'Get-SettingLock', 'Confirm-SettingUnchanged'))
 $settingsBaseline = @{}
+$settingsLockTimeoutMs = 5000
 
 # A change made between the read and the write is refused, and the other writer's file survives intact.
 $conflictPath = Join-Path $subTmp 'conflict.json'
@@ -3369,6 +3452,7 @@ Set-Content -LiteralPath $conflictPath -Value '{ "a": 2, "b": 3 }' -Encoding utf
 $threw = $false
 try { Write-UserSetting $conflictObj $conflictPath } catch { $threw = $true; $conflictMessage = "$_" }
 Confirm-True $threw 'settings conflict: a file that changed after the read is refused'
+Confirm-True ((Get-Content -LiteralPath $installer -Raw).Contains("`$settingsLockTimeoutMs = $settingsLockTimeoutMs")) 'settings conflict: the lock timeout the tests use is the one install.ps1 defines'
 Confirm-True ($conflictMessage -match 'changed after this installer read it') "settings conflict: the message says why, got '$conflictMessage'"
 Confirm-Equal (Get-Content -LiteralPath $conflictPath -Raw).Trim() '{ "a": 2, "b": 3 }' 'settings conflict: the other writer''s content is untouched'
 Confirm-Equal (@(Get-ChildItem -LiteralPath $subTmp -Filter 'conflict.json.tmp-*' -Force).Count) 0 'settings conflict: no temporary file is left behind'
@@ -3512,10 +3596,16 @@ $text = $r.Lines -join "`n"
 Confirm-True ($text -match 'Kept:.+does not point at') "subagent ownership: the run says the key was kept, got '$text'"
 Confirm-True ($text -match "Kept:.+does not carry this project's marker") "subagent ownership: the run says the file was kept, got '$text'"
 
-# A key that is ours but a file that is not, and the other way round, are judged one at a time.
+# A key that is ours but a file that is not, and the other way round, are judged one at a time. Getting
+# to that state now takes a detour, because the install path applies the same ownership rule as the
+# uninstall path: a foreign file cannot be reinstalled over, it has to be moved out of the way first.
 $r = Invoke-Installer 'install -Subagents over the foreign file' @('-Subagents', '-SettingsPath', $subSettings)
-Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent ownership mixed: the reinstall is clean'
-Confirm-True ((Get-Content -LiteralPath $installedSub -Raw).Contains('claude-code-statusline-ps:subagent-statusline')) 'subagent ownership mixed: a reinstall replaces the file with ours, marker and all'
+Confirm-True ($r.ExitCode -ne 0) "subagent ownership mixed: a reinstall over a foreign file is refused rather than forced, exit $($r.ExitCode)"
+Confirm-Equal (Get-Content -LiteralPath $installedSub -Raw).Trim() $foreignScript 'subagent ownership mixed: the foreign file survives the refused reinstall'
+Remove-Item -LiteralPath $installedSub -Force
+$r = Invoke-Installer 'install -Subagents once the foreign file is gone' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent ownership mixed: the install is clean once the foreign file is out of the way'
+Confirm-True ((Get-Content -LiteralPath $installedSub -Raw).Contains('claude-code-statusline-ps:subagent-statusline')) 'subagent ownership mixed: the installed file is ours, marker and all'
 Set-Content -LiteralPath $installedSub -Value $foreignScript -Encoding utf8NoBOM
 $r = Invoke-Installer 'uninstall, our key and a foreign file' @('-Uninstall', '-SettingsPath', $subSettings)
 Confirm-Equal (Get-KeyList (Read-SettingFile $subSettings)) 'theme' 'subagent ownership mixed: our key is removed'
@@ -3525,6 +3615,55 @@ Remove-Item -LiteralPath $installedSub -Force
 # The marker is what makes a file ours, so the installed copy has to carry it and the repo copy has to
 # be the source of it. A rename or a reword in either place breaks the uninstaller quietly otherwise.
 Confirm-True ((Get-Content -LiteralPath $subScript -Raw).Contains('claude-code-statusline-ps:subagent-statusline')) 'subagent ownership: the repo copy carries the marker'
+
+
+# Installing over a file this project did not write. The uninstall path got an ownership rule in the
+# round before this one and the install path did not, so -Subagents would replace it with -Force. It
+# now refuses, and refuses before anything at all has changed.
+$foreignInstall = '# someone elses subagent line'
+Set-Content -LiteralPath $installedSub -Value $foreignInstall -Encoding utf8NoBOM
+$settingsBefore = Get-Content -LiteralPath $subSettings -Raw
+$r = Invoke-Installer 'install -Subagents over an unowned file' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -ne 0) "install over unowned: exit code $($r.ExitCode) is non-zero"
+Confirm-True ((($r.Lines + $r.Err) -join ' ') -match 'is not this project') "install over unowned: the message names the file and says why, got '$(($r.Lines + $r.Err) -join ' | ')'"
+Confirm-Equal (Get-Content -LiteralPath $installedSub -Raw).Trim() $foreignInstall 'install over unowned: the file is not replaced'
+Confirm-Equal (Get-Content -LiteralPath $subSettings -Raw) $settingsBefore 'install over unowned: the settings are not written either'
+Confirm-Equal (@(Get-ChildItem -LiteralPath (Join-Path $subHome '.claude') -Filter '*.tmp-*' -Force).Count) 0 'install over unowned: nothing is staged and left behind'
+Remove-Item -LiteralPath $installedSub -Force
+
+# The rollback copy: a reinstall over our own file keeps the version it replaced.
+$r = Invoke-Installer 'install -Subagents onto a clean home' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'install rollback copy: the first install is clean'
+Confirm-True (-not (Test-Path -LiteralPath "$installedSub.bak")) 'install rollback copy: no .bak when there was nothing to replace'
+$r = Invoke-Installer 'install -Subagents a second time' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'install rollback copy: the reinstall is clean'
+Confirm-True (Test-Path -LiteralPath "$installedSub.bak") 'install rollback copy: the replaced version is kept beside it'
+$r = Invoke-Installer 'uninstall after a reinstall' @('-Uninstall', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'install rollback copy: the uninstall is clean'
+Confirm-True (-not (Test-Path -LiteralPath "$installedSub.bak")) 'install rollback copy: the uninstall takes the rollback copy with it'
+
+# A second installer holding the lock. The settings write waits for it, and when it cannot have the
+# lock it writes nothing at all rather than racing the other one. This is the interprocess half of the
+# conflict rule: the in-process case above proves the comparison, this proves the exclusion.
+$lockHeld = $null
+try {
+    $lockHeld = [System.IO.File]::Open("$subSettings.lock", [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+} catch {
+    $lockHeld = $null
+}
+Confirm-True ($null -ne $lockHeld) 'settings lock: the test can take the lock the installer uses'
+if ($null -ne $lockHeld) {
+    $lockedBefore = Get-Content -LiteralPath $subSettings -Raw
+    $r = Invoke-Installer 'install while the lock is held' @('-SettingsPath', $subSettings)
+    Confirm-True ($r.ExitCode -ne 0) "settings lock: exit code $($r.ExitCode) is non-zero while another process holds it"
+    Confirm-True ((($r.Lines + $r.Err) -join ' ') -match 'Could not lock') "settings lock: the message says it could not lock, got '$(($r.Lines + $r.Err) -join ' | ')'"
+    Confirm-Equal (Get-Content -LiteralPath $subSettings -Raw) $lockedBefore 'settings lock: nothing was written while the lock was held'
+    $lockHeld.Dispose()
+    # And once it is free the same command goes through, so the lock is a wait and not a wall.
+    $r = Invoke-Installer 'install once the lock is free' @('-SettingsPath', $subSettings)
+    Confirm-True ($r.ExitCode -eq 0) "settings lock: exit code $($r.ExitCode) once the lock is released"
+    Confirm-True ((Get-KeyList (Read-SettingFile $subSettings)).Contains('statusLine')) 'settings lock: the write goes through once the lock is free'
+}
 
 # A user profile with a space and with characters cmd treats as syntax. Unquoted, the command parser
 # stops the -File argument at the first space and the status line never runs, so the path is quoted and
