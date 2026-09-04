@@ -1188,59 +1188,84 @@ foreach ($odd in @(@{ Label = 'string true'; Value = 'true' }, @{ Label = 'numbe
 Confirm-Equal (Get-ModelSegment ([pscustomobject]@{ model = [pscustomobject]@{ display_name = '' } }) $plainCfg) $null 'model: empty name omits the segment'
 
 Write-Host '== unit: pace' -ForegroundColor Cyan
-# Every reset epoch here is built from the current second, never from a literal, so the group cannot rot
-# as the clock passes any date. That leaves one hazard: real time moves on between this line and the one
-# inside Get-PaceArrow that reads the clock. It only ever moves forward, which only ever raises the
-# elapsed fraction, which only ever lowers the projection. So every figure below sits clear of its
-# threshold on the side that drift carries it towards, and the two cases pinned exactly on a boundary -
-# an elapsed of 0.1 and a projection of 100 - are the two that drift pushes further into the branch
-# under test rather than out of it. Nothing here is within a second's drift of changing its answer.
+# Get-PaceArrow takes the current epoch as a third parameter defaulting to the clock, so the arithmetic
+# can be pinned to the second here. That matters: an epoch derived from an earlier reading of the clock
+# is one second out whenever the second ticks in between, so a case meant to sit on 16200 seconds left
+# would quietly exercise 16199 instead and pass either way. Every eligibility limit is a whole second,
+# and the fraction it stands for is not exact in binary - 1 - 16200 / 18000 is 0.09999999999999998 - so
+# these are the boundaries a regression moves. Cases are written as the seconds still to run, which is
+# what the function tests: 16200 left is a tenth of the 18000-second window gone, the earliest reading
+# worth anything, and 0 left is the window spent. The default clock is covered on its own at the end.
 $paceUp = [char]::ConvertFromUtf32(0x2191)
 $paceFlat = [char]::ConvertFromUtf32(0x2192)
-$paceNow = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-$paceHalf = $paceNow + 9000    # half of the fixed 18000-second window still to run, so elapsed is 0.5
+$paceClock = 1700000000
 Confirm-Equal (Get-VisibleWidth $paceUp) 1 'pace: the up arrow is a plain character, one cell wide'
 Confirm-Equal (Get-VisibleWidth $paceFlat) 1 'pace: the right arrow is a plain character, one cell wide'
 $paceTable = @(
-    @{ Label = 'half gone, 80% used: 160% projected'; Reset = $paceHalf; Used = 80; Arrow = $paceUp; Red = $true }
-    @{ Label = 'half gone, 80% as a JSON double'; Reset = $paceHalf; Used = 80.0; Arrow = $paceUp; Red = $true }
-    @{ Label = 'half gone, 60.5% used: 121% projected is still red'; Reset = $paceHalf; Used = 60.5; Arrow = $paceUp; Red = $true }
-    @{ Label = 'half gone, 59% used: 118% projected overruns without the red'; Reset = $paceHalf; Used = 59; Arrow = $paceUp; Red = $false }
-    @{ Label = 'half gone, 55% used: 110% projected'; Reset = $paceHalf; Used = 55; Arrow = $paceUp; Red = $false }
-    @{ Label = 'half gone, 51% used: just over the line still points up'; Reset = $paceHalf; Used = 51; Arrow = $paceUp; Red = $false }
-    @{ Label = 'half gone, 50% used: exactly on pace holds'; Reset = $paceHalf; Used = 50; Arrow = $paceFlat; Red = $false }
-    @{ Label = 'half gone, 40% used: 80% projected'; Reset = $paceHalf; Used = 40; Arrow = $paceFlat; Red = $false }
-    @{ Label = 'a tenth of the window gone, the earliest reading there is'; Reset = $paceNow + 16200; Used = 5; Arrow = $paceFlat; Red = $false }
+    @{ Label = '16201s left, one second short of a tenth gone'; Left = 16201; Used = 5; Arrow = $null }
+    @{ Label = '16200s left, exactly a tenth gone: the earliest reading there is'; Left = 16200; Used = 5; Arrow = $paceFlat; Red = $false }
+    @{ Label = '16200s left, 10% used: exactly 100% projected holds'; Left = 16200; Used = 10; Arrow = $paceFlat; Red = $false }
+    @{ Label = '16200s left, 10.1% used: 101% projected points up'; Left = 16200; Used = 10.1; Arrow = $paceUp; Red = $false }
+    @{ Label = '16200s left, 11.9% used: 119% projected is not red yet'; Left = 16200; Used = 11.9; Arrow = $paceUp; Red = $false }
+    @{ Label = '16200s left, 12% used: exactly 120% projected turns red'; Left = 16200; Used = 12; Arrow = $paceUp; Red = $true }
+    @{ Label = 'half gone, 40% used: 80% projected'; Left = 9000; Used = 40; Arrow = $paceFlat; Red = $false }
+    @{ Label = 'half gone, 50% used: exactly on pace holds'; Left = 9000; Used = 50; Arrow = $paceFlat; Red = $false }
+    @{ Label = 'half gone, 51% used: 102% projected points up'; Left = 9000; Used = 51; Arrow = $paceUp; Red = $false }
+    @{ Label = 'half gone, 59.9% used: 119.8% projected is not red yet'; Left = 9000; Used = 59.9; Arrow = $paceUp; Red = $false }
+    @{ Label = 'half gone, 60% used: exactly 120% projected turns red'; Left = 9000; Used = 60; Arrow = $paceUp; Red = $true }
+    @{ Label = 'half gone, 80% used: 160% projected'; Left = 9000; Used = 80; Arrow = $paceUp; Red = $true }
+    @{ Label = 'half gone, 80% as a JSON double'; Left = 9000; Used = 80.0; Arrow = $paceUp; Red = $true }
+    @{ Label = '1s left, the last reading of a window'; Left = 1; Used = 50; Arrow = $paceFlat; Red = $false }
+    @{ Label = '0s left, the window spent to the second'; Left = 0; Used = 50; Arrow = $null }
+    @{ Label = '1s past the reset'; Left = -1; Used = 50; Arrow = $null }
+    @{ Label = '100s past the reset'; Left = -100; Used = 80; Arrow = $null }
+    @{ Label = '17500s left, inside the first half hour'; Left = 17500; Used = 90; Arrow = $null }
+    @{ Label = "sample 06's 2100 epoch, a window that has not opened"; Left = 4102444800 - 1700000000; Used = 80; Arrow = $null }
 )
 foreach ($paceRow in $paceTable) {
-    $pace = Get-PaceArrow $paceRow.Reset $paceRow.Used
+    $pace = Get-PaceArrow ($paceClock + $paceRow.Left) $paceRow.Used $paceClock
+    if ($null -eq $paceRow.Arrow) {
+        Confirm-True ($null -eq $pace) "pace: $($paceRow.Label) gives no arrow"
+        continue
+    }
     Confirm-Equal $pace.Arrow $paceRow.Arrow "pace: $($paceRow.Label) - arrow"
     Confirm-Equal $pace.Red $paceRow.Red "pace: $($paceRow.Label) - red flag"
 }
-# No arrow at all rather than a misleading one. A reset that is missing, past or so far off that the
-# window has not started; the first half hour, where one busy minute swings the projection; and a usage
-# figure that is absent, zero, negative or not a number. Get-FiniteNumber is the type gate, so a string
-# that would cast, a boolean and an array all fall out here.
+# A reset or a usage figure that is not a number at all. Get-FiniteNumber is the type gate, so a string
+# that would cast, a boolean, an array, NaN and infinity all fall out here, as does a usage figure that
+# is absent, zero or negative, where every projection is zero or worse and an arrow would be noise.
 $noPaceTable = @(
     @{ Label = 'no reset at all'; Reset = $null; Used = 80 }
-    @{ Label = 'a reset already past'; Reset = $paceNow - 100; Used = 80 }
-    @{ Label = 'a reset at this very second, the window spent'; Reset = $paceNow; Used = 80 }
-    @{ Label = 'a reset 17500s out, inside the first half hour'; Reset = $paceNow + 17500; Used = 90 }
-    @{ Label = 'a reset 16400s out, still inside the first half hour'; Reset = $paceNow + 16400; Used = 90 }
-    @{ Label = "a far-future reset, sample 06's 2100 epoch"; Reset = 4102444800; Used = 80 }
-    @{ Label = 'no usage figure'; Reset = $paceHalf; Used = $null }
-    @{ Label = 'nothing used yet'; Reset = $paceHalf; Used = 0 }
-    @{ Label = 'a negative usage figure'; Reset = $paceHalf; Used = -5 }
-    @{ Label = 'usage as text'; Reset = $paceHalf; Used = '80' }
-    @{ Label = 'usage as a boolean'; Reset = $paceHalf; Used = $true }
-    @{ Label = 'usage as an array'; Reset = $paceHalf; Used = @(80) }
-    @{ Label = 'usage as NaN'; Reset = $paceHalf; Used = [double]::NaN }
-    @{ Label = 'a reset as text'; Reset = "$paceHalf"; Used = 80 }
+    @{ Label = 'a reset as text'; Reset = "$($paceClock + 9000)"; Used = 80 }
+    @{ Label = 'a reset as a boolean'; Reset = $true; Used = 80 }
+    @{ Label = 'a reset as an array'; Reset = @($paceClock + 9000); Used = 80 }
+    @{ Label = 'a reset as NaN'; Reset = [double]::NaN; Used = 80 }
     @{ Label = 'a reset as infinity'; Reset = [double]::PositiveInfinity; Used = 80 }
+    @{ Label = 'no usage figure'; Reset = $paceClock + 9000; Used = $null }
+    @{ Label = 'nothing used yet'; Reset = $paceClock + 9000; Used = 0 }
+    @{ Label = 'a negative usage figure'; Reset = $paceClock + 9000; Used = -5 }
+    @{ Label = 'usage as text'; Reset = $paceClock + 9000; Used = '80' }
+    @{ Label = 'usage as a boolean'; Reset = $paceClock + 9000; Used = $true }
+    @{ Label = 'usage as an array'; Reset = $paceClock + 9000; Used = @(80) }
+    @{ Label = 'usage as NaN'; Reset = $paceClock + 9000; Used = [double]::NaN }
 )
 foreach ($paceRow in $noPaceTable) {
-    Confirm-True ($null -eq (Get-PaceArrow $paceRow.Reset $paceRow.Used)) "pace: $($paceRow.Label) gives no arrow"
+    Confirm-True ($null -eq (Get-PaceArrow $paceRow.Reset $paceRow.Used $paceClock)) "pace: $($paceRow.Label) gives no arrow"
 }
+# The default clock, which is the only path the script itself ever takes, so the parameter above cannot
+# become the only thing under test. Real time moves on between the epoch being built here and
+# Get-PaceArrow reading it, always forward, which only raises the elapsed fraction and only lowers the
+# projection. Every case below therefore sits clear of its threshold on the side drift carries it
+# towards, well outside a second's worth of movement. The boundaries themselves are pinned above.
+$pace = Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) 80
+Confirm-Equal $pace.Arrow $paceUp 'pace on the default clock: half a window gone at 80% points up'
+Confirm-Equal $pace.Red $true 'pace on the default clock: 160% projected is red'
+$pace = Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) 40
+Confirm-Equal $pace.Arrow $paceFlat 'pace on the default clock: half a window gone at 40% holds'
+Confirm-Equal $pace.Red $false 'pace on the default clock: 80% projected is not red'
+Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 100) 80)) 'pace on the default clock: a reset already past gives no arrow'
+Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 16400) 90)) 'pace on the default clock: the first half hour gives no arrow'
+Confirm-True ($null -eq (Get-PaceArrow 4102444800 80)) 'pace on the default clock: a far-future reset gives no arrow'
 
 Write-Host '== unit: limits' -ForegroundColor Cyan
 # Resets in the past keep TimeLeft empty, so the text is deterministic. Every call passes a config,

@@ -889,11 +889,14 @@ function TimeLeft([object] $epoch) {
 # are tested on the seconds left rather than on the fraction, because a tenth of the window is 16200
 # seconds exactly while 1 - 16200 / 18000 is 0.09999999999999998, which would drop the first honest
 # reading of every window.
-function Get-PaceArrow([object] $resetsAt, [object] $used) {
+# $Now is the current epoch and defaults to the clock, so no caller passes one. It exists for the tests:
+# an epoch derived from an earlier reading of the clock is one second out whenever the second ticks in
+# between, which is enough to miss both of those limits by exactly the margin a regression would move.
+function Get-PaceArrow([object] $resetsAt, [object] $used, [long] $Now = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) {
     $reset = Get-FiniteNumber $resetsAt
     $pct = Get-FiniteNumber $used
     if ($null -eq $reset -or $null -eq $pct -or $pct -le 0) { return $null }
-    $left = $reset - [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $left = $reset - $Now
     if ($left -le 0 -or $left -gt 16200) { return $null }
     $projected = $pct * 18000 / (18000 - $left)
     if ($projected -le 100) { return @{ Arrow = (G 0x2192); Red = $false } }
