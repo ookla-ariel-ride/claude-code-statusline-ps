@@ -141,7 +141,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
 # these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
@@ -350,6 +350,41 @@ Confirm-Equal $c.Layout 'two' 'config git beside layout: layout kept'
 Confirm-Equal $c.State $false 'config git beside state: state kept'
 Confirm-Equal $c.Git.TimeoutMs 200 'config git beside others: timeout read'
 
+# The quiet block: the smallest value cost, context and limits are worth building at. Compared with -eq
+# rather than through Confirm-Equal, because a threshold is a double and its ToString is culture-bound.
+$c = Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')
+Confirm-True ($c.Quiet.cost -eq 0 -and $c.Quiet.context -eq 0 -and $c.Quiet.limits -eq 0) 'config missing: quiet is 0 for all three, which hides nothing'
+$c = Read-StatusConfig (Write-TempConfig 'quiet-absent.json' '{ "layout": "two" }')
+Confirm-True ($c.Quiet.cost -eq 0 -and $c.Quiet.context -eq 0 -and $c.Quiet.limits -eq 0) 'config quiet absent: all three default to 0'
+$c = Read-StatusConfig (Write-TempConfig 'quiet-valid.json' '{ "quiet": { "cost": 1.5, "context": 30, "limits": 70 } }')
+Confirm-True ($c.Quiet.cost -eq 1.5) 'config quiet valid: a fractional cost is kept as written'
+Confirm-True ($c.Quiet.context -eq 30) 'config quiet valid: context 30'
+Confirm-True ($c.Quiet.limits -eq 70) 'config quiet valid: limits 70'
+$c = Read-StatusConfig (Write-TempConfig 'quiet-one.json' '{ "quiet": { "cost": 2 } }')
+Confirm-True ($c.Quiet.cost -eq 2) 'config quiet one name: cost read'
+Confirm-True ($c.Quiet.context -eq 0 -and $c.Quiet.limits -eq 0) 'config quiet one name: the other two stay 0'
+# Each name falls back on its own, so a string beside a number keeps the number.
+$c = Read-StatusConfig (Write-TempConfig 'quiet-wrong-types.json' '{ "quiet": { "cost": "1", "context": true, "limits": [70] } }')
+Confirm-True ($c.Quiet.cost -eq 0) 'config quiet string cost: falls back to 0'
+Confirm-True ($c.Quiet.context -eq 0) 'config quiet boolean context: falls back to 0'
+Confirm-True ($c.Quiet.limits -eq 0) 'config quiet array limits: falls back to 0'
+$c = Read-StatusConfig (Write-TempConfig 'quiet-mixed.json' '{ "quiet": { "cost": "1", "context": 30 } }')
+Confirm-True ($c.Quiet.cost -eq 0 -and $c.Quiet.context -eq 30) 'config quiet mixed: the bad name falls back, the good one beside it is read'
+# A negative clamps to 0 rather than passing through, so a segment whose value is 0 is still shown.
+$c = Read-StatusConfig (Write-TempConfig 'quiet-negative.json' '{ "quiet": { "cost": -5, "context": -0.5, "limits": -1e3 } }')
+Confirm-True ($c.Quiet.cost -eq 0 -and $c.Quiet.context -eq 0 -and $c.Quiet.limits -eq 0) 'config quiet negative: clamped to 0'
+foreach ($case in @(@{ Name = 'array'; Json = '{ "quiet": [1, 2, 3] }' }, @{ Name = 'number'; Json = '{ "quiet": 5 }' },
+                    @{ Name = 'string'; Json = '{ "quiet": "loud" }' }, @{ Name = 'null'; Json = '{ "quiet": null }' })) {
+    $c = Read-StatusConfig (Write-TempConfig "quiet-$($case.Name).json" $case.Json)
+    Confirm-True ($c.Quiet.cost -eq 0 -and $c.Quiet.context -eq 0 -and $c.Quiet.limits -eq 0) "config quiet $($case.Name): all three stay 0"
+}
+# A name no segment has is ignored rather than added, and the block leaves the keys beside it alone.
+$c = Read-StatusConfig (Write-TempConfig 'quiet-beside.json' '{ "layout": "two", "state": false, "quiet": { "folder": 3, "cost": 1 } }')
+Confirm-Equal $c.Layout 'two' 'config quiet beside layout: layout kept'
+Confirm-Equal $c.State $false 'config quiet beside state: state kept'
+Confirm-True ($c.Quiet.cost -eq 1) 'config quiet beside others: cost read'
+Confirm-True ($c.Quiet.Count -eq 3 -and -not $c.Quiet.ContainsKey('folder')) 'config quiet unknown name: not added to the table'
+
 # The order key: the segment names of layout one. An unknown name is skipped, a name left out is not
 # shown, a repeat keeps its first place and case does not matter. An empty array, an array naming no
 # segment, or anything that is not an array falls back to the registry order.
@@ -481,15 +516,17 @@ Confirm-Equal (Get-RowText $defaultCfg) $registryRows 'default config: rows are 
 Confirm-Equal (Get-ThresholdText $defaultCfg) '60/85' 'default config: thresholds 60 and 85'
 Confirm-Equal $defaultCfg.Icons.Count 0 'default config: no icon overrides'
 Confirm-Equal $defaultCfg.Git.TimeoutMs 1500 'default config: git timeout 1500'
+Confirm-True ($defaultCfg.Quiet.cost -eq 0 -and $defaultCfg.Quiet.context -eq 0 -and $defaultCfg.Quiet.limits -eq 0) 'default config: quiet is 0 for all three'
 Confirm-True (@($allSegments | Where-Object { -not $defaultCfg.Segments[$_] }).Count -eq 0) 'default config: every segment on'
 # A fresh table every call, nested tables included, so a caller that changes its copy cannot reach the next.
-$defaultCfg.Layout = 'two'; $defaultCfg.Segments.cost = $false; $defaultCfg.Git.TimeoutMs = 999; $defaultCfg.Thresholds.Warn = 1; $defaultCfg.Icons.model = 1
+$defaultCfg.Layout = 'two'; $defaultCfg.Segments.cost = $false; $defaultCfg.Git.TimeoutMs = 999; $defaultCfg.Thresholds.Warn = 1; $defaultCfg.Icons.model = 1; $defaultCfg.Quiet.cost = 9
 $fresh = Get-DefaultStatusConfig
 Confirm-Equal $fresh.Layout 'one' 'default config: a changed copy does not change the next table'
 Confirm-Equal $fresh.Segments.cost $true 'default config: the segment table is fresh too'
 Confirm-Equal $fresh.Git.TimeoutMs 1500 'default config: the git table is fresh too'
 Confirm-Equal $fresh.Thresholds.Warn 60 'default config: the thresholds table is fresh too'
 Confirm-Equal $fresh.Icons.Count 0 'default config: the icons table is fresh too'
+Confirm-True ($fresh.Quiet.cost -eq 0) 'default config: the quiet table is fresh too'
 $merged = Merge-StatusConfigFile $fresh (Write-TempConfig 'merge-one.json' '{ "layout": "two", "segments": { "cost": false } }')
 Confirm-Equal $merged.Layout 'two' 'merge file: the key the file names is applied'
 Confirm-Equal $merged.Segments.cost $false 'merge file: the segment toggle is applied'
@@ -764,6 +801,10 @@ Confirm-Equal (Get-ThresholdText $c) '60/85' 'shipped config: thresholds 60 and 
 Confirm-True ($shippedJson.thresholds.warn -eq 60 -and $shippedJson.thresholds.bad -eq 85) 'shipped config: the file itself says 60 and 85'
 Confirm-Equal $c.Icons.Count 0 'shipped config: no icon overrides'
 Confirm-True ($shippedJson.icons -is [System.Management.Automation.PSCustomObject] -and @($shippedJson.icons.PSObject.Properties).Count -eq 0) 'shipped config: the file itself has an empty icons object'
+# quiet is left out of the shipped file, the way order and rows are: its defaults hide nothing, so a
+# file that spelled them out would only be three zeros to keep in step with the segment list.
+Confirm-True ($c.Quiet.cost -eq 0 -and $c.Quiet.context -eq 0 -and $c.Quiet.limits -eq 0) 'shipped config: quiet is off for all three'
+Confirm-True ($null -eq $shippedJson.PSObject.Properties['quiet']) 'shipped config: the file itself has no quiet key'
 
 Write-Host '== unit: icons' -ForegroundColor Cyan
 # Get-IconSet turns the built-in table and the config's overrides into one glyph per name, and the
@@ -1456,6 +1497,51 @@ Confirm-Equal (Get-ContextSegment (Get-ContextPayload 10) $lowCfg).Role 'ok' 'co
 Confirm-Equal (Get-ContextSegment (Get-ContextPayload 20) $lowCfg).Role 'warn' 'context 20 at 20/40: warn at the edge'
 Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 65) $lowCfg).Role 'ok' 'context 1M 65 at 20/40: the 1M bands stay 70 and 90'
 
+# quiet.context hides the meter below the percentage it names. The comparison is on the clamped
+# percentage the segment would show, and it is strict, so the threshold itself still renders.
+$quietOff = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 0.0; context = 0.0; limits = 0.0 } }
+$quiet30 = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 0.0; context = 30.0; limits = 0.0 } }
+Confirm-True ((Get-ContextSegment (Get-ContextPayload 8) $quietOff).Text.StartsWith("$iconCtx 8% ")) 'context quiet 0: an 8% meter is built'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 8) $quiet30) $null 'context quiet 30: an 8% meter is hidden'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 29) $quiet30) $null 'context quiet 30: 29% is still below the line'
+Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload 30) $quiet30)) 'context quiet 30: 30% is on the line and stays'
+# A payload at -5 clamps to 0 and is compared as 0, so a quiet of 0 keeps it and any threshold hides it.
+Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload -5) $quietOff)) 'context quiet 0: a clamped 0% meter is still built'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload -5) $quiet30) $null 'context quiet 30: a clamped 0% meter is hidden'
+# $bandCfg carries no Quiet table at all, which is what an older config object looks like to the guard.
+Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload 0) $bandCfg)) 'context quiet: a config with no Quiet table hides nothing'
+
+Write-Host '== unit: cost' -ForegroundColor Cyan
+$iconCost = [char]::ConvertFromUtf32(0xF0155)
+function Get-CostPayload($Usd) { return [pscustomobject]@{ cost = [pscustomobject]@{ total_cost_usd = $Usd } } }
+$quiet1 = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 1.0; context = 0.0; limits = 0.0 } }
+Confirm-Equal (Get-CostSegment (Get-CostPayload 0.4312) $quietOff).Text ("$iconCost `$" + ('{0:N2}' -f 0.4312)) 'cost quiet 0: the figure is built'
+Confirm-Equal (Get-CostSegment ([pscustomobject]@{}) $quietOff) $null 'cost: no cost object'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 0.4312) $quiet1) $null 'cost quiet 1: 0.4312 is hidden'
+# The test is the raw number, not the rounded text: 0.996 prints as 1.00 and is still below 1.
+Confirm-Equal (Get-CostSegment (Get-CostPayload 0.996) $quiet1) $null 'cost quiet 1: 0.996 rounds to the threshold and is still hidden'
+Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload 1) $quiet1)) 'cost quiet 1: exactly 1 is on the line and stays'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 12.5) $quiet1).Text ("$iconCost `$" + ('{0:N2}' -f 12.5)) 'cost quiet 1: 12.50 stays, text unchanged'
+Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload 0) $quietOff)) 'cost quiet 0: a zero cost is still built'
+Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload 0.02) $bandCfg)) 'cost quiet: a config with no Quiet table hides nothing'
+# A cost that is not a number cannot be compared, so the guard stands aside and the builder does what
+# it always did with it, which is to format whatever converts.
+Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload '0.50') $quiet1)) 'cost quiet 1: a string cost is not a figure the guard can read, so it is not hidden'
+
+Write-Host '== unit: quiet guard' -ForegroundColor Cyan
+$quietTable = @{ Quiet = @{ cost = 1.0; context = 30.0; limits = 0.0 } }
+Confirm-True (Test-QuietValue $quietTable 'cost' 0.99) 'quiet guard: below the threshold is quiet'
+Confirm-True (-not (Test-QuietValue $quietTable 'cost' 1.0)) 'quiet guard: equal to the threshold is not quiet'
+Confirm-True (-not (Test-QuietValue $quietTable 'limits' 0)) 'quiet guard: a threshold of 0 hides nothing, not even 0'
+Confirm-True (-not (Test-QuietValue $quietTable 'lines' 0)) 'quiet guard: a name the table does not carry hides nothing'
+Confirm-True (-not (Test-QuietValue @{} 'cost' 0.5)) 'quiet guard: a config with no Quiet table hides nothing'
+Confirm-True (-not (Test-QuietValue @{ Quiet = 30 } 'cost' 0.5)) 'quiet guard: a Quiet that is not a table hides nothing'
+Confirm-True (-not (Test-QuietValue $quietTable 'cost' 'lots')) 'quiet guard: a value that is not a number hides nothing'
+Confirm-True (-not (Test-QuietValue $quietTable 'cost' $true)) 'quiet guard: a boolean is not a number'
+Confirm-True (-not (Test-QuietValue $quietTable 'cost' $null)) 'quiet guard: a missing value hides nothing'
+Confirm-True (-not (Test-QuietValue $quietTable 'cost' ([double]::NaN))) 'quiet guard: NaN hides nothing'
+Confirm-True (Test-QuietValue @{ Quiet = @{ cost = 1 } } 'COST' 0.5) 'quiet guard: the name is matched the way a hashtable matches, case and all'
+
 Write-Host '== unit: threshold' -ForegroundColor Cyan
 # Both bands are always passed; the function has no defaults, so a caller without a config is a bug
 # the tests would see as everything red, not as a quiet 60/85.
@@ -1646,6 +1732,26 @@ Confirm-True ($null -eq $seg.Short) 'limits 7d alone: short would equal text, so
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":70,"resets_at":4102444800},"seven_day":{"used_percentage":12,"resets_at":4102444800}}') $bandCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 70% (") -and $seg.Text.EndsWith(') 7d 12%')) 'limits 5h worst with a live reset: text carries the countdown'
 Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits 5h worst with a live reset: short drops the countdown'
+
+# quiet.limits is tested on the worst figure, the one that also picks the colour, so a high 7-day
+# window keeps the segment even when the 5-hour one is calm. The comparison is strict, and it happens
+# after the figures are gathered, so a payload with no readable figure is already gone by then.
+$quiet70 = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 0.0; context = 0.0; limits = 70.0 } }
+$limitsWorst61 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000},"spend_limit":{"used_percentage":44,"resets_at":1700000000}}'
+$limits7d88 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":24,"resets_at":1700000000},"seven_day":{"used_percentage":88,"resets_at":1700000000}}'
+Confirm-Equal (Get-LimitsSegment $limitsWorst61 $quietOff).Text "$iconLimit 5h 61% 7d 12% `$ 44%" 'limits quiet 0: the segment is built'
+Confirm-Equal (Get-LimitsSegment $limitsWorst61 $quiet70) $null 'limits quiet 70: a worst figure of 61 is hidden'
+Confirm-Equal (Get-LimitsSegment $limits7d88 $quiet70).Text "$iconLimit 5h 24% 7d 88%" 'limits quiet 70: a 7d figure of 88 keeps the segment, calm 5h and all'
+$limitsSpend90 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"spend_limit":{"used_percentage":90,"resets_at":1700000000}}'
+Confirm-True ($null -ne (Get-LimitsSegment $limitsSpend90 $quiet70)) 'limits quiet 70: the spend figure counts towards the worst, like the colour'
+$limits70 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":70,"resets_at":1700000000}}'
+Confirm-True ($null -ne (Get-LimitsSegment $limits70 $quiet70)) 'limits quiet 70: exactly 70 is on the line and stays'
+$limits69 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":69,"resets_at":1700000000}}'
+Confirm-Equal (Get-LimitsSegment $limits69 $quiet70) $null 'limits quiet 70: 69 is still below the line'
+# The worst figure is the rounded one, so 69.6 reads as 70 in the comparison as well as in the text.
+$limits696 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":69.6,"resets_at":1700000000}}'
+Confirm-True ($null -ne (Get-LimitsSegment $limits696 $quiet70)) 'limits quiet 70: 69.6 rounds to 70 and stays'
+Confirm-True ($null -ne (Get-LimitsSegment $limitsWorst61 $bandCfg)) 'limits quiet: a config with no Quiet table hides nothing'
 
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000},"spend_limit":{"used_percentage":null,"resets_at":null}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit null percentage: unchanged text'
@@ -3843,6 +3949,46 @@ $r = Invoke-StatusLine $payload01 (Write-TempConfig 'render-icons-surrogate.json
 Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains("$iconModel Fable 5.1")) 'render icons: a surrogate falls back to the robot'
 $r = Invoke-StatusLine 'not json' (Write-TempConfig 'render-icons-bolt.json' '{ "icons": { "model": "F0E7" } }') 0
 Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) "$bolt claude" 'render icons: the bad-payload fallback line carries the override too'
+
+# The quiet key through the whole script, at the unset width, on the samples whose figures straddle it:
+# 01 spends $0.43 in an 8% context and carries no rate limits, 02 spends $12.50, 06 is at 32% context
+# with a 7-day figure of 88, and 07's worst figure is 61 with a cost of $0.02. One config covers all
+# four, so the same three thresholds are seen to hide one sample's segment and keep another's.
+Write-Host ''
+Write-Host '== render: quiet' -ForegroundColor Cyan
+$payload02 = $samplePayloads['02-feature-dirty-high.json']
+$payload07 = $samplePayloads['07-limits-expired-default-effort.json']
+$quietPath = Write-TempConfig 'render-quiet.json' '{ "quiet": { "cost": 1, "context": 30, "limits": 70 } }'
+$quietGlyph = @{ cost = $iconCost; context = $iconCtx; limits = $iconLimit }
+foreach ($case in @(
+        @{ Payload = $payload01; Label = '01'; Hidden = @('cost', 'context'); Shown = @() }
+        @{ Payload = $payload02; Label = '02'; Hidden = @(); Shown = @('cost', 'context') }
+        @{ Payload = $payload06; Label = '06'; Hidden = @(); Shown = @('cost', 'context', 'limits') }
+        @{ Payload = $payload07; Label = '07'; Hidden = @('cost', 'context', 'limits'); Shown = @() })) {
+    $r = Invoke-StatusLine $case.Payload $quietPath 0
+    Confirm-True ($r.ExitCode -eq 0) "render quiet $($case.Label): exit code $($r.ExitCode)"
+    Confirm-True ($r.Err.Count -eq 0) "render quiet $($case.Label): stderr empty"
+    $text = ConvertTo-PlainText ($r.Lines -join "`n")
+    foreach ($n in $case.Hidden) { Confirm-True (-not $text.Contains($quietGlyph[$n])) "render quiet $($case.Label): $n is below the line and gone" }
+    foreach ($n in $case.Shown) { Confirm-True ($text.Contains($quietGlyph[$n])) "render quiet $($case.Label): $n is at or above the line and shown" }
+    Confirm-True ($text.Contains($iconModel)) "render quiet $($case.Label): the model segment has no threshold and stays"
+}
+# 01 carries no rate_limits at all, so the tachometer is absent whatever quiet.limits says; asserting it
+# here would pass for the wrong reason, and the case above leaves it out on purpose. What is worth
+# pinning is that hiding two of 01's segments leaves the rest of its line exactly as it was.
+$r = Invoke-StatusLine $payload01 $quietPath 0
+Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains("$iconFolder my-project")) 'render quiet 01: the segments with no threshold are untouched'
+# A quiet block the script cannot read leaves every segment visible and says nothing on stderr.
+foreach ($case in @(
+        @{ Name = 'render-quiet-scalar'; Json = '{ "quiet": 5 }'; Label = 'a quiet that is not an object' }
+        @{ Name = 'render-quiet-strings'; Json = '{ "quiet": { "cost": "1", "context": "30", "limits": "70" } }'; Label = 'quiet values written as strings' }
+        @{ Name = 'render-quiet-negative'; Json = '{ "quiet": { "cost": -1, "context": -1, "limits": -1 } }'; Label = 'negative quiet values' })) {
+    $r = Invoke-StatusLine $payload07 (Write-TempConfig "$($case.Name).json" $case.Json) 0
+    Confirm-True ($r.ExitCode -eq 0) "render quiet: $($case.Label), exit code $($r.ExitCode)"
+    Confirm-True ($r.Err.Count -eq 0) "render quiet: $($case.Label) prints nothing on stderr"
+    $text = ConvertTo-PlainText ($r.Lines -join "`n")
+    Confirm-True ($text.Contains($iconCost) -and $text.Contains($iconCtx) -and $text.Contains($iconLimit)) "render quiet: $($case.Label) leaves every segment visible"
+}
 
 # The project config through the whole script, at the unset width. 06 carries a cost figure, and the
 # payload names a project directory holding a .claude\statusline.json that turns the cost segment off.

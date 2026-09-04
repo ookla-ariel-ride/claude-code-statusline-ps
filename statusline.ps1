@@ -279,6 +279,7 @@ function Get-DefaultStatusConfig {
     $cfg.Rows = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
     $cfg.Thresholds = @{ Warn = 60; Bad = 85 }
     $cfg.Icons = @{}
+    $cfg.Quiet = @{ cost = 0.0; context = 0.0; limits = 0.0 }
     return $cfg
 }
 
@@ -286,7 +287,7 @@ function Get-DefaultStatusConfig {
 # takes a string that Allowed lists, folded to lower case; Bool takes a boolean. A value of any other
 # shape leaves the key at the value beneath it. A new one-value key is one row here and nothing else; a
 # key carrying an object or a list of its own gets a block of its own in Merge-StatusConfigFile, beside
-# segments, order, rows, thresholds, icons and git.
+# segments, order, rows, thresholds, quiet, icons and git.
 function Get-StatusConfigKey {
     return @(
         @{ Json = 'layout'; Key = 'Layout'; Kind = 'Enum'; Allowed = @('one', 'two') }
@@ -460,6 +461,18 @@ function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Boun
             $b = Get-FiniteNumber $t.bad
             if ($null -ne $w -and $null -ne $b -and $w -eq [math]::Floor($w) -and $b -eq [math]::Floor($b) -and $w -ge 0 -and $b -le 100 -and $w -le $b) {
                 $Cfg.Thresholds = @{ Warn = [int] $w; Bad = [int] $b }
+            }
+        }
+        # quiet: the smallest value a segment is worth building at - dollars for cost, percent for
+        # context and limits. Any finite number counts, fractions included, because a cost threshold is
+        # money rather than a count; a negative is clamped to 0, which is the default and hides nothing.
+        # Merged one name at a time, so a typo in one name cannot disturb the other two, and a quiet
+        # that is not an object at all keeps all three.
+        $q = $j.quiet
+        if ($q -is [System.Management.Automation.PSCustomObject]) {
+            foreach ($n in @($Cfg.Quiet.Keys)) {
+                $v = Get-FiniteNumber $q.$n
+                if ($null -ne $v) { $Cfg.Quiet[$n] = [math]::Max(0.0, $v) }
             }
         }
         # icons: icon name to a hex code point string, merged one name at a time. Only a known name with
@@ -1124,11 +1137,26 @@ function Get-ModelSegment($d, $cfg) {
     return @{ Name = 'model'; Text = $text; Short = $null; Role = 'model'; Bold = $true }
 }
 
+# True when a segment has nothing worth saying yet: the value it would show is below the config's quiet
+# threshold for it, so the builder returns $null and the segment never reaches the line. The comparison
+# is strict, which is what makes the default of 0 mean off - a value of 0 is not below 0. Everything is
+# read defensively, untyped: a caller with no Quiet table, a name the table does not carry, and a value
+# that is not a number all answer false, because a guard that cannot read its threshold must not hide a
+# segment. Get-FiniteNumber is the one numeric test, so a bool or a string never counts as a figure.
+function Test-QuietValue($cfg, [string] $Name, $Value) {
+    $min = if ($cfg.Quiet -is [hashtable]) { Get-FiniteNumber $cfg.Quiet[$Name] } else { $null }
+    $n = Get-FiniteNumber $Value
+    if ($null -eq $min -or $null -eq $n) { return $false }
+    return $n -lt $min
+}
+
 function Get-ContextSegment($d, $cfg) {
     $pct = $d.context_window.used_percentage
     if ($null -eq $pct) { return $null }
     $pct = [int] $pct
     $pct = [math]::Max(0, [math]::Min(100, $pct))
+    # The clamped percentage is what the segment would show, so it is what quiet.context compares.
+    if (Test-QuietValue $cfg 'context' $pct) { return $null }
     $filled = [math]::Round($pct / 10)
     $bar = ((G 0x2588) * $filled) + ((G 0x2591) * (10 - $filled))
     $used = [double] ($d.context_window.total_input_tokens ?? 0) + [double] ($d.context_window.total_output_tokens ?? 0)
@@ -1139,9 +1167,12 @@ function Get-ContextSegment($d, $cfg) {
     return @{ Name = 'context'; Text = "$short$counts"; Short = $(if ($counts) { $short } else { $null }); Role = $role; Bold = $false }
 }
 
-function Get-CostSegment($d) {
+# Session cost in dollars, two decimals. quiet.cost is tested on the raw figure rather than on the text,
+# so a threshold of 1 hides a cost of 0.996 even though it would have printed $1.00.
+function Get-CostSegment($d, $cfg) {
     $cost = $d.cost.total_cost_usd
     if ($null -eq $cost) { return $null }
+    if (Test-QuietValue $cfg 'cost' $cost) { return $null }
     return @{ Name = 'cost'; Text = ("$iconCost `$" + ('{0:N2}' -f [double] $cost)); Short = $null; Role = 'dim'; Bold = $false }
 }
 
@@ -1230,6 +1261,9 @@ function Get-LimitsSegment($d, $cfg) {
         $bits.Add("$bit$tail")
     }
     if ($bits.Count -eq 0) { return $null }
+    # quiet.limits is tested on the worst figure, the same one that picks the colour: the segment is
+    # worth reading once any window it carries is high enough, not only the five-hour one.
+    if (Test-QuietValue $cfg 'limits' $worst) { return $null }
     $role = Get-ThresholdRole $worst $cfg.Thresholds.Warn $cfg.Thresholds.Bad
     if ($paceAt -ge 0) {
         $arrow = if ($pace.Red) { Format-Inline 'removed' $pace.Arrow $role $cfg.Style } else { $pace.Arrow }
