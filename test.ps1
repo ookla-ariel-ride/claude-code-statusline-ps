@@ -141,7 +141,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
 # these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
@@ -663,6 +663,69 @@ Confirm-Equal $c.Layout 'one' 'project config: an unreachable project directory 
 # checks that follow it. What is shown instead is the property that closes the window: the two refusals
 # above are made from the handle rather than from the name.
 Write-Host '  swap-in-flight case: not staged; the handle checks above are what closes the window' -ForegroundColor DarkGray
+
+# Reading a stream's length and closing it are filesystem calls of their own, and on a handle to a remote
+# file either can hang with the file already open. Neither is allowed to run where it would hold up the
+# line, and a stream whose Length and Dispose block for five seconds proves it without depending on how
+# any real filesystem happens to behave: the length is asked for on the pool and abandoned at the budget,
+# and the close is queued and never waited on. Get-BoundedStreamDelegate closes over Stream's own virtual
+# members, so this double goes through the very call a FileStream would.
+if (-not ('StatuslineTest.BlockingStream' -as [type])) {
+    try {
+        Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.IO;
+using System.Threading;
+namespace StatuslineTest {
+    public class BlockingStream : Stream {
+        private readonly int _lengthDelayMs;
+        private readonly int _disposeDelayMs;
+        public bool Disposed;
+        public BlockingStream(int lengthDelayMs, int disposeDelayMs) { _lengthDelayMs = lengthDelayMs; _disposeDelayMs = disposeDelayMs; }
+        public override bool CanRead { get { return true; } }
+        public override bool CanSeek { get { return true; } }
+        public override bool CanWrite { get { return false; } }
+        public override long Length { get { Thread.Sleep(_lengthDelayMs); return 0L; } }
+        public override long Position { get { return 0L; } set { } }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) { return 0; }
+        public override long Seek(long offset, SeekOrigin origin) { return 0L; }
+        public override void SetLength(long value) { }
+        public override void Write(byte[] buffer, int offset, int count) { }
+        protected override void Dispose(bool disposing) { Thread.Sleep(_disposeDelayMs); Disposed = true; }
+    }
+}
+'@
+    } catch { $null = $_ }
+}
+$blockingType = 'StatuslineTest.BlockingStream' -as [type]
+if ($null -eq $blockingType) {
+    Write-Host '  blocking handle case: the double would not compile here, so Length and Dispose are not covered' -ForegroundColor DarkGray
+} else {
+    Write-Host '  blocking handle case: a compiled double holds Length and Dispose for 5000 ms' -ForegroundColor DarkGray
+    $blocking = $blockingType::new(5000, 5000)
+    $blockingCall = Get-BoundedStreamDelegate $blocking
+    # The length, asked for the way the bounded read asks for it.
+    $blockSw = [System.Diagnostics.Stopwatch]::StartNew()
+    $blockTask = [System.Threading.Tasks.Task]::Run($blockingCall.Length)
+    $blockDone = $blockTask.Wait((Get-ProjectConfigLimit).TimeoutMs)
+    $blockMs = $blockSw.ElapsedMilliseconds
+    Confirm-True (-not $blockDone) 'bounded read: a length that blocks does not answer inside the budget'
+    Confirm-True ($blockMs -lt 2000) 'bounded read: a blocking length is abandoned at the budget, not waited out'
+    # The close, queued the way the bounded read queues it: control comes back before it has finished.
+    $blockSw = [System.Diagnostics.Stopwatch]::StartNew()
+    $null = [System.Threading.Tasks.Task]::Run($blockingCall.Dispose)
+    $disposeMs = $blockSw.ElapsedMilliseconds
+    Confirm-True ($disposeMs -lt 1000) 'bounded read: a close that blocks never runs where the line waits for it'
+    Confirm-True (-not $blocking.Disposed) 'bounded read: the close is still running, so it was queued rather than waited on'
+    # A stream that answers at once is closed, so the ordinary path does not leak a handle.
+    $quick = $blockingType::new(0, 0)
+    $quickCall = Get-BoundedStreamDelegate $quick
+    $quickTask = [System.Threading.Tasks.Task]::Run($quickCall.Dispose)
+    Confirm-True ($quickTask.Wait(5000)) 'bounded read: a close that answers finishes'
+    Confirm-True ($quick.Disposed) 'bounded read: the queued close really closes the stream'
+    Confirm-Equal ([System.Threading.Tasks.Task]::Run($quickCall.Length).Result) 0 'bounded read: the length delegate reads the stream it was closed over'
+}
 
 # The config that ships with the repo has to be valid JSON and to mean what the README says it means.
 $shippedConfig = Join-Path $PSScriptRoot 'statusline.json'

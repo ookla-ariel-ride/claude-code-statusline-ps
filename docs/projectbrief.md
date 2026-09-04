@@ -93,11 +93,14 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   64 KiB cap is measured against the length the handle reports and again against the bytes read, so a
   name that changes under the check cannot widen either. A reparse point is refused too, by asking the
   name a second time, because the APIs that name a handle's own target are .NET 6 and the floor here is
-  .NET Core 3.1. One stopwatch, started before the first filesystem call, covers the open, that probe
-  and every read; each runs on the thread pool through a delegate closed over the path (a script block
-  would need a runspace the pool has none of) and is waited on for what is left of 250 ms. The bound is
-  on this read: an abandoned thread may stay blocked until the process exits, and a stream stuck
-  mid-read is not disposed, since disposing it would wait on the same read. `Read-CodePoint` admits a
+  .NET Core 3.1. One stopwatch, started before the first filesystem call, covers every step: the open,
+  the length (a call of its own — over SMB it is a round trip to the server), that probe, each read and
+  the close. Each runs on the thread pool through a delegate closed over the path or the stream (a
+  script block cannot: converted to a delegate it needs a runspace, and a pool thread has none) and is
+  waited on for what is left of 250 ms. The close is queued and never waited on, and with the budget
+  gone the stream is abandoned unclosed, whichever step spent it. The bound is on this read alone: a
+  thread can stay blocked until the process exits, and the user's own file, read the ordinary way for
+  its encoding detection, has no deadline at all. `Read-CodePoint` admits a
   code point only when it draws as one glyph
   standing alone: no control, format, separator, mark, surrogate, noncharacter or unassigned value, and
   one or two cells wide by the script's own width rule, so a repository cannot reorder, hide or

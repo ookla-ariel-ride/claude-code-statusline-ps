@@ -251,22 +251,36 @@ function Get-BoundedFileDelegate([string] $Path) {
     }
 }
 
+# The same trick for the two things done to an open stream that are filesystem calls in their own right.
+# Length is not a field: on Windows it asks the handle for the file's size, which over SMB is a round
+# trip to the server and can hang with the stream already open. Closing is a filesystem call too - a
+# remote close goes back to the redirector - so it is queued rather than run where it could block the
+# line. Both delegates are closed over Stream's own virtual members rather than FileStream's, so they
+# dispatch through the same call whatever the stream turns out to be.
+function Get-BoundedStreamDelegate($Stream) {
+    return @{
+        Length  = [System.Delegate]::CreateDelegate([Func[long]], $Stream, [System.IO.Stream].GetProperty('Length').GetMethod)
+        Dispose = [System.Delegate]::CreateDelegate([Action], $Stream, [System.IO.Stream].GetMethod('Dispose', [type[]] @()))
+    }
+}
+
 # The text of a file a repository controls, or $null when it is anything but a small, ordinary, promptly
 # readable one. Test-Path and Get-Content are not enough for this file: they follow a link wherever it
 # leads and read whatever comes back, for as long as it takes, so a repository could point the path at a
 # device, a FIFO or a dead network share and hold up every render, or hand over a file large enough to
 # matter. So one clock covers the whole thing, started before the first filesystem call of any kind, and
-# every call - the open, the attribute probe and each read - runs on the thread pool and is waited on for
-# what is left of it. When the budget runs out the attempt is abandoned and the caller keeps the config
-# it had, exactly like any other refusal. An abandoned thread may stay blocked in the kernel until the
-# process exits, and a handle it opens after that is never closed; that is the price of not waiting, and
-# this process renders one line and exits. A stream stuck mid-read is not disposed either, since
-# disposing it would wait on the same read.
+# every call runs on the thread pool and is waited on for what is left of it: the open, the file's length,
+# the attribute probe, each read, and the close at the end. When the budget runs out the attempt is
+# abandoned and the caller keeps the config it had, exactly like any other refusal. Abandoning means what
+# it says: a thread may stay blocked in the kernel until the process exits, a handle opened after that is
+# never closed, and a stream is left open rather than closed on the way out, since closing it would wait
+# on whatever is already stuck. That is the price of not waiting, and this process renders one line and
+# exits. What the clock does not cover is what the caller does with the text afterwards, or a filesystem
+# degraded enough to hang calls this function never makes.
 function Read-BoundedFileText([string] $Path) {
     $limit = Get-ProjectConfigLimit
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $fs = $null
-    $stalled = $false
+    $stream = $null
     try {
         if (-not $Path) { return $null }
         $call = Get-BoundedFileDelegate $Path
@@ -280,9 +294,17 @@ function Read-BoundedFileText([string] $Path) {
         $open = [System.Threading.Tasks.Task]::Run($call.Open)
         if (-not $open.Wait([int] $left)) { return $null }
         $fs = $open.Result
+        $stream = Get-BoundedStreamDelegate $fs
         # From the handle: a stream that cannot seek is not an ordinary file - a FIFO, a pipe, a
-        # character device - and the length is the one the handle reports, not one read off the path.
-        if (-not $fs.CanSeek -or $fs.Length -gt $limit.MaxBytes) { return $null }
+        # character device. CanSeek is settled when the handle is made and costs nothing to read back;
+        # the length is a call of its own, so it goes to the pool under the budget like everything else.
+        # It is the length the handle reports, not one read off the path before the open.
+        if (-not $fs.CanSeek) { return $null }
+        $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
+        if ($left -le 0) { return $null }
+        $length = [System.Threading.Tasks.Task]::Run($stream.Length)
+        if (-not $length.Wait([int] $left)) { return $null }
+        if ($length.Result -gt $limit.MaxBytes) { return $null }
         # Belt and braces, and all this runtime offers against a link: a FileStream follows one, and the
         # APIs that name a handle's own target arrived in .NET 6, past the floor. So the name is asked
         # once more, and a reparse point or a directory is refused even though the handle looked ordinary.
@@ -295,9 +317,9 @@ function Read-BoundedFileText([string] $Path) {
         $read = 0
         while ($read -lt $buf.Length) {
             $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
-            if ($left -le 0) { $stalled = $true; return $null }
+            if ($left -le 0) { return $null }
             $task = $fs.ReadAsync($buf, $read, $buf.Length - $read)
-            if (-not $task.Wait([int] $left)) { $stalled = $true; return $null }
+            if (-not $task.Wait([int] $left)) { return $null }
             $n = $task.Result
             if ($n -le 0) { break }
             $read += $n
@@ -309,7 +331,13 @@ function Read-BoundedFileText([string] $Path) {
         if ($text.Length -gt 0 -and $text[0] -eq [char] 0xFEFF) { $text = $text.Substring(1) }
         return $text
     } catch { return $null } finally {
-        if ($null -ne $fs -and -not $stalled) { try { $fs.Dispose() } catch { $null = $_ } }
+        # Cleanup obeys the same clock. With budget left the close is queued on the pool and not waited
+        # on, so it cannot become the thing that overruns; with the budget gone the stream is abandoned
+        # outright, whichever stage spent it, because a close would only wait on what is already stuck.
+        # An abandoned handle is closed by the process exit that follows the line.
+        if ($null -ne $stream -and ($limit.TimeoutMs - $sw.ElapsedMilliseconds) -gt 0) {
+            try { $null = [System.Threading.Tasks.Task]::Run($stream.Dispose) } catch { $null = $_ }
+        }
     }
 }
 

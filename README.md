@@ -154,16 +154,19 @@ file and skips the project file, so a render with it is the same whatever direct
 That file arrives with the repository rather than from you, so it is read as untrusted input. The file is
 opened first and then judged by the handle: a handle that cannot seek is a device or a pipe rather than a
 file, and the size that has to fit under 64 KiB is the one the handle reports, not one read off the path
-beforehand. A link or another reparse point is refused as well. One clock covers the lookup, the open and
-every read, and it starts before the first filesystem call: if 250 ms goes by the attempt is abandoned
-and the config beneath it stands, silently, the way a bad value does.
+beforehand. A link or another reparse point is refused as well. One clock covers every step — the open,
+the size, the link check, each read and the close at the end — and it starts before the first filesystem
+call: if 250 ms goes by the attempt is abandoned and the config beneath it stands, silently, the way a
+bad value does.
 
-What that buys is a bound on this read, not on the machine. A filesystem pathological enough to hang an
-open leaves a thread stuck behind it until the process exits, and the status line renders and exits
-without it. A filesystem that also hangs unrelated calls can still delay a render somewhere else, and
-64 KiB and 250 ms are the numbers this read promises rather than a guarantee about your disk. Your own
-`statusline.json` is read as it always was: it is yours, and it is the one whose text encoding the
-script does not choose.
+What that buys is a bound on this read, not on the machine. Abandoning is literal: a thread can stay
+stuck behind a hung open until the process exits, and a file left open that way is not closed on the way
+out, because closing it would wait on the same thing. The status line renders and exits without either.
+Two things the bound does not cover, said plainly rather than rounded off: your own `statusline.json` is
+read the ordinary way, with no deadline, so a home directory on a dead network share can still hold up a
+render; and a filesystem sick enough to hang calls this read never makes can hold one up somewhere else
+again. Your file is read that way on purpose — it is yours rather than a repository's, and it is the one
+whose text encoding the script does not get to choose.
 
 | Key | Values | What it does |
 |---|---|---|
