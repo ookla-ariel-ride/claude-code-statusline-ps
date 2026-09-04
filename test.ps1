@@ -145,7 +145,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
 # these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
@@ -163,6 +163,7 @@ $iconAhead = [char]::ConvertFromUtf32(0x2191)
 $iconBehind = [char]::ConvertFromUtf32(0x2193)
 $iconConflict = [char]::ConvertFromUtf32(0xF071)
 $iconPr = [char]::ConvertFromUtf32(0xF407)
+$iconWorktree = [char]::ConvertFromUtf32(0xF04C1)
 
 # A payload with one top-level key whose value is the given JSON. It goes through ConvertFrom-Json so
 # a null is a real null property, the way Claude Code sends it, and counts arrive as Int64, the way
@@ -184,6 +185,7 @@ $widthTable = @(
     @{ Text = [string][char]0x0301; Width = 0 }                                         # lone combining mark
     @{ Text = "$esc[1;36mab$esc[0m $esc[90mc$esc[0m"; Width = 4 }                     # escapes stripped
     @{ Text = "${iconAhead}1 ${iconBehind}2"; Width = 5 }                              # ahead/behind arrows are narrow
+    @{ Text = "$iconWorktree wt-review"; Width = 11 }                                  # the worktree fork is one cell wide
     @{ Text = "$esc]8;;https://example.com/pull/12$esc\abc$esc]8;;$esc\"; Width = 3 } # OSC 8 link: the URL is not visible
     @{ Text = "$esc]8;;https://example.com$esc\$esc[32mab$esc[0m$esc]8;;$esc\"; Width = 2 }  # link around coloured text
     @{ Text = "$esc]8;;$esc\"; Width = 0 }                                              # a bare link terminator
@@ -464,6 +466,101 @@ $c = Read-StatusConfig (Write-TempConfig 'icons-good-thresholds-bad.json' '{ "ic
 Confirm-Equal $c.Icons.model 0xF0E7 'config icons: kept when thresholds is invalid'
 Confirm-Equal (Get-ThresholdText $c) '60/85' 'config icons: the invalid thresholds fall back on their own'
 
+# The preset key: one name standing for a layout, a style and every segment toggle. Get-ConfigPreset
+# holds the three shapes; a name it does not have, or a value that is not a string, returns $null and
+# changes nothing. A preset is expanded before the rest of the file it is named in, so any key beside it
+# wins whatever order the file spells them in, and it touches nothing but layout, style and segments.
+function Get-SegmentText($c) { return (@($allSegments | Where-Object { $c.Segments[$_] }) -join ',') }
+$presetShape = @(
+    @{ Name = 'minimal'; Layout = 'one'; Style = 'plain'; On = 'model,context,folder,branch' }
+    @{ Name = 'cost'; Layout = 'one'; Style = 'plain'; On = 'model,context,cost,lines,limits' }
+    @{ Name = 'full'; Layout = 'two'; Style = 'powerline'; On = ($allSegments -join ',') }
+)
+foreach ($want in $presetShape) {
+    $n = $want.Name
+    $p = Get-ConfigPreset $n
+    Confirm-True ($null -ne $p) "preset ${n}: the name is known"
+    Confirm-Equal $p.Layout $want.Layout "preset ${n}: layout $($want.Layout)"
+    Confirm-Equal $p.Style $want.Style "preset ${n}: style $($want.Style)"
+    # Every preset states the whole registry and nothing beyond it, so a segment added later has to be
+    # placed in all three by hand rather than appearing in `minimal` because no one said otherwise.
+    Confirm-Equal (@($allSegments | Where-Object { -not $p.Segments.ContainsKey($_) }) -join ',') '' "preset ${n}: every registry segment is named"
+    Confirm-Equal $p.Segments.Count $allSegments.Count "preset ${n}: it names nothing the registry does not have"
+    # The same shape through a whole config file.
+    $c = Read-StatusConfig (Write-TempConfig "preset-$n.json" ('{ "preset": "' + $n + '" }'))
+    Confirm-Equal $c.Layout $want.Layout "preset ${n}: config layout $($want.Layout)"
+    Confirm-Equal $c.Style $want.Style "preset ${n}: config style $($want.Style)"
+    Confirm-Equal (Get-SegmentText $c) $want.On "preset ${n}: config segments $($want.On)"
+    # A preset sets layout, style and the toggles and nothing else: order, rows, thresholds, icons, the
+    # state toggle and the git block all stay where the defaults left them.
+    Confirm-Equal ($c.Order -join ',') $registryOrder "preset ${n}: the order is untouched"
+    Confirm-Equal (Get-RowText $c) $registryRows "preset ${n}: the rows are untouched"
+    Confirm-Equal (Get-ThresholdText $c) '60/85' "preset ${n}: the thresholds are untouched"
+    Confirm-Equal $c.Icons.Count 0 "preset ${n}: the icons are untouched"
+    Confirm-Equal $c.State $true "preset ${n}: the state toggle is untouched"
+    Confirm-Equal $c.Git.TimeoutMs 1500 "preset ${n}: the git block is untouched"
+    Confirm-Equal $c.Folder 'repo' "preset ${n}: the folder mode is untouched"
+}
+# A fresh table every call, the segment table included, so a caller that changes its copy cannot reach
+# the next caller's the way Get-DefaultStatusConfig cannot.
+$p = Get-ConfigPreset 'minimal'
+$p.Layout = 'two'; $p.Segments.cost = $true
+$p2 = Get-ConfigPreset 'minimal'
+Confirm-Equal $p2.Layout 'one' 'preset: a changed copy does not change the next table'
+Confirm-Equal $p2.Segments.cost $false 'preset: the segment table is fresh too'
+# The name is folded like layout and style are.
+foreach ($spelling in @('FULL', 'Full', 'fUlL')) {
+    Confirm-Equal (Get-ConfigPreset $spelling).Style 'powerline' "preset: $spelling names the full preset"
+}
+$c = Read-StatusConfig (Write-TempConfig 'preset-case.json' '{ "preset": "FULL" }')
+Confirm-Equal (Get-SegmentText $c) ($allSegments -join ',') 'preset: a name in capitals matches through a config file'
+Confirm-Equal $c.Style 'powerline' 'preset: a name in capitals takes the full style'
+# Anything the table does not have returns $null and leaves the defaults standing. The helper is untyped
+# so a number, an array or a boolean is refused rather than turned into a name.
+$defaultSegments = ($allSegments -join ',')
+$presetBadIndex = 0
+foreach ($case in @(
+        @{ Label = 'an unknown name'; Value = 'nope'; Json = '"nope"' }
+        @{ Label = 'an empty string'; Value = ''; Json = '""' }
+        @{ Label = 'a number'; Value = 5; Json = '5' }
+        @{ Label = 'a boolean'; Value = $true; Json = 'true' }
+        @{ Label = 'null'; Value = $null; Json = 'null' }
+        @{ Label = 'an array'; Value = @('minimal'); Json = '["minimal"]' }
+        @{ Label = 'an object'; Value = @{ name = 'minimal' }; Json = '{ "name": "minimal" }' })) {
+    Confirm-True ($null -eq (Get-ConfigPreset $case.Value)) "preset: $($case.Label) is not a preset"
+    $presetBadIndex++
+    $c = Read-StatusConfig (Write-TempConfig "preset-bad-$presetBadIndex.json" ('{ "preset": ' + $case.Json + ' }'))
+    Confirm-Equal $c.Layout 'one' "preset: $($case.Label) leaves the default layout"
+    Confirm-Equal $c.Style 'plain' "preset: $($case.Label) leaves the default style"
+    Confirm-Equal (Get-SegmentText $c) $defaultSegments "preset: $($case.Label) leaves every segment on"
+}
+# A key beside a preset is written over it, whichever order the file spells the two in. JSON has no
+# ordering rule and a person writing one may well put the preset last, so both orders are pinned here.
+foreach ($case in @(
+        @{ Where = 'after the preset'; Json = '{ "preset": "minimal", "style": "powerline" }' }
+        @{ Where = 'before the preset'; Json = '{ "style": "powerline", "preset": "minimal" }' })) {
+    $c = Read-StatusConfig (Write-TempConfig "preset-style-$($case.Where -replace ' ', '-').json" $case.Json)
+    Confirm-Equal $c.Style 'powerline' "preset: a style $($case.Where) wins"
+    Confirm-Equal $c.Layout 'one' "preset: a style $($case.Where) leaves the preset layout"
+    Confirm-Equal (Get-SegmentText $c) 'model,context,folder,branch' "preset: a style $($case.Where) leaves the minimal segments"
+}
+$c = Read-StatusConfig (Write-TempConfig 'preset-segment-on.json' '{ "preset": "cost", "segments": { "branch": true } }')
+Confirm-Equal (Get-SegmentText $c) 'model,context,cost,lines,limits,branch' 'preset: a segment turned back on beside it'
+$c = Read-StatusConfig (Write-TempConfig 'preset-segment-off.json' '{ "preset": "cost", "segments": { "cost": false } }')
+Confirm-Equal (Get-SegmentText $c) 'model,context,lines,limits' 'preset: a segment turned off beside it'
+$c = Read-StatusConfig (Write-TempConfig 'preset-layout.json' '{ "preset": "full", "layout": "one" }')
+Confirm-Equal $c.Layout 'one' 'preset: the layout beside it wins'
+Confirm-Equal $c.Style 'powerline' 'preset: the style it sets is kept'
+# A preset beside a key it does not set: both apply.
+$c = Read-StatusConfig (Write-TempConfig 'preset-thresholds.json' '{ "preset": "minimal", "thresholds": { "warn": 20, "bad": 40 }, "order": ["branch", "model"] }')
+Confirm-Equal (Get-SegmentText $c) 'model,context,folder,branch' 'preset: the segments are set beside a threshold'
+Confirm-Equal (Get-ThresholdText $c) '20/40' 'preset: the thresholds beside it are applied'
+Confirm-Equal ($c.Order -join ',') 'branch,model' 'preset: the order beside it is applied'
+# An invalid key beside a preset falls back to the preset, not to the built-in default.
+$c = Read-StatusConfig (Write-TempConfig 'preset-bad-key.json' '{ "preset": "full", "style": 5, "layout": "three" }')
+Confirm-Equal $c.Style 'powerline' 'preset: an invalid style falls back to the preset style'
+Confirm-Equal $c.Layout 'two' 'preset: an invalid layout falls back to the preset layout'
+
 # ---- The project config: a second file merged over the user file, key by key ----
 # Read-StatusConfig builds the defaults, merges the user file, then merges the project file when the
 # payload named a project directory holding .claude\statusline.json. The merge is per key, so a project
@@ -552,6 +649,26 @@ Confirm-Equal ($c.Order -join ',') 'model,cost' 'project config: an order naming
 $c = Read-StatusConfig $orderUser (Write-TempProjectDir 'proj-rows' '{ "rows": [["branch"], ["limits"]] }')
 Confirm-Equal (Get-RowText $c) 'branch|limits' 'project config: the project rows are applied'
 Confirm-Equal ($c.Order -join ',') 'model,cost' 'project config: the user order beside them is kept'
+# preset: expanded inside the file that names it, so it sits at that file's place in the chain. A user
+# preset is a starting point the user's own keys and then the whole project file are written over; a
+# project preset outranks the user file entirely, which is the same rule every other project key follows.
+# The preset table is built into the script, so naming one from a project config opens no path and reads
+# no second file: an untrusted config can pick one of three shapes and nothing else.
+$c = Read-StatusConfig (Write-TempConfig 'preset-project-user.json' '{ "preset": "minimal" }') (Write-TempProjectDir 'proj-preset-key' '{ "segments": { "cost": true } }')
+Confirm-Equal (Get-SegmentText $c) 'model,context,cost,folder,branch' 'project config: a project toggle lands on the user preset'
+Confirm-Equal $c.Layout 'one' 'project config: the user preset layout is kept'
+$c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-preset' '{ "preset": "cost" }')
+Confirm-Equal (Get-SegmentText $c) 'model,context,cost,lines,limits' 'project config: a project preset outranks the user segment toggles'
+Confirm-Equal $c.Style 'plain' 'project config: a project preset outranks the user style'
+$c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-preset-and-key' '{ "preset": "cost", "style": "powerline" }')
+Confirm-Equal $c.Style 'powerline' 'project config: a key beside the project preset wins'
+Confirm-Equal (Get-SegmentText $c) 'model,context,cost,lines,limits' 'project config: the project preset segments are kept'
+$c = Read-StatusConfig (Write-TempConfig 'preset-project-user-full.json' '{ "preset": "full" }') (Write-TempProjectDir 'proj-preset-over' '{ "preset": "minimal" }')
+Confirm-Equal (Get-SegmentText $c) 'model,context,folder,branch' 'project config: the project preset wins the one the user file names'
+Confirm-Equal $c.Layout 'one' 'project config: the project preset layout wins'
+$c = Read-StatusConfig (Write-TempConfig 'preset-project-user-min.json' '{ "preset": "minimal" }') (Write-TempProjectDir 'proj-preset-unknown' '{ "preset": "nope" }')
+Confirm-Equal (Get-SegmentText $c) 'model,context,folder,branch' 'project config: a preset name the project gets wrong keeps the user preset'
+
 # A project file that cannot be read leaves the user config in force.
 foreach ($case in @(
         @{ Name = 'proj-broken'; Json = '{ "layout": '; Label = 'broken JSON' }
@@ -777,11 +894,17 @@ Write-Host '== unit: icons' -ForegroundColor Cyan
 # Get-IconSet turns the built-in table and the config's overrides into one glyph per name, and the
 # script assigns its $icon* constants from that set.
 $defaultIcons = Get-IconDefault
-Confirm-Equal $defaultIcons.Count 18 'icons: eighteen built-in glyphs'
+Confirm-Equal $defaultIcons.Count 19 'icons: nineteen built-in glyphs'
 Confirm-Equal $defaultIcons.pr 0xF407 'icons: pr is the pull-request glyph'
 Confirm-Equal $defaultIcons.model 0xF06A9 'icons: model is the robot'
+Confirm-Equal $defaultIcons.worktree 0xF04C1 'icons: worktree is the source fork'
+# Every built-in code point has to survive the guards a config value goes through. The glyph a config
+# may put in its place is held to that bar, so the one it replaces cannot sit below it.
+foreach ($e in $defaultIcons.GetEnumerator()) {
+    Confirm-Equal (Read-CodePoint ('{0:X}' -f $e.Value)) $e.Value "icons: the built-in $($e.Key) code point passes the guards"
+}
 $set = Get-IconSet @{ Icons = @{} }
-Confirm-Equal $set.Count 18 'icons: one glyph per name'
+Confirm-Equal $set.Count 19 'icons: one glyph per name'
 Confirm-Equal $set.pr $iconPr 'icons: no override gives the built-in pr glyph'
 Confirm-Equal $set.model $iconModel 'icons: no override gives the built-in model glyph'
 Confirm-Equal $set.dirty $iconDirty 'icons: no override gives the built-in pencil'
@@ -1926,6 +2049,117 @@ Confirm-Equal $seg.Text "$iconBranch feature" 'branch override: the override nev
 Confirm-True ($seg.Text -notmatch '\p{Cf}') 'branch override: nothing of the format category is left in the rendered text'
 Confirm-True ($null -eq (Get-BranchSegment ([pscustomobject]@{ git = @{ branch = "$([char]0x202E)$([char]0x2066)" } }) $branchCfg)) 'branch override: a name that is nothing but format characters is no branch at all'
 
+Write-Host '== unit: worktree name' -ForegroundColor Cyan
+# The worktree badge's text comes from the payload and never from git. worktree.name when it is text;
+# otherwise, when workspace.git_worktree marks the session as being in one, the last segment of
+# worktree.path; otherwise nothing. The empty string is the third answer - "in a worktree, with no name
+# to show" - and the builder draws the glyph on its own for it, so a $null and an empty string are told
+# apart here rather than both being read as "no text". Each payload goes through ConvertFrom-Json, so a
+# missing key is a real missing property, a JSON true a real boolean and a number a real number.
+function Get-WorktreePayload([string] $Json) { return ($Json | ConvertFrom-Json) }
+$worktreeTable = @(
+    @{ Json = '{"worktree":{"name":"wt-review"}}'; Text = 'wt-review'; Label = 'a name on its own' }
+    @{ Json = '{"worktree":{"name":"wt-review"},"workspace":{"git_worktree":false}}'; Text = 'wt-review'; Label = 'a name with the flag off' }
+    @{ Json = '{"worktree":{"name":"  wt-review  "},"workspace":{"git_worktree":true}}'; Text = 'wt-review'; Label = 'a padded name is trimmed' }
+    @{ Json = '{"worktree":{"name":"","path":"C:\\src\\wt-x"},"workspace":{"git_worktree":true}}'; Text = 'wt-x'; Label = 'an empty name falls back to the path leaf' }
+    @{ Json = '{"worktree":{"path":"/home/j/src/wt-y/"},"workspace":{"git_worktree":true}}'; Text = 'wt-y'; Label = 'a posix path with a trailing slash' }
+    @{ Json = '{"worktree":{"path":"C:\\src\\wt-b\\"},"workspace":{"git_worktree":true}}'; Text = 'wt-b'; Label = 'a windows path with a trailing separator' }
+    @{ Json = '{"worktree":{"path":"wt-d"},"workspace":{"git_worktree":true}}'; Text = 'wt-d'; Label = 'a path with no separator at all' }
+    @{ Json = '{"worktree":{"name":42,"path":"C:\\src\\wt-n"},"workspace":{"git_worktree":true}}'; Text = 'wt-n'; Label = 'a number is not a name' }
+    @{ Json = '{"worktree":{"name":true},"workspace":{"git_worktree":true}}'; Text = ''; Label = 'a boolean is not a name' }
+    @{ Json = '{"worktree":{"name":["a","b"]},"workspace":{"git_worktree":true}}'; Text = ''; Label = 'a list is not a name' }
+    @{ Json = '{"worktree":{"name":" "},"workspace":{"git_worktree":true}}'; Text = ''; Label = 'a blank name' }
+    @{ Json = '{"worktree":"wt-review","workspace":{"git_worktree":true}}'; Text = ''; Label = 'a worktree that is a string, not an object' }
+    @{ Json = '{"worktree":null,"workspace":{"git_worktree":true}}'; Text = ''; Label = 'a null worktree with the flag on' }
+    @{ Json = '{"worktree":{"name":null,"path":null},"workspace":{"git_worktree":true}}'; Text = ''; Label = 'both fields null with the flag on' }
+    @{ Json = '{"workspace":{"git_worktree":true}}'; Text = ''; Label = 'the flag on its own' }
+    @{ Json = '{"worktree":{},"workspace":{"git_worktree":true}}'; Text = ''; Label = 'an empty worktree object with the flag on' }
+    @{ Json = '{"worktree":{"path":"/"},"workspace":{"git_worktree":true}}'; Text = ''; Label = 'a path with nothing but a separator' }
+    @{ Json = '{"worktree":{"name":"wt\u001b[31mx"},"workspace":{"git_worktree":true}}'; Text = ''; Label = 'an escape in the name' }
+    @{ Json = '{"worktree":{"path":"C:\\src\\wt\u000ay"},"workspace":{"git_worktree":true}}'; Text = ''; Label = 'a newline in the path' }
+    @{ Json = '{"worktree":{"path":"C:\\src\\wt-z"},"workspace":{"git_worktree":false}}'; Text = $null; Label = 'a path with the flag off' }
+    @{ Json = '{"worktree":{"path":"C:\\src\\wt-z"},"workspace":{"current_dir":"C:\\src"}}'; Text = $null; Label = 'a path with no flag at all' }
+    @{ Json = '{"workspace":{"git_worktree":"true"}}'; Text = $null; Label = 'the flag as a string' }
+    @{ Json = '{"workspace":{"git_worktree":1}}'; Text = $null; Label = 'the flag as a number' }
+    @{ Json = '{"workspace":{"current_dir":"C:\\src"}}'; Text = $null; Label = 'a payload with no worktree in it' }
+    @{ Json = '{}'; Text = $null; Label = 'an empty payload' }
+)
+foreach ($row in $worktreeTable) {
+    $got = Get-WorktreeName (Get-WorktreePayload $row.Json)
+    if ($null -eq $row.Text) {
+        Confirm-True ($null -eq $got) "worktree name: $($row.Label) gives no badge, got '$got'"
+    } else {
+        # Ordinal, for the reason Confirm-Equal is: -ceq compares by culture, and a culture comparison
+        # gives the Unicode Format characters no weight at all, so it would call "wt<U+202E>-x" and
+        # "wt-x" the same string and say nothing about an override sitting in the badge.
+        Confirm-True ($got -is [string] -and [string]::Equals($got, $row.Text, [System.StringComparison]::Ordinal)) "worktree name: $($row.Label) gives '$($row.Text)', got '$got'"
+    }
+}
+
+# A worktree directory is named by whoever made the repository, the same argument the branch name gets,
+# so an override in the name or in the path leaf is stripped and the badge still names the checkout.
+Confirm-Equal (Get-WorktreeName (Get-WorktreePayload '{"worktree":{"name":"wt-re\u202eview"},"workspace":{"git_worktree":true}}')) 'wt-review' 'worktree name: an override in the name is stripped'
+Confirm-Equal (Get-WorktreeName (Get-WorktreePayload '{"worktree":{"path":"C:\\src\\wt-\u202ey"},"workspace":{"git_worktree":true}}')) 'wt-y' 'worktree name: an override in the path leaf is stripped'
+Confirm-Equal (Get-WorktreeName (Get-WorktreePayload '{"worktree":{"name":"  wt-\u200dq  "},"workspace":{"git_worktree":true}}')) 'wt-q' 'worktree name: a joiner comes out and the padding is still trimmed'
+# The three answers survive a name that strips to nothing, and no fourth one is invented for it. A name
+# with nothing visible left is not a name, so the chain carries on the way it does for a blank one.
+Confirm-Equal (Get-WorktreeName (Get-WorktreePayload '{"worktree":{"name":"\u202e\u2066","path":"C:\\src\\wt-p"},"workspace":{"git_worktree":true}}')) 'wt-p' 'worktree name: a name that is nothing but format characters falls through to the path leaf'
+$got = Get-WorktreeName (Get-WorktreePayload '{"worktree":{"name":"\u202e"},"workspace":{"git_worktree":true}}')
+Confirm-True ($got -is [string] -and $got.Length -eq 0) "worktree name: a name that strips to nothing, with no path behind it, is the glyph on its own, got '$got'"
+# And a directory whose own name is invisible: the leaf strips to nothing, which is the same answer.
+$got = Get-WorktreeName (Get-WorktreePayload '{"worktree":{"path":"C:\\src\\\u202e"},"workspace":{"git_worktree":true}}')
+Confirm-True ($got -is [string] -and $got.Length -eq 0) "worktree name: a path leaf that strips to nothing is the glyph on its own, not the parent directory, got '$got'"
+# The flag is what says "in a worktree" at all, so with it off there is still no badge.
+Confirm-True ($null -eq (Get-WorktreeName (Get-WorktreePayload '{"worktree":{"name":"\u202e"},"workspace":{"git_worktree":false}}'))) 'worktree name: a name that strips to nothing outside a worktree is still no badge'
+
+# The badge on the segment: the glyph and the name between the branch name and the counts, so the
+# identity of the checkout reads left to right and the pencil still lands last. The Short form is the
+# one the counts already fold into - icon, name, pencil - so a narrow line sheds the worktree with them.
+$seg = Get-BranchSegment ('{"git":{"branch":"main","status":"clean"},"worktree":{"name":"wt-review"}}' | ConvertFrom-Json) $branchCfg
+Confirm-Equal $seg.Text "$iconHome main $iconWorktree wt-review" 'branch worktree: the glyph and the name after the branch'
+Confirm-Equal $seg.Short "$iconHome main" 'branch worktree: short drops the badge'
+Confirm-Equal $seg.Role 'branch' 'branch worktree: a worktree is not a reason to change the colour'
+Confirm-Equal (Get-VisibleWidth $seg.Text) 18 'branch worktree: the badge measures as a glyph, a space and the name'
+$seg = Get-BranchSegment ('{"git":{"branch":"feature/x","status":{"modified":2}},"worktree":{"name":"wt-review"},"workspace":{"git_worktree":true}}' | ConvertFrom-Json) $branchCfg
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x $iconWorktree wt-review ~2 $iconDirty" 'branch worktree dirty: badge, then the counts, then the pencil'
+Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch worktree dirty: short is icon, name and pencil'
+Confirm-Equal $seg.Role 'warn' 'branch worktree dirty: the pencil still sets the colour'
+$seg = Get-BranchSegment ('{"git":{"branch":"main","status":"clean"},"worktree":{"path":"C:\\src\\wt-y"},"workspace":{"git_worktree":true}}' | ConvertFrom-Json) $branchCfg
+Confirm-Equal $seg.Text "$iconHome main $iconWorktree wt-y" 'branch worktree path: the leaf stands in for the name'
+$seg = Get-BranchSegment ('{"git":{"branch":"main","status":"clean"},"workspace":{"git_worktree":true}}' | ConvertFrom-Json) $branchCfg
+Confirm-Equal $seg.Text "$iconHome main $iconWorktree" 'branch worktree bare: the glyph on its own'
+Confirm-Equal (Get-VisibleWidth $seg.Text) 8 'branch worktree bare: the glyph is one cell and there is no trailing space'
+$seg = Get-BranchSegment ('{"git":{"branch":"main","status":"clean"},"worktree":{"name":"wt-re\u202eview"}}' | ConvertFrom-Json) $branchCfg
+Confirm-Equal $seg.Text "$iconHome main $iconWorktree wt-review" 'branch worktree override: the badge draws the name without the override'
+Confirm-True ($seg.Text -notmatch '\p{Cf}') 'branch worktree override: no format character reaches the line'
+Confirm-Equal (Get-VisibleWidth $seg.Text) 18 'branch worktree override: the width is what the badge draws, the same as the clean name'
+$seg = Get-BranchSegment ('{"git":{"branch":"main","status":"clean"},"worktree":{"name":"\u202e"},"workspace":{"git_worktree":true}}' | ConvertFrom-Json) $branchCfg
+Confirm-Equal $seg.Text "$iconHome main $iconWorktree" 'branch worktree override: a name that strips to nothing draws the glyph on its own'
+Confirm-Equal (Get-VisibleWidth $seg.Text) 8 'branch worktree override: and no trailing space is left where the name was'
+$seg = Get-BranchSegment ('{"git":{"branch":"main","status":"clean"}}' | ConvertFrom-Json) $branchCfg
+Confirm-Equal $seg.Text "$iconHome main" 'branch without a worktree: exactly the text it printed before'
+Confirm-True (-not $seg.Text.Contains($iconWorktree)) 'branch without a worktree: no fork glyph anywhere'
+
+# A worktree name is the repository's word, not the user's: a directory called `wt-<ESC>[31m` would
+# recolour the rest of the line, and one holding a newline would break it in two. The name and the path
+# go through Test-PayloadText, the same guard the branch name and the repository name pass, so a
+# hostile one leaves the glyph standing on its own rather than reaching the line. The cases below are
+# what that guard refuses today; it may refuse more later, and none of them asks it to accept anything.
+$seg = Get-BranchSegment ('{"git":{"branch":"main","status":"clean"},"worktree":{"name":"wt\u001b[31mx","path":"C:\\src\\wt\u000ay"},"workspace":{"git_worktree":true}}' | ConvertFrom-Json) $branchCfg
+Confirm-Equal $seg.Text "$iconHome main $iconWorktree" 'branch worktree hostile: an escape in the name and a newline in the path leave the glyph alone'
+Confirm-True ($seg.Text -notmatch '\p{Cc}') 'branch worktree hostile: no control character reaches the line'
+Confirm-Equal (Get-VisibleWidth $seg.Text) 8 'branch worktree hostile: the width is the glyph, not the refused text'
+$seg = Get-BranchSegment ('{"git":{"branch":"main","status":"clean"},"worktree":{"name":"wt\u001b[31mx"}}' | ConvertFrom-Json) $branchCfg
+Confirm-Equal $seg.Text "$iconHome main" 'branch worktree hostile name with no flag: no badge at all'
+
+# A worktree directory can be named in any script, and the script's width count and the test's own have
+# to agree on it or the fitting pipeline shrinks against a width the terminal never sees.
+$wideName = [char]::ConvertFromUtf32(0x691C) + [char]::ConvertFromUtf32(0x8A3C)
+$seg = Get-BranchSegment (('{"git":{"branch":"main","status":"clean"},"worktree":{"name":"' + $wideName + '"}}') | ConvertFrom-Json) $branchCfg
+Confirm-Equal $seg.Text "$iconHome main $iconWorktree $wideName" 'branch worktree wide name: the name reaches the line'
+Confirm-Equal (Get-VisibleWidth $seg.Text) 13 'branch worktree wide name: two cells for each wide character'
+Confirm-Equal (Measure-VisibleWidth $seg.Text) (Get-VisibleWidth $seg.Text) 'branch worktree wide name: the script and the test count the same width'
+
 # Ahead and behind counts only ever come from the git probe, so stand in for Get-GitBranch here and put
 # the real one back afterwards. The "not a repo" checks below then double as proof the restore worked.
 # Each stand-in record carries the full key set, the shape Read-PorcelainStatus and Read-PayloadStatus
@@ -1967,6 +2201,14 @@ Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch everything: 
 $script:mockGitBranch = Get-BranchRecord 'main' $true -Staged 1 -Modified 2
 $seg = Get-BranchSegment $probePayload $branchCfg
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconHome main +1 ~2 $iconDirty" 'branch file counts only: no arrows, zero counts omitted'
+# The badge does not care where the branch came from: the payload names the worktree, git names the
+# branch, and the badge still sits between the name and the counts. The probe path is the normal one
+# for a real session, which is the only place a worktree name ever arrives.
+$script:mockGitBranch = Get-BranchRecord 'wt-branch' $false -Ahead 1
+$probeWtPayload = '{"workspace":{"current_dir":"x","git_worktree":true},"worktree":{"name":"wt-review"}}' | ConvertFrom-Json
+$seg = Get-BranchSegment $probeWtPayload $branchCfg
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch wt-branch $iconWorktree wt-review ${iconAhead}1" 'branch worktree on the probe path: the badge sits between the probed name and its counts'
+Confirm-Equal $seg.Short "$iconBranch wt-branch" 'branch worktree on the probe path: short is icon and name'
 
 Write-Host '== unit: git cache' -ForegroundColor Cyan
 # The cache in front of the probe, with a stand-in Get-GitBranch that counts its calls and answers with
@@ -3517,6 +3759,21 @@ $absentGlyphs = @{
         @{ Icon = $iconLimit; Name = 'limits' }
         @{ Icon = $iconConflict; Name = 'warn' }
     )
+    '11-worktree.json'                      = @(
+        @{ Icon = $iconHome; Name = 'home' }
+        @{ Icon = $iconLines; Name = 'lines' }
+        @{ Icon = $iconLimit; Name = 'limits' }
+        @{ Icon = $iconConflict; Name = 'warn' }
+    )
+}
+# 11 is the only sample whose session is in a worktree, so every other one has to keep the fork glyph
+# off its line. One row per sample rather than ten written out by hand, and a sample added later is
+# covered without an edit: a builder that started drawing the badge from a payload that names no
+# worktree would show up on all of them at once.
+foreach ($sample in $sampleFiles) {
+    if ($sample.Name -eq '11-worktree.json') { continue }
+    $rows = @(if ($absentGlyphs.ContainsKey($sample.Name)) { $absentGlyphs[$sample.Name] })
+    $absentGlyphs[$sample.Name] = $rows + @{ Icon = $iconWorktree; Name = 'worktree' }
 }
 # What each sample renders when every segment is enabled and nothing is fitted away: 04 carries nothing
 # but a model, 05, 07 and 08 have no git object and their probe directory is not a repository, and 07's
@@ -3533,6 +3790,7 @@ $sampleSegments = @{
     '08-repo-identity.json'                 = @('model', 'context', 'cost', 'folder')
     '09-1m-context.json'                    = @('model', 'context', 'cost', 'folder', 'branch')
     '10-pr.json'                            = @('model', 'context', 'cost', 'pr', 'folder', 'branch')
+    '11-worktree.json'                      = @('model', 'context', 'cost', 'folder', 'branch')
 }
 # One marker per segment per sample: the segment's glyph plus the value this payload gives it, spelled
 # the way it reaches the line once the escapes are stripped. Every visible segment has to put its marker
@@ -3558,6 +3816,9 @@ $sampleShortForms = @{
     }
     '08-repo-identity.json'                 = @{
         folder = @{ Icon = $iconFolder; Full = "$iconFolder octo/demo $iconChevron tools"; Short = "$iconFolder demo" }
+    }
+    '11-worktree.json'                      = @{
+        branch = @{ Icon = $iconBranch; Full = "$iconBranch review/x $iconWorktree wt-review ~2 $iconDirty"; Short = "$iconBranch review/x $iconDirty" }
     }
 }
 
@@ -3603,6 +3864,10 @@ $sampleMarkers = @{
         model  = "$iconModel Fable 5.1"; context = "$iconCtx 8%"; cost = "$iconCost `$$('{0:N2}' -f 0.4312)"
         pr     = "$iconPr #12"; folder = "$iconFolder my-project"; branch = "$iconBranch feature/x"
     }
+    '11-worktree.json'                      = @{
+        model  = "$iconModel Sonnet 5"; context = "$iconCtx 21%"; cost = "$iconCost `$$('{0:N2}' -f 0.75)"
+        folder = "$iconFolder wt-review"; branch = "$iconBranch review/x $iconWorktree wt-review ~2 $iconDirty"
+    }
 }
 # Every glyph a segment can put on the line: a segment the config turns off must show none of them, and
 # the two-line checks use them to say which row a segment landed on.
@@ -3615,13 +3880,13 @@ $segmentGlyphs = @{
     badges  = @($iconFast, $iconThink, $iconEffort, $iconVim)
     pr      = @($iconPr)
     folder  = @($iconFolder)
-    branch  = @($iconHome, $iconBranch, $iconDirty, $iconAhead, $iconBehind, $iconConflict)
+    branch  = @($iconHome, $iconBranch, $iconDirty, $iconAhead, $iconBehind, $iconConflict, $iconWorktree)
 }
 # The segment behind each row of the absence table, so a row can be skipped when its segment is off
 # (the per-segment absence assertions cover that case instead, for every glyph the segment owns).
 $glyphSegment = @{
     context = 'context'; cost = 'cost'; folder = 'folder'; lines = 'lines'; limits = 'limits'; warn = 'model'
-    home = 'branch'; pencil = 'branch'; branch = 'branch'
+    home = 'branch'; pencil = 'branch'; branch = 'branch'; worktree = 'branch'
     fast = 'badges'; think = 'badges'; effort = 'badges'; vim = 'badges'
 }
 # A config record for the matrix. Rows is what the script prints from this config, read the way the
@@ -3894,6 +4159,52 @@ $r = Invoke-StatusLine $payload01 (Write-TempConfig 'render-icons-surrogate.json
 Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains("$iconModel Fable 5.1")) 'render icons: a surrogate falls back to the robot'
 $r = Invoke-StatusLine 'not json' (Write-TempConfig 'render-icons-bolt.json' '{ "icons": { "model": "F0E7" } }') 0
 Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) "$bolt claude" 'render icons: the bad-payload fallback line carries the override too'
+
+# The presets through the whole script, against the sample that carries every segment's data. What is
+# checked is glyphs on the line rather than a config table, so a preset that parsed and then failed to
+# reach the render would show up here. 06 has no pull-request block, so `pr` prints nothing whatever the
+# toggle says and is not asserted either way.
+Write-Host ''
+Write-Host '== render: presets' -ForegroundColor Cyan
+$presetArrow = [char]::ConvertFromUtf32(0xE0B0)
+$presetGlyph = @{
+    model = $iconModel; context = $iconCtx; cost = $iconCost; lines = $iconLines; limits = $iconLimit
+    fast = $iconFast; think = $iconThink; effort = $iconEffort; vim = $iconVim; folder = $iconFolder; branch = $iconHome
+}
+function Get-PresetRender([string] $Name, [string] $Json) {
+    $r = Invoke-StatusLine $payload06 (Write-TempConfig "render-preset-$Name.json" $Json) 0
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) "render preset ${Name}: exit code 0, stderr empty"
+    return $r
+}
+function Confirm-PresetGlyph([string] $Label, [string] $Text, [string[]] $Present, [string[]] $Absent) {
+    foreach ($g in $Present) { Confirm-True ($Text.Contains($presetGlyph[$g])) "render preset ${Label}: the $g glyph is on the line" }
+    foreach ($g in $Absent) { Confirm-True (-not $Text.Contains($presetGlyph[$g])) "render preset ${Label}: the $g glyph is gone" }
+}
+$r = Get-PresetRender 'minimal' '{ "preset": "minimal" }'
+$text = ConvertTo-PlainText ($r.Lines -join "`n")
+Confirm-Equal $r.Lines.Count 1 'render preset minimal: one line'
+Confirm-True (-not $text.Contains($presetArrow)) 'render preset minimal: plain style, no powerline arrow'
+Confirm-PresetGlyph 'minimal' $text @('model', 'context', 'folder', 'branch') @('cost', 'lines', 'limits', 'fast', 'think', 'effort', 'vim')
+$r = Get-PresetRender 'cost' '{ "preset": "cost" }'
+$text = ConvertTo-PlainText ($r.Lines -join "`n")
+Confirm-Equal $r.Lines.Count 1 'render preset cost: one line'
+Confirm-PresetGlyph 'cost' $text @('model', 'context', 'cost', 'lines', 'limits') @('fast', 'think', 'effort', 'vim', 'folder', 'branch')
+$r = Get-PresetRender 'full' '{ "preset": "full" }'
+$text = ConvertTo-PlainText ($r.Lines -join "`n")
+Confirm-Equal $r.Lines.Count 2 'render preset full: two lines'
+Confirm-True (($r.Lines -join "`n").Contains($presetArrow)) 'render preset full: powerline arrows between the blocks'
+Confirm-PresetGlyph 'full' $text @('model', 'context', 'cost', 'lines', 'limits', 'fast', 'think', 'effort', 'vim', 'folder', 'branch') @()
+# A segment turned off beside the preset it belongs to, through the whole script.
+$r = Get-PresetRender 'cost-no-cost' '{ "preset": "cost", "segments": { "cost": false } }'
+$text = ConvertTo-PlainText ($r.Lines -join "`n")
+Confirm-PresetGlyph 'cost-no-cost' $text @('lines', 'limits') @('cost')
+# An unknown preset renders the same bytes as an empty config, and the shipped statusline.json still
+# renders what it always did: a preset is a starting point, not a change to the defaults.
+$plainRender = (Get-PresetRender 'none' '{}').Lines -join "`n"
+Confirm-Equal ((Get-PresetRender 'unknown' '{ "preset": "nope" }').Lines -join "`n") $plainRender 'render preset: an unknown name renders the empty config byte for byte'
+Confirm-Equal ((Get-PresetRender 'number' '{ "preset": 5 }').Lines -join "`n") $plainRender 'render preset: a non-string name renders the empty config byte for byte'
+$r = Invoke-StatusLine $payload06 (Join-Path $PSScriptRoot 'statusline.json') 0
+Confirm-Equal ($r.Lines -join "`n") $plainRender 'render preset: the shipped statusline.json still renders the default line'
 
 # The project config through the whole script, at the unset width. 06 carries a cost figure, and the
 # payload names a project directory holding a .claude\statusline.json that turns the cost segment off.

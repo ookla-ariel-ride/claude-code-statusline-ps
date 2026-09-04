@@ -34,6 +34,7 @@ how close you are to a rate limit, and which modes are on.
 - The branch's pull request as `#12`, green when approved and red when changes are requested. Ctrl-click it in Windows Terminal to open the PR.
 - Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory, cached for a few seconds so most renders never start git.
 - Counts beside the branch name: `↑N` `↓N` commits ahead of or behind the upstream, `+N` staged, `~N` changed, `?N` untracked, and a red triangle with a count when files are in conflict. See [Branch counts](#branch-counts).
+- A fork glyph and the worktree name beside the branch when the session is in a git worktree, so a window on `wt-review` is not mistaken for the main checkout. See [Worktree name](#worktree-name).
 - One line or two, plain separators or powerline blocks, and any segment switched off, all from `statusline.json`.
 - A matching line for each running subagent in the agent panel, with `.\install.ps1 -Subagents`. See [Subagent status line](#subagent-status-line).
 - Fits the terminal width. A line that is too long first loses detail from the limits, context, branch and folder segments, then loses whole segments from the right, so lines stop wrapping in normal use.
@@ -274,6 +275,7 @@ whose text encoding the script does not get to choose.
 
 | Key | Values | What it does |
 |---|---|---|
+| `preset` | `minimal`, `cost`, `full` | A name for a layout, a style and the whole set of segment toggles, listed below. Every other key in the same file is applied over it, so a preset is a starting point rather than a lock. A name none of the three has, or a value that is not a string, changes nothing. |
 | `layout` | `one`, `two` | `two` puts model, folder, branch, pr and badges on the first line and context, limits, cost and lines on the second, unless `rows` says otherwise. |
 | `style` | `plain`, `powerline` | `plain` is coloured text with a dim chevron between segments. `powerline` is coloured blocks joined by solid arrows. |
 | `folder` | `repo`, `leaf` | `repo` shows `owner/name` from `workspace.repo` when the payload has one, with the current directory's name after a `›` when it differs from the project root. `leaf` always shows the directory name alone. |
@@ -282,10 +284,32 @@ whose text encoding the script does not get to choose.
 | `order` | `["model", "branch", "context"]` | The segments of layout `one`, left to right. A segment left out is not shown, an unknown name is skipped, a repeat keeps its first place. Left out altogether, as the installed file leaves it, the segments come in the script's order, new ones included. An empty list, a list naming no segment, or anything that is not a list does the same. |
 | `rows` | `[["model", "branch"], ["context", "cost"]]` | The two lines of layout `two`, with the same rules per row. A segment named on the first row is not repeated on the second, and a row may be empty. Left out, the script's own two rows apply, new segments included. Anything but exactly two lists, or two lists naming no segment, does the same. |
 | `thresholds` | `{ "warn": 20, "bad": 40 }` | Where the context meter and the rate limits turn yellow and red: whole numbers from 0 to 100 (`20` or `20.0`, not `20.5`), `warn` no higher than `bad`. Either value wrong keeps 60 and 85 for both. A 1M window keeps its own 70 and 90. |
-| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cost`, `folder`, `chevron`, `branch`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `pr`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`. A name the list does not have, or a value that is not a single printable glyph, keeps the built-in one. To count as a glyph a code point has to be inside Unicode, not a surrogate half and not a noncharacter, one or two cells wide, and none of: a control (`A` is a newline, `1B` a bare escape), a format character (`202E` is a right-to-left override, `200D` a zero-width joiner), a line or paragraph separator, a space, or a combining mark. Private use is where the Nerd Font glyphs live, so it is allowed. |
+| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cost`, `folder`, `chevron`, `branch`, `worktree`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `pr`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`. A name the list does not have, or a value that is not a single printable glyph, keeps the built-in one. To count as a glyph a code point has to be inside Unicode, not a surrogate half and not a noncharacter, one or two cells wide, and none of: a control (`A` is a newline, `1B` a bare escape), a format character (`202E` is a right-to-left override, `200D` a zero-width joiner), a line or paragraph separator, a space, or a combining mark. Private use is where the Nerd Font glyphs live, so it is allowed. |
 | `git.timeoutMs` | `100` to `10000` | How long the branch segment waits for `git status`, in milliseconds, before it gives up and leaves the segment out. A value outside the range is clamped to it. |
 | `git.cacheSeconds` | `0` to `300` | How long a `git status` result is reused for, in seconds, before git is asked again. `0` asks git on every render. Clamped like `timeoutMs`. |
 | `git.cache` | `true`, `false` | `false` asks git on every render, whatever `cacheSeconds` says. |
+
+### Presets
+
+Turning five segments off by hand is the first edit most people make, so the three usual shapes have
+names. The whole file can be `{"preset": "minimal"}`.
+
+| Preset | Layout | Style | Segments on |
+|---|---|---|---|
+| `minimal` | `one` | `plain` | model, context, folder, branch |
+| `cost` | `one` | `plain` | model, context, cost, lines, limits |
+| `full` | `two` | `powerline` | all nine |
+
+`minimal` answers which model, how full and where am I, and nothing else. `cost` is the spend line,
+for watching a budget or a rate limit. `full` is everything, split across two rows.
+
+A preset is expanded before the rest of the file it appears in, whatever order the keys are written
+in, so anything beside it wins: `{"preset": "minimal", "style": "powerline"}` is the minimal segment
+set in powerline blocks, and `{"preset": "cost", "segments": {"branch": true}}` is the spend line with
+the branch put back. It sets nothing but the layout, the style and the toggles — `order`, `rows`,
+`thresholds`, `icons`, `state` and the `git` block are untouched. A preset in a project file sits
+where any other project key sits, so it is written over the user file whole; a preset in the user file
+is a base for the project file to change.
 
 A config only needs the keys it changes. This one puts the branch beside the model, colours the
 meter early and uses a house glyph on `main`:
@@ -361,7 +385,7 @@ The model segment always stays.
 | badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
 | pr | <img src="docs/icons/pull-request.svg" height="18" alt="pull request"> `nf-oct-git_pull_request` | `pr.number`, `pr.url`, `pr.review_state` | `#12`, wrapped in an [OSC 8 hyperlink](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda) to `pr.url` so ctrl-click in Windows Terminal opens it. Green when the review state is `approved`, red on `changes_requested`, dim otherwise. Hidden when the payload has no `pr` object or no whole, positive number in it; a `url` that is not `http` or `https` leaves the text unlinked |
 | folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.repo`, `workspace.project_dir`, `workspace.current_dir` | Blue. `owner/name` when the payload names the repository, then `›` and the directory name when it differs from the project root. Without a repository, the directory name alone. The short form is the repository name |
-| branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git status --porcelain=v1 --branch` run in `workspace.current_dir` | Magenta when clean, yellow with the pencil when the tree has changes. The counts described below sit between the name and the pencil. Shows `detached` on a detached HEAD |
+| branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/fork.svg" height="18" alt="fork"> `nf-md-source_fork` in a worktree, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git status --porcelain=v1 --branch` run in `workspace.current_dir`, `worktree.name`, `worktree.path`, `workspace.git_worktree` | Magenta when clean, yellow with the pencil when the tree has changes. The worktree name follows the branch name, then the counts described below, then the pencil. Shows `detached` on a detached HEAD |
 | separator | <img src="docs/icons/chevron.svg" height="18" alt="chevron"> in `plain`, <img src="docs/icons/arrow.svg" height="18" alt="arrow"> in `powerline` | none | Dim chevron between segments, or a solid arrow coloured to blend the neighbouring blocks |
 
 A dim <img src="docs/icons/chevron.svg" height="14" alt="chevron"> separates the segments in plain
@@ -395,6 +419,27 @@ The `git status` call is the one the script already made for the pencil, so the 
 extra process. If a payload does include a `git` object with `branch` and `status`, as the test
 samples do, the script reads the branch and the four file counts from it instead and shows no
 arrows. A `git` object with an empty branch name shows nothing.
+
+### Worktree name
+
+When the session is in a git worktree, the branch segment carries a fork glyph
+(<img src="docs/icons/fork.svg" height="14" alt="fork"> `nf-md-source_fork`) and the worktree's name
+after the branch name, so the segment reads branch glyph, `feature/x`, fork glyph, `wt-review`, then
+the counts and the pencil. Sessions outside a worktree print what they always printed.
+
+The name comes from the payload, not from git, so it costs no extra work: `worktree.name` when
+Claude Code sends one, otherwise the last segment of `worktree.path` when `workspace.git_worktree` is
+true. In a worktree that gives neither, the glyph stands on its own. The name goes through the same
+guard as the branch and repository names: a directory named with an escape sequence in it is refused
+outright, and the invisible characters that reorder a line rather than break it - a right-to-left
+override, a directional isolate, a zero-width joiner - are taken out of the name instead, so one of
+them costs the character and not the badge. A name with nothing visible left in it is not a name, and
+falls through to the path leaf, then to the glyph on its own, the same as a blank one.
+
+The badge is not in the segment's short form. On a narrow line it is shed with the counts, leaving
+the icon, the branch name and the pencil, before any whole segment is dropped. `segments.branch` in
+`statusline.json` turns the badge off with the rest of the segment; there is no key of its own,
+because the name only ever appears beside a branch.
 
 ## Test without Claude Code
 
@@ -571,10 +616,12 @@ Done so far:
 - [x] Pace arrow on the 5-hour rate limit
 - [x] Per-project `statusline.json` merged over the user file
 - [x] A subagent status line for the agent panel, installed with `-Subagents`
+- [x] Named presets: `minimal`, `cost` and `full` under one `preset` key
+- [x] Worktree name beside the branch
 
 [Issues #2 to #43](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
 each with its own plan. In rough order: new segments (cache warmth, cost per turn, session
-clock, worktree name, links on the folder and branch), named presets, and finally an ASCII style that
+clock, links on the folder and branch), and finally an ASCII style that
 needs no Nerd Font and a light palette.
 
 ## License

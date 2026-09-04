@@ -24,6 +24,7 @@ $icons = [ordered]@{
     home        = 0xF015
     branch      = 0xE0A0
     pencil      = 0xF040
+    fork        = 0xF04C1
     'pull-request' = 0xF407
     chevron     = 0xE0B1
     arrow       = 0xE0B0
