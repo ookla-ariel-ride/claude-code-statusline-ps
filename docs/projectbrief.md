@@ -194,8 +194,8 @@ the segment registry and config keys (#20), the per-project config merge (#19), 
 the link helper (#12) and the git cache (#18). The intended order for the rest:
 
 1. New segments: cache warmth and hit ratio, worktree name, links on the folder and branch, agent
-   and session badges, cost per turn, pace, session clock (#2, #3, #5, #6, #8, #11, #13, #14). #5
-   and #6 read the state file; #13 reuses `Format-Link`.
+   and session badges, cost per turn, session clock (#2, #3, #5, #8, #11, #13, #14). #5 reads the
+   state file; #13 reuses `Format-Link`.
 2. Config: presets, a quiet block, an alarm colour (#21 to #23). Each is one key over
    `Merge-StatusConfigFile`.
 3. Style and terminal: an ASCII style, a light palette, a right-aligned group with a clock, taskbar
