@@ -20,6 +20,33 @@ function G([int] $cp) { [char]::ConvertFromUtf32($cp) }
 $e = [char]27
 function C([string] $code, [string] $text) { "$e[${code}m$text$e[0m" }
 
+# ---- Diagnostics log ----
+# The git probe, the probe cache and the state file swallow every failure on purpose: a status line
+# that throws, or that prints an error where the branch should be, is worse than one that is a little
+# stale. The cost is that "git still runs on every render" and "the state file never appears" cannot be
+# looked into without editing the installed script. CLAUDE_STATUSLINE_DEBUG buys that back without
+# giving the silence up: set to anything other than 0, false, no or off, each swallowed catch, each
+# cache branch and each state read and write appends one line - UTC time, process id, reason - to
+# claude-statusline-diag.log in the temp folder. Unset, which is the normal case, this reads one
+# environment variable and returns.
+# Writing the log is itself silent, for the same reason the caller's catch is: a temp folder that is
+# not there or cannot be written, or another render holding the file, costs the line and nothing else.
+# The reason is folded onto one line, because an exception message can carry newlines and one call has
+# to stay one line. Nothing here reaches the pipeline, so a call can sit in front of a return without
+# changing what the caller returns. The file is never rotated or swept; it only grows while the
+# variable is set, and it is safe to delete at any time.
+function Write-StatusDiag([string] $Reason) {
+    $flag = $env:CLAUDE_STATUSLINE_DEBUG
+    if (-not $flag -or $flag.Trim() -in @('0', 'false', 'no', 'off')) { return }
+    try {
+        $base = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { [System.IO.Path]::GetTempPath() }
+        $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [System.Globalization.CultureInfo]::InvariantCulture)
+        $text = [regex]::Replace($Reason, '\s+', ' ').Trim()
+        [System.IO.File]::AppendAllText([System.IO.Path]::Combine($base, 'claude-statusline-diag.log'),
+            "$stamp $PID $text`n", [System.Text.UTF8Encoding]::new($false))
+    } catch { $null = $_ }
+}
+
 # The built-in code point of every glyph the segments use, keyed by the name the icons key of
 # statusline.json takes: the $icon* constant minus its prefix, lower-cased. The constants themselves
 # are assigned from Get-IconSet once the config is read, so an override is in place before any builder runs.
@@ -412,7 +439,7 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
     if (-not $Dir) { return $null }
     if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return $null }
     $git = (Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-    if (-not $git) { return $null }
+    if (-not $git) { Write-StatusDiag 'git probe: git is not on PATH'; return $null }
     $p = $null
     $outTask = $null
     $errTask = $null
@@ -432,19 +459,19 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
         $exited = $p.WaitForExit($TimeoutMs)
         if (-not $exited) {
             # Kill the whole tree, then give it a moment to actually go away before we dispose the handles.
-            try { $p.Kill($true) } catch { $null = $_ }
+            try { $p.Kill($true) } catch { Write-StatusDiag "git probe: kill failed: $($_.Exception.Message)" }
             [void] $p.WaitForExit(100)
         }
         # Bounded waits on both drains: the full timeout after a clean exit, so a slow reader cannot cost
         # us the branch, and a short grace after a kill, where the result is discarded anyway. A faulted
         # task is observed here rather than left to the finalizer.
         $drainMs = if ($exited) { $TimeoutMs } else { 100 }
-        try { [void] [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask), $drainMs) } catch { $null = $_ }
-        if (-not $exited) { return $null }
-        if (-not $outTask.IsCompletedSuccessfully) { return $null }
-        if ($p.ExitCode -ne 0) { return $null }
+        try { [void] [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask), $drainMs) } catch { Write-StatusDiag "git probe: drain failed: $($_.Exception.Message)" }
+        if (-not $exited) { Write-StatusDiag "git probe: no answer within $TimeoutMs ms"; return $null }
+        if (-not $outTask.IsCompletedSuccessfully) { Write-StatusDiag 'git probe: stdout did not drain'; return $null }
+        if ($p.ExitCode -ne 0) { Write-StatusDiag "git probe: git exited $($p.ExitCode)"; return $null }
         return Read-PorcelainStatus $outTask.Result
-    } catch { return $null }
+    } catch { Write-StatusDiag "git probe failed: $($_.Exception.Message)"; return $null }
     finally {
         # Disposing closes the redirected streams, so it is only safe once both drains have finished. The
         # bounded wait after a kill can return with a ReadToEndAsync still pending; disposing then would
@@ -513,7 +540,7 @@ function Get-GitRepoRoot([string] $Dir) {
             $path = [System.IO.Path]::GetDirectoryName($path)
         }
         return $null
-    } catch { return $null }
+    } catch { Write-StatusDiag "git cache: repository walk failed: $($_.Exception.Message)"; return $null }
 }
 
 # The stamp string for a git directory: the UTC ticks, joined with commas, of the directory itself, of
@@ -602,10 +629,17 @@ function Get-GitCacheDir {
 # something to write, and a failure to create it, or to write, costs nothing but the cache.
 function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir, [int] $Ttl) {
     $repo = if ($CacheDir -and $Ttl -gt 0) { Get-GitRepoRoot $Dir } else { $null }
-    if (-not $repo) { return Get-GitBranch $Dir $TimeoutMs }
+    if (-not $repo) {
+        if ($CacheDir -and $Ttl -gt 0) { Write-StatusDiag "git cache: skipped (no repository above $Dir)" } else { Write-StatusDiag 'git cache: skipped (off in the config)' }
+        return Get-GitBranch $Dir $TimeoutMs
+    }
     $root = $repo.WorkTree
-    $stamps = try { Get-GitStamp $repo.GitDir } catch { $null }
-    if (-not $stamps -or $stamps.StartsWith('over-cap:')) { return Get-GitBranch $Dir $TimeoutMs }
+    $stamps = $null
+    try { $stamps = Get-GitStamp $repo.GitDir } catch { Write-StatusDiag "git cache: stamp failed: $($_.Exception.Message)" }
+    if (-not $stamps -or $stamps.StartsWith('over-cap:')) {
+        if ($stamps) { Write-StatusDiag 'git cache: skipped (the repository is over the ref cap)' } else { Write-StatusDiag 'git cache: skipped (no stamp)' }
+        return Get-GitBranch $Dir $TimeoutMs
+    }
     $path = [System.IO.Path]::Combine($CacheDir, (Get-ShortHash $root.ToLowerInvariant()) + '.json')
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     try {
@@ -615,17 +649,22 @@ function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir
                 $j.root -is [string] -and $j.root -eq $root -and
                 $j.stamps -is [string] -and $j.stamps -ceq $stamps -and
                 [math]::Abs($now - [long] $j.writtenAt) -lt $Ttl -and $null -ne $j.PSObject.Properties['result']) {
-                if ($null -eq $j.result) { return $null }
+                if ($null -eq $j.result) { Write-StatusDiag 'git cache: hit (the entry holds no branch)'; return $null }
                 $info = Read-CachedRecord $j.result
-                if ($info) { return $info }
+                if ($info) { Write-StatusDiag "git cache: hit ($($info.Branch))"; return $info }
+                Write-StatusDiag 'git cache: miss (the record did not pass the guards)'
+            } else {
+                Write-StatusDiag 'git cache: miss (the entry is stale or does not match)'
             }
+        } else {
+            Write-StatusDiag 'git cache: miss (no entry yet)'
         }
-    } catch { $null = $_ }
+    } catch { Write-StatusDiag "git cache: read failed: $($_.Exception.Message)" }
     $info = Get-GitBranch $Dir $TimeoutMs
     try {
         [void] [System.IO.Directory]::CreateDirectory($CacheDir)
         if (Write-AtomicJson $path ([ordered]@{ v = 1; root = $root; stamps = $stamps; writtenAt = $now; result = $info }) 3) { Invoke-SessionStateSweep $CacheDir }
-    } catch { $null = $_ }
+    } catch { Write-StatusDiag "git cache: write failed: $($_.Exception.Message)" }
     return $info
 }
 
@@ -658,7 +697,7 @@ function Get-SessionStateDir([bool] $Create) {
             [void] [System.IO.Directory]::CreateDirectory($dir)
         }
         return $dir
-    } catch { return $null }
+    } catch { Write-StatusDiag "state dir failed: $($_.Exception.Message)"; return $null }
 }
 
 # The file for a session, <name>.json. When the id is already lower-case, at most 64 characters and has
@@ -699,9 +738,9 @@ function Get-StateNumber($v, [switch] $Whole) {
 function Read-SessionState([string] $SessionId) {
     try {
         $path = Get-SessionStatePath $SessionId $false
-        if (-not $path -or -not [System.IO.File]::Exists($path)) { return $null }
+        if (-not $path -or -not [System.IO.File]::Exists($path)) { Write-StatusDiag 'state: no file yet'; return $null }
         $j = [System.IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop
-        if ($j -isnot [System.Management.Automation.PSCustomObject] -or (Get-StateNumber $j.v) -ne 1) { return $null }
+        if ($j -isnot [System.Management.Automation.PSCustomObject] -or (Get-StateNumber $j.v) -ne 1) { Write-StatusDiag 'state: the file is not a version 1 record'; return $null }
         $history = [System.Collections.Generic.List[hashtable]]::new()
         foreach ($h in @($j.history)) {
             $t = Get-StateNumber $h.t -Whole
@@ -711,8 +750,9 @@ function Read-SessionState([string] $SessionId) {
         $state = @{ v = 1; history = @($history) }
         foreach ($key in @('updated_at', 'input_tokens', 'output_tokens')) { $state[$key] = Get-StateNumber $j.$key -Whole }
         foreach ($key in @('cost_usd', 'used_percentage', 'five_hour_percentage')) { $state[$key] = Get-StateNumber $j.$key }
+        Write-StatusDiag "state: read ($path)"
         return $state
-    } catch { return $null }
+    } catch { Write-StatusDiag "state read failed: $($_.Exception.Message)"; return $null }
 }
 
 # The next state for a session: the payload's figures now, and the history ring carried over from the
@@ -762,12 +802,12 @@ function Invoke-SessionStateSweep([string] $Dir) {
             foreach ($f in [System.IO.Directory]::EnumerateFiles($Dir, $pattern)) {
                 if ($deleted -ge 200) { $capped = $true; break }
                 if ([math]::Abs(($now - [System.IO.File]::GetLastWriteTimeUtc($f)).TotalDays) -lt 1) { continue }
-                try { [System.IO.File]::Delete($f); $deleted++ } catch { $null = $_ }
+                try { [System.IO.File]::Delete($f); $deleted++ } catch { Write-StatusDiag "sweep: delete failed: $($_.Exception.Message)" }
             }
             if ($capped) { break }
         }
         if (-not $capped) { [System.IO.File]::WriteAllText($stamp, '') }
-    } catch { $null = $_ }
+    } catch { Write-StatusDiag "sweep failed: $($_.Exception.Message)" }
 }
 
 # Writes a session's state through Write-AtomicJson, then runs the sweep. Nothing is written for an
@@ -778,11 +818,16 @@ function Invoke-SessionStateSweep([string] $Dir) {
 # is one missing delta.
 function Write-SessionState([string] $SessionId, $State) {
     try {
-        if (-not $State) { return }
+        if (-not $State) { Write-StatusDiag 'state: not written (nothing to write)'; return }
         $path = Get-SessionStatePath $SessionId $true
-        if (-not $path) { return }
-        if (Write-AtomicJson $path $State 4) { Invoke-SessionStateSweep (Split-Path $path -Parent) }
-    } catch { $null = $_ }
+        if (-not $path) { Write-StatusDiag 'state: not written (the session id leaves no file name)'; return }
+        if (Write-AtomicJson $path $State 4) {
+            Write-StatusDiag "state: written ($path)"
+            Invoke-SessionStateSweep (Split-Path $path -Parent)
+        } else {
+            Write-StatusDiag 'state: not written (the record serialised to nothing)'
+        }
+    } catch { Write-StatusDiag "state write failed: $($_.Exception.Message)" }
 }
 
 $configPath = if ($Config) { $Config } else { Join-Path $PSScriptRoot 'statusline.json' }
