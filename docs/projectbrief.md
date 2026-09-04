@@ -5,7 +5,8 @@
 A PowerShell status line for Claude Code on Windows. It replaces the default status line with one
 or two lines showing the active model, context-window usage, session cost, lines changed, rate
 limits, mode badges, the branch's pull request as a clickable link, current folder, and the git
-branch with its ahead, behind and file-change counts, rendered with Nerd Font glyphs and ANSI colour.
+branch with its worktree name and its ahead, behind and file-change counts, rendered with Nerd Font
+glyphs and ANSI colour.
 
 ## Problem
 
@@ -37,12 +38,12 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | `subagent-statusline.ps1` | The per-subagent line for the agent panel, wired up by `install.ps1 -Subagents`. A different contract from the main script: Claude Code runs it once for the whole panel with every live row in one payload (`columns` and a `tasks` array) and reads one JSON object per line back, `{"id","content"}`, keyed by the task id. One line per row: the robot glyph, the agent's name, its context percentage and token count, clipped to `columns`. A `columns` of 0 means no room and prints no row; a missing or malformed one means no information about the width and prints in full. No config file, no git probe, no powerline style, no state file. Its second line is a marker the installer looks for, as a whole line inside the first ten, before it overwrites or deletes an installed copy. Ten small helpers are copied verbatim from `statusline.ps1`, because that script reads stdin and prints as it loads and so cannot be dot-sourced; `test.ps1` fails when the copies drift. |
 | `tools/capture-stdin.ps1` | Appends stdin to a file and prints nothing on stdout. Point a settings key at it to find out what Claude Code sends at an integration point whose payload is not documented. Bounded in three places against a capture left running: stdin is read to a ceiling, the record is cut to `-MaxBytes` (1 MiB by default) with a truncation marker, and the file is rotated over one `.1` sibling when the existing length plus this record would exceed the cap, so each generation stays at or under it. The append is taken under a `.lock` sibling; a tick that cannot get it drops its payload. A write it cannot make is reported once to stderr and to a `.error` sidecar, after which it stops until the sidecar is deleted. |
 | `install.ps1` | Copies the script to `~/.claude/`, writes the `statusLine` entry to user settings with `hideVimModeIndicator` on and, with `-RefreshInterval <seconds>`, a `refreshInterval`; with `-Subagents`, also copies `subagent-statusline.ps1` there and writes a `subagentStatusLine` entry of `type` and `command` only; optionally installs JetBrainsMono Nerd Font via winget and sets it as the Windows Terminal default font. Both commands carry a double-quoted forward-slash path, so a profile with a space or an `&` in it still runs. Settings are replaced atomically, the way `Write-AtomicJson` does it in `statusline.ps1`, under an exclusive lock on a `.lock` sibling held across the whole read-modify-write: serialize to a uniquely named sibling, compare the destination with what was read, parse the new text back, take the `.bak`, compare once more, then move. The lock serialises writers that take it and has no effect on one that does not; the second comparison narrows the loss window to the rename itself rather than removing it, and what a rename replaces is in the `.bak`. Ownership of the subagent artifacts is decided by strict match, not substring: the entry has to be the exact command form the installer writes with the target as the `-File` argument itself, and the file has to carry the marker as a whole line inside its first ten. `-Subagents` refuses to install over a file that fails that check, stages its copy under a temporary name so a settings failure changes nothing, and keeps the version it replaces as `~/.claude/.claude-code-statusline-ps.subagent-rollback.ps1` — a project-owned name rather than a `.bak` beside the script, and still marker-checked before it is overwritten or deleted. Supports `-Uninstall`, which removes the `statusLine` entry and script outright and the subagent entry and script only when they pass the ownership check, and `-SettingsPath` (the seam the tests use). |
-| `statusline.json` | Defaults for layout, style, the folder mode, the state file toggle, segment toggles, the colour thresholds, the alarm percentages (`alarm.context`, `alarm.limits`), glyph overrides, and the git probe's timeout and cache (`git.timeoutMs`, `git.cacheSeconds`, `git.cache`). The layout-one `order` and layout-two `rows` keys are left out so the registry stays the source and a new segment appears on its own. Installed beside the script. |
+| `statusline.json` | Defaults for layout, style, the folder mode, the state file toggle, segment toggles, the colour thresholds, the alarm percentages (`alarm.context`, `alarm.limits`), glyph overrides, and the git probe's timeout and cache (`git.timeoutMs`, `git.cacheSeconds`, `git.cache`). A `preset` key names one of three built-in shapes — `minimal`, `cost`, `full` — for the layout, the style and every segment toggle at once; it is expanded before the rest of the file it appears in, so any key beside it wins. The layout-one `order` and layout-two `rows` keys are left out so the registry stays the source and a new segment appears on its own, and the `quiet` thresholds are left out for the same reason: they default to zero, which hides nothing. Installed beside the script. |
 | `<workspace.project_dir>\.claude\statusline.json` | The project's own copy of the same keys, merged over the user file key by key so a repository can pin its layout without changing any other session. Read only when the payload names a project directory that holds it, and not at all when `-Config` names a file. Read as untrusted input: opened first and judged by the handle, at most 64 KiB, within one 250 ms budget that starts before the first filesystem call. |
 | `%TEMP%\claude-statusline-state\` | One JSON file per session (`<session_id>.json`, version 1): last cost, token totals, context and 5-hour percentages, and a ring of up to twenty cost readings. Written after the line is printed, swept of day-old files at most every six hours. `~/.claude/statusline-state` when `TEMP` is empty. |
 | `%TEMP%\claude-statusline\` | The git probe cache: one JSON file per repository, named by the first 16 hex characters of the SHA-256 of the lower-cased work tree path, holding the root, a stamp string (the UTC ticks of the git directory, of `index`, `HEAD`, `ORIG_HEAD`, `FETCH_HEAD`, `MERGE_HEAD`, `packed-refs`, `logs/HEAD`, `config` and `info/exclude`, and of every directory under `refs`, capped at 256; a worktree's main repository after a bar), the write time and the last `git status` record, or null when the probe failed. Read before the branch segment is built and reused for `git.cacheSeconds` while the stamp string matches; swept of day-old files with the state sweep. `TMPDIR`, then the runtime's temp path, when `TEMP` is empty. |
 | `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, checks the git fallback in temporary repositories: clean, dirty, unborn, detached, ahead, behind, a mixed tree, a git that fails and one that hangs, the probe cache with a counting stand-in and end to end with a failing git on `PATH`, exercises the session state file end to end, runs `install.ps1` against a settings file in a temp folder, and pipes every subagent payload through `subagent-statusline.ps1`, reading the replies the way the panel does and checking the copied helpers for drift. `-Columns`, `-Config`, `-Raw`. |
-| `samples/*.json` | Every payload in `samples/` goes through the render matrix. One per case: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort, a repository identity below its project root, a 1M window with `exceeds_200k_tokens` true, a feature branch with an approved pull request, a context window past the alarm percentage. |
+| `samples/*.json` | Every payload in `samples/` goes through the render matrix. One per case: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges and lines, expired limits with default effort, a repository identity below its project root, a 1M window with `exceeds_200k_tokens` true, a feature branch with an approved pull request, a session in a git worktree, a context window past the alarm percentage. |
 | `samples/subagent/*.json` | Subagent panel payloads, in their own subdirectory so the render matrix, which globs `samples/` without `-Recurse`, never sees them. One per case: two running agents, a task with nothing but an id, an empty task list, hostile fields (an escape in a name, a blank and an array id, `20.0` and `2e1` token counts, a zero window, a label too long for the panel), and a 1M window with no `columns` key. |
 | `docs/render-screenshot.ps1` | Renders a payload and config through the script and captures the terminal as the README screenshot. |
 | `docs/render-icons.ps1` | Extracts the Nerd Font glyphs used by the script as SVG outlines for `docs/icons/`. |
@@ -59,7 +60,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | Badges | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dim glyphs |
 | PR | `pr.number`, `pr.url`, `pr.review_state` (`pr.kind` is read but not shown) | Pull-request glyph and `#N`, the whole text wrapped in an OSC 8 hyperlink to `pr.url`. Green on `approved`, red on `changes requested` (underscores and case ignored), dim for anything else. Omitted without a `pr` object or a whole, positive `number`; a `url` that is not `http(s)` leaves the text unlinked. No short form |
 | Folder | `workspace.repo.owner`, `workspace.repo.name`, `workspace.project_dir`, `workspace.current_dir` | Blue. `owner/name` when the payload carries a repository, followed by `›` and the leaf of `current_dir` when it differs from `project_dir`. The leaf alone without a repository or with `"folder": "leaf"` in the config. Short form is the repository name |
-| Branch | `git status --porcelain=v1 --branch` in `workspace.current_dir`. The Claude Code payload has no `git` object, so this is the normal path; a payload that does carry `git.branch` and `git.status` (the test samples) is used as is | Home glyph on main/master, branch glyph otherwise. Yellow with pencil glyph when dirty, magenta when clean. Between the name and the pencil, dim counts in a fixed order: `↑N` `↓N` ahead of and behind the upstream (header bracket, git path only), `+N` staged, `~N` changed in the work tree, `?N` untracked entries, then a red triangle with the conflict count. Zero counts are left out. The short form used at a narrow width is icon, name and pencil |
+| Branch | `git status --porcelain=v1 --branch` in `workspace.current_dir`. The Claude Code payload has no `git` object, so this is the normal path; a payload that does carry `git.branch` and `git.status` (the test samples) is used as is. The worktree badge is payload-only: `worktree.name`, `worktree.path`, `workspace.git_worktree` | Home glyph on main/master, branch glyph otherwise. Yellow with pencil glyph when dirty, magenta when clean. A session in a git worktree gets the fork glyph and the worktree name straight after the branch name: `worktree.name` when it is usable text, otherwise the leaf of `worktree.path` when `workspace.git_worktree` is exactly `true`, otherwise the glyph on its own; no worktree at all means no badge, and neither field changes the colour. Both fields pass the payload-text guard the branch name and the repo owner pass, which refuses a control character and strips the Unicode Format characters, so a name that is nothing but overrides is not a name and falls through the chain. Between the badge and the pencil, dim counts in a fixed order: `↑N` `↓N` ahead of and behind the upstream (header bracket, git path only), `+N` staged, `~N` changed in the work tree, `?N` untracked entries, then a red triangle with the conflict count. Zero counts are left out. The short form used at a narrow width is icon, name and pencil, so the badge sheds with the counts |
 
 ## Key design decisions
 
@@ -120,7 +121,24 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   compare is one number: `Get-WholePercent` turns a payload figure into the percentage that is printed,
   banded and alarmed on, rounding half to even, so a meter reading 90% cannot sit beside a model that
   thinks the window is at 89. The subagent panel is the deliberate exception - it derives a percentage
-  from token counts and floors it, so a partly used window never reads as a full one. `icons` maps a
+  from token counts and floors it, so a partly used window never reads as a full one. `quiet` is the
+  same idea one step earlier: a threshold per segment below which the builder returns `$null` and the
+  segment is never built, so a four-cent cost or a 3% meter costs nothing on the line. It extends the
+  rule the lines and badges segments already follow, that a segment with nothing to say disappears, from
+  zero to a number the user picks. One guard, `Test-QuietValue`, reads the threshold defensively, so a
+  config with no `Quiet` table hides nothing; the comparison is strict, which is what makes the default
+  of `0` mean off, and it is on the raw figure rather than the rounded text. **Quiet never hides a
+  segment that is carrying a warning or an error**, which is the rule that makes the setting safe to
+  turn on: a hide-the-boring-numbers key that also hid the alarm would be worse than no key at all. So
+  each builder settles its warning state before it asks the guard — context and limits keep a segment
+  whose role is `warn` or `bad`, and limits also keeps one whose pace arrow projects an overrun, since
+  a low current percentage early in a five-hour window is precisely the reading that projects red.
+  `Get-PaceArrow` names that state `Over` rather than leaving it to be read off the glyph. Cost has no
+  warning state to preserve, its role being always `dim`, so there the threshold stands alone. What
+  `quiet.limits` compares is the larger of the 5-hour and 7-day figures, deliberately not the `$worst`
+  that also carries the spend limit and drives the colour: the key is a threshold on how much of an
+  allowance is gone, and a spend limit is not one of those. With neither window present there is
+  nothing to compare and the segment is kept. `icons` maps a
   name to a code point, and the `$icon*` constants are assigned from `Get-IconSet` after the config
   is read and before the payload is parsed, so the fallback line and every builder see one set of
   glyphs. The fitting order stays in the table: it is a property of what each segment can shed, not
@@ -187,12 +205,14 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 Two-line layout, powerline style, config file, width fitting and the git fallback are implemented.
 The branch segment shows ahead and behind counts (#16) and staged, changed, untracked and conflict
 counts (#17), all from the one `git status` call, and that call is cached per repository with its
-timeout and lifetime in the config (#18). The model segment marks a 1M window (#9), the limits
+timeout and lifetime in the config (#18), and it shows the worktree name beside the branch when the
+payload names one (#11). The model segment marks a 1M window (#9), the limits
 segment shows the spend limit (#7) and paces the 5-hour figure against its window (#6), and the
 folder segment shows `owner/name` (#10). The
 pull-request segment (#12) links `#N` to the PR with OSC 8. Segment order, the two rows, the colour
-thresholds and the glyphs are `statusline.json` keys over the segment registry (#20). The installer
-writes `hideVimModeIndicator` and, on request, `refreshInterval` (#26), and `-Subagents` installs a
+thresholds and the glyphs are `statusline.json` keys over the segment registry (#20), and `preset`
+names three whole shapes of those keys (#21). The installer writes `hideVimModeIndicator` and, on
+request, `refreshInterval` (#26), and `-Subagents` installs a
 second script for the agent panel (#15). A state file per session (#4) is written but nothing on the
 line reads it yet. Every silent catch can be traced through an optional log behind
 `CLAUDE_STATUSLINE_DEBUG` (#43). A light palette is still a constant in the script.
@@ -205,9 +225,9 @@ the link helper (#12) and the git cache (#18). A registry refactor that let the 
 segment builders would remove the copied helpers in `subagent-statusline.ps1`; it is not worth it for
 ten short functions and a drift test. The intended order for the rest:
 
-1. New segments: cache warmth and hit ratio, worktree name, links on the folder and branch, agent
-   and session badges, cost per turn, session clock (#2, #3, #5, #8, #11, #13, #14). #5 reads the
-   state file; #13 reuses `Format-Link`.
+1. New segments: cache warmth and hit ratio, links on the folder and branch, agent
+   and session badges, cost per turn, session clock (#2, #3, #5, #8, #13, #14). #5 reads the
+   state file; #13 reuses `Format-Link` around the finished branch and folder text.
 2. Config: presets, a quiet block, an alarm colour (#21 to #23). Each is one key over
    `Merge-StatusConfigFile`.
 3. Style and terminal: an ASCII style, a light palette, a right-aligned group with a clock, taskbar

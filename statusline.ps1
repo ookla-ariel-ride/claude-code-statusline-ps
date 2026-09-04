@@ -97,6 +97,7 @@ function Get-IconDefault {
         folder   = 0xF07C    # nf-fa-folder_open
         chevron  = 0x203A    # single right-pointing angle quotation mark (between owner/name and the leaf)
         branch   = 0xE0A0    # powerline branch
+        worktree = 0xF04C1   # nf-md-source_fork (the session is in a git worktree)
         home     = 0xF015    # nf-fa-home  (on main/master)
         dirty    = 0xF040    # nf-fa-pencil (uncommitted changes)
         ahead    = 0x2191    # up arrow (commits ahead of upstream)
@@ -185,7 +186,10 @@ function Get-ConfigInteger($v, [int] $Default, [int] $Min, [int] $Max) {
     return [int] [math]::Min([math]::Max($n, [double] $Min), [double] $Max)
 }
 
-# Visible cell width of a rendered line: escapes stripped, combining marks 0, CJK and emoji 2, else 1.
+# Visible cell width of a rendered line: escapes stripped, combining marks and the Unicode Format
+# characters 0, CJK and emoji 2, else 1. Format is the whole category rather than the U+200B to U+200D
+# range it used to be: a zero-width joiner, a bidi override, a directional isolate and a byte order
+# mark all draw nothing, and counting one as a cell measures a line wider than it renders.
 # A small wcwidth approximation; Nerd Font glyphs count as 1. The OSC 8 hyperlink wrappers go first,
 # with either terminator (ESC \ or BEL), so a URL is never counted as text; then the SGR colour codes.
 function Get-VisibleWidth([string] $Text) {
@@ -201,7 +205,7 @@ function Get-VisibleWidth([string] $Text) {
         if ($cat -eq [System.Globalization.UnicodeCategory]::NonSpacingMark -or
             $cat -eq [System.Globalization.UnicodeCategory]::SpacingCombiningMark -or
             $cat -eq [System.Globalization.UnicodeCategory]::EnclosingMark -or
-            ($cp -ge 0x200B -and $cp -le 0x200D) -or $cp -eq 0xFE0F) { continue }
+            $cat -eq [System.Globalization.UnicodeCategory]::Format -or $cp -eq 0xFE0F) { continue }
         if (($cp -ge 0x1100 -and $cp -le 0x115F) -or ($cp -ge 0x2E80 -and $cp -le 0xA4CF) -or
             ($cp -ge 0xAC00 -and $cp -le 0xD7A3) -or ($cp -ge 0xF900 -and $cp -le 0xFAFF) -or
             ($cp -ge 0xFE30 -and $cp -le 0xFE4F) -or ($cp -ge 0xFF00 -and $cp -le 0xFF60) -or
@@ -280,6 +284,7 @@ function Get-DefaultStatusConfig {
     $cfg.Thresholds = @{ Warn = 60; Bad = 85 }
     $cfg.Alarm = @{ Context = 90; Limits = 90 }
     $cfg.Icons = @{}
+    $cfg.Quiet = @{ cost = 0.0; context = 0.0; limits = 0.0 }
     return $cfg
 }
 
@@ -287,7 +292,8 @@ function Get-DefaultStatusConfig {
 # takes a string that Allowed lists, folded to lower case; Bool takes a boolean. A value of any other
 # shape leaves the key at the value beneath it. A new one-value key is one row here and nothing else; a
 # key carrying an object or a list of its own gets a block of its own in Merge-StatusConfigFile, beside
-# segments, order, rows, thresholds, alarm, icons and git.
+# preset, segments, order, rows, thresholds, alarm, quiet, icons and git. `preset` is one of those: it
+# is a string, but it stands for several keys at once rather than landing in one.
 function Get-StatusConfigKey {
     return @(
         @{ Json = 'layout'; Key = 'Layout'; Kind = 'Enum'; Allowed = @('one', 'two') }
@@ -295,6 +301,48 @@ function Get-StatusConfigKey {
         @{ Json = 'folder'; Key = 'Folder'; Kind = 'Enum'; Allowed = @('repo', 'leaf') }
         @{ Json = 'state';  Key = 'State';  Kind = 'Bool'; Allowed = $null }
     )
+}
+
+# A named starting point: one word standing for a layout, a style and the whole set of segment toggles,
+# so a config that wants a common shape is {"preset": "minimal"} rather than nine booleans. The three
+# names are built into this table and nothing here opens a path, so a preset named by a project config
+# reads no file and needs no budget; it can only pick one of the shapes below.
+#   minimal - which model, how full, where am I. One plain line.
+#   cost    - the spend line, for watching a budget or a rate limit.
+#   full    - everything, split across two powerline rows.
+# $Name is untyped and gated here rather than declared [string], because a config file spells the value
+# however it likes and a [string] parameter would turn a number or an array into a name instead of
+# refusing it. An unknown name returns $null, which leaves the config exactly as it was.
+# Each preset states every segment in the registry rather than only the ones it turns on, so a segment
+# added later has to be placed in all three by hand; the test that compares these tables to the registry
+# is what makes that a failure rather than a silent appearance in `minimal`. A fresh table every call,
+# the nested one included, so a caller that changes its copy cannot reach the next caller's.
+function Get-ConfigPreset($Name) {
+    if ($Name -isnot [string]) { return $null }
+    switch ($Name.ToLowerInvariant()) {
+        'minimal' {
+            return @{ Layout = 'one'; Style = 'plain'; Segments = @{
+                    model = $true; context = $true; cost = $false; lines = $false; limits = $false
+                    badges = $false; pr = $false; folder = $true; branch = $true
+                }
+            }
+        }
+        'cost' {
+            return @{ Layout = 'one'; Style = 'plain'; Segments = @{
+                    model = $true; context = $true; cost = $true; lines = $true; limits = $true
+                    badges = $false; pr = $false; folder = $false; branch = $false
+                }
+            }
+        }
+        'full' {
+            return @{ Layout = 'two'; Style = 'powerline'; Segments = @{
+                    model = $true; context = $true; cost = $true; lines = $true; limits = $true
+                    badges = $true; pr = $true; folder = $true; branch = $true
+                }
+            }
+        }
+    }
+    return $null
 }
 
 # What a project config may cost to read. A config a person wrote is a few hundred bytes, so 64 KiB is
@@ -423,6 +471,20 @@ function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Boun
         if (-not $text) { return $Cfg }
         $j = $text | ConvertFrom-Json -ErrorAction Stop
         if ($j -isnot [System.Management.Automation.PSCustomObject]) { return $Cfg }
+        # preset: a name standing for a layout, a style and every segment toggle, expanded first so that
+        # every other key in this same file is written over it whatever order the file spells them in.
+        # A preset therefore sits at the precedence of the file naming it: defaults, then the user file's
+        # preset and the user file's own keys, then the project file's preset and the project file's own
+        # keys. A project preset outranking a user toggle is the same rule as any other project key.
+        # A name no preset has, or a value that is not a string, leaves everything as it was.
+        $preset = Get-ConfigPreset $j.preset
+        if ($null -ne $preset) {
+            $Cfg.Layout = $preset.Layout
+            $Cfg.Style = $preset.Style
+            foreach ($n in @($Cfg.Segments.Keys)) {
+                if ($preset.Segments.ContainsKey($n)) { $Cfg.Segments[$n] = $preset.Segments[$n] }
+            }
+        }
         foreach ($rec in Get-StatusConfigKey) {
             $v = $j.($rec.Json)
             if ($rec.Kind -eq 'Bool') {
@@ -474,6 +536,18 @@ function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Boun
         if ($al -is [System.Management.Automation.PSCustomObject]) {
             $Cfg.Alarm.Context = Get-ConfigInteger $al.context $Cfg.Alarm.Context 0 ([int]::MaxValue)
             $Cfg.Alarm.Limits = Get-ConfigInteger $al.limits $Cfg.Alarm.Limits 0 ([int]::MaxValue)
+        }
+        # quiet: the smallest value a segment is worth building at - dollars for cost, percent for
+        # context and limits. Any finite number counts, fractions included, because a cost threshold is
+        # money rather than a count; a negative is clamped to 0, which is the default and hides nothing.
+        # Merged one name at a time, so a typo in one name cannot disturb the other two, and a quiet
+        # that is not an object at all keeps all three.
+        $q = $j.quiet
+        if ($q -is [System.Management.Automation.PSCustomObject]) {
+            foreach ($n in @($Cfg.Quiet.Keys)) {
+                $v = Get-FiniteNumber $q.$n
+                if ($null -ne $v) { $Cfg.Quiet[$n] = [math]::Max(0.0, $v) }
+            }
         }
         # icons: icon name to a hex code point string, merged one name at a time. Only a known name with
         # a code point Read-CodePoint accepts is kept, as name to integer; every other entry leaves the
@@ -673,7 +747,9 @@ function Read-PorcelainStatus([string] $Text) {
         if ($y -ne ' ') { $modified++ }
     }
     $dirty = ($staged + $modified + $untracked + $conflicts) -gt 0
-    return @{ Branch = $branch; Dirty = $dirty; Ahead = $ahead; Behind = $behind
+    # git permits a right-to-left override in a ref name, so the Format characters come out of the
+    # branch here, at the source, rather than being left to whatever renders it.
+    return @{ Branch = (Format-PayloadText $branch); Dirty = $dirty; Ahead = $ahead; Behind = $behind
               Staged = $staged; Modified = $modified; Untracked = $untracked; Conflicts = $conflicts }
 }
 
@@ -842,6 +918,9 @@ function Read-CachedRecord($r) {
     if (-not (Test-PayloadText $r.Branch) -or $r.Dirty -isnot [bool]) { return $null }
     $info = @{}
     foreach ($prop in $r.PSObject.Properties) { $info[$prop.Name] = $prop.Value }
+    # Stripped again on the way out of the file. A cache entry written by this script is already clean,
+    # but the file is on disk and this is the path an edited one comes back through.
+    $info.Branch = Format-PayloadText ([string] $r.Branch)
     foreach ($key in @('Ahead', 'Behind', 'Staged', 'Modified', 'Untracked', 'Conflicts')) {
         $n = Get-PayloadNumber $r.$key
         if ($null -eq $n -or $n -lt 0) { return $null }
@@ -1095,6 +1174,7 @@ $iconCost = $icons.cost
 $iconFolder = $icons.folder
 $iconChevron = $icons.chevron
 $iconBranch = $icons.branch
+$iconWorktree = $icons.worktree
 $iconHome = $icons.home
 $iconDirty = $icons.dirty
 $iconAhead = $icons.ahead
@@ -1195,6 +1275,26 @@ function Get-ModelSegment($d, $cfg) {
     return @{ Name = 'model'; Text = $text; Short = $null; Role = $role; Bold = $true }
 }
 
+# THE RULE THIS FEATURE RESTS ON: quiet never hides a segment that is carrying a warning or an error.
+# It is a setting for hiding boring numbers, and one that also hid the alarm would be worse than not
+# having it at all, so every caller checks its own warning state before it asks this question - the
+# context and limits builders keep a segment whose role is warn or bad, and limits keeps one whose pace
+# arrow projects an overrun, whatever the threshold says. The cost segment has no warning state of its
+# own to preserve: its role is always dim and it has no thresholds, so the guard is the whole story there.
+#
+# True when a segment has nothing worth saying yet: the value it would show is below the config's quiet
+# threshold for it, so the builder returns $null and the segment never reaches the line. The comparison
+# is strict, which is what makes the default of 0 mean off - a value of 0 is not below 0. Everything is
+# read defensively, untyped: a caller with no Quiet table, a name the table does not carry, and a value
+# that is not a number all answer false, because a guard that cannot read its threshold must not hide a
+# segment. Get-FiniteNumber is the one numeric test, so a bool or a string never counts as a figure.
+function Test-QuietValue($cfg, [string] $Name, $Value) {
+    $min = if ($cfg.Quiet -is [hashtable]) { Get-FiniteNumber $cfg.Quiet[$Name] } else { $null }
+    $n = Get-FiniteNumber $Value
+    if ($null -eq $min -or $null -eq $n) { return $false }
+    return $n -lt $min
+}
+
 function Get-ContextSegment($d, $cfg) {
     $pct = $d.context_window.used_percentage
     if ($null -eq $pct) { return $null }
@@ -1202,19 +1302,35 @@ function Get-ContextSegment($d, $cfg) {
     # alarm are all the same number. The 0..100 clamp is this segment's own: the bar has ten blocks.
     $pct = Get-WholePercent $pct
     $pct = [math]::Max(0, [math]::Min(100, $pct))
+    $size = $d.context_window.context_window_size
+    # ORDER MATTERS, and these three lines are why. $pct is normalised first - by Get-WholePercent,
+    # which is the same rule the model segment's alarm compares against - the role is read from the
+    # normalised $pct, and only then is the quiet guard asked. Whoever changes how $pct is normalised
+    # must keep the role below it: a role read from the raw payload figure would band the wrong number,
+    # and the guard would then hide a meter the wrong colour says is calm. Both rules break at once,
+    # and a third with them: the alarm would then fire on a percentage this segment never printed.
+    $role = if (Test-WideWindow $size) { Get-ThresholdRole $pct 70 90 } else { Get-ThresholdRole $pct $cfg.Thresholds.Warn $cfg.Thresholds.Bad }
+    # quiet.context compares the clamped percentage, which is what the segment would show. The role is
+    # settled first so the rule above can hold: a meter already yellow or red is an alarm, and a
+    # threshold set above the warn band must not swallow it.
+    if ($role -eq 'ok' -and (Test-QuietValue $cfg 'context' $pct)) { return $null }
     $filled = [math]::Round($pct / 10)
     $bar = ((G 0x2588) * $filled) + ((G 0x2591) * (10 - $filled))
     $used = [double] ($d.context_window.total_input_tokens ?? 0) + [double] ($d.context_window.total_output_tokens ?? 0)
-    $size = $d.context_window.context_window_size
     $counts = if ($used -gt 0 -and $size) { " $(K $used)/$(K $size)" } elseif ($used -gt 0) { " $(K $used)" } else { '' }
     $short = "$iconCtx $pct% $bar"
-    $role = if (Test-WideWindow $size) { Get-ThresholdRole $pct 70 90 } else { Get-ThresholdRole $pct $cfg.Thresholds.Warn $cfg.Thresholds.Bad }
     return @{ Name = 'context'; Text = "$short$counts"; Short = $(if ($counts) { $short } else { $null }); Role = $role; Bold = $false }
 }
 
-function Get-CostSegment($d) {
+# Session cost in dollars, two decimals. quiet.cost is tested on the raw figure rather than on the text,
+# so a threshold of 1 hides a cost of 0.996 even though it would have printed $1.00.
+# There is no warning state to preserve here, unlike context and limits: this segment's role is always
+# dim and no config threshold colours it, so a spend the user called boring is only ever boring and the
+# quiet guard stands alone.
+function Get-CostSegment($d, $cfg) {
     $cost = $d.cost.total_cost_usd
     if ($null -eq $cost) { return $null }
+    if (Test-QuietValue $cfg 'cost' $cost) { return $null }
     return @{ Name = 'cost'; Text = ("$iconCost `$" + ('{0:N2}' -f [double] $cost)); Short = $null; Role = 'dim'; Bold = $false }
 }
 
@@ -1258,8 +1374,10 @@ function Get-PaceArrow([object] $resetsAt, [object] $used, [long] $Now = ([DateT
     $left = $reset - $Now
     if ($left -le 0 -or $left -gt 16200) { return $null }
     $projected = $pct * 18000 / (18000 - $left)
-    if ($projected -le 100) { return @{ Arrow = (G 0x2192); Red = $false } }
-    return @{ Arrow = (G 0x2191); Red = ($projected -ge 120) }
+    # Over names the state the up arrow draws: this rate overruns the window. The quiet guard reads it
+    # rather than the glyph, because it is the warning that must survive a threshold, not the character.
+    if ($projected -le 100) { return @{ Arrow = (G 0x2192); Over = $false; Red = $false } }
+    return @{ Arrow = (G 0x2191); Over = $true; Red = ($projected -ge 120) }
 }
 
 # Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets, and the spend limit when
@@ -1278,14 +1396,16 @@ function Get-LimitsSegment($d, $cfg) {
     if (-not $rl) { return $null }
     $bits = [System.Collections.Generic.List[string]]::new()
     $worst = -1
+    $windowWorst = $null
     $first = $null
     $top = $null
     $pace = $null
     $paceAt = -1
     $paceHead = ''
     $paceTail = ''
-    # Label, source object and whether the pace arrow and the countdown follow, in render order.
-    foreach ($row in @(@('5h', $rl.five_hour, $true), @('7d', $rl.seven_day, $false), @('$', $rl.spend_limit, $false))) {
+    # Label, source object, whether the pace arrow and the countdown follow, and whether the figure is a
+    # rate-limit window rather than the spend limit, in render order.
+    foreach ($row in @(@('5h', $rl.five_hour, $true, $true), @('7d', $rl.seven_day, $false, $true), @('$', $rl.spend_limit, $false, $false))) {
         $pct = $row[1].used_percentage
         if ($null -eq $pct) { continue }
         $pct = Get-WholePercent $pct
@@ -1293,6 +1413,10 @@ function Get-LimitsSegment($d, $cfg) {
         if ($null -eq $first) { $first = $bit }
         # A strict comparison keeps the earlier figure on a tie, so 5h beats 7d beats spend.
         if ($pct -gt $worst) { $top = $bit; $worst = $pct }
+        # The largest of the two rate-limit windows, kept apart from $worst because quiet.limits is a
+        # threshold on how much of an allowance is gone, and the spend limit is not one of those. $null
+        # until a window is actually present, which is what a payload carrying only a spend limit leaves.
+        if ($row[3] -and ($null -eq $windowWorst -or $pct -gt $windowWorst)) { $windowWorst = $pct }
         $tail = ''
         if ($row[2]) {
             $tail = TimeLeft $row[1].resets_at
@@ -1303,7 +1427,22 @@ function Get-LimitsSegment($d, $cfg) {
         $bits.Add("$bit$tail")
     }
     if ($bits.Count -eq 0) { return $null }
+    # ORDER MATTERS here the same way it does in Get-ContextSegment. Each figure is normalised to a whole
+    # percent inside the loop above - by Get-WholePercent, the rule the alarm compares against too -
+    # $worst and $windowWorst are accumulated from those normalised figures, the role is read from
+    # $worst, and only then is the quiet guard asked. Whoever changes how a figure is normalised must
+    # keep that chain: a role read from a raw payload figure would band the wrong number, and the guard
+    # would then hide a segment the wrong colour says is calm. The pace arrow below is the one
+    # deliberate exception, and says so: it needs the raw figure because it is projecting from it.
     $role = Get-ThresholdRole $worst $cfg.Thresholds.Warn $cfg.Thresholds.Bad
+    # quiet.limits is tested on the larger of the two rate-limit windows, not on $worst, which also
+    # carries the spend limit and stays the colour-driving figure. Two guards stand in front of it, both
+    # the rule above: a segment already yellow or red is an alarm, and so is a five-hour figure whose
+    # projection overruns the window - that is the case a threshold would otherwise swallow at its most
+    # dangerous, because a low current percentage early in a window is exactly what projects red.
+    # With neither window present there is nothing to compare, and Test-QuietValue answers false on the
+    # $null, so a payload carrying only a spend limit is never hidden by this key.
+    if ($role -eq 'ok' -and -not ($paceAt -ge 0 -and $pace.Over) -and (Test-QuietValue $cfg 'limits' $windowWorst)) { return $null }
     if ($paceAt -ge 0) {
         $arrow = if ($pace.Red) { Format-Inline 'removed' $pace.Arrow $role $cfg.Style } else { $pace.Arrow }
         $bits[$paceAt] = "$paceHead $arrow$paceTail"
@@ -1353,12 +1492,16 @@ function Get-PrSegment($d) {
 function Get-FolderSegment($d, $cfg) {
     $dir = [string] $d.workspace.current_dir
     if (-not $dir) { return $null }
-    $leaf = Split-Path $dir -Leaf
+    # Every piece of text this segment draws comes from outside it - a directory name, a repo owner -
+    # and each one is stripped of its Format characters, so none of them can reorder the rest of the line.
+    $leaf = Format-PayloadText (Split-Path $dir -Leaf)
     $owner = $d.workspace.repo.owner
     $name = $d.workspace.repo.name
     if ($cfg.Folder -eq 'leaf' -or -not (Test-PayloadText $owner) -or -not (Test-PayloadText $name)) {
         return @{ Name = 'folder'; Text = "$iconFolder $leaf"; Short = $null; Role = 'folder'; Bold = $false }
     }
+    $owner = Format-PayloadText ([string] $owner)
+    $name = Format-PayloadText ([string] $name)
     $root = [string] $d.workspace.project_dir
     $here = ($dir -replace '/', '\').TrimEnd('\')
     $there = ($root -replace '/', '\').TrimEnd('\')
@@ -1378,12 +1521,26 @@ function Get-PayloadNumber($v) {
     return [int] $d
 }
 
-# Whether a payload value is text: a string with visible content and no control character. Numbers,
-# arrays, objects, nulls, blank strings and strings carrying an escape (any Unicode Cc character) are
-# not, so a field that should name something cannot be rendered from one of those, and a repo owner or
-# name cannot smuggle an escape sequence onto the line.
+# The two families of invisible character a rendered value may not carry, and the two different answers
+# to them. Cc, the C0 range, DEL and the C1 range, is an escape: U+001B, and U+009B, U+009C and U+009D
+# which are CSI, ST and OSC in their 8-bit forms. A value carrying one is refused outright, because half
+# an escape sequence is not a name and its presence is evidence the value is hostile rather than
+# careless. Cf, the Unicode Format category, is a right-to-left override, a directional isolate, a
+# zero-width joiner or a byte order mark: none of them breaks the escape syntax and ConvertTo-Json emits
+# them raw, but each one reorders or hides the rest of the line, which is exactly the reasoning
+# Get-IconRefusedCategory already applies to an icon code point. Those are stripped rather than refused,
+# because one stray override in a branch name - and git permits one in a ref name - should cost the
+# character, not the segment that says which branch the session is on. Format-PayloadText takes them
+# out; Test-PayloadText answers whether anything visible is left once they are gone, so a value that is
+# nothing but overrides is not text and a caller with a fallback list moves on to the next field.
+# Numbers, arrays, objects, nulls and blank strings are not text either.
+function Format-PayloadText([string] $Text) {
+    return [regex]::Replace($Text, '\p{Cf}', '')
+}
+
 function Test-PayloadText($v) {
-    return ($v -is [string] -and -not [string]::IsNullOrWhiteSpace($v) -and $v -notmatch '\p{Cc}')
+    return ($v -is [string] -and -not [string]::IsNullOrWhiteSpace($v) -and $v -notmatch '\p{Cc}' -and
+            -not [string]::IsNullOrWhiteSpace((Format-PayloadText $v)))
 }
 
 # Dirty flag from a payload git.status value: "clean"/other string, or an object of counts/booleans.
@@ -1416,22 +1573,61 @@ function Get-PayloadCount($status) {
 # carries no upstream data. $null when the object names no branch, which means "no branch", not "go
 # and look".
 function Read-PayloadStatus($git) {
-    if (-not $git.branch) { return $null }
+    # Stripped rather than refused: a name that is nothing but Format characters leaves no branch to
+    # put on the line, but one carrying a stray override keeps the rest of its text.
+    $branch = Format-PayloadText "$($git.branch)"
+    if (-not $branch) { return $null }
     $info = Get-PayloadCount $git.status
-    $info.Branch = "$($git.branch)"
+    $info.Branch = $branch
     $info.Dirty = Test-PayloadDirty $git.status
     $info.Ahead = 0
     $info.Behind = 0
     return $info
 }
 
+# The name of the worktree the session is in, for the badge inside the branch segment. Three answers:
+# the name, when worktree.name is text; the empty string, meaning "in a worktree, with nothing to call
+# it", which draws the glyph on its own; and $null, meaning the session is not in a worktree at all and
+# there is no badge. worktree.name is the field to use when Claude Code sends one, whatever
+# workspace.git_worktree says, because a payload that names a worktree is in one. Without a usable name
+# the boolean is the signal, and only a real boolean: a "true" string or a 1 is a payload that does not
+# mean what this reads, so it gets no badge. Then the last segment of worktree.path stands in, taken
+# after the separators are folded and any trailing one is dropped, so C:\src\wt-x\ and /home/j/wt-x
+# both give wt-x. Both fields go through Test-PayloadText, the one guard the branch name and the repo
+# owner and name already pass: a worktree directory is named by whoever made the repository, not by the
+# person at the keyboard, and a name carrying an escape would recolour or break the rest of the line.
+# Whatever that guard refuses, this refuses with it, rather than keeping a second rule of its own that
+# could fall behind. Whatever that guard strips, this strips with it: the name and the path leaf are
+# rendered text, so they go through Format-PayloadText the way the branch name and the repo owner do,
+# and a right-to-left override in a worktree directory costs the character rather than the badge. That
+# leaves the three answers where they were. A name with nothing visible left in it is not a name, so it
+# falls through this chain rather than becoming a fourth answer; a path leaf with nothing left lands on
+# the empty string, which is already what "in a worktree, with nothing to call it" means. Nothing here
+# starts a process or touches the disk - the payload is the only source, so a render costs no more.
+function Get-WorktreeName($d) {
+    $wt = $d.worktree
+    if (Test-PayloadText $wt.name) { return (Format-PayloadText "$($wt.name)").Trim() }
+    if ($d.workspace.git_worktree -isnot [bool] -or -not $d.workspace.git_worktree) { return $null }
+    if (Test-PayloadText $wt.path) {
+        # The leaf is taken from the path as it arrived and stripped afterwards, not the other way
+        # round: stripping first would turn C:\src\<override> into C:\src\ and then call the worktree
+        # "src", naming the parent of a directory whose own name is invisible.
+        $path = ("$($wt.path)" -replace '/', '\').TrimEnd('\')
+        $leaf = Format-PayloadText $path.Substring($path.LastIndexOf('\') + 1)
+        if ($leaf) { return $leaf }
+    }
+    return ''
+}
+
 # Branch from the payload's git object when present; otherwise from git status in current_dir, through
 # the probe cache, which is handed no directory when the config turns it off and does the rest of the
 # deciding itself. Either way the record has the same keys. Ahead/behind counts only exist on the git
 # path; the file counts come from either source. All of them render dim between the name and the
-# pencil, arrows first, then +staged ~modified ?untracked, then the conflict glyph in red. Short is
-# icon, name and pencil, so a wide line sheds the counts before it sheds whole segments. Zero counts
-# render nothing, so a clean tree is the same text as before.
+# pencil, arrows first, then +staged ~modified ?untracked, then the conflict glyph in red. A session in
+# a git worktree gets the fork glyph and the worktree's name in front of the counts, from the payload
+# rather than from git. Short is icon, name and pencil, so a wide line sheds the badge and the counts
+# before it sheds whole segments. Zero counts render nothing, and a session outside a worktree gets no
+# badge, so an ordinary clean checkout is the same text as before.
 function Get-BranchSegment($d, $cfg) {
     $info = if ($null -ne $d.git) { Read-PayloadStatus $d.git } else {
         $cacheDir = if ($cfg.Git.Cache) { Get-GitCacheDir } else { $null }
@@ -1442,6 +1638,12 @@ function Get-BranchSegment($d, $cfg) {
     $icon = if ($isMain) { $iconHome } else { $iconBranch }
     $role = if ($info.Dirty) { 'warn' } else { 'branch' }
     $name = "$icon $($info.Branch)"
+    # The worktree badge, when the session is in one: the fork glyph and the name, straight after the
+    # branch name, so the two halves of "which checkout is this" read together and the counts and the
+    # pencil keep their places behind them. It is not in Short, so a narrow line sheds it with the
+    # counts, and it is not in the role either: a worktree is never the reason a colour changes.
+    $worktree = Get-WorktreeName $d
+    $badge = if ($null -eq $worktree) { '' } elseif ($worktree) { " $iconWorktree $worktree" } else { " $iconWorktree" }
     $counts = ''
     # Record key, prefix and inline colour role for each count, in the order they render.
     foreach ($row in @(@('Ahead', $iconAhead, 'track'), @('Behind', $iconBehind, 'track'), @('Staged', '+', 'track'),
@@ -1450,7 +1652,7 @@ function Get-BranchSegment($d, $cfg) {
         if ($n -gt 0) { $counts += ' ' + (Format-Inline $row[2] "$($row[1])$n" $role $cfg.Style) }
     }
     $pencil = if ($info.Dirty) { " $iconDirty" } else { '' }
-    return @{ Name = 'branch'; Text = "$name$counts$pencil"; Short = "$name$pencil"; Role = $role; Bold = $false }
+    return @{ Name = 'branch'; Text = "$name$badge$counts$pencil"; Short = "$name$pencil"; Role = $role; Bold = $false }
 }
 
 # ---- Build, lay out, fit, print ----
