@@ -52,7 +52,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | Context | `context_window.used_percentage`, `total_input_tokens`, `total_output_tokens`, `context_window_size` | Percent, ten-block bar, used/total in k or M. Green below 60%, yellow below 85%, red above. A 1M window uses 70% and 90%, so red still means about 100k tokens of room |
 | Cost | `cost.total_cost_usd` | Dimmed, two decimals |
 | Lines | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
-| Limits | `rate_limits.five_hour`, `seven_day`, `spend_limit` | Coloured by the worst of the figures. The spend figure is `$ 62%`, a literal dollar sign, shown only when the payload carries `spend_limit`, which Claude Code sends behind a Claude apps gateway with a spend limit (2.1.251 or later); its reset time is not shown |
+| Limits | `rate_limits.five_hour`, `seven_day`, `spend_limit` | Coloured by the worst of the figures. A pace arrow follows the 5-hour figure, before its countdown: `→` while the current rate lands inside the window, `↑` when it overruns, red through the `removed` inline role once the projection reaches 120%. The elapsed fraction comes from `resets_at` and the fixed five-hour window, so there is no arrow without a reset time, after one, inside the first tenth of a window, or before anything has been used. The arrow never reaches the short form. The spend figure is `$ 62%`, a literal dollar sign, shown only when the payload carries `spend_limit`, which Claude Code sends behind a Claude apps gateway with a spend limit (2.1.251 or later); its reset time is not shown |
 | Badges | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dim glyphs |
 | PR | `pr.number`, `pr.url`, `pr.review_state` (`pr.kind` is read but not shown) | Pull-request glyph and `#N`, the whole text wrapped in an OSC 8 hyperlink to `pr.url`. Green on `approved`, red on `changes requested` (underscores and case ignored), dim for anything else. Omitted without a `pr` object or a whole, positive `number`; a `url` that is not `http(s)` leaves the text unlinked. No short form |
 | Folder | `workspace.repo.owner`, `workspace.repo.name`, `workspace.project_dir`, `workspace.current_dir` | Blue. `owner/name` when the payload carries a repository, followed by `›` and the leaf of `current_dir` when it differs from `project_dir`. The leaf alone without a repository or with `"folder": "leaf"` in the config. Short form is the repository name |
@@ -139,6 +139,22 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   the real one, so an interrupted write costs nothing. The file holds numbers and one id, nothing from
   the prompt or the file system. Cleanup is a stamped sweep, so the common render is one read and one
   write.
+- **The silence is switchable.** Every failure in the git probe, the probe cache and the state file is
+  swallowed on purpose, which leaves a bug report with nothing in it. `Write-StatusDiag` appends one
+  line - UTC time, process id, reason - per swallowed catch, per cache branch and per state read and
+  write to `claude-statusline-diag.log` in the temp folder, and only while `CLAUDE_STATUSLINE_DEBUG`
+  is set to something other than `0`, `false`, `no` or `off`. Unset, the helper reads one
+  environment variable and returns, so the render pays nothing for it. The log is written the way the
+  catch behaves: it never reaches the pipeline, a failure to write it is swallowed in turn, and the
+  rendered line is identical with the variable set and unset. The log rolls over into a `.log.1`
+  sibling once an append would take it past 4 MB, from inside that same `try`, so a variable left set
+  in a profile cannot fill the temp volume and a rollover that fails costs the line and nothing more.
+  One record is cut at 1000 characters, so no single reason can outgrow the cap by itself. The move is
+  taken under a named mutex with a zero wait, and the size is read again while it is held, so two
+  renders cannot rotate over each other's archive; one that cannot take the mutex at once skips the
+  rollover and appends. Nothing waits, and the append itself is unlocked, which makes the cap
+  approximate rather than exact: overlapping renders can leave the file a little over it or lose a
+  line. That is the right trade for a log that must never delay a render and is off by default.
 
 ## Constraints
 
@@ -151,7 +167,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 ## Success criteria
 
-- `.\test.ps1` passes: the unit checks, every payload in `samples/` across seven configs and four widths (120, 60, 20 and unset) with content checks at the unset width, the git cases with the probe cache, the state file cases, and the install cases.
+- `.\test.ps1` passes: the unit checks, every payload in `samples/` across seven configs and four widths (120, 60, 20 and unset) with content checks at the unset width, the git cases with the probe cache, the state file cases, the diagnostics log cases, and the install cases.
 - `.\install.ps1` on a fresh machine produces a working status line in Claude Code after one session restart.
 - `.\install.ps1 -Uninstall` returns `settings.json` to its prior state minus the `statusLine` key.
 - `.\install.ps1` leaves an existing `~/.claude/statusline.json` untouched.
@@ -162,11 +178,13 @@ Two-line layout, powerline style, config file, width fitting and the git fallbac
 The branch segment shows ahead and behind counts (#16) and staged, changed, untracked and conflict
 counts (#17), all from the one `git status` call, and that call is cached per repository with its
 timeout and lifetime in the config (#18). The model segment marks a 1M window (#9), the limits
-segment shows the spend limit (#7), and the folder segment shows `owner/name` (#10). The
+segment shows the spend limit (#7) and paces the 5-hour figure against its window (#6), and the
+folder segment shows `owner/name` (#10). The
 pull-request segment (#12) links `#N` to the PR with OSC 8. Segment order, the two rows, the colour
 thresholds and the glyphs are `statusline.json` keys over the segment registry (#20). The installer
 writes `hideVimModeIndicator` and, on request, `refreshInterval` (#26). A state file per session
-(#4) is written but nothing on the line reads it yet. A light palette is still a constant in the
+(#4) is written but nothing on the line reads it yet. Every silent catch can be traced through an
+optional log behind `CLAUDE_STATUSLINE_DEBUG` (#43). A light palette is still a constant in the
 script.
 
 ## Future work
@@ -183,7 +201,7 @@ the link helper (#12) and the git cache (#18). The intended order for the rest:
 3. Style and terminal: an ASCII style, a light palette, a right-aligned group with a clock, taskbar
    progress, a subagent status line (#15, #24, #25, #27, #28).
 4. Small fixes from review: the zero-segment fallback line should respect the model toggle and the
-   configured order (#42), and an optional diagnostics log for the silent catch blocks (#43).
+   configured order (#42).
 
 ## License
 

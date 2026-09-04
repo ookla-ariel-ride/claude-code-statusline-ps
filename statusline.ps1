@@ -21,6 +21,71 @@ function G([int] $cp) { [char]::ConvertFromUtf32($cp) }
 $e = [char]27
 function C([string] $code, [string] $text) { "$e[${code}m$text$e[0m" }
 
+# ---- Diagnostics log ----
+# The git probe, the probe cache and the state file swallow every failure on purpose: a status line
+# that throws, or that prints an error where the branch should be, is worse than one that is a little
+# stale. The cost is that "git still runs on every render" and "the state file never appears" cannot be
+# looked into without editing the installed script. CLAUDE_STATUSLINE_DEBUG buys that back without
+# giving the silence up: set to anything other than 0, false, no or off, each swallowed catch, each
+# cache branch and each state read and write appends one line - UTC time, process id, reason - to
+# claude-statusline-diag.log in the temp folder. Unset, which is the normal case, this reads one
+# environment variable and returns.
+# Writing the log is itself silent, for the same reason the caller's catch is: a temp folder that is
+# not there or cannot be written, or another render holding the file, costs the line and nothing else.
+# The reason is folded onto one line, because an exception message can carry newlines and one call has
+# to stay one line. Nothing here reaches the pipeline, so a call can sit in front of a return without
+# changing what the caller returns.
+# The log is rolled over rather than left to grow, and one record is bounded so that a reason of any
+# length cannot set the size of the file on its own. The 4 MB cap is a target rather than a promise;
+# Invoke-StatusDiagRollover has the reason why.
+
+# Moves a log with no room left for the next record over claude-statusline-diag.log.1, so a variable
+# left set in a profile costs two files of the cap's size at most rather than the temp volume.
+# Two renders can be printing at once and would both see the same full file, so the move is taken
+# under a named mutex and the size is read again with the mutex in hand: the second render then finds
+# the small file the first one left and does nothing, rather than moving that over the archive the
+# first one just made. The wait is zero. A render that cannot have the mutex at once skips the
+# rollover and appends, because the file it would have moved is about to shrink under it anyway, so
+# nothing here ever waits on another process - which is the point of a log that must not delay a
+# render. The append itself is not locked at all. That leaves the cap approximate: two renders that
+# overlap can leave the file a little over it, or lose a line to each other, which is the right trade
+# for a diagnostic that is off by default and read by a person. Anything that throws is
+# Write-StatusDiag's to swallow, and nothing here reaches the pipeline.
+function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap) {
+    $mutex = [System.Threading.Mutex]::new($false, 'claude-code-statusline-diag-rollover')
+    try {
+        $held = $false
+        # An abandoned mutex is one this process now owns: the render holding it died mid-move.
+        try { $held = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $held = $true }
+        if (-not $held) { return }
+        try {
+            $fi = [System.IO.FileInfo]::new($Path)
+            if ($fi.Exists -and $fi.Length + $Need -gt $Cap) { [System.IO.File]::Move($Path, $Path + '.1', $true) }
+        } finally { $mutex.ReleaseMutex() }
+    } finally { $mutex.Dispose() }
+}
+
+function Write-StatusDiag([string] $Reason) {
+    $flag = $env:CLAUDE_STATUSLINE_DEBUG
+    if (-not $flag -or $flag.Trim() -in @('0', 'false', 'no', 'off')) { return }
+    try {
+        $base = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { [System.IO.Path]::GetTempPath() }
+        $path = [System.IO.Path]::Combine($base, 'claude-statusline-diag.log')
+        $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [System.Globalization.CultureInfo]::InvariantCulture)
+        $text = [regex]::Replace($Reason, '\s+', ' ').Trim()
+        # A record is one line a person reads, and an exception message has no length limit, so a reason
+        # past 1000 characters is cut and marked. Without this one record could be larger than the whole
+        # cap and land in the file the rollover had just emptied, leaving the log over the cap again.
+        if ($text.Length -gt 1000) { $text = $text.Substring(0, 1000) + ' [cut]' }
+        $line = "$stamp $PID $text`n"
+        $utf8 = [System.Text.UTF8Encoding]::new($false)
+        $need = $utf8.GetByteCount($line)
+        $fi = [System.IO.FileInfo]::new($path)
+        if ($fi.Exists -and $fi.Length + $need -gt 4MB) { Invoke-StatusDiagRollover $path $need 4MB }
+        [System.IO.File]::AppendAllText($path, $line, $utf8)
+    } catch { $null = $_ }
+}
+
 # The built-in code point of every glyph the segments use, keyed by the name the icons key of
 # statusline.json takes: the $icon* constant minus its prefix, lower-cased. The constants themselves
 # are assigned from Get-IconSet once the config is read, so an override is in place before any builder runs.
@@ -605,7 +670,7 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
     if (-not $Dir) { return $null }
     if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return $null }
     $git = (Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-    if (-not $git) { return $null }
+    if (-not $git) { Write-StatusDiag 'git probe: git is not on PATH'; return $null }
     $p = $null
     $outTask = $null
     $errTask = $null
@@ -625,19 +690,19 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
         $exited = $p.WaitForExit($TimeoutMs)
         if (-not $exited) {
             # Kill the whole tree, then give it a moment to actually go away before we dispose the handles.
-            try { $p.Kill($true) } catch { $null = $_ }
+            try { $p.Kill($true) } catch { Write-StatusDiag "git probe: kill failed: $($_.Exception.Message)" }
             [void] $p.WaitForExit(100)
         }
         # Bounded waits on both drains: the full timeout after a clean exit, so a slow reader cannot cost
         # us the branch, and a short grace after a kill, where the result is discarded anyway. A faulted
         # task is observed here rather than left to the finalizer.
         $drainMs = if ($exited) { $TimeoutMs } else { 100 }
-        try { [void] [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask), $drainMs) } catch { $null = $_ }
-        if (-not $exited) { return $null }
-        if (-not $outTask.IsCompletedSuccessfully) { return $null }
-        if ($p.ExitCode -ne 0) { return $null }
+        try { [void] [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask), $drainMs) } catch { Write-StatusDiag "git probe: drain failed: $($_.Exception.Message)" }
+        if (-not $exited) { Write-StatusDiag "git probe: no answer within $TimeoutMs ms"; return $null }
+        if (-not $outTask.IsCompletedSuccessfully) { Write-StatusDiag 'git probe: stdout did not drain'; return $null }
+        if ($p.ExitCode -ne 0) { Write-StatusDiag "git probe: git exited $($p.ExitCode)"; return $null }
         return Read-PorcelainStatus $outTask.Result
-    } catch { return $null }
+    } catch { Write-StatusDiag "git probe failed: $($_.Exception.Message)"; return $null }
     finally {
         # Disposing closes the redirected streams, so it is only safe once both drains have finished. The
         # bounded wait after a kill can return with a ReadToEndAsync still pending; disposing then would
@@ -706,7 +771,7 @@ function Get-GitRepoRoot([string] $Dir) {
             $path = [System.IO.Path]::GetDirectoryName($path)
         }
         return $null
-    } catch { return $null }
+    } catch { Write-StatusDiag "git cache: repository walk failed: $($_.Exception.Message)"; return $null }
 }
 
 # The stamp string for a git directory: the UTC ticks, joined with commas, of the directory itself, of
@@ -795,10 +860,17 @@ function Get-GitCacheDir {
 # something to write, and a failure to create it, or to write, costs nothing but the cache.
 function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir, [int] $Ttl) {
     $repo = if ($CacheDir -and $Ttl -gt 0) { Get-GitRepoRoot $Dir } else { $null }
-    if (-not $repo) { return Get-GitBranch $Dir $TimeoutMs }
+    if (-not $repo) {
+        if ($CacheDir -and $Ttl -gt 0) { Write-StatusDiag "git cache: skipped (no repository above $Dir)" } else { Write-StatusDiag 'git cache: skipped (off in the config)' }
+        return Get-GitBranch $Dir $TimeoutMs
+    }
     $root = $repo.WorkTree
-    $stamps = try { Get-GitStamp $repo.GitDir } catch { $null }
-    if (-not $stamps -or $stamps.StartsWith('over-cap:')) { return Get-GitBranch $Dir $TimeoutMs }
+    $stamps = $null
+    try { $stamps = Get-GitStamp $repo.GitDir } catch { Write-StatusDiag "git cache: stamp failed: $($_.Exception.Message)" }
+    if (-not $stamps -or $stamps.StartsWith('over-cap:')) {
+        if ($stamps) { Write-StatusDiag 'git cache: skipped (the repository is over the ref cap)' } else { Write-StatusDiag 'git cache: skipped (no stamp)' }
+        return Get-GitBranch $Dir $TimeoutMs
+    }
     $path = [System.IO.Path]::Combine($CacheDir, (Get-ShortHash $root.ToLowerInvariant()) + '.json')
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     try {
@@ -808,17 +880,22 @@ function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir
                 $j.root -is [string] -and $j.root -eq $root -and
                 $j.stamps -is [string] -and $j.stamps -ceq $stamps -and
                 [math]::Abs($now - [long] $j.writtenAt) -lt $Ttl -and $null -ne $j.PSObject.Properties['result']) {
-                if ($null -eq $j.result) { return $null }
+                if ($null -eq $j.result) { Write-StatusDiag 'git cache: hit (the entry holds no branch)'; return $null }
                 $info = Read-CachedRecord $j.result
-                if ($info) { return $info }
+                if ($info) { Write-StatusDiag "git cache: hit ($($info.Branch))"; return $info }
+                Write-StatusDiag 'git cache: miss (the record did not pass the guards)'
+            } else {
+                Write-StatusDiag 'git cache: miss (the entry is stale or does not match)'
             }
+        } else {
+            Write-StatusDiag 'git cache: miss (no entry yet)'
         }
-    } catch { $null = $_ }
+    } catch { Write-StatusDiag "git cache: read failed: $($_.Exception.Message)" }
     $info = Get-GitBranch $Dir $TimeoutMs
     try {
         [void] [System.IO.Directory]::CreateDirectory($CacheDir)
         if (Write-AtomicJson $path ([ordered]@{ v = 1; root = $root; stamps = $stamps; writtenAt = $now; result = $info }) 3) { Invoke-SessionStateSweep $CacheDir }
-    } catch { $null = $_ }
+    } catch { Write-StatusDiag "git cache: write failed: $($_.Exception.Message)" }
     return $info
 }
 
@@ -851,7 +928,7 @@ function Get-SessionStateDir([bool] $Create) {
             [void] [System.IO.Directory]::CreateDirectory($dir)
         }
         return $dir
-    } catch { return $null }
+    } catch { Write-StatusDiag "state dir failed: $($_.Exception.Message)"; return $null }
 }
 
 # The file for a session, <name>.json. When the id is already lower-case, at most 64 characters and has
@@ -892,9 +969,9 @@ function Get-StateNumber($v, [switch] $Whole) {
 function Read-SessionState([string] $SessionId) {
     try {
         $path = Get-SessionStatePath $SessionId $false
-        if (-not $path -or -not [System.IO.File]::Exists($path)) { return $null }
+        if (-not $path -or -not [System.IO.File]::Exists($path)) { Write-StatusDiag 'state: no file yet'; return $null }
         $j = [System.IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop
-        if ($j -isnot [System.Management.Automation.PSCustomObject] -or (Get-StateNumber $j.v) -ne 1) { return $null }
+        if ($j -isnot [System.Management.Automation.PSCustomObject] -or (Get-StateNumber $j.v) -ne 1) { Write-StatusDiag 'state: the file is not a version 1 record'; return $null }
         $history = [System.Collections.Generic.List[hashtable]]::new()
         foreach ($h in @($j.history)) {
             $t = Get-StateNumber $h.t -Whole
@@ -904,8 +981,9 @@ function Read-SessionState([string] $SessionId) {
         $state = @{ v = 1; history = @($history) }
         foreach ($key in @('updated_at', 'input_tokens', 'output_tokens')) { $state[$key] = Get-StateNumber $j.$key -Whole }
         foreach ($key in @('cost_usd', 'used_percentage', 'five_hour_percentage')) { $state[$key] = Get-StateNumber $j.$key }
+        Write-StatusDiag "state: read ($path)"
         return $state
-    } catch { return $null }
+    } catch { Write-StatusDiag "state read failed: $($_.Exception.Message)"; return $null }
 }
 
 # The next state for a session: the payload's figures now, and the history ring carried over from the
@@ -955,12 +1033,12 @@ function Invoke-SessionStateSweep([string] $Dir) {
             foreach ($f in [System.IO.Directory]::EnumerateFiles($Dir, $pattern)) {
                 if ($deleted -ge 200) { $capped = $true; break }
                 if ([math]::Abs(($now - [System.IO.File]::GetLastWriteTimeUtc($f)).TotalDays) -lt 1) { continue }
-                try { [System.IO.File]::Delete($f); $deleted++ } catch { $null = $_ }
+                try { [System.IO.File]::Delete($f); $deleted++ } catch { Write-StatusDiag "sweep: delete failed: $($_.Exception.Message)" }
             }
             if ($capped) { break }
         }
         if (-not $capped) { [System.IO.File]::WriteAllText($stamp, '') }
-    } catch { $null = $_ }
+    } catch { Write-StatusDiag "sweep failed: $($_.Exception.Message)" }
 }
 
 # Writes a session's state through Write-AtomicJson, then runs the sweep. Nothing is written for an
@@ -971,11 +1049,16 @@ function Invoke-SessionStateSweep([string] $Dir) {
 # is one missing delta.
 function Write-SessionState([string] $SessionId, $State) {
     try {
-        if (-not $State) { return }
+        if (-not $State) { Write-StatusDiag 'state: not written (nothing to write)'; return }
         $path = Get-SessionStatePath $SessionId $true
-        if (-not $path) { return }
-        if (Write-AtomicJson $path $State 4) { Invoke-SessionStateSweep (Split-Path $path -Parent) }
-    } catch { $null = $_ }
+        if (-not $path) { Write-StatusDiag 'state: not written (the session id leaves no file name)'; return }
+        if (Write-AtomicJson $path $State 4) {
+            Write-StatusDiag "state: written ($path)"
+            Invoke-SessionStateSweep (Split-Path $path -Parent)
+        } else {
+            Write-StatusDiag 'state: not written (the record serialised to nothing)'
+        }
+    } catch { Write-StatusDiag "state write failed: $($_.Exception.Message)" }
 }
 
 $raw = [Console]::In.ReadToEnd()
@@ -1080,13 +1163,43 @@ function TimeLeft([object] $epoch) {
     return ' ({0}h{1:00}m)' -f [int] [math]::Floor($left.TotalHours), $left.Minutes
 }
 
+# How the 5-hour window is being spent, as one plain arrow: U+2192 when carrying on at this rate lands
+# inside the window, U+2191 when it overruns, with Red set once the projection reaches 120% so the caller
+# can colour it. Returned as @{ Arrow; Red }, or $null for no arrow at all - which is the answer whenever
+# there is nothing honest to say: no reset time, a reset already past or one so far out that the window
+# has not opened, less than the first tenth of the window gone (one busy minute swings the projection
+# there), or no usage yet, where every projection is zero and a right arrow would just be noise.
+# The window is a fixed 18000 seconds, so the elapsed fraction follows from the reset alone and no state
+# file is needed. The arithmetic stays in whole seconds rather than DateTimeOffset, which throws on an
+# epoch outside its own range; a payload's absurd number here just falls out as no arrow. The two limits
+# are tested on the seconds left rather than on the fraction, because a tenth of the window is 16200
+# seconds exactly while 1 - 16200 / 18000 is 0.09999999999999998, which would drop the first honest
+# reading of every window.
+# $Now is the current epoch and defaults to the clock, so no caller passes one. It exists for the tests:
+# an epoch derived from an earlier reading of the clock is one second out whenever the second ticks in
+# between, which is enough to miss both of those limits by exactly the margin a regression would move.
+function Get-PaceArrow([object] $resetsAt, [object] $used, [long] $Now = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) {
+    $reset = Get-FiniteNumber $resetsAt
+    $pct = Get-FiniteNumber $used
+    if ($null -eq $reset -or $null -eq $pct -or $pct -le 0) { return $null }
+    $left = $reset - $Now
+    if ($left -le 0 -or $left -gt 16200) { return $null }
+    $projected = $pct * 18000 / (18000 - $left)
+    if ($projected -le 100) { return @{ Arrow = (G 0x2192); Red = $false } }
+    return @{ Arrow = (G 0x2191); Red = ($projected -ge 120) }
+}
+
 # Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets, and the spend limit when
 # the payload carries one (Claude Code sends it behind a Claude apps gateway with a spend limit). The spend
 # figure uses a literal dollar sign, not the cash glyph, so it does not read as a second cost; its resets_at
 # is not shown, one countdown is enough. Every figure that is present joins the worst-of colour, banded by
 # the config's thresholds whatever the window size, and the Short form a narrow terminal falls back to
 # keeps the figure behind that colour: the worst one, or the first present one when nothing is above the
-# warn line. Either way it carries no countdown.
+# warn line. Either way it carries neither the countdown nor the pace arrow.
+# The 5-hour figure also gets the pace arrow, between the percentage and the countdown, because that is
+# the only window one payload can honestly pace. It is added after the loop rather than inside it: a red
+# arrow goes through Format-Inline, which hands the segment's own foreground back afterwards, and which
+# foreground that is depends on every figure the loop has yet to see.
 function Get-LimitsSegment($d, $cfg) {
     $rl = $d.rate_limits
     if (-not $rl) { return $null }
@@ -1094,7 +1207,11 @@ function Get-LimitsSegment($d, $cfg) {
     $worst = -1
     $first = $null
     $top = $null
-    # Label, source object and whether the countdown follows, in render order.
+    $pace = $null
+    $paceAt = -1
+    $paceHead = ''
+    $paceTail = ''
+    # Label, source object and whether the pace arrow and the countdown follow, in render order.
     foreach ($row in @(@('5h', $rl.five_hour, $true), @('7d', $rl.seven_day, $false), @('$', $rl.spend_limit, $false))) {
         $pct = $row[1].used_percentage
         if ($null -eq $pct) { continue }
@@ -1103,12 +1220,22 @@ function Get-LimitsSegment($d, $cfg) {
         if ($null -eq $first) { $first = $bit }
         # A strict comparison keeps the earlier figure on a tie, so 5h beats 7d beats spend.
         if ($pct -gt $worst) { $top = $bit; $worst = $pct }
-        $tail = if ($row[2]) { TimeLeft $row[1].resets_at } else { '' }
+        $tail = ''
+        if ($row[2]) {
+            $tail = TimeLeft $row[1].resets_at
+            # The raw percentage, not the rounded one: the projection is the arrow's whole point.
+            $pace = Get-PaceArrow $row[1].resets_at $row[1].used_percentage
+            if ($pace) { $paceAt = $bits.Count; $paceHead = $bit; $paceTail = $tail }
+        }
         $bits.Add("$bit$tail")
     }
     if ($bits.Count -eq 0) { return $null }
-    $text = "$iconLimit $($bits -join ' ')"
     $role = Get-ThresholdRole $worst $cfg.Thresholds.Warn $cfg.Thresholds.Bad
+    if ($paceAt -ge 0) {
+        $arrow = if ($pace.Red) { Format-Inline 'removed' $pace.Arrow $role $cfg.Style } else { $pace.Arrow }
+        $bits[$paceAt] = "$paceHead $arrow$paceTail"
+    }
+    $text = "$iconLimit $($bits -join ' ')"
     $short = "$iconLimit " + $(if ($role -eq 'ok') { $first } else { $top })
     if ($short -eq $text) { $short = $null }
     return @{ Name = 'limits'; Text = $text; Short = $short; Role = $role; Bold = $false }
