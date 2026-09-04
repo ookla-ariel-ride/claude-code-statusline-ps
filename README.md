@@ -223,6 +223,7 @@ The script reads `statusline.json` from its own folder, so after installing that
   "folder": "repo",
   "state": true,
   "thresholds": { "warn": 60, "bad": 85 },
+  "alarm": { "context": 90, "limits": 90 },
   "icons": {},
   "git": {
     "timeoutMs": 1500,
@@ -285,6 +286,7 @@ whose text encoding the script does not get to choose.
 | `order` | `["model", "branch", "context"]` | The segments of layout `one`, left to right. A segment left out is not shown, an unknown name is skipped, a repeat keeps its first place. Left out altogether, as the installed file leaves it, the segments come in the script's order, new ones included. An empty list, a list naming no segment, or anything that is not a list does the same. |
 | `rows` | `[["model", "branch"], ["context", "cost"]]` | The two lines of layout `two`, with the same rules per row. A segment named on the first row is not repeated on the second, and a row may be empty. Left out, the script's own two rows apply, new segments included. Anything but exactly two lists, or two lists naming no segment, does the same. |
 | `thresholds` | `{ "warn": 20, "bad": 40 }` | Where the context meter and the rate limits turn yellow and red: whole numbers from 0 to 100 (`20` or `20.0`, not `20.5`), `warn` no higher than `bad`. Either value wrong keeps 60 and 85 for both. A 1M window keeps its own 70 and 90. |
+| `alarm` | `{ "context": 90, "limits": 90 }` | Where the model segment itself turns red: `context` is read against `context_window.used_percentage` and `limits` against the higher of the 5-hour and 7-day figures. Whole numbers, each read on its own, so a file naming one leaves the other at 90. `0` turns that alarm off, a negative counts as `0`, and a number above 100 is kept and can then never fire. The spend limit is a billing ceiling rather than a rate and raises no alarm; neither does a percentage that is missing or null, which is what a session sends before its first API response. What is compared is the whole number the segments print, rounded half to even, so the meter and the model can never disagree about whether 90% has been reached: at 89.6 the meter reads 90% and the alarm fires. The alarm reads the percentage whatever the window size, so on a 1M window it fires at the same figure as the window's own fixed 90 band. |
 | `quiet` | `{ "cost": 1.00, "context": 30, "limits": 50 }` | The smallest value a segment is worth showing at: dollars for `cost`, percent for `context`, and percent for `limits` against the larger of the 5-hour and 7-day figures (the spend limit is not one of them, and a payload carrying only a spend limit is never hidden here). Below it the segment is not built at all, so it takes no room and has nothing to shed at a narrow width. **Quiet never hides a segment that is carrying a warning or an error**: a context meter or a limits segment already yellow or red stays whatever the threshold says, and so does a 5-hour figure whose pace arrow projects an overrun — which is the case that matters most, because a low percentage early in a window is exactly the one that projects red. `cost` has no warning state of its own, so there its threshold is the whole story. Fractions are allowed, a negative counts as zero, and the test is on the raw figure rather than the printed one, so `"cost": 1.00` hides a cost of 0.996 even though it would have printed `$1.00`. The default is `0` everywhere, which hides nothing; a value that is not a number leaves that one name at `0` and the other two alone. |
 | `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cost`, `folder`, `chevron`, `branch`, `worktree`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `pr`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`. A name the list does not have, or a value that is not a single printable glyph, keeps the built-in one. To count as a glyph a code point has to be inside Unicode, not a surrogate half and not a noncharacter, one or two cells wide, and none of: a control (`A` is a newline, `1B` a bare escape), a format character (`202E` is a right-to-left override, `200D` a zero-width joiner), a line or paragraph separator, a space, or a combining mark. Private use is where the Nerd Font glyphs live, so it is allowed. |
 | `git.timeoutMs` | `100` to `10000` | How long the branch segment waits for `git status`, in milliseconds, before it gives up and leaves the segment out. A value outside the range is clamped to it. |
@@ -379,7 +381,7 @@ The model segment always stays.
 
 | Segment | Icon | Data | Rendering |
 |---|---|---|---|
-| model | <img src="docs/icons/robot.svg" height="18" alt="robot"> `nf-md-robot` | `model.display_name`, `context_window.context_window_size`, `exceeds_200k_tokens` | Bold cyan. On a 1M window `1M` follows the name in a lighter cyan, then a warning triangle when Claude Code reports `exceeds_200k_tokens` as true |
+| model | <img src="docs/icons/robot.svg" height="18" alt="robot"> `nf-md-robot` | `model.display_name`, `context_window.context_window_size`, `exceeds_200k_tokens`, `context_window.used_percentage`, `rate_limits.five_hour`, `seven_day` | Bold cyan. On a 1M window `1M` follows the name in a lighter cyan, then a warning triangle when Claude Code reports `exceeds_200k_tokens` as true. The whole segment turns red once the context window or a rate limit reaches the `alarm` percentage, 90 unless the config moves it. The text does not change. This is the one segment that is never shortened and never dropped, which is why the alarm rides on it: at any width, and on either row of layout two, a full context window is still visible as a red line |
 | context | <img src="docs/icons/memory.svg" height="18" alt="memory"> `nf-md-memory` | `context_window.*` | Percent, ten-block bar, used/total tokens. Green below 60%, yellow below 85%, red above, or the `thresholds` from the config. On a 1M window the cut-offs are 70% and 90% whatever the config says, so red still means about 100k tokens left |
 | cost | <img src="docs/icons/cash.svg" height="18" alt="cash"> `nf-md-cash` | `cost.total_cost_usd` | Dimmed, two decimals |
 | lines | <img src="docs/icons/code.svg" height="18" alt="code"> `nf-fa-code` | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
@@ -513,7 +515,8 @@ under Configuration. What is left sits at the top of `statusline.ps1`:
 - `Get-IconDefault` holds the built-in code point of every glyph, under the name the `icons` key takes. The [Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet) lists alternatives.
 - How long the branch segment waits for `git status` is `git.timeoutMs` in `statusline.json`, not a constant in the script.
 - `$defaultEffort` is the level at which the effort badge is hidden.
-- The 70% and 90% cut-offs of a 1M window are passed by the context block to `Get-ThresholdRole`; `thresholds` does not move them.
+- The 70% and 90% cut-offs of a 1M window are passed by the context block to `Get-ThresholdRole`; `thresholds` does not move them. The `alarm` percentages are separate from both: `Test-AlarmState` reads the payload directly, so it does not care about the window size or about which segments are switched on.
+- `Get-WholePercent` is the one rule that turns a payload figure into the percentage on the line. The context meter, the limits figures, the colour bands and the alarms all go through it, so a fractional percentage cannot print as 90% in one segment and count as 89% in another. It rounds half to even, which is what the casts it replaced already did.
 - `Get-Palette` holds the colours for both styles.
 - `Get-SegmentRegistry` is the segment table. Its array order is the default `order`, `Row` and `RowRank` give the default `rows`, and `ShrinkRank` and `DropRank` set the fitting order, which the config does not change.
 
@@ -586,6 +589,9 @@ and value to look for). A sample without those rows fails the run by name. A sam
 that has a short form, such as a branch with counts or a folder with a repository, also needs an
 entry in `$sampleShortForms`, the full and shortened text the matrix accepts at a set width, unless
 its full text carries a live countdown or cannot fit at 120 columns, as sample 06's limits line does.
+A sample whose percentages reach the `alarm` level needs its name in `$alarmSamples` as well: the
+markers are plain text and cannot see a colour, so that list is what tells the matrix whether the
+model segment should be red or cyan, and it checks both.
 Then regenerate the screenshots at the top of this file with
 `pwsh docs/render-screenshot.ps1` and
 `pwsh docs/render-screenshot.ps1 -Config docs/statusline-two-line.json -Out docs/statusline-two-line.png`.
