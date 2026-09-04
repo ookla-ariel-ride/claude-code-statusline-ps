@@ -275,6 +275,7 @@ whose text encoding the script does not get to choose.
 
 | Key | Values | What it does |
 |---|---|---|
+| `preset` | `minimal`, `cost`, `full` | A name for a layout, a style and the whole set of segment toggles, listed below. Every other key in the same file is applied over it, so a preset is a starting point rather than a lock. A name none of the three has, or a value that is not a string, changes nothing. |
 | `layout` | `one`, `two` | `two` puts model, folder, branch, pr and badges on the first line and context, limits, cost and lines on the second, unless `rows` says otherwise. |
 | `style` | `plain`, `powerline` | `plain` is coloured text with a dim chevron between segments. `powerline` is coloured blocks joined by solid arrows. |
 | `folder` | `repo`, `leaf` | `repo` shows `owner/name` from `workspace.repo` when the payload has one, with the current directory's name after a `›` when it differs from the project root. `leaf` always shows the directory name alone. |
@@ -287,6 +288,28 @@ whose text encoding the script does not get to choose.
 | `git.timeoutMs` | `100` to `10000` | How long the branch segment waits for `git status`, in milliseconds, before it gives up and leaves the segment out. A value outside the range is clamped to it. |
 | `git.cacheSeconds` | `0` to `300` | How long a `git status` result is reused for, in seconds, before git is asked again. `0` asks git on every render. Clamped like `timeoutMs`. |
 | `git.cache` | `true`, `false` | `false` asks git on every render, whatever `cacheSeconds` says. |
+
+### Presets
+
+Turning five segments off by hand is the first edit most people make, so the three usual shapes have
+names. The whole file can be `{"preset": "minimal"}`.
+
+| Preset | Layout | Style | Segments on |
+|---|---|---|---|
+| `minimal` | `one` | `plain` | model, context, folder, branch |
+| `cost` | `one` | `plain` | model, context, cost, lines, limits |
+| `full` | `two` | `powerline` | all nine |
+
+`minimal` answers which model, how full and where am I, and nothing else. `cost` is the spend line,
+for watching a budget or a rate limit. `full` is everything, split across two rows.
+
+A preset is expanded before the rest of the file it appears in, whatever order the keys are written
+in, so anything beside it wins: `{"preset": "minimal", "style": "powerline"}` is the minimal segment
+set in powerline blocks, and `{"preset": "cost", "segments": {"branch": true}}` is the spend line with
+the branch put back. It sets nothing but the layout, the style and the toggles — `order`, `rows`,
+`thresholds`, `icons`, `state` and the `git` block are untouched. A preset in a project file sits
+where any other project key sits, so it is written over the user file whole; a preset in the user file
+is a base for the project file to change.
 
 A config only needs the keys it changes. This one puts the branch beside the model, colours the
 meter early and uses a house glyph on `main`:
@@ -590,11 +613,12 @@ Done so far:
 - [x] Pace arrow on the 5-hour rate limit
 - [x] Per-project `statusline.json` merged over the user file
 - [x] A subagent status line for the agent panel, installed with `-Subagents`
+- [x] Named presets: `minimal`, `cost` and `full` under one `preset` key
 - [x] Worktree name beside the branch
 
 [Issues #2 to #43](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
 each with its own plan. In rough order: new segments (cache warmth, cost per turn, session
-clock, links on the folder and branch), named presets, and finally an ASCII style that
+clock, links on the folder and branch), and finally an ASCII style that
 needs no Nerd Font and a light palette.
 
 ## License
