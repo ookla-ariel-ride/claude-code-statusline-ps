@@ -141,7 +141,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
 # these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
@@ -445,13 +445,287 @@ Confirm-Equal $c.Icons.model 0xF0E7 'config icons: the known name beside it is k
 $c = Read-StatusConfig (Write-TempConfig 'icons-invalid.json' '{ "icons": { "model": "zz", "cost": 61671, "folder": "", "lines": "110000", "limits": "D800", "fast": "DFFF", "think": "-1", "effort": "F0 E7", "vim": null, "home": ["F0E7"], "ahead": true, "behind": "1B", "conflict": "A", "chevron": "0" } }')
 Confirm-Equal $c.Icons.Count 0 'config icons: every invalid value is skipped'
 $c = Read-StatusConfig (Write-TempConfig 'icons-edges.json' '{ "icons": { "model": "10FFFF", "dirty": "E000", "ahead": "D7FF", "behind": "41" } }')
-Confirm-Equal $c.Icons.Count 4 'config icons: the edges of the range are allowed'
-Confirm-Equal $c.Icons.model 0x10FFFF 'config icons: 10FFFF'
+Confirm-Equal $c.Icons.Count 2 'config icons: the private use and letter edges are allowed'
+Confirm-Equal $c.Icons.dirty 0xE000 'config icons: the first private use code point'
+Confirm-Equal $c.Icons.behind 0x41 'config icons: a plain letter'
+Confirm-True (-not $c.Icons.ContainsKey('model')) 'config icons: 10FFFF is a noncharacter and is skipped'
+Confirm-True (-not $c.Icons.ContainsKey('ahead')) 'config icons: D7FF is unassigned and is skipped'
 Confirm-Equal (Read-StatusConfig (Write-TempConfig 'icons-array.json' '{ "icons": ["F0E7"] }')).Icons.Count 0 'config icons: array falls back'
 Confirm-Equal (Read-StatusConfig (Write-TempConfig 'icons-string.json' '{ "icons": "F0E7" }')).Icons.Count 0 'config icons: string falls back'
 $c = Read-StatusConfig (Write-TempConfig 'icons-good-thresholds-bad.json' '{ "icons": { "model": "F0E7" }, "thresholds": 5 }')
 Confirm-Equal $c.Icons.model 0xF0E7 'config icons: kept when thresholds is invalid'
 Confirm-Equal (Get-ThresholdText $c) '60/85' 'config icons: the invalid thresholds fall back on their own'
+
+# ---- The project config: a second file merged over the user file, key by key ----
+# Read-StatusConfig builds the defaults, merges the user file, then merges the project file when the
+# payload named a project directory holding .claude\statusline.json. The merge is per key, so a project
+# file naming one key leaves the rest of the user file standing, and an invalid value there falls back
+# to the value beneath it rather than to the built-in default.
+function Write-TempProjectDir([string] $Name, $Json) {
+    $dir = Join-Path $tmp $Name
+    $claude = Join-Path $dir '.claude'
+    New-Item -ItemType Directory -Force $claude | Out-Null
+    if ($null -ne $Json) { [System.IO.File]::WriteAllText((Join-Path $claude 'statusline.json'), $Json, [System.Text.UTF8Encoding]::new($false)) }
+    return $dir
+}
+$missingConfig = Join-Path $tmp 'does-not-exist.json'
+
+# The defaults and one file merge are functions of their own, so the files can be applied in order.
+$defaultCfg = Get-DefaultStatusConfig
+Confirm-Equal $defaultCfg.Layout 'one' 'default config: layout one'
+Confirm-Equal $defaultCfg.Style 'plain' 'default config: style plain'
+Confirm-Equal $defaultCfg.Folder 'repo' 'default config: folder repo'
+Confirm-Equal $defaultCfg.State $true 'default config: state on'
+Confirm-Equal ($defaultCfg.Order -join ',') $registryOrder 'default config: order is the registry order'
+Confirm-Equal (Get-RowText $defaultCfg) $registryRows 'default config: rows are the registry rows'
+Confirm-Equal (Get-ThresholdText $defaultCfg) '60/85' 'default config: thresholds 60 and 85'
+Confirm-Equal $defaultCfg.Icons.Count 0 'default config: no icon overrides'
+Confirm-Equal $defaultCfg.Git.TimeoutMs 1500 'default config: git timeout 1500'
+Confirm-True (@($allSegments | Where-Object { -not $defaultCfg.Segments[$_] }).Count -eq 0) 'default config: every segment on'
+# A fresh table every call, nested tables included, so a caller that changes its copy cannot reach the next.
+$defaultCfg.Layout = 'two'; $defaultCfg.Segments.cost = $false; $defaultCfg.Git.TimeoutMs = 999; $defaultCfg.Thresholds.Warn = 1; $defaultCfg.Icons.model = 1
+$fresh = Get-DefaultStatusConfig
+Confirm-Equal $fresh.Layout 'one' 'default config: a changed copy does not change the next table'
+Confirm-Equal $fresh.Segments.cost $true 'default config: the segment table is fresh too'
+Confirm-Equal $fresh.Git.TimeoutMs 1500 'default config: the git table is fresh too'
+Confirm-Equal $fresh.Thresholds.Warn 60 'default config: the thresholds table is fresh too'
+Confirm-Equal $fresh.Icons.Count 0 'default config: the icons table is fresh too'
+$merged = Merge-StatusConfigFile $fresh (Write-TempConfig 'merge-one.json' '{ "layout": "two", "segments": { "cost": false } }')
+Confirm-Equal $merged.Layout 'two' 'merge file: the key the file names is applied'
+Confirm-Equal $merged.Segments.cost $false 'merge file: the segment toggle is applied'
+Confirm-Equal $merged.Style 'plain' 'merge file: a key the file does not name is left alone'
+Confirm-Equal (Merge-StatusConfigFile (Get-DefaultStatusConfig) $missingConfig).Layout 'one' 'merge file: a missing file changes nothing'
+$twice = Merge-StatusConfigFile (Merge-StatusConfigFile (Get-DefaultStatusConfig) (Write-TempConfig 'merge-first.json' '{ "layout": "two", "style": "powerline" }')) (Write-TempConfig 'merge-second.json' '{ "style": "plain" }')
+Confirm-Equal $twice.Layout 'two' 'merge file: the first file survives the second'
+Confirm-Equal $twice.Style 'plain' 'merge file: the second file wins the key both name'
+
+# The user file the project cases below merge over: powerline with the cost segment off.
+$userPath = Write-TempConfig 'project-user.json' '{ "style": "powerline", "segments": { "cost": false } }'
+$c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-layout' '{ "layout": "two" }')
+Confirm-Equal $c.Layout 'two' 'project config: the project layout is applied'
+Confirm-Equal $c.Style 'powerline' 'project config: the user style is kept'
+Confirm-Equal $c.Segments.cost $false 'project config: the user segment toggle is kept'
+Confirm-True (@($allSegments | Where-Object { $_ -ne 'cost' -and -not $c.Segments[$_] }).Count -eq 0) 'project config: the other eight segments stay on'
+# The project file with no user file at all: it applies over the built-in defaults.
+$c = Read-StatusConfig $missingConfig (Write-TempProjectDir 'proj-alone' '{ "layout": "two", "state": false }')
+Confirm-Equal $c.Layout 'two' 'project config alone: the layout is applied'
+Confirm-Equal $c.State $false 'project config alone: the state toggle is applied'
+Confirm-Equal $c.Style 'plain' 'project config alone: the rest is the built-in defaults'
+# A project toggle turns a segment the user file switched off back on.
+$c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-cost-on' '{ "segments": { "cost": true } }')
+Confirm-Equal $c.Segments.cost $true 'project config: a segment the user file turned off is turned back on'
+Confirm-Equal $c.Style 'powerline' 'project config: the segment toggle does not disturb the style'
+# An invalid value falls back to the value beneath it, which is the user file's, not the default.
+$richUser = Write-TempConfig 'project-user-rich.json' '{ "layout": "two", "thresholds": { "warn": 20, "bad": 40 }, "git": { "timeoutMs": 3000, "cache": false }, "icons": { "model": "F0E7" } }'
+$c = Read-StatusConfig $richUser (Write-TempProjectDir 'proj-invalid' '{ "layout": "three", "thresholds": { "warn": 90, "bad": 10 }, "git": { "timeoutMs": "x", "cache": "no" }, "icons": { "model": "zz" } }')
+Confirm-Equal $c.Layout 'two' 'project config: an invalid layout keeps the user layout'
+Confirm-Equal (Get-ThresholdText $c) '20/40' 'project config: invalid thresholds keep the user thresholds'
+Confirm-Equal $c.Git.TimeoutMs 3000 'project config: an invalid timeout keeps the user timeout'
+Confirm-Equal $c.Git.Cache $false 'project config: an invalid cache flag keeps the user flag'
+Confirm-Equal $c.Icons.model 0xF0E7 'project config: an invalid icon keeps the user override'
+# The git block merges key by key like the rest.
+$c = Read-StatusConfig $richUser (Write-TempProjectDir 'proj-git' '{ "git": { "cacheSeconds": 30 } }')
+Confirm-Equal $c.Git.CacheSeconds 30 'project config: the project cache window is applied'
+Confirm-Equal $c.Git.TimeoutMs 3000 'project config: the user timeout beside it is kept'
+Confirm-Equal $c.Git.Cache $false 'project config: the user cache flag beside it is kept'
+# Icons merge by name: the project wins the name both spell and adds its own.
+$c = Read-StatusConfig (Write-TempConfig 'project-user-icons.json' '{ "icons": { "model": "F0E7", "branch": "E0A0" } }') (Write-TempProjectDir 'proj-icons' '{ "icons": { "model": "2588", "cost": "F0155" } }')
+Confirm-Equal $c.Icons.Count 3 'project config: icons merge by name'
+Confirm-Equal $c.Icons.model 0x2588 'project config: the project icon wins the shared name'
+Confirm-Equal $c.Icons.branch 0xE0A0 'project config: the user icon it does not name is kept'
+Confirm-Equal $c.Icons.cost 0xF0155 'project config: the icon only the project names is added'
+# order and rows: the project list replaces the user list whole, and one naming nothing falls back to it.
+$orderUser = Write-TempConfig 'project-user-order.json' '{ "order": ["model", "cost"], "rows": [["model"], ["cost"]] }'
+$c = Read-StatusConfig $orderUser (Write-TempProjectDir 'proj-order' '{ "order": ["branch", "model"] }')
+Confirm-Equal ($c.Order -join ',') 'branch,model' 'project config: the project order is applied'
+Confirm-Equal (Get-RowText $c) 'model|cost' 'project config: the user rows beside it are kept'
+$c = Read-StatusConfig $orderUser (Write-TempProjectDir 'proj-order-bad' '{ "order": ["nonsense"] }')
+Confirm-Equal ($c.Order -join ',') 'model,cost' 'project config: an order naming nothing keeps the user order'
+$c = Read-StatusConfig $orderUser (Write-TempProjectDir 'proj-rows' '{ "rows": [["branch"], ["limits"]] }')
+Confirm-Equal (Get-RowText $c) 'branch|limits' 'project config: the project rows are applied'
+Confirm-Equal ($c.Order -join ',') 'model,cost' 'project config: the user order beside them is kept'
+# A project file that cannot be read leaves the user config in force.
+foreach ($case in @(
+        @{ Name = 'proj-broken'; Json = '{ "layout": '; Label = 'broken JSON' }
+        @{ Name = 'proj-array'; Json = '[1, 2]'; Label = 'a JSON array' }
+        @{ Name = 'proj-number'; Json = '42'; Label = 'a bare number' }
+        @{ Name = 'proj-empty-file'; Json = ''; Label = 'an empty file' }
+        @{ Name = 'proj-no-file'; Json = $null; Label = 'an empty .claude directory' })) {
+    $c = Read-StatusConfig $userPath (Write-TempProjectDir $case.Name $case.Json)
+    Confirm-Equal $c.Style 'powerline' "project config: $($case.Label) keeps the user style"
+    Confirm-Equal $c.Segments.cost $false "project config: $($case.Label) keeps the user segment toggle"
+}
+# A directory with no .claude, one that does not exist, and no project directory at all.
+$noClaude = Join-Path $tmp 'proj-plain-dir'
+New-Item -ItemType Directory -Force $noClaude | Out-Null
+Confirm-Equal (Read-StatusConfig $userPath $noClaude).Style 'powerline' 'project config: a directory with no .claude changes nothing'
+Confirm-Equal (Read-StatusConfig $userPath (Join-Path $tmp 'proj-does-not-exist')).Style 'powerline' 'project config: a directory that does not exist changes nothing'
+Confirm-Equal (Read-StatusConfig $userPath '').Style 'powerline' 'project config: an empty project directory leaves the user file in force'
+Confirm-Equal (Read-StatusConfig $userPath $null).Style 'powerline' 'project config: a null project directory leaves the user file in force'
+Confirm-Equal (Read-StatusConfig $userPath).Style 'powerline' 'project config: the project directory parameter is optional'
+# The payload can spell project_dir any way it likes, so a value that is not a string is ignored rather
+# than joined into a path: an array would otherwise become "a b" and a hashtable its type name.
+foreach ($bad in @(7, $true, @('a', 'b'), @{ a = 1 })) {
+    $c = Read-StatusConfig $userPath $bad
+    Confirm-Equal $c.Style 'powerline' "project config: a project directory of type $($bad.GetType().Name) is ignored"
+}
+# A user file that cannot be read leaves the project file merging over the built-in defaults.
+$c = Read-StatusConfig (Write-TempConfig 'project-user-broken.json' '{ "style": ') (Write-TempProjectDir 'proj-over-broken' '{ "layout": "two" }')
+Confirm-Equal $c.Layout 'two' 'project config: it still applies when the user file is broken'
+Confirm-Equal $c.Style 'plain' 'project config: the broken user file falls back to the defaults'
+
+# ---- The project file as bounded untrusted input ----
+# The project file comes with the repository, not from the user, so it is read through Read-BoundedFileText
+# rather than Get-Content: an ordinary file, no bigger than the cap, read under a deadline. Everything
+# else is refused silently, the same as a value of the wrong type.
+$limit = Get-ProjectConfigLimit
+Confirm-True ($limit.MaxBytes -ge 4096 -and $limit.MaxBytes -le 262144) 'bounded read: the cap is tens of kilobytes, far past a hand-written config'
+Confirm-True ($limit.TimeoutMs -gt 0 -and $limit.TimeoutMs -le 1000) 'bounded read: the deadline is shorter than a render'
+$smallProject = Write-TempConfig 'bounded-small.json' '{ "layout": "two" }'
+Confirm-Equal (Read-BoundedFileText $smallProject) '{ "layout": "two" }' 'bounded read: a small file reads back whole'
+Confirm-Equal (Read-BoundedFileText (Join-Path $tmp 'bounded-missing.json')) $null 'bounded read: a file that is not there is refused'
+Confirm-Equal (Read-BoundedFileText $tmp) $null 'bounded read: a directory is refused'
+Confirm-Equal (Read-BoundedFileText '') $null 'bounded read: an empty path is refused'
+# One byte under the cap reads, the cap plus a little does not. The pad keeps the file valid JSON either
+# way, so what separates the two cases is the size and nothing else.
+$underCap = Write-TempConfig 'bounded-under-cap.json' ('{ "layout": "two", "pad": "' + ('x' * ($limit.MaxBytes - 40)) + '" }')
+Confirm-True ((Get-Item -LiteralPath $underCap).Length -le $limit.MaxBytes) 'bounded read: the under-cap fixture is under the cap'
+Confirm-True ($null -ne (Read-BoundedFileText $underCap)) 'bounded read: a file just under the cap reads back'
+$overCap = Write-TempConfig 'bounded-over-cap.json' ('{ "layout": "two", "pad": "' + ('x' * $limit.MaxBytes) + '" }')
+Confirm-Equal (Read-BoundedFileText $overCap) $null 'bounded read: a file over the cap is refused'
+# A byte order mark is dropped, since ConvertFrom-Json will not parse past one.
+$bomPath = Join-Path $tmp 'bounded-bom.json'
+[System.IO.File]::WriteAllText($bomPath, '{ "layout": "two" }', [System.Text.UTF8Encoding]::new($true))
+Confirm-Equal (Read-BoundedFileText $bomPath) '{ "layout": "two" }' 'bounded read: a byte order mark is dropped'
+# The same rules through Read-StatusConfig: an oversized project config, and one that is not an ordinary
+# file, both leave the user config standing. A file symbolic link needs Developer Mode or an elevated
+# shell on Windows; where one cannot be made a directory stands in its place, which is the same rule
+# under test - the entry has to be an ordinary file.
+$c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-oversized' ('{ "layout": "two", "pad": "' + ('x' * $limit.MaxBytes) + '" }'))
+Confirm-Equal $c.Layout 'one' 'project config: a file over the byte cap is refused'
+Confirm-Equal $c.Style 'powerline' 'project config: the user file stands over the oversized one'
+$linkDir = Write-TempProjectDir 'proj-link' $null
+$linkPath = Join-Path (Join-Path $linkDir '.claude') 'statusline.json'
+$linkTarget = Write-TempConfig 'proj-link-target.json' '{ "layout": "two" }'
+$madeLink = $true
+try { New-Item -ItemType SymbolicLink -Path $linkPath -Target $linkTarget -ErrorAction Stop | Out-Null } catch { $madeLink = $false }
+if (-not $madeLink) { New-Item -ItemType Directory -Force $linkPath | Out-Null }
+$linkKind = if ($madeLink) { 'a link' } else { 'a directory' }
+# Say which one ran, so a green log cannot be read as proof that the link case was exercised on a
+# machine where a symbolic link could not be made.
+Write-Host "  project link case: $linkKind ($(if ($madeLink) { 'symbolic links available' } else { 'symbolic links need Developer Mode here' }))" -ForegroundColor DarkGray
+Confirm-Equal (Read-BoundedFileText $linkPath) $null "bounded read: $linkKind in place of the file is refused"
+$c = Read-StatusConfig $userPath $linkDir
+Confirm-Equal $c.Layout 'one' "project config: $linkKind in place of the file is refused"
+Confirm-Equal $c.Style 'powerline' 'project config: the user file stands over the refused link'
+
+# One clock covers the whole read and starts before the first filesystem call. A budget of zero shows
+# where it starts: a file that read back whole a few lines ago is refused, because the budget is spent
+# before anything is looked up. The real limit is rebuilt from the values captured here rather than
+# retyped, so this cannot drift from the script's own numbers.
+$realLimit = Get-ProjectConfigLimit
+. ([scriptblock]::Create("function Get-ProjectConfigLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = 0 } }"))
+$zeroSw = [System.Diagnostics.Stopwatch]::StartNew()
+Confirm-Equal (Read-BoundedFileText $smallProject) $null 'bounded read: a spent budget refuses a file that is otherwise fine'
+Confirm-True ($zeroSw.ElapsedMilliseconds -lt 1000) 'bounded read: a spent budget gives up at once'
+. ([scriptblock]::Create("function Get-ProjectConfigLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = $($realLimit.TimeoutMs) } }"))
+Confirm-Equal (Get-ProjectConfigLimit).TimeoutMs $realLimit.TimeoutMs 'bounded read: the real deadline is back'
+Confirm-Equal (Get-ProjectConfigLimit).MaxBytes $realLimit.MaxBytes 'bounded read: the real cap is back'
+Confirm-Equal (Read-BoundedFileText $smallProject) '{ "layout": "two" }' 'bounded read: the same file reads again with the deadline back'
+
+# What the handle says, not what the name said. The null device opens like a file on Windows and has the
+# shape a FIFO has on Unix - a handle that cannot seek - so it is the one non-regular file this machine
+# can produce without a privilege, and the check that refuses it is made after the open, from the handle.
+$deviceSeek = $null
+try { $h = [System.IO.File]::OpenRead('NUL'); $deviceSeek = $h.CanSeek; $h.Dispose() } catch { $deviceSeek = $null }
+Write-Host "  device handle case: $(if ($null -eq $deviceSeek) { 'the null device would not open here, so only the refusal is checked' } else { "the null device opens with CanSeek $deviceSeek" })" -ForegroundColor DarkGray
+Confirm-True ($null -eq $deviceSeek -or -not $deviceSeek) 'bounded read: a device handle cannot seek'
+Confirm-Equal (Read-BoundedFileText 'NUL') $null 'bounded read: a handle that cannot seek is refused'
+
+# A filesystem that does not answer. The open blocks inside the call, which is the case the budget exists
+# for and the one that tells this design from the last: a check made before the clock started could only
+# wait on the network stack. Where a machine's stack refuses at once this proves the refusal and nothing
+# more, so the log says which of the two happened rather than letting a green run imply the harder one.
+$deadPath = '\\192.0.2.1\statusline-test\statusline.json'
+$deadSw = [System.Diagnostics.Stopwatch]::StartNew()
+$deadText = Read-BoundedFileText $deadPath
+$deadMs = $deadSw.ElapsedMilliseconds
+Write-Host "  unreachable path case: $deadMs ms ($(if ($deadMs -ge $realLimit.TimeoutMs) { 'the open blocked and the budget ended it' } else { 'the network stack refused before the budget mattered' }))" -ForegroundColor DarkGray
+Confirm-Equal $deadText $null 'bounded read: a path on an unreachable filesystem is refused'
+Confirm-True ($deadMs -lt 2000) 'bounded read: an unreachable filesystem costs the budget, not the network timeout'
+$deadSw = [System.Diagnostics.Stopwatch]::StartNew()
+$c = Read-StatusConfig $userPath '\\192.0.2.1\statusline-test'
+Confirm-True ($deadSw.ElapsedMilliseconds -lt 2000) 'project config: an unreachable project directory costs the budget'
+Confirm-Equal $c.Style 'powerline' 'project config: an unreachable project directory leaves the user file in force'
+Confirm-Equal $c.Layout 'one' 'project config: an unreachable project directory changes nothing'
+# The swap this ordering defeats - a name that becomes a link, a device or a larger file between the
+# check and the read - cannot be staged from here, because there is no hook between the open and the
+# checks that follow it. What is shown instead is the property that closes the window: the two refusals
+# above are made from the handle rather than from the name.
+Write-Host '  swap-in-flight case: not staged; the handle checks above are what closes the window' -ForegroundColor DarkGray
+
+# Reading a stream's length and closing it are filesystem calls of their own, and on a handle to a remote
+# file either can hang with the file already open. Neither is allowed to run where it would hold up the
+# line, and a stream whose Length and Dispose block for five seconds proves it without depending on how
+# any real filesystem happens to behave: the length is asked for on the pool and abandoned at the budget,
+# and the close is queued and never waited on. Get-BoundedStreamDelegate closes over Stream's own virtual
+# members, so this double goes through the very call a FileStream would.
+if (-not ('StatuslineTest.BlockingStream' -as [type])) {
+    try {
+        Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.IO;
+using System.Threading;
+namespace StatuslineTest {
+    public class BlockingStream : Stream {
+        private readonly int _lengthDelayMs;
+        private readonly int _disposeDelayMs;
+        public bool Disposed;
+        public BlockingStream(int lengthDelayMs, int disposeDelayMs) { _lengthDelayMs = lengthDelayMs; _disposeDelayMs = disposeDelayMs; }
+        public override bool CanRead { get { return true; } }
+        public override bool CanSeek { get { return true; } }
+        public override bool CanWrite { get { return false; } }
+        public override long Length { get { Thread.Sleep(_lengthDelayMs); return 0L; } }
+        public override long Position { get { return 0L; } set { } }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) { return 0; }
+        public override long Seek(long offset, SeekOrigin origin) { return 0L; }
+        public override void SetLength(long value) { }
+        public override void Write(byte[] buffer, int offset, int count) { }
+        protected override void Dispose(bool disposing) { Thread.Sleep(_disposeDelayMs); Disposed = true; }
+    }
+}
+'@
+    } catch { $null = $_ }
+}
+$blockingType = 'StatuslineTest.BlockingStream' -as [type]
+if ($null -eq $blockingType) {
+    Write-Host '  blocking handle case: the double would not compile here, so Length and Dispose are not covered' -ForegroundColor DarkGray
+} else {
+    Write-Host '  blocking handle case: a compiled double holds Length and Dispose for 5000 ms' -ForegroundColor DarkGray
+    $blocking = $blockingType::new(5000, 5000)
+    $blockingCall = Get-BoundedStreamDelegate $blocking
+    # The length, asked for the way the bounded read asks for it.
+    $blockSw = [System.Diagnostics.Stopwatch]::StartNew()
+    $blockTask = [System.Threading.Tasks.Task]::Run($blockingCall.Length)
+    $blockDone = $blockTask.Wait((Get-ProjectConfigLimit).TimeoutMs)
+    $blockMs = $blockSw.ElapsedMilliseconds
+    Confirm-True (-not $blockDone) 'bounded read: a length that blocks does not answer inside the budget'
+    Confirm-True ($blockMs -lt 2000) 'bounded read: a blocking length is abandoned at the budget, not waited out'
+    # The close, queued the way the bounded read queues it: control comes back before it has finished.
+    $blockSw = [System.Diagnostics.Stopwatch]::StartNew()
+    $null = [System.Threading.Tasks.Task]::Run($blockingCall.Dispose)
+    $disposeMs = $blockSw.ElapsedMilliseconds
+    Confirm-True ($disposeMs -lt 1000) 'bounded read: a close that blocks never runs where the line waits for it'
+    Confirm-True (-not $blocking.Disposed) 'bounded read: the close is still running, so it was queued rather than waited on'
+    # A stream that answers at once is closed, so the ordinary path does not leak a handle.
+    $quick = $blockingType::new(0, 0)
+    $quickCall = Get-BoundedStreamDelegate $quick
+    $quickTask = [System.Threading.Tasks.Task]::Run($quickCall.Dispose)
+    Confirm-True ($quickTask.Wait(5000)) 'bounded read: a close that answers finishes'
+    Confirm-True ($quick.Disposed) 'bounded read: the queued close really closes the stream'
+    Confirm-Equal ([System.Threading.Tasks.Task]::Run($quickCall.Length).Result) 0 'bounded read: the length delegate reads the stream it was closed over'
+}
 
 # The config that ships with the repo has to be valid JSON and to mean what the README says it means.
 $shippedConfig = Join-Path $PSScriptRoot 'statusline.json'
@@ -516,14 +790,55 @@ Confirm-Equal $set.fast ([char]::ConvertFromUtf32(0xF0E7)) 'icons: the fast badg
 # the six-digit cap, so a zero-padded form reads. A control character (00 to 1F, 7F to 9F) is refused:
 # A is a newline and 1B a bare escape, either of which would break the line.
 foreach ($row in @(@('F0E7', 0xF0E7), @('f0e7', 0xF0E7), @('U+F0E7', 0xF0E7), @('u+f0e7', 0xF0E7), @('0xF0E7', 0xF0E7), @('0XF0E7', 0xF0E7),
-        @(' F0E7 ', 0xF0E7), @('10FFFF', 0x10FFFF), @('41', 0x41), @('0000F0E7', 0xF0E7), @('U+0000F0E7', 0xF0E7), @('0x0000F0E7', 0xF0E7),
-        @('000000000041', 0x41), @('20', 0x20), @('A0', 0xA0), @('7E', 0x7E))) {
+        @(' F0E7 ', 0xF0E7), @('E000', 0xE000), @('41', 0x41), @('0000F0E7', 0xF0E7), @('U+0000F0E7', 0xF0E7), @('0x0000F0E7', 0xF0E7),
+        @('000000000041', 0x41), @('2588', 0x2588), @('4E2D', 0x4E2D), @('7E', 0x7E))) {
     Confirm-Equal (Read-CodePoint $row[0]) $row[1] "code point: '$($row[0])' reads as $($row[1])"
 }
 foreach ($bad in @('', ' ', 'zz', '110000', 'D800', 'DBFF', 'DC00', 'DFFF', '-1', 'F0 E7', '+F0E7', 'U+', '0x', '1234567', 'U+0xF0E7',
         '0', '0000', 'U+0000', 'A', '1B', '1F', '7F', '9B', '9F', '0x0A', $null, 61671, $true, @('F0E7'))) {
     Confirm-Equal (Read-CodePoint $bad) $null "code point: '$bad' is refused"
 }
+# A code point can reach the icons table from a repository's own config, so it is admitted only when it
+# draws as one glyph standing by itself. A bidi override or isolate could reorder the visible line, a
+# zero-width or format character hide part of it, a line or paragraph separator break it in two, a
+# combining mark attach to whatever came before, a separator draw as blank, and a noncharacter or an
+# unassigned code point has no glyph at all - the last two also make the width count, and the fitting
+# that depends on it, a guess. Each is refused three ways: by the parser, in a parsed config, and in the
+# glyph set the line is built from, which has to keep the built-in glyph.
+$defaultModelGlyph = [char]::ConvertFromUtf32((Get-IconDefault).model)
+foreach ($case in @(
+        @{ Hex = '202E'; Name = 'a right-to-left override' }
+        @{ Hex = '202D'; Name = 'a left-to-right override' }
+        @{ Hex = '2066'; Name = 'a left-to-right isolate' }
+        @{ Hex = '2069'; Name = 'a pop directional isolate' }
+        @{ Hex = '200B'; Name = 'a zero width space' }
+        @{ Hex = '200D'; Name = 'a zero width joiner' }
+        @{ Hex = 'FEFF'; Name = 'a byte order mark' }
+        @{ Hex = '2028'; Name = 'a line separator' }
+        @{ Hex = '2029'; Name = 'a paragraph separator' }
+        @{ Hex = '0301'; Name = 'a combining acute accent' }
+        @{ Hex = 'FE0F'; Name = 'a variation selector' }
+        @{ Hex = '20E3'; Name = 'an enclosing keycap' }
+        @{ Hex = '0903'; Name = 'a spacing combining mark' }
+        @{ Hex = '20'; Name = 'a space' }
+        @{ Hex = 'A0'; Name = 'a no-break space' }
+        @{ Hex = 'FDD0'; Name = 'a noncharacter in the arabic block' }
+        @{ Hex = 'FFFE'; Name = 'a noncharacter' }
+        @{ Hex = '1FFFE'; Name = 'a noncharacter above the basic plane' }
+        @{ Hex = '10FFFF'; Name = 'the last code point, a noncharacter' }
+        @{ Hex = 'D7FF'; Name = 'an unassigned code point' })) {
+    Confirm-Equal (Read-CodePoint $case.Hex) $null "code point: $($case.Name) is refused"
+    $c = Read-StatusConfig (Write-TempConfig "icons-refused-$($case.Hex).json" ('{ "icons": { "model": "' + $case.Hex + '" } }'))
+    Confirm-Equal $c.Icons.Count 0 "config icons: $($case.Name) is skipped"
+    Confirm-Equal (Get-IconSet $c).model $defaultModelGlyph "icons: $($case.Name) leaves the built-in glyph"
+}
+# The categories the refusal list holds, so a later edit cannot quietly drop one.
+$refusedCategories = @(Get-IconRefusedCategory)
+Confirm-Equal $refusedCategories.Count 10 'code point: ten refused categories'
+foreach ($name in @('Control', 'Format', 'Surrogate', 'OtherNotAssigned', 'SpaceSeparator', 'LineSeparator', 'ParagraphSeparator', 'NonSpacingMark', 'SpacingCombiningMark', 'EnclosingMark')) {
+    Confirm-True (([System.Globalization.UnicodeCategory] $name) -in $refusedCategories) "code point: $name is refused"
+}
+Confirm-True (([System.Globalization.UnicodeCategory]::PrivateUse) -notin $refusedCategories) 'code point: private use is allowed, which is where the Nerd Font glyphs live'
 
 Write-Host '== unit: state' -ForegroundColor Cyan
 # The state helpers derive their directory from TEMP, so point it at a folder under $tmp for these cases
@@ -1186,6 +1501,87 @@ foreach ($odd in @(@{ Label = 'string true'; Value = 'true' }, @{ Label = 'numbe
     Confirm-Equal (Get-ModelSegment $p $plainCfg).Text "$iconModel Fable 5.1" "model exceeds as $($odd.Label): no glyph"
 }
 Confirm-Equal (Get-ModelSegment ([pscustomobject]@{ model = [pscustomobject]@{ display_name = '' } }) $plainCfg) $null 'model: empty name omits the segment'
+
+Write-Host '== unit: pace' -ForegroundColor Cyan
+# Get-PaceArrow takes the current epoch as a third parameter defaulting to the clock, so the arithmetic
+# can be pinned to the second here. That matters: an epoch derived from an earlier reading of the clock
+# is one second out whenever the second ticks in between, so a case meant to sit on 16200 seconds left
+# would quietly exercise 16199 instead and pass either way. Every eligibility limit is a whole second,
+# and the fraction it stands for is not exact in binary - 1 - 16200 / 18000 is 0.09999999999999998 - so
+# these are the boundaries a regression moves. Cases are written as the seconds still to run, which is
+# what the function tests: 16200 left is a tenth of the 18000-second window gone, the earliest reading
+# worth anything, and 0 left is the window spent. The default clock is covered on its own at the end.
+$paceUp = [char]::ConvertFromUtf32(0x2191)
+$paceFlat = [char]::ConvertFromUtf32(0x2192)
+$paceClock = 1700000000
+Confirm-Equal (Get-VisibleWidth $paceUp) 1 'pace: the up arrow is a plain character, one cell wide'
+Confirm-Equal (Get-VisibleWidth $paceFlat) 1 'pace: the right arrow is a plain character, one cell wide'
+$paceTable = @(
+    @{ Label = '16201s left, one second short of a tenth gone'; Left = 16201; Used = 5; Arrow = $null }
+    @{ Label = '16200s left, exactly a tenth gone: the earliest reading there is'; Left = 16200; Used = 5; Arrow = $paceFlat; Red = $false }
+    @{ Label = '16200s left, 10% used: exactly 100% projected holds'; Left = 16200; Used = 10; Arrow = $paceFlat; Red = $false }
+    @{ Label = '16200s left, 10.1% used: 101% projected points up'; Left = 16200; Used = 10.1; Arrow = $paceUp; Red = $false }
+    @{ Label = '16200s left, 11.9% used: 119% projected is not red yet'; Left = 16200; Used = 11.9; Arrow = $paceUp; Red = $false }
+    @{ Label = '16200s left, 12% used: exactly 120% projected turns red'; Left = 16200; Used = 12; Arrow = $paceUp; Red = $true }
+    @{ Label = 'half gone, 40% used: 80% projected'; Left = 9000; Used = 40; Arrow = $paceFlat; Red = $false }
+    @{ Label = 'half gone, 50% used: exactly on pace holds'; Left = 9000; Used = 50; Arrow = $paceFlat; Red = $false }
+    @{ Label = 'half gone, 51% used: 102% projected points up'; Left = 9000; Used = 51; Arrow = $paceUp; Red = $false }
+    @{ Label = 'half gone, 59.9% used: 119.8% projected is not red yet'; Left = 9000; Used = 59.9; Arrow = $paceUp; Red = $false }
+    @{ Label = 'half gone, 60% used: exactly 120% projected turns red'; Left = 9000; Used = 60; Arrow = $paceUp; Red = $true }
+    @{ Label = 'half gone, 80% used: 160% projected'; Left = 9000; Used = 80; Arrow = $paceUp; Red = $true }
+    @{ Label = 'half gone, 80% as a JSON double'; Left = 9000; Used = 80.0; Arrow = $paceUp; Red = $true }
+    @{ Label = '1s left, the last reading of a window'; Left = 1; Used = 50; Arrow = $paceFlat; Red = $false }
+    @{ Label = '0s left, the window spent to the second'; Left = 0; Used = 50; Arrow = $null }
+    @{ Label = '1s past the reset'; Left = -1; Used = 50; Arrow = $null }
+    @{ Label = '100s past the reset'; Left = -100; Used = 80; Arrow = $null }
+    @{ Label = '17500s left, inside the first half hour'; Left = 17500; Used = 90; Arrow = $null }
+    @{ Label = "sample 06's 2100 epoch, a window that has not opened"; Left = 4102444800 - 1700000000; Used = 80; Arrow = $null }
+)
+foreach ($paceRow in $paceTable) {
+    $pace = Get-PaceArrow ($paceClock + $paceRow.Left) $paceRow.Used $paceClock
+    if ($null -eq $paceRow.Arrow) {
+        Confirm-True ($null -eq $pace) "pace: $($paceRow.Label) gives no arrow"
+        continue
+    }
+    Confirm-Equal $pace.Arrow $paceRow.Arrow "pace: $($paceRow.Label) - arrow"
+    Confirm-Equal $pace.Red $paceRow.Red "pace: $($paceRow.Label) - red flag"
+}
+# A reset or a usage figure that is not a number at all. Get-FiniteNumber is the type gate, so a string
+# that would cast, a boolean, an array, NaN and infinity all fall out here, as does a usage figure that
+# is absent, zero or negative, where every projection is zero or worse and an arrow would be noise.
+$noPaceTable = @(
+    @{ Label = 'no reset at all'; Reset = $null; Used = 80 }
+    @{ Label = 'a reset as text'; Reset = "$($paceClock + 9000)"; Used = 80 }
+    @{ Label = 'a reset as a boolean'; Reset = $true; Used = 80 }
+    @{ Label = 'a reset as an array'; Reset = @($paceClock + 9000); Used = 80 }
+    @{ Label = 'a reset as NaN'; Reset = [double]::NaN; Used = 80 }
+    @{ Label = 'a reset as infinity'; Reset = [double]::PositiveInfinity; Used = 80 }
+    @{ Label = 'no usage figure'; Reset = $paceClock + 9000; Used = $null }
+    @{ Label = 'nothing used yet'; Reset = $paceClock + 9000; Used = 0 }
+    @{ Label = 'a negative usage figure'; Reset = $paceClock + 9000; Used = -5 }
+    @{ Label = 'usage as text'; Reset = $paceClock + 9000; Used = '80' }
+    @{ Label = 'usage as a boolean'; Reset = $paceClock + 9000; Used = $true }
+    @{ Label = 'usage as an array'; Reset = $paceClock + 9000; Used = @(80) }
+    @{ Label = 'usage as NaN'; Reset = $paceClock + 9000; Used = [double]::NaN }
+)
+foreach ($paceRow in $noPaceTable) {
+    Confirm-True ($null -eq (Get-PaceArrow $paceRow.Reset $paceRow.Used $paceClock)) "pace: $($paceRow.Label) gives no arrow"
+}
+# The default clock, which is the only path the script itself ever takes, so the parameter above cannot
+# become the only thing under test. Real time moves on between the epoch being built here and
+# Get-PaceArrow reading it, always forward, which only raises the elapsed fraction and only lowers the
+# projection. Every case below therefore sits clear of its threshold on the side drift carries it
+# towards, well outside a second's worth of movement. The boundaries themselves are pinned above.
+$pace = Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) 80
+Confirm-Equal $pace.Arrow $paceUp 'pace on the default clock: half a window gone at 80% points up'
+Confirm-Equal $pace.Red $true 'pace on the default clock: 160% projected is red'
+$pace = Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) 40
+Confirm-Equal $pace.Arrow $paceFlat 'pace on the default clock: half a window gone at 40% holds'
+Confirm-Equal $pace.Red $false 'pace on the default clock: 80% projected is not red'
+Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 100) 80)) 'pace on the default clock: a reset already past gives no arrow'
+Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 16400) 90)) 'pace on the default clock: the first half hour gives no arrow'
+Confirm-True ($null -eq (Get-PaceArrow 4102444800 80)) 'pace on the default clock: a far-future reset gives no arrow'
+
 Write-Host '== unit: limits' -ForegroundColor Cyan
 # Resets in the past keep TimeLeft empty, so the text is deterministic. Every call passes a config,
 # because the builder reads its colour bands from it.
@@ -1268,6 +1664,49 @@ Confirm-Equal (Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"seven_day":{"used_percentage":15,"resets_at":1700000000}}') $lowCfg
 Confirm-Equal $seg.Role 'ok' 'limits 10 and 15 at 20/40: ok'
 Confirm-Equal $seg.Short "$iconLimit 5h 10%" 'limits 10 and 15 at 20/40: short is the first figure'
+
+# The pace arrow rides on the 5-hour figure alone, between the percentage and the countdown. Every case
+# below is clock-relative for the reason the pace group gives, and each epoch is taken on the line that
+# uses it so drift stays under a second. A live reset is what makes the arrow appear at all, which is
+# why none of the fixed-epoch cases above grew one: 1700000000 is long past and 4102444800 is a window
+# that has not opened.
+$paceCfg = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Style = 'plain' }
+$pacePlCfg = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Style = 'powerline' }
+$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":40,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $paceCfg
+Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 40% $paceFlat (") -and $seg.Text.EndsWith(') 7d 12%')) 'limits on pace: the right arrow sits after the figure and before the countdown'
+Confirm-Equal $seg.Short "$iconLimit 5h 40%" 'limits on pace: the short form drops the arrow with the countdown'
+Confirm-Equal $seg.Role 'ok' 'limits on pace: the arrow does not touch the role'
+
+$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":55,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $paceCfg
+Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 55% $paceUp (")) 'limits overrunning under 120: a plain up arrow, no colour'
+Confirm-Equal $seg.Role 'ok' 'limits overrunning under 120: the role is still the worse of the figures'
+
+# At 80% with half the window gone the projection is 160, so the arrow goes through the removed inline
+# role and restores the segment's own foreground - the warn one here, which the 80 earns on its own.
+$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":80,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $paceCfg
+Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'plain') (")) 'limits well over pace: the up arrow is red and hands the warn colour back'
+Confirm-Equal $seg.Role 'warn' 'limits well over pace: the role is the worse figure, not the projection'
+Confirm-Equal $seg.Short "$iconLimit 5h 80%" 'limits well over pace: the short form keeps the figure without the arrow'
+
+$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":80,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $pacePlCfg
+Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'powerline') (")) 'limits well over pace in powerline: the red arrow restores the segment foreground'
+
+# The 7-day figure never gets an arrow, whatever its reset says: one payload cannot pace a week.
+$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"seven_day":{"used_percentage":80,"resets_at":' + $paceLive + '},"spend_limit":{"used_percentage":80,"resets_at":' + $paceLive + '}}')) $paceCfg
+Confirm-Equal $seg.Text "$iconLimit 7d 80% `$ 80%" 'limits without a 5h figure: no arrow on the 7d or the spend figure'
+
+# A reset under a minute out leaves TimeLeft empty, so the arrow is the only thing the Text has that the
+# Short form does not. Fifty seconds is far enough from both ends - past the reset, or past the minute
+# TimeLeft needs - that no plausible drift moves the answer.
+$paceEnd = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 50
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":55,"resets_at":' + $paceEnd + '}}')) $paceCfg
+Confirm-Equal $seg.Text "$iconLimit 5h 55% $paceFlat" 'limits at the end of a window: the arrow with no countdown behind it'
+Confirm-Equal $seg.Short "$iconLimit 5h 55%" 'limits at the end of a window: a short form exists purely to drop the arrow'
 
 Write-Host '== unit: porcelain' -ForegroundColor Cyan
 $r = Read-PorcelainStatus "## main...origin/main [ahead 1]`n"
@@ -1977,6 +2416,281 @@ try {
     if ($null -ne $oldTemp) { $env:TEMP = $oldTemp } else { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }
     if ($null -ne $oldTmpDir) { $env:TMPDIR = $oldTmpDir } else { Remove-Item Env:TMPDIR -ErrorAction SilentlyContinue }
     if ($null -ne $oldTmp) { $env:TMP = $oldTmp } else { Remove-Item Env:TMP -ErrorAction SilentlyContinue }
+}
+
+Write-Host '== unit: diag' -ForegroundColor Cyan
+# The diagnostics log. Every failure the probe, the cache and the state file swallow stays swallowed;
+# with CLAUDE_STATUSLINE_DEBUG set, each one also appends a line to claude-statusline-diag.log in the
+# temp folder. The log's path comes from TEMP, so point that at a folder of its own for the group. The
+# stub Get-GitBranch from the cache checks above is still in place, so nothing here starts git.
+$oldTemp = $env:TEMP
+$oldDebug = $env:CLAUDE_STATUSLINE_DEBUG
+$diagTemp = Join-Path $tmp 'temp-diag'
+New-Item -ItemType Directory -Force $diagTemp | Out-Null
+$env:TEMP = $diagTemp
+# The test's own spelling of the log's name and of a line's shape, so the script's cannot agree with itself.
+$diagLog = Join-Path $diagTemp 'claude-statusline-diag.log'
+$diagStamp = '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \d+ '
+function Get-DiagLine {
+    # The comma keeps a one-line log an array rather than one string the caller would index by character.
+    if (-not (Test-Path -LiteralPath $diagLog)) { return , @() }
+    return , @([System.IO.File]::ReadAllText($diagLog) -split "`n" | Where-Object { $_ -ne '' })
+}
+function Clear-DiagLog { if (Test-Path -LiteralPath $diagLog) { Remove-Item -LiteralPath $diagLog -Force } }
+function Measure-DiagMatch([string] $Pattern) { return @(Get-DiagLine | Where-Object { $_ -match $Pattern }).Count }
+try {
+    $script:cacheProbe = Get-BranchRecord 'main' $false
+    # Unset - the normal case - the helper writes nothing at all.
+    Remove-Item Env:CLAUDE_STATUSLINE_DEBUG -ErrorAction SilentlyContinue
+    Write-StatusDiag 'nobody asked for this'
+    Confirm-True (-not (Test-Path -LiteralPath $diagLog)) 'diag off: no log file'
+
+    # Set, one call appends one line: the UTC time, the process id, then the reason.
+    $env:CLAUDE_STATUSLINE_DEBUG = '1'
+    Write-StatusDiag 'hello'
+    $diagLines = Get-DiagLine
+    Confirm-Equal $diagLines.Count 1 'diag on: one call writes one line'
+    Confirm-True ($diagLines[0] -match ($diagStamp + 'hello$')) "diag on: the line reads '<utc> <pid> hello', got '$($diagLines[0])'"
+    Confirm-Equal $diagLines[0].Split(' ')[1] "$PID" 'diag on: the second field is the process id'
+    Write-StatusDiag 'again'
+    $diagLines = Get-DiagLine
+    Confirm-Equal $diagLines.Count 2 'diag on: the second call appends rather than replaces'
+    Confirm-True ($diagLines[1] -match 'again$') 'diag on: the second line holds the second reason'
+    $diagBytes = [System.IO.File]::ReadAllBytes($diagLog)
+    Confirm-True (-not ($diagBytes[0] -eq 0xEF -and $diagBytes[1] -eq 0xBB -and $diagBytes[2] -eq 0xBF)) 'diag file: UTF-8 without a BOM'
+    Confirm-Equal $diagBytes[$diagBytes.Count - 1] 10 'diag file: every line ends with a newline'
+
+    # An exception message can carry newlines, and one call has to stay one line.
+    Clear-DiagLog
+    Write-StatusDiag "two`r`nlines`tand   spaces "
+    $diagLines = Get-DiagLine
+    Confirm-Equal $diagLines.Count 1 'diag on: a reason with newlines in it is still one line'
+    Confirm-True ($diagLines[0].EndsWith('two lines and spaces')) "diag on: the whitespace is folded, got '$($diagLines[0])'"
+
+    # Nothing reaches the pipeline, so a call can sit in front of a return without changing it.
+    Confirm-Equal @(Write-StatusDiag 'quiet').Count 0 'diag on: the helper returns nothing'
+
+    # The values that read as off, and a sample of the values that read as on.
+    foreach ($off in @('0', 'false', 'FALSE', 'no', 'off', ' false ')) {
+        Clear-DiagLog
+        $env:CLAUDE_STATUSLINE_DEBUG = $off
+        Write-StatusDiag 'not this one'
+        Confirm-True (-not (Test-Path -LiteralPath $diagLog)) "diag off: '$off' writes nothing"
+    }
+    foreach ($on in @('1', 'true', 'yes', 'please')) {
+        Clear-DiagLog
+        $env:CLAUDE_STATUSLINE_DEBUG = $on
+        Write-StatusDiag 'this one'
+        Confirm-Equal (Get-DiagLine).Count 1 "diag on: '$on' writes"
+    }
+
+    # A log that cannot be written costs the line and nothing else. TEMP points at a file here, so the
+    # append throws inside the helper the way a read-only temp folder would.
+    $env:CLAUDE_STATUSLINE_DEBUG = '1'
+    $diagBlocked = Join-Path $tmp 'diag-blocked'
+    [System.IO.File]::WriteAllText($diagBlocked, 'not a directory')
+    $env:TEMP = $diagBlocked
+    $diagThrew = $false
+    try { Write-StatusDiag 'into a path that is not a directory' } catch { $diagThrew = $true }
+    Confirm-True (-not $diagThrew) 'diag write failure: the helper does not throw'
+    $env:TEMP = $diagTemp
+
+    # The cache says miss, then hit, and the record the caller gets is the same either way.
+    Clear-DiagLog
+    $diagCacheDir = Join-Path $diagTemp 'cache'
+    $before = $script:probeCalls
+    $diagMiss = Get-CachedGitBranch $cacheRepo 1500 $diagCacheDir 5
+    Confirm-Equal $script:probeCalls ($before + 1) 'diag cache: the first call still probes'
+    Confirm-Equal $diagMiss.Branch 'main' 'diag cache: the miss still returns the probe record'
+    Confirm-True ($diagMiss -is [hashtable]) 'diag cache: the miss returns one record, not a pipeline of two things'
+    Confirm-Equal (Measure-DiagMatch 'git cache: miss') 1 "diag cache: the miss is logged, got '$((Get-DiagLine) -join ' | ')'"
+    Clear-DiagLog
+    $diagHit = Get-CachedGitBranch $cacheRepo 1500 $diagCacheDir 5
+    Confirm-Equal $script:probeCalls ($before + 1) 'diag cache: the second call still hits'
+    Confirm-Equal $diagHit.Branch 'main' 'diag cache: the hit still returns the record from the file'
+    Confirm-True ($diagHit -is [hashtable]) 'diag cache: the hit returns one record, not a pipeline of two things'
+    Confirm-Equal (Measure-DiagMatch 'git cache: hit') 1 "diag cache: the hit is logged, got '$((Get-DiagLine) -join ' | ')'"
+    # A lifetime of 0 never looks at the cache at all, and says so.
+    Clear-DiagLog
+    $null = Get-CachedGitBranch $cacheRepo 1500 $diagCacheDir 0
+    Confirm-Equal (Measure-DiagMatch 'git cache: skipped') 1 'diag cache: a lifetime of 0 says the cache was skipped'
+    # A corrupt entry is still a miss, and now says so.
+    Clear-DiagLog
+    [System.IO.File]::WriteAllText((Join-Path $diagCacheDir (Get-CacheEntryName $cacheRepo)), '{ not json')
+    $diagCorrupt = Get-CachedGitBranch $cacheRepo 1500 $diagCacheDir 5
+    Confirm-Equal $diagCorrupt.Branch 'main' 'diag cache: a corrupt entry still returns the probe record'
+    Confirm-Equal (Measure-DiagMatch 'git cache: read failed') 1 'diag cache: a corrupt entry logs the read failure'
+
+    # With the variable unset the same calls leave no log at all.
+    Clear-DiagLog
+    Remove-Item Env:CLAUDE_STATUSLINE_DEBUG -ErrorAction SilentlyContinue
+    $diagQuietDir = Join-Path $diagTemp 'cache-quiet'
+    $null = Get-CachedGitBranch $cacheRepo 1500 $diagQuietDir 5
+    $null = Get-CachedGitBranch $cacheRepo 1500 $diagQuietDir 5
+    Confirm-True (-not (Test-Path -LiteralPath $diagLog)) 'diag off: the cache writes no log'
+
+    # The state file: a corrupt file still reads as no state, and now says why; a write says it wrote.
+    $env:CLAUDE_STATUSLINE_DEBUG = '1'
+    Clear-DiagLog
+    $diagStateDir = Join-Path $diagTemp 'claude-statusline-state'
+    New-Item -ItemType Directory -Force $diagStateDir | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $diagStateDir 'diag-session.json'), '{ not json')
+    Confirm-Equal (Read-SessionState 'diag-session') $null 'diag state: a corrupt file still reads as no state'
+    Confirm-Equal (Measure-DiagMatch 'state read failed') 1 "diag state: the read failure is logged, got '$((Get-DiagLine) -join ' | ')'"
+    Clear-DiagLog
+    Write-SessionState 'diag-session' (Merge-SessionState $null (Get-StatePayload 1.07) 1767225600)
+    Confirm-True (Test-Path -LiteralPath (Join-Path $diagStateDir 'diag-session.json')) 'diag state: the write still happens'
+    Confirm-Equal (Measure-DiagMatch 'state: written') 1 'diag state: the write is logged'
+    Clear-DiagLog
+    Confirm-Equal (Read-SessionState 'diag-session').cost_usd 1.07 'diag state: the record still reads back'
+    Confirm-Equal (Measure-DiagMatch 'state: read') 1 'diag state: the read is logged'
+
+    # The log is rolled over rather than left to grow: an append that would take the file past the cap
+    # moves it aside first. The cap is spelled out here rather than read from the script, so the two
+    # cannot agree with each other about a wrong number.
+    $diagCap = 4194304
+    $diagRolled = $diagLog + '.1'
+    function Clear-DiagRollover { if (Test-Path -LiteralPath $diagRolled) { Remove-Item -LiteralPath $diagRolled -Recurse -Force } }
+    function Get-DiagLogSize { return (Get-Item -LiteralPath $diagLog).Length }
+    Clear-DiagLog
+    Clear-DiagRollover
+    # Room for the line: it lands in the same file and nothing is moved aside.
+    [System.IO.File]::WriteAllText($diagLog, ('x' * ($diagCap - 200)))
+    Write-StatusDiag 'still room'
+    Confirm-True ((Get-DiagLogSize) -gt ($diagCap - 200) -and (Get-DiagLogSize) -le $diagCap) "diag rollover: under the cap the line is appended, size $(Get-DiagLogSize)"
+    Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover: under the cap nothing is moved aside'
+    # No room: the full log becomes .log.1 and the line starts a fresh one.
+    [System.IO.File]::WriteAllText($diagLog, ('y' * $diagCap))
+    Write-StatusDiag 'over the cap'
+    $diagLines = Get-DiagLine
+    Confirm-Equal $diagLines.Count 1 'diag rollover: the new log holds only the line that crossed the cap'
+    Confirm-True ($diagLines[0].EndsWith('over the cap')) 'diag rollover: and that line is the one just written'
+    Confirm-True (Test-Path -LiteralPath $diagRolled) 'diag rollover: the full log is kept as .log.1'
+    Confirm-Equal (Get-Item -LiteralPath $diagRolled).Length $diagCap 'diag rollover: the kept file is the one that was full'
+    # A second rollover replaces the first .log.1 rather than piling up a third file.
+    [System.IO.File]::WriteAllText($diagLog, ('z' * $diagCap))
+    Write-StatusDiag 'over the cap again'
+    $diagStream = [System.IO.File]::OpenRead($diagRolled)
+    try { $diagFirstByte = $diagStream.ReadByte() } finally { $diagStream.Dispose() }
+    Confirm-Equal $diagFirstByte 122 'diag rollover: the second rollover replaced the first .log.1'
+    Confirm-Equal @(Get-ChildItem -LiteralPath $diagTemp -File -Filter 'claude-statusline-diag.log*').Count 2 'diag rollover: two files at most, never a third'
+
+    # Bounded through the real callers: with the log parked just under the cap, a run of cache reads and
+    # state reads and writes rolls it over instead of pushing past it.
+    Clear-DiagLog
+    Clear-DiagRollover
+    [System.IO.File]::WriteAllText($diagLog, ('x' * ($diagCap - 120)))
+    $diagBoundDir = Join-Path $diagTemp 'cache-bound'
+    $diagOverCap = 0
+    for ($i = 0; $i -lt 12; $i++) {
+        $null = Get-CachedGitBranch $cacheRepo 1500 $diagBoundDir 5
+        $null = Read-SessionState 'diag-session'
+        Write-SessionState 'diag-session' (Merge-SessionState $null (Get-StatePayload 1.07) 1767225600)
+        if ((Get-DiagLogSize) -gt $diagCap) { $diagOverCap++ }
+    }
+    Confirm-Equal $diagOverCap 0 'diag rollover: the log never passes the cap across a run of renders'
+    Confirm-True (Test-Path -LiteralPath $diagRolled) 'diag rollover: the run rolled the full log aside'
+    Confirm-True ((Get-DiagLine).Count -gt 0) 'diag rollover: and carried on logging into the fresh file'
+
+    # A rollover that cannot happen is as silent as a write that cannot happen: a directory holds the
+    # .log.1 name here, so the move throws where the append would.
+    Clear-DiagLog
+    Clear-DiagRollover
+    New-Item -ItemType Directory -Force $diagRolled | Out-Null
+    [System.IO.File]::WriteAllText($diagLog, ('w' * $diagCap))
+    $diagRollThrew = $false
+    $diagRollOut = @('not run')
+    try { $diagRollOut = @(Write-StatusDiag 'the rollover cannot happen') } catch { $diagRollThrew = $true }
+    Confirm-True (-not $diagRollThrew) 'diag rollover failure: the helper does not throw'
+    Confirm-Equal $diagRollOut.Count 0 'diag rollover failure: nothing reaches the pipeline'
+    Confirm-Equal (Get-DiagLogSize) $diagCap 'diag rollover failure: the log is left exactly as it was'
+    Clear-DiagRollover
+
+    # One record cannot set the size of the file on its own: a reason of any length is cut and marked,
+    # so a pathological exception message cannot land in the file the rollover has just emptied and
+    # leave the log over the cap again.
+    Clear-DiagLog
+    Clear-DiagRollover
+    Write-StatusDiag ('q' * 5000)
+    $diagLines = Get-DiagLine
+    Confirm-Equal $diagLines.Count 1 'diag record cap: an enormous reason is still one line'
+    Confirm-Equal $diagLines[0].Split(' ', 3)[2] (('q' * 1000) + ' [cut]') 'diag record cap: the reason is cut at 1000 characters and marked'
+    Confirm-True ((Get-DiagLogSize) -lt 1200) "diag record cap: the record is bounded, size $(Get-DiagLogSize)"
+    [System.IO.File]::WriteAllText($diagLog, ('y' * $diagCap))
+    Write-StatusDiag ('r' * 5000)
+    Confirm-True ((Get-DiagLogSize) -le $diagCap) 'diag record cap: an enormous reason on a full log still leaves the log at or under the cap'
+
+    # The rollover is taken under a named mutex with no wait at all, so a render that finds another one
+    # already rotating appends rather than waiting on it. A mutex belongs to a thread and is reentrant,
+    # so only another process can hold it against this one: a child pwsh takes it, says so by writing a
+    # file, and keeps it until this one says to let go. The name is spelled out here rather than read
+    # from the script, so the two cannot agree with each other about the wrong one.
+    Clear-DiagLog
+    Clear-DiagRollover
+    [System.IO.File]::WriteAllText($diagLog, ('y' * $diagCap))
+    $diagReady = Join-Path $tmp 'diag-lock-ready'
+    $diagGo = Join-Path $tmp 'diag-lock-go'
+    foreach ($diagSignal in @($diagReady, $diagGo)) { if (Test-Path -LiteralPath $diagSignal) { Remove-Item -LiteralPath $diagSignal -Force } }
+    $diagHoldFile = Join-Path $tmp 'diag-hold-mutex.ps1'
+    [System.IO.File]::WriteAllText($diagHoldFile, @'
+param([string] $Ready, [string] $Go)
+$m = [System.Threading.Mutex]::new($false, 'claude-code-statusline-diag-rollover')
+[void] $m.WaitOne()
+[System.IO.File]::WriteAllText($Ready, 'held')
+$deadline = [DateTime]::UtcNow.AddSeconds(30)
+while (-not [System.IO.File]::Exists($Go) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 20 }
+$m.ReleaseMutex()
+$m.Dispose()
+'@)
+    $diagPsi = [System.Diagnostics.ProcessStartInfo]::new((Get-Command pwsh -CommandType Application | Select-Object -First 1).Source)
+    foreach ($diagArg in @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', $diagHoldFile, $diagReady, $diagGo)) { $diagPsi.ArgumentList.Add($diagArg) }
+    $diagPsi.UseShellExecute = $false
+    $diagPsi.CreateNoWindow = $true
+    $diagHolder = [System.Diagnostics.Process]::Start($diagPsi)
+    try {
+        $diagDeadline = [DateTime]::UtcNow.AddSeconds(30)
+        while (-not [System.IO.File]::Exists($diagReady) -and [DateTime]::UtcNow -lt $diagDeadline) { Start-Sleep -Milliseconds 20 }
+        Confirm-True ([System.IO.File]::Exists($diagReady)) 'diag rollover lock: another process holds the mutex the rollover takes'
+        $diagLockThrew = $false
+        $diagLockOut = @('not run')
+        try { $diagLockOut = @(Write-StatusDiag 'another render is rotating') } catch { $diagLockThrew = $true }
+        Confirm-True (-not $diagLockThrew) 'diag rollover lock: a rollover it cannot take does not throw'
+        Confirm-Equal $diagLockOut.Count 0 'diag rollover lock: and nothing reaches the pipeline'
+        Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover lock: the file the other render is rotating is left alone'
+        Confirm-True ((Get-DiagLogSize) -gt $diagCap) 'diag rollover lock: the line is appended anyway rather than waited for, which is what makes the cap approximate'
+    } finally {
+        [System.IO.File]::WriteAllText($diagGo, 'go')
+        [void] $diagHolder.WaitForExit(30000)
+        $diagHolder.Dispose()
+    }
+    # With the mutex free again the next record rotates as it always did.
+    Write-StatusDiag 'the other render has finished'
+    Confirm-True (Test-Path -LiteralPath $diagRolled) 'diag rollover lock: once the mutex is free the rollover happens'
+    Confirm-Equal (Get-DiagLine).Count 1 'diag rollover lock: and the fresh log holds only the new record'
+    Clear-DiagLog
+    Clear-DiagRollover
+
+    # The whole script, run twice on one payload: the log changes nothing a terminal would show, and
+    # the run with it on leaves a log behind.
+    Clear-DiagLog
+    $diagRenderDir = Join-Path $diagTemp 'render'
+    New-Item -ItemType Directory -Force $diagRenderDir | Out-Null
+    $diagPayload = ([ordered]@{ model = @{ display_name = 'M' }; session_id = 'diag-render'
+                                cost = @{ total_cost_usd = 0.5 }; workspace = @{ current_dir = $diagRenderDir } } | ConvertTo-Json -Compress)
+    Remove-Item Env:CLAUDE_STATUSLINE_DEBUG -ErrorAction SilentlyContinue
+    $diagQuietRun = Invoke-StatusLine $diagPayload $null 0
+    Confirm-True (-not (Test-Path -LiteralPath $diagLog)) 'diag render: a render with the variable unset writes no log'
+    $env:CLAUDE_STATUSLINE_DEBUG = '1'
+    $diagLoudRun = Invoke-StatusLine $diagPayload $null 0
+    Confirm-Equal ($diagLoudRun.Lines -join "`n") ($diagQuietRun.Lines -join "`n") 'diag render: the log changes nothing on the line'
+    Confirm-Equal $diagLoudRun.Err.Count 0 'diag render: nothing on stderr'
+    Confirm-Equal $diagLoudRun.ExitCode 0 'diag render: exit 0'
+    Confirm-True ((Get-DiagLine).Count -gt 0) 'diag render: the child wrote the log'
+    Confirm-Equal (@(Get-DiagLine | Where-Object { $_ -notmatch $diagStamp }).Count) 0 'diag render: every line the child wrote carries the stamp and the process id'
+    Confirm-Equal (@(Get-DiagLine | Where-Object { $_.Split(' ')[1] -eq "$PID" }).Count) 0 'diag render: the child logged under its own process id, not the one running the test'
+} finally {
+    if ($null -ne $oldTemp) { $env:TEMP = $oldTemp } else { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }
+    if ($null -ne $oldDebug) { $env:CLAUDE_STATUSLINE_DEBUG = $oldDebug } else { Remove-Item Env:CLAUDE_STATUSLINE_DEBUG -ErrorAction SilentlyContinue }
 }
 . (Import-ScriptFunction $script @('Get-GitBranch'))
 
@@ -3129,6 +3843,79 @@ $r = Invoke-StatusLine $payload01 (Write-TempConfig 'render-icons-surrogate.json
 Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains("$iconModel Fable 5.1")) 'render icons: a surrogate falls back to the robot'
 $r = Invoke-StatusLine 'not json' (Write-TempConfig 'render-icons-bolt.json' '{ "icons": { "model": "F0E7" } }') 0
 Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) "$bolt claude" 'render icons: the bad-payload fallback line carries the override too'
+
+# The project config through the whole script, at the unset width. 06 carries a cost figure, and the
+# payload names a project directory holding a .claude\statusline.json that turns the cost segment off.
+# With no -Config the script reads the user file beside it (the shipped one, every segment on) and then
+# that project file; with -Config the project file is not looked for at all, which is what keeps the
+# render matrix and the screenshot script free of any dependency on the directory a payload names.
+Write-Host ''
+Write-Host '== render: project config' -ForegroundColor Cyan
+function Write-RenderProjectPayload([string] $Name, $Json) {
+    $dir = Join-Path $tmp $Name
+    $claude = Join-Path $dir '.claude'
+    New-Item -ItemType Directory -Force $claude | Out-Null
+    if ($null -ne $Json) { [System.IO.File]::WriteAllText((Join-Path $claude 'statusline.json'), $Json, [System.Text.UTF8Encoding]::new($false)) }
+    $payload = $payload06 | ConvertFrom-Json
+    $payload.workspace | Add-Member -NotePropertyName project_dir -NotePropertyValue $dir -Force
+    return ($payload | ConvertTo-Json -Depth 20 -Compress)
+}
+$projectPayload = Write-RenderProjectPayload 'render-project' '{ "segments": { "cost": false } }'
+$r = Invoke-StatusLine $projectPayload $null 0
+Confirm-True ($r.ExitCode -eq 0) "render project: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) 'render project: stderr empty'
+$text = ConvertTo-PlainText ($r.Lines -join "`n")
+Confirm-True (-not $text.Contains($iconCost)) 'render project: the project file turns the cost segment off'
+Confirm-True ($text.Contains($iconLines)) 'render project: a segment the project file does not name stays on'
+$r = Invoke-StatusLine $projectPayload (Write-TempConfig 'render-project-config.json' '{}') 0
+Confirm-True ($r.Err.Count -eq 0) 'render project: -Config stderr empty'
+Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains($iconCost)) 'render project: -Config does not read the project file'
+# A malformed project file, a project directory with no config in it, and a file the bounded read
+# refuses all leave the user file in force and say nothing on stderr. The oversized case is the one that
+# matters most: it is a whole render, so a config a repository grew to megabytes would show up here as a
+# slow or hanging child rather than as a quiet fallback.
+$overSized = '{ "segments": { "cost": false }, "pad": "' + ('x' * (Get-ProjectConfigLimit).MaxBytes) + '" }'
+foreach ($case in @(
+        @{ Name = 'render-project-broken'; Json = '{ "segments": '; Label = 'a malformed project file' }
+        @{ Name = 'render-project-none'; Json = $null; Label = 'an empty .claude directory' }
+        @{ Name = 'render-project-huge'; Json = $overSized; Label = 'a project file over the byte cap' })) {
+    $r = Invoke-StatusLine (Write-RenderProjectPayload $case.Name $case.Json) $null 0
+    Confirm-True ($r.ExitCode -eq 0) "render project: $($case.Label) exit code $($r.ExitCode)"
+    Confirm-True ($r.Err.Count -eq 0) "render project: $($case.Label) prints nothing on stderr"
+    Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains($iconCost)) "render project: $($case.Label) leaves the user config in force"
+}
+# A link, or anything else that is not an ordinary file, where the project config should be. The payload
+# is built first with a real file so the directory exists, then the file is replaced.
+$linkPayload = Write-RenderProjectPayload 'render-project-link' '{ "segments": { "cost": false } }'
+$renderLink = Join-Path (Join-Path (Join-Path $tmp 'render-project-link') '.claude') 'statusline.json'
+Remove-Item -LiteralPath $renderLink -Force
+$renderLinkMade = $true
+try { New-Item -ItemType SymbolicLink -Path $renderLink -Target (Write-TempConfig 'render-link-target.json' '{ "segments": { "cost": false } }') -ErrorAction Stop | Out-Null } catch { $renderLinkMade = $false }
+if (-not $renderLinkMade) { New-Item -ItemType Directory -Force $renderLink | Out-Null }
+$renderLinkKind = if ($renderLinkMade) { 'a link' } else { 'a directory' }
+$r = Invoke-StatusLine $linkPayload $null 0
+Confirm-True ($r.ExitCode -eq 0) "render project: $renderLinkKind in place of the file, exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "render project: $renderLinkKind in place of the file prints nothing on stderr"
+Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains($iconCost)) "render project: $renderLinkKind in place of the file leaves the user config in force"
+# An unreachable project directory through a whole render. The line still prints, and it prints without
+# waiting on the network stack: a render is a few hundred milliseconds of pwsh start-up, so the bound
+# here is loose, and what it catches is a filesystem wait of the tens of seconds an SMB timeout runs to.
+$deadRender = $payload06 | ConvertFrom-Json
+$deadRender.workspace | Add-Member -NotePropertyName project_dir -NotePropertyValue '\\192.0.2.1\statusline-test' -Force
+$r = Invoke-StatusLine ($deadRender | ConvertTo-Json -Depth 20 -Compress) $null 0
+Write-Host "  unreachable render: $($r.Ms) ms" -ForegroundColor DarkGray
+Confirm-True ($r.ExitCode -eq 0) "render project: an unreachable project directory, exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) 'render project: an unreachable project directory prints nothing on stderr'
+Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains($iconCost)) 'render project: an unreachable project directory leaves the user config in force'
+Confirm-True ($r.Ms -lt 20000) 'render project: an unreachable project directory does not wait on the filesystem timeout'
+# The icons a repository can ask for reach a whole render too: a right-to-left override in the project
+# config must not touch the line, and the built-in glyph has to survive it.
+$r = Invoke-StatusLine (Write-RenderProjectPayload 'render-project-bidi' '{ "icons": { "model": "202E", "cost": "2588" } }') $null 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render project: a bidi override in the project icons, exit code 0, stderr empty'
+$text = ConvertTo-PlainText ($r.Lines -join "`n")
+Confirm-True (-not $text.Contains([char]::ConvertFromUtf32(0x202E))) 'render project: the right-to-left override never reaches the line'
+Confirm-True ($text.Contains($iconModel)) 'render project: the built-in model glyph survives the refused override'
+Confirm-True ($text.Contains([char]::ConvertFromUtf32(0x2588))) 'render project: the valid override beside it is applied'
 Confirm-True (@(Get-ChildItem -LiteralPath $matrixTemp -Recurse -Force -File).Count -eq 0) 'render matrix: no state written for payloads without a session_id'
 } finally {
     if ($null -ne $oldTemp) { $env:TEMP = $oldTemp } else { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }

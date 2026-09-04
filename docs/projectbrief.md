@@ -33,11 +33,12 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 | File | Role |
 |---|---|
-| `statusline.ps1` | Reads JSON on stdin and `statusline.json` beside it; prints one or two coloured lines fitted to `COLUMNS`. |
+| `statusline.ps1` | Reads JSON on stdin, then `statusline.json` beside it and the project's own copy over that; prints one or two coloured lines fitted to `COLUMNS`. |
 | `subagent-statusline.ps1` | The per-subagent line for the agent panel, wired up by `install.ps1 -Subagents`. A different contract from the main script: Claude Code runs it once for the whole panel with every live row in one payload (`columns` and a `tasks` array) and reads one JSON object per line back, `{"id","content"}`, keyed by the task id. One line per row: the robot glyph, the agent's name, its context percentage and token count, clipped to `columns`. A `columns` of 0 means no room and prints no row; a missing or malformed one means no information about the width and prints in full. No config file, no git probe, no powerline style, no state file. Its second line is a marker the installer looks for, as a whole line inside the first ten, before it overwrites or deletes an installed copy. Ten small helpers are copied verbatim from `statusline.ps1`, because that script reads stdin and prints as it loads and so cannot be dot-sourced; `test.ps1` fails when the copies drift. |
 | `tools/capture-stdin.ps1` | Appends stdin to a file and prints nothing on stdout. Point a settings key at it to find out what Claude Code sends at an integration point whose payload is not documented. Bounded in three places against a capture left running: stdin is read to a ceiling, the record is cut to `-MaxBytes` (1 MiB by default) with a truncation marker, and the file is rotated over one `.1` sibling when the existing length plus this record would exceed the cap, so each generation stays at or under it. The append is taken under a `.lock` sibling; a tick that cannot get it drops its payload. A write it cannot make is reported once to stderr and to a `.error` sidecar, after which it stops until the sidecar is deleted. |
 | `install.ps1` | Copies the script to `~/.claude/`, writes the `statusLine` entry to user settings with `hideVimModeIndicator` on and, with `-RefreshInterval <seconds>`, a `refreshInterval`; with `-Subagents`, also copies `subagent-statusline.ps1` there and writes a `subagentStatusLine` entry of `type` and `command` only; optionally installs JetBrainsMono Nerd Font via winget and sets it as the Windows Terminal default font. Both commands carry a double-quoted forward-slash path, so a profile with a space or an `&` in it still runs. Settings are replaced atomically, the way `Write-AtomicJson` does it in `statusline.ps1`, under an exclusive lock on a `.lock` sibling held across the whole read-modify-write: serialize to a uniquely named sibling, compare the destination with what was read, parse the new text back, take the `.bak`, compare once more, then move. The lock serialises writers that take it and has no effect on one that does not; the second comparison narrows the loss window to the rename itself rather than removing it, and what a rename replaces is in the `.bak`. Ownership of the subagent artifacts is decided by strict match, not substring: the entry has to be the exact command form the installer writes with the target as the `-File` argument itself, and the file has to carry the marker as a whole line inside its first ten. `-Subagents` refuses to install over a file that fails that check, stages its copy under a temporary name so a settings failure changes nothing, and keeps the version it replaces as `~/.claude/.claude-code-statusline-ps.subagent-rollback.ps1` — a project-owned name rather than a `.bak` beside the script, and still marker-checked before it is overwritten or deleted. Supports `-Uninstall`, which removes the `statusLine` entry and script outright and the subagent entry and script only when they pass the ownership check, and `-SettingsPath` (the seam the tests use). |
 | `statusline.json` | Defaults for layout, style, the folder mode, the state file toggle, segment toggles, the colour thresholds, glyph overrides, and the git probe's timeout and cache (`git.timeoutMs`, `git.cacheSeconds`, `git.cache`). The layout-one `order` and layout-two `rows` keys are left out so the registry stays the source and a new segment appears on its own. Installed beside the script. |
+| `<workspace.project_dir>\.claude\statusline.json` | The project's own copy of the same keys, merged over the user file key by key so a repository can pin its layout without changing any other session. Read only when the payload names a project directory that holds it, and not at all when `-Config` names a file. Read as untrusted input: opened first and judged by the handle, at most 64 KiB, within one 250 ms budget that starts before the first filesystem call. |
 | `%TEMP%\claude-statusline-state\` | One JSON file per session (`<session_id>.json`, version 1): last cost, token totals, context and 5-hour percentages, and a ring of up to twenty cost readings. Written after the line is printed, swept of day-old files at most every six hours. `~/.claude/statusline-state` when `TEMP` is empty. |
 | `%TEMP%\claude-statusline\` | The git probe cache: one JSON file per repository, named by the first 16 hex characters of the SHA-256 of the lower-cased work tree path, holding the root, a stamp string (the UTC ticks of the git directory, of `index`, `HEAD`, `ORIG_HEAD`, `FETCH_HEAD`, `MERGE_HEAD`, `packed-refs`, `logs/HEAD`, `config` and `info/exclude`, and of every directory under `refs`, capped at 256; a worktree's main repository after a bar), the write time and the last `git status` record, or null when the probe failed. Read before the branch segment is built and reused for `git.cacheSeconds` while the stamp string matches; swept of day-old files with the state sweep. `TMPDIR`, then the runtime's temp path, when `TEMP` is empty. |
 | `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, checks the git fallback in temporary repositories: clean, dirty, unborn, detached, ahead, behind, a mixed tree, a git that fails and one that hangs, the probe cache with a counting stand-in and end to end with a failing git on `PATH`, exercises the session state file end to end, runs `install.ps1` against a settings file in a temp folder, and pipes every subagent payload through `subagent-statusline.ps1`, reading the replies the way the panel does and checking the copied helpers for drift. `-Columns`, `-Config`, `-Raw`. |
@@ -54,7 +55,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | Context | `context_window.used_percentage`, `total_input_tokens`, `total_output_tokens`, `context_window_size` | Percent, ten-block bar, used/total in k or M. Green below 60%, yellow below 85%, red above. A 1M window uses 70% and 90%, so red still means about 100k tokens of room |
 | Cost | `cost.total_cost_usd` | Dimmed, two decimals |
 | Lines | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
-| Limits | `rate_limits.five_hour`, `seven_day`, `spend_limit` | Coloured by the worst of the figures. The spend figure is `$ 62%`, a literal dollar sign, shown only when the payload carries `spend_limit`, which Claude Code sends behind a Claude apps gateway with a spend limit (2.1.251 or later); its reset time is not shown |
+| Limits | `rate_limits.five_hour`, `seven_day`, `spend_limit` | Coloured by the worst of the figures. A pace arrow follows the 5-hour figure, before its countdown: `→` while the current rate lands inside the window, `↑` when it overruns, red through the `removed` inline role once the projection reaches 120%. The elapsed fraction comes from `resets_at` and the fixed five-hour window, so there is no arrow without a reset time, after one, inside the first tenth of a window, or before anything has been used. The arrow never reaches the short form. The spend figure is `$ 62%`, a literal dollar sign, shown only when the payload carries `spend_limit`, which Claude Code sends behind a Claude apps gateway with a spend limit (2.1.251 or later); its reset time is not shown |
 | Badges | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dim glyphs |
 | PR | `pr.number`, `pr.url`, `pr.review_state` (`pr.kind` is read but not shown) | Pull-request glyph and `#N`, the whole text wrapped in an OSC 8 hyperlink to `pr.url`. Green on `approved`, red on `changes requested` (underscores and case ignored), dim for anything else. Omitted without a `pr` object or a whole, positive `number`; a `url` that is not `http(s)` leaves the text unlinked. No short form |
 | Folder | `workspace.repo.owner`, `workspace.repo.name`, `workspace.project_dir`, `workspace.current_dir` | Blue. `owner/name` when the payload carries a repository, followed by `›` and the leaf of `current_dir` when it differs from `project_dir`. The leaf alone without a repository or with `"folder": "leaf"` in the config. Short form is the repository name |
@@ -86,9 +87,27 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 - **Segment records and one renderer.** Each segment is a small record (name, text, short text,
   colour role, bold); one function renders a line in plain or powerline style, and width fitting
   shrinks then drops records in a fixed order.
-- **Silent config.** Any missing or invalid value in `statusline.json` falls back to its default with
-  no output, and each key falls back on its own: a valid `order` beside a broken `thresholds` keeps
-  the order.
+- **Silent config.** Any missing or invalid value in `statusline.json` falls back with no output, and
+  each key falls back on its own: a valid `order` beside a broken `thresholds` keeps the order. The
+  files are merged in precedence order, defaults then user then project, so what a key falls back to
+  is the value beneath it: a project file with a bad `layout` keeps the user's, not the default.
+- **The project file is untrusted input.** It comes with the repository, so `Read-BoundedFileText` opens
+  it first and judges the handle: not seekable means a device or a pipe rather than a file, and the
+  64 KiB cap is measured against the length the handle reports and again against the bytes read, so a
+  name that changes under the check cannot widen either. A reparse point is refused too, by asking the
+  name a second time, because the APIs that name a handle's own target are .NET 6 and the floor here is
+  .NET Core 3.1. One stopwatch, started before the first filesystem call, covers every step: the open,
+  the length (a call of its own — over SMB it is a round trip to the server), that probe, each read and
+  the close. Each runs on the thread pool through a delegate closed over the path or the stream (a
+  script block cannot: converted to a delegate it needs a runspace, and a pool thread has none) and is
+  waited on for what is left of 250 ms. The close is queued and never waited on, and with the budget
+  gone the stream is abandoned unclosed, whichever step spent it. The bound is on this read alone: a
+  thread can stay blocked until the process exits, and the user's own file, read the ordinary way for
+  its encoding detection, has no deadline at all. `Read-CodePoint` admits a
+  code point only when it draws as one glyph
+  standing alone: no control, format, separator, mark, surrogate, noncharacter or unassigned value, and
+  one or two cells wide by the script's own width rule, so a repository cannot reorder, hide or
+  mis-measure the line through the `icons` table. The user's own file keeps its ordinary read.
 - **One segment table, and the config moves what it can.** `Get-SegmentRegistry` is the single list of
   segments: its array order is the default `order`, its row keys the default `rows`, its ranks the
   shrink and drop order, and the build loop dispatches through it. The `order` and `rows` keys pick
@@ -123,6 +142,22 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   the real one, so an interrupted write costs nothing. The file holds numbers and one id, nothing from
   the prompt or the file system. Cleanup is a stamped sweep, so the common render is one read and one
   write.
+- **The silence is switchable.** Every failure in the git probe, the probe cache and the state file is
+  swallowed on purpose, which leaves a bug report with nothing in it. `Write-StatusDiag` appends one
+  line - UTC time, process id, reason - per swallowed catch, per cache branch and per state read and
+  write to `claude-statusline-diag.log` in the temp folder, and only while `CLAUDE_STATUSLINE_DEBUG`
+  is set to something other than `0`, `false`, `no` or `off`. Unset, the helper reads one
+  environment variable and returns, so the render pays nothing for it. The log is written the way the
+  catch behaves: it never reaches the pipeline, a failure to write it is swallowed in turn, and the
+  rendered line is identical with the variable set and unset. The log rolls over into a `.log.1`
+  sibling once an append would take it past 4 MB, from inside that same `try`, so a variable left set
+  in a profile cannot fill the temp volume and a rollover that fails costs the line and nothing more.
+  One record is cut at 1000 characters, so no single reason can outgrow the cap by itself. The move is
+  taken under a named mutex with a zero wait, and the size is read again while it is held, so two
+  renders cannot rotate over each other's archive; one that cannot take the mutex at once skips the
+  rollover and appends. Nothing waits, and the append itself is unlocked, which makes the cap
+  approximate rather than exact: overlapping renders can leave the file a little over it or lose a
+  line. That is the right trade for a log that must never delay a render and is off by default.
 
 ## Constraints
 
@@ -135,7 +170,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 ## Success criteria
 
-- `.\test.ps1` passes: the unit checks, every payload in `samples/` across seven configs and four widths (120, 60, 20 and unset) with content checks at the unset width, the git cases with the probe cache, the state file cases, the install cases, and the subagent cases.
+- `.\test.ps1` passes: the unit checks, every payload in `samples/` across seven configs and four widths (120, 60, 20 and unset) with content checks at the unset width, the git cases with the probe cache, the state file cases, the diagnostics log cases, the install cases, and the subagent cases.
 - `.\install.ps1` on a fresh machine produces a working status line in Claude Code after one session restart.
 - `.\install.ps1 -Uninstall` returns `settings.json` to its prior state minus the `statusLine` key, and minus `subagentStatusLine` when that key is this project's. A settings write is never observed truncated, and never silently overwrites a change made since the file was read.
 - `.\install.ps1` leaves an existing `~/.claude/statusline.json` untouched.
@@ -146,29 +181,32 @@ Two-line layout, powerline style, config file, width fitting and the git fallbac
 The branch segment shows ahead and behind counts (#16) and staged, changed, untracked and conflict
 counts (#17), all from the one `git status` call, and that call is cached per repository with its
 timeout and lifetime in the config (#18). The model segment marks a 1M window (#9), the limits
-segment shows the spend limit (#7), and the folder segment shows `owner/name` (#10). The
+segment shows the spend limit (#7) and paces the 5-hour figure against its window (#6), and the
+folder segment shows `owner/name` (#10). The
 pull-request segment (#12) links `#N` to the PR with OSC 8. Segment order, the two rows, the colour
 thresholds and the glyphs are `statusline.json` keys over the segment registry (#20). The installer
 writes `hideVimModeIndicator` and, on request, `refreshInterval` (#26), and `-Subagents` installs a
 second script for the agent panel (#15). A state file per session (#4) is written but nothing on the
-line reads it yet. A light palette is still a constant in the script.
+line reads it yet. Every silent catch can be traced through an optional log behind
+`CLAUDE_STATUSLINE_DEBUG` (#43). A light palette is still a constant in the script.
 
 ## Future work
 
 Issues #2 to #43 hold the backlog, each with a plan and success criteria. The enablers are done:
-the segment registry and config keys (#20), the state file (#4), the link helper (#12) and the git
-cache (#18). A registry refactor that let the two scripts share segment builders would remove the
-copied helpers in `subagent-statusline.ps1`; it is not worth it for ten short functions and a drift
-test. The intended order for the rest:
+the segment registry and config keys (#20), the per-project config merge (#19), the state file (#4),
+the link helper (#12) and the git cache (#18). A registry refactor that let the two scripts share
+segment builders would remove the copied helpers in `subagent-statusline.ps1`; it is not worth it for
+ten short functions and a drift test. The intended order for the rest:
 
 1. New segments: cache warmth and hit ratio, worktree name, links on the folder and branch, agent
-   and session badges, cost per turn, pace, session clock (#2, #3, #5, #6, #8, #11, #13, #14). #5
-   and #6 read the state file; #13 reuses `Format-Link`.
-2. Config: presets, a quiet block, an alarm colour, per-project config (#19, #21 to #23).
+   and session badges, cost per turn, session clock (#2, #3, #5, #8, #11, #13, #14). #5 reads the
+   state file; #13 reuses `Format-Link`.
+2. Config: presets, a quiet block, an alarm colour (#21 to #23). Each is one key over
+   `Merge-StatusConfigFile`.
 3. Style and terminal: an ASCII style, a light palette, a right-aligned group with a clock, taskbar
    progress (#24, #25, #27, #28).
 4. Small fixes from review: the zero-segment fallback line should respect the model toggle and the
-   configured order (#42), and an optional diagnostics log for the silent catch blocks (#43).
+   configured order (#42).
 
 ## License
 

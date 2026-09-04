@@ -4,11 +4,12 @@
 # Reads the JSON Claude Code pipes on stdin and prints one or two lines, e.g.
 #   󰚩 Fable 5.1  󰍛 37% ████░░░░░░   $0.43   my-project   main
 # Layout, separator style, segment toggles and order, colour bands and glyph overrides come from
-# statusline.json next to this script.
+# statusline.json next to this script, with the project's own .claude\statusline.json merged over it.
 # Glyphs are emitted from code points so the file's own encoding never matters.
 [CmdletBinding()]
 param(
-    # Path to the config file. Defaults to statusline.json beside this script. Claude Code never passes it.
+    # Path to the config file. Defaults to statusline.json beside this script; given, it replaces that
+    # file and the project's own file is not read at all. Claude Code never passes it.
     [string] $Config
 )
 $ErrorActionPreference = 'SilentlyContinue'
@@ -19,6 +20,71 @@ $PSStyle.OutputRendering = 'Ansi'
 function G([int] $cp) { [char]::ConvertFromUtf32($cp) }
 $e = [char]27
 function C([string] $code, [string] $text) { "$e[${code}m$text$e[0m" }
+
+# ---- Diagnostics log ----
+# The git probe, the probe cache and the state file swallow every failure on purpose: a status line
+# that throws, or that prints an error where the branch should be, is worse than one that is a little
+# stale. The cost is that "git still runs on every render" and "the state file never appears" cannot be
+# looked into without editing the installed script. CLAUDE_STATUSLINE_DEBUG buys that back without
+# giving the silence up: set to anything other than 0, false, no or off, each swallowed catch, each
+# cache branch and each state read and write appends one line - UTC time, process id, reason - to
+# claude-statusline-diag.log in the temp folder. Unset, which is the normal case, this reads one
+# environment variable and returns.
+# Writing the log is itself silent, for the same reason the caller's catch is: a temp folder that is
+# not there or cannot be written, or another render holding the file, costs the line and nothing else.
+# The reason is folded onto one line, because an exception message can carry newlines and one call has
+# to stay one line. Nothing here reaches the pipeline, so a call can sit in front of a return without
+# changing what the caller returns.
+# The log is rolled over rather than left to grow, and one record is bounded so that a reason of any
+# length cannot set the size of the file on its own. The 4 MB cap is a target rather than a promise;
+# Invoke-StatusDiagRollover has the reason why.
+
+# Moves a log with no room left for the next record over claude-statusline-diag.log.1, so a variable
+# left set in a profile costs two files of the cap's size at most rather than the temp volume.
+# Two renders can be printing at once and would both see the same full file, so the move is taken
+# under a named mutex and the size is read again with the mutex in hand: the second render then finds
+# the small file the first one left and does nothing, rather than moving that over the archive the
+# first one just made. The wait is zero. A render that cannot have the mutex at once skips the
+# rollover and appends, because the file it would have moved is about to shrink under it anyway, so
+# nothing here ever waits on another process - which is the point of a log that must not delay a
+# render. The append itself is not locked at all. That leaves the cap approximate: two renders that
+# overlap can leave the file a little over it, or lose a line to each other, which is the right trade
+# for a diagnostic that is off by default and read by a person. Anything that throws is
+# Write-StatusDiag's to swallow, and nothing here reaches the pipeline.
+function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap) {
+    $mutex = [System.Threading.Mutex]::new($false, 'claude-code-statusline-diag-rollover')
+    try {
+        $held = $false
+        # An abandoned mutex is one this process now owns: the render holding it died mid-move.
+        try { $held = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $held = $true }
+        if (-not $held) { return }
+        try {
+            $fi = [System.IO.FileInfo]::new($Path)
+            if ($fi.Exists -and $fi.Length + $Need -gt $Cap) { [System.IO.File]::Move($Path, $Path + '.1', $true) }
+        } finally { $mutex.ReleaseMutex() }
+    } finally { $mutex.Dispose() }
+}
+
+function Write-StatusDiag([string] $Reason) {
+    $flag = $env:CLAUDE_STATUSLINE_DEBUG
+    if (-not $flag -or $flag.Trim() -in @('0', 'false', 'no', 'off')) { return }
+    try {
+        $base = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { [System.IO.Path]::GetTempPath() }
+        $path = [System.IO.Path]::Combine($base, 'claude-statusline-diag.log')
+        $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [System.Globalization.CultureInfo]::InvariantCulture)
+        $text = [regex]::Replace($Reason, '\s+', ' ').Trim()
+        # A record is one line a person reads, and an exception message has no length limit, so a reason
+        # past 1000 characters is cut and marked. Without this one record could be larger than the whole
+        # cap and land in the file the rollover had just emptied, leaving the log over the cap again.
+        if ($text.Length -gt 1000) { $text = $text.Substring(0, 1000) + ' [cut]' }
+        $line = "$stamp $PID $text`n"
+        $utf8 = [System.Text.UTF8Encoding]::new($false)
+        $need = $utf8.GetByteCount($line)
+        $fi = [System.IO.FileInfo]::new($path)
+        if ($fi.Exists -and $fi.Length + $need -gt 4MB) { Invoke-StatusDiagRollover $path $need 4MB }
+        [System.IO.File]::AppendAllText($path, $line, $utf8)
+    } catch { $null = $_ }
+}
 
 # The built-in code point of every glyph the segments use, keyed by the name the icons key of
 # statusline.json takes: the $icon* constant minus its prefix, lower-cased. The constants themselves
@@ -46,10 +112,36 @@ function Get-IconDefault {
     }
 }
 
+# The Unicode categories an icon code point may not have. A config is not always the user's own - a
+# repository's .claude\statusline.json reaches the icons table too - so a code point is admitted only
+# when the terminal can draw it as one glyph standing by itself. Control and Format cover a bare escape,
+# a right-to-left override, a directional isolate, a zero-width joiner and a byte order mark, any of
+# which can reorder or hide the rest of the line without breaking the escape syntax; the two separators
+# would break the line in half; the three marks attach to whatever came before them instead of standing
+# alone; a surrogate half is not a character; and an unassigned code point has no glyph, so the terminal
+# draws a placeholder of its own choosing. Private use is deliberately not on the list: every Nerd Font
+# glyph the script ships lives there.
+function Get-IconRefusedCategory {
+    return @(
+        [System.Globalization.UnicodeCategory]::Control
+        [System.Globalization.UnicodeCategory]::Format
+        [System.Globalization.UnicodeCategory]::Surrogate
+        [System.Globalization.UnicodeCategory]::OtherNotAssigned
+        [System.Globalization.UnicodeCategory]::SpaceSeparator
+        [System.Globalization.UnicodeCategory]::LineSeparator
+        [System.Globalization.UnicodeCategory]::ParagraphSeparator
+        [System.Globalization.UnicodeCategory]::NonSpacingMark
+        [System.Globalization.UnicodeCategory]::SpacingCombiningMark
+        [System.Globalization.UnicodeCategory]::EnclosingMark
+    )
+}
+
 # A code point from a config value: a string of hex digits, with U+ or 0x allowed in front, space around
-# it and leading zeros, at most six digits once those are gone, up to 10FFFF, not a surrogate and not a
-# control character (00 to 1F and 7F to 9F, which would put a raw newline or a bare escape on the line).
-# $null for anything else, so the caller keeps the built-in glyph.
+# it and leading zeros, at most six digits once those are gone. What comes back is a code point that
+# draws as a single glyph: inside Unicode, not a noncharacter (xFFFE, xFFFF and FDD0 to FDEF, which no
+# process may interchange), none of the categories above, and one or two cells wide by the script's own
+# width rule, so an override can never throw the fitting off. $null for anything else, so the caller
+# keeps the built-in glyph.
 function Read-CodePoint($Value) {
     if ($Value -isnot [string]) { return $null }
     $hex = $Value.Trim()
@@ -58,7 +150,10 @@ function Read-CodePoint($Value) {
     if ($hex.Length -lt 1 -or $hex.Length -gt 6) { return $null }
     $cp = 0
     if (-not [int]::TryParse($hex, [System.Globalization.NumberStyles]::AllowHexSpecifier, [cultureinfo]::InvariantCulture, [ref] $cp)) { return $null }
-    if ($cp -gt 0x10FFFF -or ($cp -ge 0xD800 -and $cp -le 0xDFFF) -or $cp -le 0x1F -or ($cp -ge 0x7F -and $cp -le 0x9F)) { return $null }
+    if (-not [System.Text.Rune]::IsValid($cp)) { return $null }
+    if (($cp -band 0xFFFE) -eq 0xFFFE -or ($cp -ge 0xFDD0 -and $cp -le 0xFDEF)) { return $null }
+    if ([System.Text.Rune]::GetUnicodeCategory([System.Text.Rune]::new($cp)) -in (Get-IconRefusedCategory)) { return $null }
+    if ((Get-VisibleWidth ([char]::ConvertFromUtf32($cp))) -notin @(1, 2)) { return $null }
     return $cp
 }
 
@@ -175,57 +270,201 @@ function Read-SegmentNameList($Value, [hashtable] $Known, [hashtable] $Seen) {
     return , $names
 }
 
-# Reads statusline.json. Anything missing or invalid silently falls back to its default, and each key
-# falls back on its own: a valid order beside a broken thresholds keeps the order.
-function Read-StatusConfig([string] $Path) {
+# The built-in defaults: the table every config file is merged over. A fresh table each call, the nested
+# tables included, so a merge that changes one caller's copy cannot reach the next caller's.
+function Get-DefaultStatusConfig {
     $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Segments = @{}; Git = Get-DefaultGitConfig }
     foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
     $cfg.Order = @((Get-SegmentRegistry).Name)
     $cfg.Rows = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
     $cfg.Thresholds = @{ Warn = 60; Bad = 85 }
     $cfg.Icons = @{}
+    return $cfg
+}
+
+# The one-value config keys: the JSON name, the config key it lands in, and how the value is read. Enum
+# takes a string that Allowed lists, folded to lower case; Bool takes a boolean. A value of any other
+# shape leaves the key at the value beneath it. A new one-value key is one row here and nothing else; a
+# key carrying an object or a list of its own gets a block of its own in Merge-StatusConfigFile, beside
+# segments, order, rows, thresholds, icons and git.
+function Get-StatusConfigKey {
+    return @(
+        @{ Json = 'layout'; Key = 'Layout'; Kind = 'Enum'; Allowed = @('one', 'two') }
+        @{ Json = 'style';  Key = 'Style';  Kind = 'Enum'; Allowed = @('plain', 'powerline') }
+        @{ Json = 'folder'; Key = 'Folder'; Kind = 'Enum'; Allowed = @('repo', 'leaf') }
+        @{ Json = 'state';  Key = 'State';  Kind = 'Bool'; Allowed = $null }
+    )
+}
+
+# What a project config may cost to read. A config a person wrote is a few hundred bytes, so 64 KiB is
+# far past any real one and still reads in under a millisecond from a disk; the deadline is what a read
+# that never finishes may cost, and the status line is redrawn on every event, so a quarter of a second
+# is already longer than a render. Both are constants rather than config keys: they guard the file the
+# config itself comes from.
+function Get-ProjectConfigLimit { return @{ MaxBytes = 65536; TimeoutMs = 250 } }
+
+# The two calls the bounded read makes, each closed over the path so it can go straight to the thread
+# pool. Nothing here can be a script block: converted to a delegate one needs a runspace, and a thread
+# pool thread has none. Delegate.CreateDelegate over a one-argument static method is plain .NET, needs no
+# runspace, and the pair costs about a sixth of a millisecond - which is what makes it possible to put a
+# blocking open behind a deadline without starting a process, and a process per render would cost more
+# than everything else the line does. Both APIs are .NET Standard, so they hold on the 7.0 floor.
+function Get-BoundedFileDelegate([string] $Path) {
+    return @{
+        Open       = [System.Delegate]::CreateDelegate([Func[System.IO.FileStream]], $Path, [System.IO.File].GetMethod('OpenRead', [type[]] @([string])))
+        Attributes = [System.Delegate]::CreateDelegate([Func[System.IO.FileAttributes]], $Path, [System.IO.File].GetMethod('GetAttributes', [type[]] @([string])))
+    }
+}
+
+# The same trick for the two things done to an open stream that are filesystem calls in their own right.
+# Length is not a field: on Windows it asks the handle for the file's size, which over SMB is a round
+# trip to the server and can hang with the stream already open. Closing is a filesystem call too - a
+# remote close goes back to the redirector - so it is queued rather than run where it could block the
+# line. Both delegates are closed over Stream's own virtual members rather than FileStream's, so they
+# dispatch through the same call whatever the stream turns out to be.
+function Get-BoundedStreamDelegate($Stream) {
+    return @{
+        Length  = [System.Delegate]::CreateDelegate([Func[long]], $Stream, [System.IO.Stream].GetProperty('Length').GetMethod)
+        Dispose = [System.Delegate]::CreateDelegate([Action], $Stream, [System.IO.Stream].GetMethod('Dispose', [type[]] @()))
+    }
+}
+
+# The text of a file a repository controls, or $null when it is anything but a small, ordinary, promptly
+# readable one. Test-Path and Get-Content are not enough for this file: they follow a link wherever it
+# leads and read whatever comes back, for as long as it takes, so a repository could point the path at a
+# device, a FIFO or a dead network share and hold up every render, or hand over a file large enough to
+# matter. So one clock covers the whole thing, started before the first filesystem call of any kind, and
+# every call runs on the thread pool and is waited on for what is left of it: the open, the file's length,
+# the attribute probe, each read, and the close at the end. When the budget runs out the attempt is
+# abandoned and the caller keeps the config it had, exactly like any other refusal. Abandoning means what
+# it says: a thread may stay blocked in the kernel until the process exits, a handle opened after that is
+# never closed, and a stream is left open rather than closed on the way out, since closing it would wait
+# on whatever is already stuck. That is the price of not waiting, and this process renders one line and
+# exits. What the clock does not cover is what the caller does with the text afterwards, or a filesystem
+# degraded enough to hang calls this function never makes.
+function Read-BoundedFileText([string] $Path) {
+    $limit = Get-ProjectConfigLimit
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $stream = $null
     try {
-        if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $cfg }
-        $j = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-        if ($j -isnot [System.Management.Automation.PSCustomObject]) { return $cfg }
-        if ($j.layout -is [string] -and $j.layout.ToLowerInvariant() -in @('one', 'two')) { $cfg.Layout = $j.layout.ToLowerInvariant() }
-        if ($j.style -is [string] -and $j.style.ToLowerInvariant() -in @('plain', 'powerline')) { $cfg.Style = $j.style.ToLowerInvariant() }
-        if ($j.folder -is [string] -and $j.folder.ToLowerInvariant() -in @('repo', 'leaf')) { $cfg.Folder = $j.folder.ToLowerInvariant() }
-        if ($j.state -is [bool]) { $cfg.State = $j.state }
-        $segs = $j.segments
-        if ($segs -is [System.Management.Automation.PSCustomObject]) {
-            foreach ($n in @($cfg.Segments.Keys)) {
-                $v = $segs.$n
-                if ($v -is [bool]) { $cfg.Segments[$n] = $v }
+        if (-not $Path) { return $null }
+        $call = Get-BoundedFileDelegate $Path
+        # The open goes first and what it hands back is what gets judged, so there is no gap between a
+        # question asked about a name and a read of whatever that name means by then. A name swapped in
+        # that gap can still only point at another ordinary file, whose bytes this repository could have
+        # written into the config anyway; what it cannot do is make the line block on a device or read
+        # past the cap, because both of those are settled from the handle just below.
+        $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
+        if ($left -le 0) { return $null }
+        $open = [System.Threading.Tasks.Task]::Run($call.Open)
+        if (-not $open.Wait([int] $left)) { return $null }
+        $fs = $open.Result
+        $stream = Get-BoundedStreamDelegate $fs
+        # From the handle: a stream that cannot seek is not an ordinary file - a FIFO, a pipe, a
+        # character device. CanSeek is settled when the handle is made and costs nothing to read back;
+        # the length is a call of its own, so it goes to the pool under the budget like everything else.
+        # It is the length the handle reports, not one read off the path before the open.
+        if (-not $fs.CanSeek) { return $null }
+        $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
+        if ($left -le 0) { return $null }
+        $length = [System.Threading.Tasks.Task]::Run($stream.Length)
+        if (-not $length.Wait([int] $left)) { return $null }
+        if ($length.Result -gt $limit.MaxBytes) { return $null }
+        # Belt and braces, and all this runtime offers against a link: a FileStream follows one, and the
+        # APIs that name a handle's own target arrived in .NET 6, past the floor. So the name is asked
+        # once more, and a reparse point or a directory is refused even though the handle looked ordinary.
+        $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
+        if ($left -le 0) { return $null }
+        $attr = [System.Threading.Tasks.Task]::Run($call.Attributes)
+        if (-not $attr.Wait([int] $left)) { return $null }
+        if (($attr.Result -band ([System.IO.FileAttributes]::ReparsePoint -bor [System.IO.FileAttributes]::Directory)) -ne 0) { return $null }
+        $buf = [byte[]]::new($limit.MaxBytes + 1)
+        $read = 0
+        while ($read -lt $buf.Length) {
+            $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
+            if ($left -le 0) { return $null }
+            $task = $fs.ReadAsync($buf, $read, $buf.Length - $read)
+            if (-not $task.Wait([int] $left)) { return $null }
+            $n = $task.Result
+            if ($n -le 0) { break }
+            $read += $n
+        }
+        # The cap once more, in case the file grew past the length the handle reported.
+        if ($read -gt $limit.MaxBytes) { return $null }
+        $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+        # UTF8.GetString keeps a byte order mark as U+FEFF, which ConvertFrom-Json will not parse past.
+        if ($text.Length -gt 0 -and $text[0] -eq [char] 0xFEFF) { $text = $text.Substring(1) }
+        return $text
+    } catch { return $null } finally {
+        # Cleanup obeys the same clock. With budget left the close is queued on the pool and not waited
+        # on, so it cannot become the thing that overruns; with the budget gone the stream is abandoned
+        # outright, whichever stage spent it, because a close would only wait on what is already stuck.
+        # An abandoned handle is closed by the process exit that follows the line.
+        if ($null -ne $stream -and ($limit.TimeoutMs - $sw.ElapsedMilliseconds) -gt 0) {
+            try { $null = [System.Threading.Tasks.Task]::Run($stream.Dispose) } catch { $null = $_ }
+        }
+    }
+}
+
+# Applies one config file over a table and returns it. Anything missing or invalid silently falls back to
+# the value already there, and each key falls back on its own: a valid order beside a broken thresholds
+# keeps the order. Files are applied lowest precedence first, so what an invalid value in the project
+# file falls back to is the user file's value rather than the built-in default. -Bounded reads the file
+# as untrusted input, which is what the project file is; the user's own file, written by the installer
+# or by the user, is read as it always was, so an encoding Get-Content works out still loads.
+function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Bounded) {
+    try {
+        if (-not $Path) { return $Cfg }
+        $text = if ($Bounded) { Read-BoundedFileText $Path } else {
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $Cfg }
+            Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+        }
+        if (-not $text) { return $Cfg }
+        $j = $text | ConvertFrom-Json -ErrorAction Stop
+        if ($j -isnot [System.Management.Automation.PSCustomObject]) { return $Cfg }
+        foreach ($rec in Get-StatusConfigKey) {
+            $v = $j.($rec.Json)
+            if ($rec.Kind -eq 'Bool') {
+                if ($v -is [bool]) { $Cfg[$rec.Key] = $v }
+            } elseif ($v -is [string] -and $v.ToLowerInvariant() -in $rec.Allowed) {
+                $Cfg[$rec.Key] = $v.ToLowerInvariant()
             }
         }
-        # order: the segment names of layout one. Empty, or naming no segment, keeps the registry order.
-        $order = Read-SegmentNameList $j.order $cfg.Segments @{}
-        if ($null -ne $order -and $order.Count -gt 0) { $cfg.Order = $order }
+        # segments: one boolean per name, so a file naming one segment leaves the others as they were.
+        $segs = $j.segments
+        if ($segs -is [System.Management.Automation.PSCustomObject]) {
+            foreach ($n in @($Cfg.Segments.Keys)) {
+                $v = $segs.$n
+                if ($v -is [bool]) { $Cfg.Segments[$n] = $v }
+            }
+        }
+        # order: the segment names of layout one. Empty, or naming no segment, keeps the order beneath.
+        $order = Read-SegmentNameList $j.order $Cfg.Segments @{}
+        if ($null -ne $order -and $order.Count -gt 0) { $Cfg.Order = $order }
         # rows: two arrays of names for layout two, read against one seen set so a segment sits on one
-        # row only. Anything but exactly two arrays, or two rows naming nothing, keeps the registry rows.
+        # row only. Anything but exactly two arrays, or two rows naming nothing, keeps the rows beneath.
         $rows = $j.rows
         if ($rows -is [array] -and $rows.Count -eq 2) {
             $seen = @{}
-            $row1 = Read-SegmentNameList $rows[0] $cfg.Segments $seen
-            $row2 = Read-SegmentNameList $rows[1] $cfg.Segments $seen
-            if ($null -ne $row1 -and $null -ne $row2 -and ($row1.Count + $row2.Count) -gt 0) { $cfg.Rows = @($row1, $row2) }
+            $row1 = Read-SegmentNameList $rows[0] $Cfg.Segments $seen
+            $row2 = Read-SegmentNameList $rows[1] $Cfg.Segments $seen
+            if ($null -ne $row1 -and $null -ne $row2 -and ($row1.Count + $row2.Count) -gt 0) { $Cfg.Rows = @($row1, $row2) }
         }
         # thresholds: warn and bad, whole numbers 0 to 100 with warn at or below bad, for the context
         # meter on a standard window and for the rate limits. A whole number written as 20.0 counts, the
         # way Get-PayloadNumber reads a count, since a config written by another tool can spell it so.
-        # Either value wrong keeps 60 and 85 for both.
+        # Either value wrong keeps both as they were.
         $t = $j.thresholds
         if ($t -is [System.Management.Automation.PSCustomObject]) {
             $w = Get-FiniteNumber $t.warn
             $b = Get-FiniteNumber $t.bad
             if ($null -ne $w -and $null -ne $b -and $w -eq [math]::Floor($w) -and $b -eq [math]::Floor($b) -and $w -ge 0 -and $b -le 100 -and $w -le $b) {
-                $cfg.Thresholds = @{ Warn = [int] $w; Bad = [int] $b }
+                $Cfg.Thresholds = @{ Warn = [int] $w; Bad = [int] $b }
             }
         }
-        # icons: icon name to a hex code point string. Only a known name with a code point Read-CodePoint
-        # accepts is kept, as name to integer; every other entry leaves the built-in glyph alone. The two
-        # names the constants shorten are accepted in either spelling.
+        # icons: icon name to a hex code point string, merged one name at a time. Only a known name with
+        # a code point Read-CodePoint accepts is kept, as name to integer; every other entry leaves the
+        # glyph beneath alone. The two names the constants shorten are accepted in either spelling.
         $ic = $j.icons
         if ($ic -is [System.Management.Automation.PSCustomObject]) {
             $known = Get-IconDefault
@@ -234,20 +473,39 @@ function Read-StatusConfig([string] $Path) {
                 $n = $p.Name.ToLowerInvariant()
                 if ($alias.ContainsKey($n)) { $n = $alias[$n] }
                 $cp = Read-CodePoint $p.Value
-                if ($known.ContainsKey($n) -and $null -ne $cp) { $cfg.Icons[$n] = $cp }
+                if ($known.ContainsKey($n) -and $null -ne $cp) { $Cfg.Icons[$n] = $cp }
             }
         }
         # ---- git: probe timeout and cache ----
-        # Whole numbers are clamped to their range; a key of the wrong type keeps its default, and a git
-        # value that is not an object keeps all three.
+        # Whole numbers are clamped to their range; a key of the wrong type keeps the value beneath it,
+        # and a git value that is not an object keeps all three.
         $g = $j.git
         if ($g -is [System.Management.Automation.PSCustomObject]) {
-            $cfg.Git.TimeoutMs = Get-ConfigInteger $g.timeoutMs $cfg.Git.TimeoutMs 100 10000
-            $cfg.Git.CacheSeconds = Get-ConfigInteger $g.cacheSeconds $cfg.Git.CacheSeconds 0 300
-            if ($g.cache -is [bool]) { $cfg.Git.Cache = $g.cache }
+            $Cfg.Git.TimeoutMs = Get-ConfigInteger $g.timeoutMs $Cfg.Git.TimeoutMs 100 10000
+            $Cfg.Git.CacheSeconds = Get-ConfigInteger $g.cacheSeconds $Cfg.Git.CacheSeconds 0 300
+            if ($g.cache -is [bool]) { $Cfg.Git.Cache = $g.cache }
         }
-    } catch { return $cfg }
-    return $cfg
+    } catch { return $Cfg }
+    return $Cfg
+}
+
+# The config a render runs on: the built-in defaults, the user file, then the project file when the
+# payload named a project directory holding .claude\statusline.json. The merge is per key, so a project
+# file of {"layout": "two"} keeps every user toggle. A project directory that is missing, holds no
+# .claude\statusline.json, or holds an unreadable one leaves the config below it exactly as it was. That
+# file arrives with the repository rather than from the user, so it is read as bounded untrusted input.
+# $ProjectDir is untyped and gated here rather than declared [string]: a payload spells project_dir
+# however it likes, and a [string] parameter would join an array into a path instead of rejecting it.
+# The caller passes it only when -Config named no file, so an explicit config renders the same whatever
+# directory the payload names.
+function Read-StatusConfig([string] $Path, $ProjectDir) {
+    $cfg = Merge-StatusConfigFile (Get-DefaultStatusConfig) $Path
+    if ($ProjectDir -isnot [string] -or -not $ProjectDir) { return $cfg }
+    # No Test-Path on the project directory on the way in. It would be a filesystem call on a path the
+    # repository chose, outside the one budget below, which is the whole thing that budget is for; a
+    # directory that is not there is refused by the bounded read like anything else it cannot open.
+    # Join-Path only joins strings, so the first call to touch a disk is inside Read-BoundedFileText.
+    try { return Merge-StatusConfigFile $cfg (Join-Path $ProjectDir '.claude' 'statusline.json') -Bounded } catch { return $cfg }
 }
 
 # Colour table. Plain style uses the SGR codes the script has always used; powerline uses 256-colour
@@ -412,7 +670,7 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
     if (-not $Dir) { return $null }
     if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return $null }
     $git = (Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-    if (-not $git) { return $null }
+    if (-not $git) { Write-StatusDiag 'git probe: git is not on PATH'; return $null }
     $p = $null
     $outTask = $null
     $errTask = $null
@@ -432,19 +690,19 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
         $exited = $p.WaitForExit($TimeoutMs)
         if (-not $exited) {
             # Kill the whole tree, then give it a moment to actually go away before we dispose the handles.
-            try { $p.Kill($true) } catch { $null = $_ }
+            try { $p.Kill($true) } catch { Write-StatusDiag "git probe: kill failed: $($_.Exception.Message)" }
             [void] $p.WaitForExit(100)
         }
         # Bounded waits on both drains: the full timeout after a clean exit, so a slow reader cannot cost
         # us the branch, and a short grace after a kill, where the result is discarded anyway. A faulted
         # task is observed here rather than left to the finalizer.
         $drainMs = if ($exited) { $TimeoutMs } else { 100 }
-        try { [void] [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask), $drainMs) } catch { $null = $_ }
-        if (-not $exited) { return $null }
-        if (-not $outTask.IsCompletedSuccessfully) { return $null }
-        if ($p.ExitCode -ne 0) { return $null }
+        try { [void] [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask), $drainMs) } catch { Write-StatusDiag "git probe: drain failed: $($_.Exception.Message)" }
+        if (-not $exited) { Write-StatusDiag "git probe: no answer within $TimeoutMs ms"; return $null }
+        if (-not $outTask.IsCompletedSuccessfully) { Write-StatusDiag 'git probe: stdout did not drain'; return $null }
+        if ($p.ExitCode -ne 0) { Write-StatusDiag "git probe: git exited $($p.ExitCode)"; return $null }
         return Read-PorcelainStatus $outTask.Result
-    } catch { return $null }
+    } catch { Write-StatusDiag "git probe failed: $($_.Exception.Message)"; return $null }
     finally {
         # Disposing closes the redirected streams, so it is only safe once both drains have finished. The
         # bounded wait after a kill can return with a ReadToEndAsync still pending; disposing then would
@@ -513,7 +771,7 @@ function Get-GitRepoRoot([string] $Dir) {
             $path = [System.IO.Path]::GetDirectoryName($path)
         }
         return $null
-    } catch { return $null }
+    } catch { Write-StatusDiag "git cache: repository walk failed: $($_.Exception.Message)"; return $null }
 }
 
 # The stamp string for a git directory: the UTC ticks, joined with commas, of the directory itself, of
@@ -602,10 +860,17 @@ function Get-GitCacheDir {
 # something to write, and a failure to create it, or to write, costs nothing but the cache.
 function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir, [int] $Ttl) {
     $repo = if ($CacheDir -and $Ttl -gt 0) { Get-GitRepoRoot $Dir } else { $null }
-    if (-not $repo) { return Get-GitBranch $Dir $TimeoutMs }
+    if (-not $repo) {
+        if ($CacheDir -and $Ttl -gt 0) { Write-StatusDiag "git cache: skipped (no repository above $Dir)" } else { Write-StatusDiag 'git cache: skipped (off in the config)' }
+        return Get-GitBranch $Dir $TimeoutMs
+    }
     $root = $repo.WorkTree
-    $stamps = try { Get-GitStamp $repo.GitDir } catch { $null }
-    if (-not $stamps -or $stamps.StartsWith('over-cap:')) { return Get-GitBranch $Dir $TimeoutMs }
+    $stamps = $null
+    try { $stamps = Get-GitStamp $repo.GitDir } catch { Write-StatusDiag "git cache: stamp failed: $($_.Exception.Message)" }
+    if (-not $stamps -or $stamps.StartsWith('over-cap:')) {
+        if ($stamps) { Write-StatusDiag 'git cache: skipped (the repository is over the ref cap)' } else { Write-StatusDiag 'git cache: skipped (no stamp)' }
+        return Get-GitBranch $Dir $TimeoutMs
+    }
     $path = [System.IO.Path]::Combine($CacheDir, (Get-ShortHash $root.ToLowerInvariant()) + '.json')
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     try {
@@ -615,17 +880,22 @@ function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir
                 $j.root -is [string] -and $j.root -eq $root -and
                 $j.stamps -is [string] -and $j.stamps -ceq $stamps -and
                 [math]::Abs($now - [long] $j.writtenAt) -lt $Ttl -and $null -ne $j.PSObject.Properties['result']) {
-                if ($null -eq $j.result) { return $null }
+                if ($null -eq $j.result) { Write-StatusDiag 'git cache: hit (the entry holds no branch)'; return $null }
                 $info = Read-CachedRecord $j.result
-                if ($info) { return $info }
+                if ($info) { Write-StatusDiag "git cache: hit ($($info.Branch))"; return $info }
+                Write-StatusDiag 'git cache: miss (the record did not pass the guards)'
+            } else {
+                Write-StatusDiag 'git cache: miss (the entry is stale or does not match)'
             }
+        } else {
+            Write-StatusDiag 'git cache: miss (no entry yet)'
         }
-    } catch { $null = $_ }
+    } catch { Write-StatusDiag "git cache: read failed: $($_.Exception.Message)" }
     $info = Get-GitBranch $Dir $TimeoutMs
     try {
         [void] [System.IO.Directory]::CreateDirectory($CacheDir)
         if (Write-AtomicJson $path ([ordered]@{ v = 1; root = $root; stamps = $stamps; writtenAt = $now; result = $info }) 3) { Invoke-SessionStateSweep $CacheDir }
-    } catch { $null = $_ }
+    } catch { Write-StatusDiag "git cache: write failed: $($_.Exception.Message)" }
     return $info
 }
 
@@ -658,7 +928,7 @@ function Get-SessionStateDir([bool] $Create) {
             [void] [System.IO.Directory]::CreateDirectory($dir)
         }
         return $dir
-    } catch { return $null }
+    } catch { Write-StatusDiag "state dir failed: $($_.Exception.Message)"; return $null }
 }
 
 # The file for a session, <name>.json. When the id is already lower-case, at most 64 characters and has
@@ -699,9 +969,9 @@ function Get-StateNumber($v, [switch] $Whole) {
 function Read-SessionState([string] $SessionId) {
     try {
         $path = Get-SessionStatePath $SessionId $false
-        if (-not $path -or -not [System.IO.File]::Exists($path)) { return $null }
+        if (-not $path -or -not [System.IO.File]::Exists($path)) { Write-StatusDiag 'state: no file yet'; return $null }
         $j = [System.IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop
-        if ($j -isnot [System.Management.Automation.PSCustomObject] -or (Get-StateNumber $j.v) -ne 1) { return $null }
+        if ($j -isnot [System.Management.Automation.PSCustomObject] -or (Get-StateNumber $j.v) -ne 1) { Write-StatusDiag 'state: the file is not a version 1 record'; return $null }
         $history = [System.Collections.Generic.List[hashtable]]::new()
         foreach ($h in @($j.history)) {
             $t = Get-StateNumber $h.t -Whole
@@ -711,8 +981,9 @@ function Read-SessionState([string] $SessionId) {
         $state = @{ v = 1; history = @($history) }
         foreach ($key in @('updated_at', 'input_tokens', 'output_tokens')) { $state[$key] = Get-StateNumber $j.$key -Whole }
         foreach ($key in @('cost_usd', 'used_percentage', 'five_hour_percentage')) { $state[$key] = Get-StateNumber $j.$key }
+        Write-StatusDiag "state: read ($path)"
         return $state
-    } catch { return $null }
+    } catch { Write-StatusDiag "state read failed: $($_.Exception.Message)"; return $null }
 }
 
 # The next state for a session: the payload's figures now, and the history ring carried over from the
@@ -762,12 +1033,12 @@ function Invoke-SessionStateSweep([string] $Dir) {
             foreach ($f in [System.IO.Directory]::EnumerateFiles($Dir, $pattern)) {
                 if ($deleted -ge 200) { $capped = $true; break }
                 if ([math]::Abs(($now - [System.IO.File]::GetLastWriteTimeUtc($f)).TotalDays) -lt 1) { continue }
-                try { [System.IO.File]::Delete($f); $deleted++ } catch { $null = $_ }
+                try { [System.IO.File]::Delete($f); $deleted++ } catch { Write-StatusDiag "sweep: delete failed: $($_.Exception.Message)" }
             }
             if ($capped) { break }
         }
         if (-not $capped) { [System.IO.File]::WriteAllText($stamp, '') }
-    } catch { $null = $_ }
+    } catch { Write-StatusDiag "sweep failed: $($_.Exception.Message)" }
 }
 
 # Writes a session's state through Write-AtomicJson, then runs the sweep. Nothing is written for an
@@ -778,18 +1049,32 @@ function Invoke-SessionStateSweep([string] $Dir) {
 # is one missing delta.
 function Write-SessionState([string] $SessionId, $State) {
     try {
-        if (-not $State) { return }
+        if (-not $State) { Write-StatusDiag 'state: not written (nothing to write)'; return }
         $path = Get-SessionStatePath $SessionId $true
-        if (-not $path) { return }
-        if (Write-AtomicJson $path $State 4) { Invoke-SessionStateSweep (Split-Path $path -Parent) }
-    } catch { $null = $_ }
+        if (-not $path) { Write-StatusDiag 'state: not written (the session id leaves no file name)'; return }
+        if (Write-AtomicJson $path $State 4) {
+            Write-StatusDiag "state: written ($path)"
+            Invoke-SessionStateSweep (Split-Path $path -Parent)
+        } else {
+            Write-StatusDiag 'state: not written (the record serialised to nothing)'
+        }
+    } catch { Write-StatusDiag "state write failed: $($_.Exception.Message)" }
 }
 
-$configPath = if ($Config) { $Config } else { Join-Path $PSScriptRoot 'statusline.json' }
-$cfg = Read-StatusConfig $configPath
+$raw = [Console]::In.ReadToEnd()
+$payloadOk = $true
+$d = $null
+try { $d = $raw | ConvertFrom-Json } catch { $payloadOk = $false }
 
-# The glyphs the builders and the fallback line use, with the config's icons overrides applied. The config
-# is read before the payload so these are settled before anything is printed.
+# The config is read after the payload, because the payload names the project directory whose
+# .claude\statusline.json is merged over the user file, and still before anything is printed. -Config
+# replaces the user file and leaves the project file unread: it is the explicit override the tests and
+# the screenshot script use, and both need a render that no directory a sample payload names can change.
+$configPath = if ($Config) { $Config } else { Join-Path $PSScriptRoot 'statusline.json' }
+$projectDir = if ($Config) { $null } else { $d.workspace.project_dir }
+$cfg = Read-StatusConfig $configPath $projectDir
+
+# The glyphs the builders and the fallback line use, with the config's icons overrides applied.
 $icons = Get-IconSet $cfg
 $iconModel = $icons.model
 $iconCtx = $icons.context
@@ -810,8 +1095,9 @@ $iconThink = $icons.think
 $iconEffort = $icons.effort
 $iconVim = $icons.vim
 
-$raw = [Console]::In.ReadToEnd()
-try { $d = $raw | ConvertFrom-Json } catch { Write-Host (C '36' "$iconModel claude"); exit 0 }
+# A payload that is not JSON gets the fallback line. It is printed here rather than where the payload was
+# read so that it carries the config's glyph overrides, which are only settled above.
+if (-not $payloadOk) { Write-Host (C '36' "$iconModel claude"); exit 0 }
 
 # ---- Segment builders. Each returns $null (segment omitted) or @{ Name; Text; Short; Role; Bold }. ----
 
@@ -877,13 +1163,43 @@ function TimeLeft([object] $epoch) {
     return ' ({0}h{1:00}m)' -f [int] [math]::Floor($left.TotalHours), $left.Minutes
 }
 
+# How the 5-hour window is being spent, as one plain arrow: U+2192 when carrying on at this rate lands
+# inside the window, U+2191 when it overruns, with Red set once the projection reaches 120% so the caller
+# can colour it. Returned as @{ Arrow; Red }, or $null for no arrow at all - which is the answer whenever
+# there is nothing honest to say: no reset time, a reset already past or one so far out that the window
+# has not opened, less than the first tenth of the window gone (one busy minute swings the projection
+# there), or no usage yet, where every projection is zero and a right arrow would just be noise.
+# The window is a fixed 18000 seconds, so the elapsed fraction follows from the reset alone and no state
+# file is needed. The arithmetic stays in whole seconds rather than DateTimeOffset, which throws on an
+# epoch outside its own range; a payload's absurd number here just falls out as no arrow. The two limits
+# are tested on the seconds left rather than on the fraction, because a tenth of the window is 16200
+# seconds exactly while 1 - 16200 / 18000 is 0.09999999999999998, which would drop the first honest
+# reading of every window.
+# $Now is the current epoch and defaults to the clock, so no caller passes one. It exists for the tests:
+# an epoch derived from an earlier reading of the clock is one second out whenever the second ticks in
+# between, which is enough to miss both of those limits by exactly the margin a regression would move.
+function Get-PaceArrow([object] $resetsAt, [object] $used, [long] $Now = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) {
+    $reset = Get-FiniteNumber $resetsAt
+    $pct = Get-FiniteNumber $used
+    if ($null -eq $reset -or $null -eq $pct -or $pct -le 0) { return $null }
+    $left = $reset - $Now
+    if ($left -le 0 -or $left -gt 16200) { return $null }
+    $projected = $pct * 18000 / (18000 - $left)
+    if ($projected -le 100) { return @{ Arrow = (G 0x2192); Red = $false } }
+    return @{ Arrow = (G 0x2191); Red = ($projected -ge 120) }
+}
+
 # Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets, and the spend limit when
 # the payload carries one (Claude Code sends it behind a Claude apps gateway with a spend limit). The spend
 # figure uses a literal dollar sign, not the cash glyph, so it does not read as a second cost; its resets_at
 # is not shown, one countdown is enough. Every figure that is present joins the worst-of colour, banded by
 # the config's thresholds whatever the window size, and the Short form a narrow terminal falls back to
 # keeps the figure behind that colour: the worst one, or the first present one when nothing is above the
-# warn line. Either way it carries no countdown.
+# warn line. Either way it carries neither the countdown nor the pace arrow.
+# The 5-hour figure also gets the pace arrow, between the percentage and the countdown, because that is
+# the only window one payload can honestly pace. It is added after the loop rather than inside it: a red
+# arrow goes through Format-Inline, which hands the segment's own foreground back afterwards, and which
+# foreground that is depends on every figure the loop has yet to see.
 function Get-LimitsSegment($d, $cfg) {
     $rl = $d.rate_limits
     if (-not $rl) { return $null }
@@ -891,7 +1207,11 @@ function Get-LimitsSegment($d, $cfg) {
     $worst = -1
     $first = $null
     $top = $null
-    # Label, source object and whether the countdown follows, in render order.
+    $pace = $null
+    $paceAt = -1
+    $paceHead = ''
+    $paceTail = ''
+    # Label, source object and whether the pace arrow and the countdown follow, in render order.
     foreach ($row in @(@('5h', $rl.five_hour, $true), @('7d', $rl.seven_day, $false), @('$', $rl.spend_limit, $false))) {
         $pct = $row[1].used_percentage
         if ($null -eq $pct) { continue }
@@ -900,12 +1220,22 @@ function Get-LimitsSegment($d, $cfg) {
         if ($null -eq $first) { $first = $bit }
         # A strict comparison keeps the earlier figure on a tie, so 5h beats 7d beats spend.
         if ($pct -gt $worst) { $top = $bit; $worst = $pct }
-        $tail = if ($row[2]) { TimeLeft $row[1].resets_at } else { '' }
+        $tail = ''
+        if ($row[2]) {
+            $tail = TimeLeft $row[1].resets_at
+            # The raw percentage, not the rounded one: the projection is the arrow's whole point.
+            $pace = Get-PaceArrow $row[1].resets_at $row[1].used_percentage
+            if ($pace) { $paceAt = $bits.Count; $paceHead = $bit; $paceTail = $tail }
+        }
         $bits.Add("$bit$tail")
     }
     if ($bits.Count -eq 0) { return $null }
-    $text = "$iconLimit $($bits -join ' ')"
     $role = Get-ThresholdRole $worst $cfg.Thresholds.Warn $cfg.Thresholds.Bad
+    if ($paceAt -ge 0) {
+        $arrow = if ($pace.Red) { Format-Inline 'removed' $pace.Arrow $role $cfg.Style } else { $pace.Arrow }
+        $bits[$paceAt] = "$paceHead $arrow$paceTail"
+    }
+    $text = "$iconLimit $($bits -join ' ')"
     $short = "$iconLimit " + $(if ($role -eq 'ok') { $first } else { $top })
     if ($short -eq $text) { $short = $null }
     return @{ Name = 'limits'; Text = $text; Short = $short; Role = $role; Bold = $false }
