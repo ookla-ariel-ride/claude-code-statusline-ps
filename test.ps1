@@ -2106,6 +2106,67 @@ try {
     Confirm-Equal (Read-SessionState 'diag-session').cost_usd 1.07 'diag state: the record still reads back'
     Confirm-Equal (Measure-DiagMatch 'state: read') 1 'diag state: the read is logged'
 
+    # The log is rolled over rather than left to grow: an append that would take the file past the cap
+    # moves it aside first. The cap is spelled out here rather than read from the script, so the two
+    # cannot agree with each other about a wrong number.
+    $diagCap = 4194304
+    $diagRolled = $diagLog + '.1'
+    function Clear-DiagRollover { if (Test-Path -LiteralPath $diagRolled) { Remove-Item -LiteralPath $diagRolled -Recurse -Force } }
+    function Get-DiagLogSize { return (Get-Item -LiteralPath $diagLog).Length }
+    Clear-DiagLog
+    Clear-DiagRollover
+    # Room for the line: it lands in the same file and nothing is moved aside.
+    [System.IO.File]::WriteAllText($diagLog, ('x' * ($diagCap - 200)))
+    Write-StatusDiag 'still room'
+    Confirm-True ((Get-DiagLogSize) -gt ($diagCap - 200) -and (Get-DiagLogSize) -le $diagCap) "diag rollover: under the cap the line is appended, size $(Get-DiagLogSize)"
+    Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover: under the cap nothing is moved aside'
+    # No room: the full log becomes .log.1 and the line starts a fresh one.
+    [System.IO.File]::WriteAllText($diagLog, ('y' * $diagCap))
+    Write-StatusDiag 'over the cap'
+    $diagLines = Get-DiagLine
+    Confirm-Equal $diagLines.Count 1 'diag rollover: the new log holds only the line that crossed the cap'
+    Confirm-True ($diagLines[0].EndsWith('over the cap')) 'diag rollover: and that line is the one just written'
+    Confirm-True (Test-Path -LiteralPath $diagRolled) 'diag rollover: the full log is kept as .log.1'
+    Confirm-Equal (Get-Item -LiteralPath $diagRolled).Length $diagCap 'diag rollover: the kept file is the one that was full'
+    # A second rollover replaces the first .log.1 rather than piling up a third file.
+    [System.IO.File]::WriteAllText($diagLog, ('z' * $diagCap))
+    Write-StatusDiag 'over the cap again'
+    $diagStream = [System.IO.File]::OpenRead($diagRolled)
+    try { $diagFirstByte = $diagStream.ReadByte() } finally { $diagStream.Dispose() }
+    Confirm-Equal $diagFirstByte 122 'diag rollover: the second rollover replaced the first .log.1'
+    Confirm-Equal @(Get-ChildItem -LiteralPath $diagTemp -File -Filter 'claude-statusline-diag.log*').Count 2 'diag rollover: two files at most, never a third'
+
+    # Bounded through the real callers: with the log parked just under the cap, a run of cache reads and
+    # state reads and writes rolls it over instead of pushing past it.
+    Clear-DiagLog
+    Clear-DiagRollover
+    [System.IO.File]::WriteAllText($diagLog, ('x' * ($diagCap - 120)))
+    $diagBoundDir = Join-Path $diagTemp 'cache-bound'
+    $diagOverCap = 0
+    for ($i = 0; $i -lt 12; $i++) {
+        $null = Get-CachedGitBranch $cacheRepo 1500 $diagBoundDir 5
+        $null = Read-SessionState 'diag-session'
+        Write-SessionState 'diag-session' (Merge-SessionState $null (Get-StatePayload 1.07) 1767225600)
+        if ((Get-DiagLogSize) -gt $diagCap) { $diagOverCap++ }
+    }
+    Confirm-Equal $diagOverCap 0 'diag rollover: the log never passes the cap across a run of renders'
+    Confirm-True (Test-Path -LiteralPath $diagRolled) 'diag rollover: the run rolled the full log aside'
+    Confirm-True ((Get-DiagLine).Count -gt 0) 'diag rollover: and carried on logging into the fresh file'
+
+    # A rollover that cannot happen is as silent as a write that cannot happen: a directory holds the
+    # .log.1 name here, so the move throws where the append would.
+    Clear-DiagLog
+    Clear-DiagRollover
+    New-Item -ItemType Directory -Force $diagRolled | Out-Null
+    [System.IO.File]::WriteAllText($diagLog, ('w' * $diagCap))
+    $diagRollThrew = $false
+    $diagRollOut = @('not run')
+    try { $diagRollOut = @(Write-StatusDiag 'the rollover cannot happen') } catch { $diagRollThrew = $true }
+    Confirm-True (-not $diagRollThrew) 'diag rollover failure: the helper does not throw'
+    Confirm-Equal $diagRollOut.Count 0 'diag rollover failure: nothing reaches the pipeline'
+    Confirm-Equal (Get-DiagLogSize) $diagCap 'diag rollover failure: the log is left exactly as it was'
+    Clear-DiagRollover
+
     # The whole script, run twice on one payload: the log changes nothing a terminal would show, and
     # the run with it on leaves a log behind.
     Clear-DiagLog

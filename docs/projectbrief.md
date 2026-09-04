@@ -127,7 +127,9 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   is set to something other than `0`, `false`, `no` or `off`. Unset, the helper reads one
   environment variable and returns, so the render pays nothing for it. The log is written the way the
   catch behaves: it never reaches the pipeline, a failure to write it is swallowed in turn, and the
-  rendered line is identical with the variable set and unset.
+  rendered line is identical with the variable set and unset. The log rolls over into a `.log.1`
+  sibling once an append would take it past 4 MB, from inside that same `try`, so a variable left set
+  in a profile cannot fill the temp volume and a rollover that fails costs the line and nothing more.
 
 ## Constraints
 

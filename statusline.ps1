@@ -33,17 +33,25 @@ function C([string] $code, [string] $text) { "$e[${code}m$text$e[0m" }
 # not there or cannot be written, or another render holding the file, costs the line and nothing else.
 # The reason is folded onto one line, because an exception message can carry newlines and one call has
 # to stay one line. Nothing here reaches the pipeline, so a call can sit in front of a return without
-# changing what the caller returns. The file is never rotated or swept; it only grows while the
-# variable is set, and it is safe to delete at any time.
+# changing what the caller returns.
+# The log is rolled over rather than left to grow. An append that would take the file past 4 MB moves
+# it over claude-statusline-diag.log.1 first, so a variable left set in a profile costs two files of
+# that size at most rather than the temp volume - and the size is counted in the bytes about to be
+# written, so the file never ends a call larger than the cap. The move sits inside the same try as the
+# append: a rollover that cannot happen, because the sibling name is taken by a directory or a reader
+# holds the file, costs the line exactly as a failed append does. Both files are safe to delete.
 function Write-StatusDiag([string] $Reason) {
     $flag = $env:CLAUDE_STATUSLINE_DEBUG
     if (-not $flag -or $flag.Trim() -in @('0', 'false', 'no', 'off')) { return }
     try {
         $base = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { [System.IO.Path]::GetTempPath() }
+        $path = [System.IO.Path]::Combine($base, 'claude-statusline-diag.log')
         $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [System.Globalization.CultureInfo]::InvariantCulture)
-        $text = [regex]::Replace($Reason, '\s+', ' ').Trim()
-        [System.IO.File]::AppendAllText([System.IO.Path]::Combine($base, 'claude-statusline-diag.log'),
-            "$stamp $PID $text`n", [System.Text.UTF8Encoding]::new($false))
+        $line = "$stamp $PID $([regex]::Replace($Reason, '\s+', ' ').Trim())`n"
+        $utf8 = [System.Text.UTF8Encoding]::new($false)
+        $fi = [System.IO.FileInfo]::new($path)
+        if ($fi.Exists -and $fi.Length + $utf8.GetByteCount($line) -gt 4MB) { [System.IO.File]::Move($path, $path + '.1', $true) }
+        [System.IO.File]::AppendAllText($path, $line, $utf8)
     } catch { $null = $_ }
 }
 

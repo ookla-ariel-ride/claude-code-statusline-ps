@@ -364,8 +364,9 @@ read and write appends a line to `claude-statusline-diag.log` in your temp folde
 ```
 
 The printed line is the same either way, and a log that cannot be written is as silent as the failure
-it records. Nothing rotates or sweeps the file, so unset the variable when you are done - `0`,
-`false`, `no` and `off` also count as off - and delete the log.
+it records. The log rolls over into `claude-statusline-diag.log.1` once it would pass 4 MB, so
+leaving the variable set costs two files of that size at most - but unset it when you are done (`0`,
+`false`, `no` and `off` also count as off) and delete both.
 
 ## Contributing
 
