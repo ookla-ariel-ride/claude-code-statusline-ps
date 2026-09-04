@@ -95,6 +95,7 @@ function Get-Palette {
             removed = @{ Sgr = '31'; Fg = 203 }
             track   = @{ Sgr = '90'; Fg = 245 }
             muted   = @{ Sgr = '22;36'; Fg = 152 }
+            cached  = @{ Sgr = '90'; Fg = 244 }
         }
     }
 }

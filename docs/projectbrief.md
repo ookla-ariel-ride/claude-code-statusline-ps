@@ -19,7 +19,8 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 - Work out of the box on Windows 11 with PowerShell 7 and Windows Terminal.
 - Zero dependencies beyond PowerShell 7 and a Nerd Font.
-- Degrade gracefully: omit any segment whose data is missing from the payload, and never print nothing.
+- Degrade gracefully: omit any segment whose data is missing from the payload, and never print nothing
+  the config did not ask for — a config with no model segment on it is allowed to render no line.
 - One-command install and uninstall that preserves the rest of `~/.claude/settings.json`.
 - Fit the terminal width rather than wrap.
 - Be configurable from one small JSON file without editing the script.
@@ -53,7 +54,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | Segment | Source field | Rendering |
 |---|---|---|
 | Model | `model.display_name`, `context_window.context_window_size`, `exceeds_200k_tokens`, and, for the alarm, `context_window.used_percentage` and `rate_limits.five_hour`, `seven_day` | Bold cyan, robot glyph. On a 1M window `1M` follows the name in a lighter cyan, then the warning triangle when Claude Code reports `exceeds_200k_tokens` as true. Red instead of cyan, text unchanged, once the context window or a rate limit reaches the `alarm` percentage (90 by default, `0` off). `Test-AlarmState` decides that from the payload and the config alone, and the role is picked before the text is built so the `1M` marker restores the right foreground |
-| Context | `context_window.used_percentage`, `total_input_tokens`, `total_output_tokens`, `context_window_size` | Percent, ten-block bar, used/total in k or M. Green below 60%, yellow below 85%, red above. A 1M window uses 70% and 90%, so red still means about 100k tokens of room |
+| Context | `context_window.used_percentage`, `total_input_tokens`, `total_output_tokens`, `context_window_size`, `current_usage.{input_tokens, cache_creation_input_tokens, cache_read_input_tokens}` | Percent, ten-block bar, used/total in k or M, then the cached share as a dim `92% cached`. Green below 60%, yellow below 85%, red above. A 1M window uses 70% and 90%, so red still means about 100k tokens of room. The share is the cache read over the whole of `current_usage`, rounded by `Get-WholePercent` like every other percentage; a missing block, a missing field, a zero total or any negative count leaves it off. A negative count is refused rather than repaired, because a negative `input_tokens` beside a positive read divides out above 100 and would print as a confident `100% cached`; "we cannot tell" is the honest answer and the one a missing block already gets. With every count non-negative the share is in range by arithmetic, so there is no clamp. It lives in `Text` and not in `Short`, so the fitting sheds it with the token counts |
 | Cost | `cost.total_cost_usd` | Dimmed, two decimals |
 | Lines | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
 | Limits | `rate_limits.five_hour`, `seven_day`, `spend_limit` | Coloured by the worst of the figures. A pace arrow follows the 5-hour figure, before its countdown: `→` while the current rate lands inside the window, `↑` when it overruns, red through the `removed` inline role once the projection reaches 120%. The elapsed fraction comes from `resets_at` and the fixed five-hour window, so there is no arrow without a reset time, after one, inside the first tenth of a window, or before anything has been used. The arrow never reaches the short form. The spend figure is `$ 62%`, a literal dollar sign, shown only when the payload carries `spend_limit`, which Claude Code sends behind a Claude apps gateway with a spend limit (2.1.251 or later); its reset time is not shown |
@@ -130,7 +131,11 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   compare is one number: `Get-WholePercent` turns a payload figure into the percentage that is printed,
   banded and alarmed on, rounding half to even, so a meter reading 90% cannot sit beside a model that
   thinks the window is at 89. The subagent panel is the deliberate exception - it derives a percentage
-  from token counts and floors it, so a partly used window never reads as a full one. `quiet` is the
+  from token counts and floors it, so a partly used window never reads as a full one. Deriving a
+  figure from token counts is not itself what earns that exception: the context segment's cached
+  share is derived the same way and still rounds, because nothing bands or alarms on it and it
+  prints beside the meter's own rounded percentage, where two rules on one segment is exactly the
+  disagreement `Get-WholePercent` exists to rule out. `quiet` is the
   same idea one step earlier: a threshold per segment below which the builder returns `$null` and the
   segment is never built, so a four-cent cost or a 3% meter costs nothing on the line. It extends the
   rule the lines and badges segments already follow, that a segment with nothing to say disappears, from
@@ -151,9 +156,29 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   allowance is gone, and a spend limit is not one of those. With neither window present there is
   nothing to compare and the segment is kept. `icons` maps a
   name to a code point, and the `$icon*` constants are assigned from `Get-IconSet` after the config
-  is read and before the payload is parsed, so the fallback line and every builder see one set of
-  glyphs. The fitting order stays in the table: it is a property of what each segment can shed, not
-  of taste.
+  is read and before the first line is printed, so both fallback lines and every builder see one set
+  of glyphs. The fitting order stays in the table: it is a property of what each segment can shed,
+  not of taste.
+- **Two fallback lines, one rule.** Both print the model glyph and the word `claude`, which makes
+  each of them the model segment with no name to put in it — a payload carrying no
+  `model.display_name` is the case the second was written for. So neither goes out unless the config
+  would have allowed a model segment: toggled on, and named by `order` or by one of the rows. The
+  rule is decided once, above both lines, so they cannot answer the same config differently. A
+  payload that is not JSON is no exception to it: it loses only the *project* overlay, because it
+  names no project directory, while the user file — or the file `-Config` named — was read and
+  merged over the defaults well before either line prints, and the glyph overrides from that same
+  merge are already being used on it. A config file that cannot be parsed at all leaves the built-in
+  defaults, which have model on and listed, so the case of saying something when nothing else can be
+  said is carried by the defaults rather than by printing over a user who asked for no model
+  segment. A config that turns model off, or whose order leaves it out, gets no line at all — the
+  same answer the fitting loop already gives when every line shrinks away to nothing.
+- **A display choice is not a persistence choice.** The zero-segment path does not exit. A payload
+  that parsed carries its session id and its cost, token and rate figures whatever the config chose
+  to put on screen, and the state file is where the next render reads them back from, so an empty
+  render still writes and merges state and still runs the sweep. Falling through costs nothing on
+  screen: `Get-FittedLine` returns `$null` for an empty line, so the print loop prints nothing. The
+  one path that does exit early is the malformed payload, which has no session id and no figures to
+  keep.
 - **One branch record, two readers.** The porcelain parser and the payload reader return the same
   eight keys (branch, dirty, ahead, behind, staged, modified, untracked, conflicts), so the segment
   builder reads one shape whichever source filled it, and a test pins the two key sets against each
@@ -226,7 +251,9 @@ names three whole shapes of those keys (#21). The installer writes `hideVimModeI
 request, `refreshInterval` (#26), and `-Subagents` installs a
 second script for the agent panel (#15). A state file per session (#4) is written but nothing on the
 line reads it yet. Every silent catch can be traced through an optional log behind
-`CLAUDE_STATUSLINE_DEBUG` (#43). A light palette is still a constant in the script.
+`CLAUDE_STATUSLINE_DEBUG` (#43). Both fallback lines are printed only where the config allows a model
+segment, and a render that shows nothing still writes its state (#42). A light palette is still a
+constant in the script.
 
 ## Future work
 
@@ -243,8 +270,6 @@ eleven short functions and a drift test. The intended order for the rest:
    `Merge-StatusConfigFile`.
 3. Style and terminal: an ASCII style, a light palette, a right-aligned group with a clock, taskbar
    progress (#24, #25, #27, #28).
-4. Small fixes from review: the zero-segment fallback line should respect the model toggle and the
-   configured order (#42).
 
 ## License
 
