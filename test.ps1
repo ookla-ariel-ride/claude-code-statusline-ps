@@ -1794,7 +1794,12 @@ Confirm-True (Get-ContextSegment (Get-CachePayload 0 5000 0) $cacheCfg).Text.End
 Confirm-True (Get-ContextSegment (Get-CachePayload $null $null 1000) $cacheCfg).Text.EndsWith("100% cached$esc[32m") 'context cached: reads alone print 100% cached'
 
 # Every way there is nothing to report renders exactly the segment this script printed before the
-# suffix existed, Short form included.
+# suffix existed, Short form included. The negative rows are the sharpest of them: three counts of
+# tokens cannot be negative, so a payload carrying one is refused whole rather than repaired into a
+# number. The row that matters most is a negative input_tokens beside a positive read, which divides
+# out above 100 and would print as a confident "100% cached" - a perfect cache hit invented from a
+# malformed block. Each of the three fields gets its own row, because they reach the total by
+# different routes: the read is in its own denominator, the other two are only in the denominator.
 foreach ($row in @(
         @{ Label = 'the three fields are all zero'; Payload = (Get-CachePayload 0 0 0) }
         @{ Label = 'current_usage is an empty object'; Payload = (Get-CachePayload $null $null $null) }
@@ -1804,18 +1809,18 @@ foreach ($row in @(
         @{ Label = 'the fields are arrays'; Payload = (Get-CachePayload @(1, 2) @(3) @(4)) }
         # The parentheses are load-bearing. A bare -500 in an argument position is a generic token,
         # not a number: PowerShell hands it over as the string "-500", Get-FiniteNumber refuses it,
-        # and the case would silently become "this field is text" - which the row above already
+        # and every row below would silently become "this field is text" - which a row above already
         # covers - instead of the negative count it is meant to be.
-        @{ Label = 'the counts cancel to a zero total'; Payload = (Get-CachePayload (-500) 0 500) }
-        @{ Label = 'the total is negative'; Payload = (Get-CachePayload (-900) 0 100) })) {
+        @{ Label = 'input_tokens is negative and the total is still positive'; Payload = (Get-CachePayload (-100) 0 200) }
+        @{ Label = 'cache_creation_input_tokens is negative and the total is still positive'; Payload = (Get-CachePayload 0 (-100) 200) }
+        @{ Label = 'cache_read_input_tokens is negative and the total is still positive'; Payload = (Get-CachePayload 200 0 (-100)) }
+        @{ Label = 'a negative count cancels the total to zero'; Payload = (Get-CachePayload (-500) 0 500) }
+        @{ Label = 'a negative count drives the total below zero'; Payload = (Get-CachePayload (-900) 0 100) }
+        @{ Label = 'every count is negative'; Payload = (Get-CachePayload (-1) (-2) (-3)) })) {
     $seg = Get-ContextSegment $row.Payload $cacheCfg
     Confirm-Equal $seg.Text "$plain32$counts32" "context cached: no suffix when $($row.Label)"
     Confirm-Equal $seg.Short $plain32 "context cached: the Short form is untouched when $($row.Label)"
 }
-
-# A share above 100, which only a payload with a negative fresh count can produce, is clamped rather
-# than printed: the bar beside it clamps the same way.
-Confirm-True (Get-ContextSegment (Get-CachePayload (-100) 0 200) $cacheCfg).Text.EndsWith("100% cached$esc[32m") 'context cached: a share above 100 is clamped to 100'
 
 # Short is what stage 1 of the fitting swaps in, so a segment carrying a suffix has to have one even
 # when the payload gives it no token counts at all. Without this the suffix could never be shed.
@@ -1823,6 +1828,28 @@ $seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500 0) $cacheCfg
 Confirm-Equal $seg.Text "$plain32 $esc[90m92% cached$esc[32m" 'context cached with no token counts: the suffix still renders'
 Confirm-Equal $seg.Short $plain32 'context cached with no token counts: there is still a Short form to shed it'
 Confirm-Equal (Get-ContextSegment (Get-CachePayload 0 0 0 0) $cacheCfg).Short $null 'context cached: no counts and no suffix leaves no Short form'
+
+# The whole reason the suffix goes through Format-Inline is the code it hands back: the segment's own
+# foreground, not a reset, so a powerline background runs on under it. That restore is per role, so
+# every band gets its own row in both styles. The bands are moved rather than the payload, so the text
+# in front of the suffix is the same 32% in all six and the only thing under test is the colour.
+# A red meter in powerline is the case where getting this wrong is most visible, and it is also the
+# one the pinned string alone cannot catch: ok and bad share the foreground 231, so the role is
+# asserted beside the text, and plain style, where ok is 32 and bad is 31, separates them.
+foreach ($row in @(
+        @{ Bands = @{ Warn = 60; Bad = 85 }; Role = 'ok'; Plain = '32'; Fg = 231 }
+        @{ Bands = @{ Warn = 20; Bad = 40 }; Role = 'warn'; Plain = '33'; Fg = 16 }
+        @{ Bands = @{ Warn = 20; Bad = 30 }; Role = 'bad'; Plain = '31'; Fg = 231 })) {
+    foreach ($styleName in @('plain', 'powerline')) {
+        $roleCfg = @{ Style = $styleName; Thresholds = $row.Bands }
+        $seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500) $roleCfg
+        $open = if ($styleName -eq 'plain') { "$esc[90m" } else { "$esc[38;5;244m" }
+        $back = if ($styleName -eq 'plain') { "$esc[$($row.Plain)m" } else { "$esc[38;5;$($row.Fg)m" }
+        $roleLabel = "context cached on a $($row.Role) meter in $styleName"
+        Confirm-Equal $seg.Role $row.Role "${roleLabel}: 32% bands as $($row.Role) here"
+        Confirm-Equal $seg.Text "$plain32$counts32 ${open}92% cached$back" "${roleLabel}: the suffix hands the segment's own foreground back"
+    }
+}
 
 # ORDER MATTERS in Get-ContextSegment: the percentage is normalised, the role is read from it, and
 # only then does the quiet guard run. A suffix appended after all three cannot move any of them.

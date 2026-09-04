@@ -1304,22 +1304,37 @@ function Test-QuietValue($cfg, [string] $Name, $Value) {
 # invalidated - the usual reason a small turn suddenly costs several cents.
 # The whole block is absent on older Claude Code versions and before the first API response, and every
 # field goes through Get-FiniteNumber, so a missing block, a missing field, and a field carrying text, a
-# bool or an array all count as 0 rather than throwing. A total of 0 or less is $null rather than 0%:
-# there is no share of nothing, and PowerShell throws on a division by zero between doubles as readily
-# as between integers.
+# bool or an array all count as 0 rather than throwing.
+# THE ONE RULE THAT MAKES THIS FIGURE HONEST: a count that is negative is not a count, and a payload
+# carrying one is refused outright rather than repaired. Three counts of tokens cannot be negative, so
+# a negative one says the block cannot be trusted, and every way of salvaging a number from it invents
+# a claim the payload does not support - most sharply an input_tokens of -100 beside a read of 200,
+# which is a raw 200% and reads on the line as a confident "100% cached", a perfect cache hit
+# manufactured out of a malformed block. Refusing is the same answer this function already gives for a
+# current_usage that is absent, and it is the honest one: not "everything was cached" but "we cannot
+# tell". A total of 0 or less is refused for the same reason, and because PowerShell throws on a
+# division by zero between doubles as readily as between integers.
+# There is no clamp on the result and it does not need one. With all three counts non-negative and a
+# positive total, the read is one of the terms of its own denominator, so the share is between 0 and
+# 100 by arithmetic rather than by correction. A clamp was here and it is what hid the 200% case above,
+# turning a payload this function should have refused into the most reassuring number on the line - so
+# whoever relaxes the refusal above has to put a clamp back, and should ask first why the payload is
+# being trusted at all.
 # The rounding is Get-WholePercent, the script's one percentage rule, and not a rule of its own. This
 # figure is printed as a whole percentage beside another whole percentage built by the same function,
 # and two rounding rules on one segment is exactly the disagreement that function exists to rule out.
 # The choice is deliberate rather than a reflex: subagent-statusline.ps1 floors its derived percentage,
 # and the case for flooring there is that the figure feeds a colour band, where overstating is what
 # matters. Nothing bands or alarms on this one, so the nearest whole number is simply the truest one to
-# print. The 0..100 clamp is the meter's own rule next door; only a payload with a negative count can
-# leave the range, and neither a bar of ten blocks nor a share of the input goes past 100.
+# print.
 function Get-CacheShare($usage) {
     $read = (Get-FiniteNumber $usage.cache_read_input_tokens) ?? 0
-    $total = $read + ((Get-FiniteNumber $usage.input_tokens) ?? 0) + ((Get-FiniteNumber $usage.cache_creation_input_tokens) ?? 0)
+    $fresh = (Get-FiniteNumber $usage.input_tokens) ?? 0
+    $written = (Get-FiniteNumber $usage.cache_creation_input_tokens) ?? 0
+    if ($read -lt 0 -or $fresh -lt 0 -or $written -lt 0) { return $null }
+    $total = $read + $fresh + $written
     if ($total -le 0) { return $null }
-    return [math]::Max(0, [math]::Min(100, (Get-WholePercent (100 * $read / $total))))
+    return Get-WholePercent (100 * $read / $total)
 }
 
 function Get-ContextSegment($d, $cfg) {
