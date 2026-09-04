@@ -168,7 +168,13 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   A payload that carries no cost or token totals keeps the ones the record holds rather than replacing
   them with nothing - they count up over a session, and the delta is measured from them - while the two
   percentages are read fresh, because a gauge carried across a compaction or a window reset describes a
-  moment that has passed. Every failure (no temp folder, a read-only directory, a corrupt file) is
+  moment that has passed. A counter is also required to be possible and not merely finite: dollars and
+  tokens only count up, so `Get-CountedNumber` refuses a negative one field by field, on the way in and
+  on the way out, and the delta refuses both ends of its subtraction the same way. A hand-edited record
+  holding `-100` would otherwise render a confident `(+$101.07)` beside a real total. The refusal is not
+  a clamp to zero on purpose: a clamp would answer with a delta measured from nothing, which is the most
+  reassuring reading available and the least true. The percentages keep the plain rule, because a rate
+  limit really can report over 100 and the pace arrow already refuses anything at or below zero. Every failure (no temp folder, a read-only directory, a corrupt file) is
   silent and leaves the line unchanged. The record is written to a `.tmp` file and moved over
   the real one, so an interrupted write costs nothing. The file holds numbers and one id, nothing from
   the prompt or the file system. Cleanup is a stamped sweep, so the common render is one read and one

@@ -1060,9 +1060,34 @@ function Get-StateNumber($v, [switch] $Whole) {
     return [long] [math]::Floor($n)
 }
 
+# A cumulative figure: a running total that only ever counts up, which is what the dollars spent and the
+# token counts are. Get-StateNumber first, then the sign, because finite is not the same question as
+# possible - no session has ever spent minus a hundred dollars or sent minus four thousand tokens, so a
+# negative here is evidence that a payload or a hand-edited file is wrong rather than a figure to keep.
+# It is refused exactly the way a string or a boolean already is: the figure becomes $null and every
+# reader treats it as a figure that is not there. That is deliberately not a clamp to zero. A clamp
+# would turn an impossible input into the most reassuring possible output - a delta measured from a
+# baseline of nothing - where a refusal makes the absence visible instead.
+# The refusal is per field, not per record, which is the rule the rest of this file already follows: a
+# figure of any other shape nulls itself and leaves the record's other keys alone, and a whole record is
+# thrown away only for a structural fault - not JSON, or not version 1. One corrupt counter is no
+# evidence about the ring or about the other counters, and discarding those would cost more deltas than
+# it saves. Every field that goes missing here fails safe: the segment renders without its delta, which
+# is the same path as a session that has no state file at all.
+# The two percentages do not come through here. They are gauges rather than counters, and their range is
+# not this function's to decide: a rate limit really can report over 100, and the one reader a stored
+# percentage has - the pace arrow's fallback - already refuses anything at or below zero at its own door.
+function Get-CountedNumber($v, [switch] $Whole) {
+    $n = Get-StateNumber $v -Whole:$Whole
+    if ($null -eq $n -or $n -lt 0) { return $null }
+    return $n
+}
+
 # The state last written for a session, as a hashtable with the schema's keys, or $null for no file,
 # unreadable JSON, or a version other than 1. Each figure is a number or $null; history entries without
-# both a time and a cost are dropped.
+# both a time and a cost are dropped. The three counters and the ring's costs go through
+# Get-CountedNumber, so a negative one - which no session can reach, and which a hand-edited file can
+# hold - reads as a figure that is not there rather than as a baseline to measure a delta from.
 function Read-SessionState([string] $SessionId) {
     try {
         $path = Get-SessionStatePath $SessionId $false
@@ -1072,12 +1097,15 @@ function Read-SessionState([string] $SessionId) {
         $history = [System.Collections.Generic.List[hashtable]]::new()
         foreach ($h in @($j.history)) {
             $t = Get-StateNumber $h.t -Whole
-            $c = Get-StateNumber $h.cost_usd
+            $c = Get-CountedNumber $h.cost_usd
             if ($null -ne $t -and $null -ne $c) { $history.Add(@{ t = $t; cost_usd = $c }) }
         }
         $state = @{ v = 1; history = @($history) }
-        foreach ($key in @('updated_at', 'input_tokens', 'output_tokens')) { $state[$key] = Get-StateNumber $j.$key -Whole }
-        foreach ($key in @('cost_usd', 'used_percentage', 'five_hour_percentage')) { $state[$key] = Get-StateNumber $j.$key }
+        # updated_at is a clock reading rather than a counter, so it keeps the plain rule.
+        $state['updated_at'] = Get-StateNumber $j.updated_at -Whole
+        foreach ($key in @('input_tokens', 'output_tokens')) { $state[$key] = Get-CountedNumber $j.$key -Whole }
+        $state['cost_usd'] = Get-CountedNumber $j.cost_usd
+        foreach ($key in @('used_percentage', 'five_hour_percentage')) { $state[$key] = Get-StateNumber $j.$key }
         Write-StatusDiag "state: read ($path)"
         return $state
     } catch { Write-StatusDiag "state read failed: $($_.Exception.Message)"; return $null }
@@ -1093,7 +1121,7 @@ function Read-SessionState([string] $SessionId) {
 # A payload can arrive with no cost object at all - the minimal sample is that shape - and comparing
 # against a carried figure would be comparing against a reading that never happened.
 function Merge-SessionState($Previous, $Payload, [long] $Now) {
-    $cost = Get-StateNumber $Payload.cost.total_cost_usd
+    $cost = Get-CountedNumber $Payload.cost.total_cost_usd
     $history = [System.Collections.Generic.List[hashtable]]::new()
     if ($Previous) {
         foreach ($h in @($Previous.history)) { if ($h) { $history.Add($h) } }
@@ -1119,9 +1147,9 @@ function Merge-SessionState($Previous, $Payload, [long] $Now) {
     return [ordered]@{
         v = 1
         updated_at = $Now
-        cost_usd = $cost ?? (Get-StateNumber $Previous.cost_usd)
-        input_tokens = (Get-StateNumber $ctx.total_input_tokens -Whole) ?? (Get-StateNumber $Previous.input_tokens -Whole)
-        output_tokens = (Get-StateNumber $ctx.total_output_tokens -Whole) ?? (Get-StateNumber $Previous.output_tokens -Whole)
+        cost_usd = $cost ?? (Get-CountedNumber $Previous.cost_usd)
+        input_tokens = (Get-CountedNumber $ctx.total_input_tokens -Whole) ?? (Get-CountedNumber $Previous.input_tokens -Whole)
+        output_tokens = (Get-CountedNumber $ctx.total_output_tokens -Whole) ?? (Get-CountedNumber $Previous.output_tokens -Whole)
         used_percentage = Get-StateNumber $ctx.used_percentage
         five_hour_percentage = Get-StateNumber $Payload.rate_limits.five_hour.used_percentage
         history = @($history)
@@ -1374,11 +1402,18 @@ function Get-CostSegment($d, $cfg, $state) {
     if ($null -eq $cost) { return $null }
     if (Test-QuietValue $cfg 'cost' $cost) { return $null }
     $total = "$iconCost `$" + ('{0:N2}' -f [double] $cost)
-    # Both sides go through Get-FiniteNumber, so a cost or a stored figure of any other shape is simply
-    # a render with no delta: this arithmetic never decides whether the segment appears at all.
+    # Both sides go through Get-CountedNumber, so a figure of any other shape, and a negative on either
+    # side, is simply a render with no delta: this arithmetic never decides whether the segment appears
+    # at all. The stored total is the side that matters - a hand-edited record holding -100 against a
+    # real total of 1.07 would otherwise render a confident (+$101.07). The payload's own total is asked
+    # the same question even though nothing today can reach a wrong answer through it: a negative
+    # payload total against an honest record makes the subtraction negative, which the rule below
+    # refuses anyway, and against a negative record the record is refused first. It is written as the
+    # invariant rather than left resting on that coincidence, because the coincidence belongs to the
+    # "at least a cent" rule and would go with it.
     $suffix = ''
-    $spent = Get-FiniteNumber $cost
-    $before = Get-FiniteNumber $state.cost_usd
+    $spent = Get-CountedNumber $cost
+    $before = Get-CountedNumber $state.cost_usd
     if ($null -ne $spent -and $null -ne $before) {
         $delta = [math]::Round($spent - $before, 2)
         if ($delta -ge 0.01) { $suffix = " (+`$" + ('{0:N2}' -f $delta) + ')' }

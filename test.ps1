@@ -165,7 +165,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Get-CountedNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
 # these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
@@ -1120,6 +1120,35 @@ Confirm-Equal (Get-PayloadNumber 2147483648) $null 'state number: a count must f
 Confirm-Equal (Get-StateNumber 2147483648 -Whole) 2147483648 'state number: a whole figure may exceed an Int32'
 Confirm-Equal (Get-StateNumber 1e300 -Whole) $null 'state number: a whole figure must fit a long'
 
+# Every negative literal below is parenthesised, and that is not style. A bare `-100` in argument
+# position is bound as the STRING "-100", not as the number: PowerShell reads a leading hyphen as the
+# start of a parameter name and falls back to passing the token through as text. An untyped parameter
+# then holds a string, Get-FiniteNumber refuses it because it is not a ValueType, and the check passes
+# for the wrong reason - it would pass against an implementation with no sign rule at all. A mutation
+# run is what found it here. `(-100)` is an expression and binds the number, so write it that way
+# wherever a negative figure is the thing under test.
+#
+# A cumulative figure has to be possible as well as finite: dollars spent and tokens sent only count up,
+# so a negative one is a corrupt record or a wrong payload, not a figure. It is refused rather than
+# clamped, because a clamp to zero would turn an impossible input into a delta measured from nothing,
+# which is the most reassuring answer available and the least true.
+Confirm-Equal (Get-CountedNumber 1.07) 1.07 'counted number: a positive figure passes'
+Confirm-Equal (Get-CountedNumber 0) 0 'counted number: zero is a figure and passes'
+Confirm-Equal (Get-CountedNumber (-0.01)) $null 'counted number: a fraction below zero is refused'
+Confirm-Equal (Get-CountedNumber (-100)) $null 'counted number: a negative figure is refused, not clamped'
+Confirm-Equal (Get-CountedNumber 60000 -Whole) 60000 'counted number: -Whole passes a positive count'
+Confirm-Equal (Get-CountedNumber (-4000) -Whole) $null 'counted number: -Whole refuses a negative count'
+Confirm-Equal (Get-CountedNumber 1.5 -Whole) 1 'counted number: -Whole still floors'
+foreach ($case in @(
+        @{ N = 'a string';           V = 'lots' }
+        @{ N = 'a missing value';    V = $null }
+        @{ N = 'a boolean';          V = $true }
+        @{ N = 'an array';           V = @(1, 2) }
+        @{ N = 'NaN';                V = [double]::NaN }
+        @{ N = 'negative infinity';  V = [double]::NegativeInfinity })) {
+    Confirm-Equal (Get-CountedNumber $case.V) $null "counted number: $($case.N) is refused the same way"
+}
+
 $state = Merge-SessionState $null (Get-StatePayload 1.07) 1767225600
 Confirm-Equal $state.v 1 'state merge: version 1'
 Confirm-Equal $state.updated_at 1767225600 'state merge: updated_at is the clock given'
@@ -1194,6 +1223,25 @@ Confirm-Equal $badCarry.cost_usd 1.07 'state merge: a cost that is not a number 
 Confirm-Equal @($badCarry.history).Count 1 'state merge: a cost that is not a number adds no entry'
 $zeroCost = Merge-SessionState $back (Get-StatePayload 0) 1767225800
 Confirm-Equal $zeroCost.cost_usd 0 'state merge: a cost of zero is a figure and replaces the one before it'
+# A negative counter is refused on both doors: coming in from a payload, and being carried out of a
+# record that already holds one. A carried negative would otherwise survive every payload without a
+# cost and keep producing a fictitious delta for the rest of the session.
+$negPayload = Merge-SessionState $back (Get-StatePayload (-100)) 1767225810
+Confirm-Equal $negPayload.cost_usd 1.07 'state merge: a negative cost in the payload is refused and the record keeps its total'
+Confirm-Equal @($negPayload.history).Count 1 'state merge: a negative cost adds no history entry'
+$negTokens = Merge-SessionState $back ([pscustomobject]@{ context_window = [pscustomobject]@{ total_input_tokens = -5; total_output_tokens = -5 } }) 1767225820
+Confirm-Equal $negTokens.input_tokens 60000 'state merge: negative input tokens are refused and the record keeps its count'
+Confirm-Equal $negTokens.output_tokens 4000 'state merge: negative output tokens are refused and the record keeps its count'
+$negCarry = Merge-SessionState @{ cost_usd = -100; input_tokens = -5 } ([pscustomobject]@{ session_id = 'abc' }) 1767225830
+Confirm-Equal $negCarry.cost_usd $null 'state merge: a negative total in the record is not carried forward'
+Confirm-Equal $negCarry.input_tokens $null 'state merge: a negative count in the record is not carried forward'
+# The gauges are deliberately not given the same rule, so that decision is pinned rather than left to be
+# rediscovered: a percentage's range is not this file's business - a rate limit really can report over
+# 100 - and the one reader a stored one has refuses anything at or below zero at its own door.
+$negGauge = Merge-SessionState $back ([pscustomobject]@{ context_window = [pscustomobject]@{ used_percentage = -3 }
+        rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{ used_percentage = -3 } } }) 1767225840
+Confirm-Equal $negGauge.used_percentage -3 'state merge: a negative context percentage is stored as it arrived, because a gauge is not a counter'
+Confirm-Equal $negGauge.five_hour_percentage -3 'state merge: and so is a negative five-hour percentage'
 $badCost = Merge-SessionState $null ([pscustomobject]@{ cost = [pscustomobject]@{ total_cost_usd = 'lots' } }) 1
 Confirm-Equal $badCost.cost_usd $null 'state merge: string cost is not a number'
 Confirm-Equal @($badCost.history).Count 0 'state merge: string cost starts no history'
@@ -1249,6 +1297,26 @@ Confirm-True ($odd -is [hashtable]) 'state read: odd but versioned file still re
 Confirm-Equal $odd.cost_usd $null 'state read: string cost reads as null'
 Confirm-Equal @($odd.history).Count 1 'state read: history entries without both numbers are dropped'
 Confirm-Equal $odd.history[0].cost_usd 0.5 'state read: the whole entry is kept'
+
+# A version 1 record can be hand-edited into a shape no session reaches. A negative counter is refused
+# field by field, the way a string one already is, and the rest of the record still reads: throwing the
+# whole file away would cost the ring and the other counters for a fault that says nothing about them.
+# The percentages are not counters and keep the plain rule, which is pinned here so the difference is a
+# decision rather than an oversight - their one reader, the pace arrow's fallback, refuses anything at
+# or below zero at its own door, and no rate limit's upper end is this file's business.
+[System.IO.File]::WriteAllText((Join-Path $stateDir 'negative.json'), '{ "v": 1, "updated_at": 5, "cost_usd": -100, "input_tokens": -6, "output_tokens": 4000, "used_percentage": -3, "five_hour_percentage": 23.5, "history": [ { "t": 6, "cost_usd": -2 }, { "t": 7, "cost_usd": 0.5 } ] }')
+$neg = Read-SessionState 'negative'
+Confirm-True ($neg -is [hashtable]) 'state read: a record with a negative counter still reads'
+Confirm-Equal $neg.cost_usd $null 'state read: a negative cost reads as no figure'
+Confirm-Equal $neg.input_tokens $null 'state read: a negative input count reads as no figure'
+Confirm-Equal $neg.output_tokens 4000 'state read: the counter beside it is untouched'
+Confirm-Equal $neg.updated_at 5 'state read: updated_at is a clock reading and keeps the plain rule'
+Confirm-Equal $neg.used_percentage -3 'state read: a percentage is a gauge and is not refused here'
+Confirm-Equal $neg.five_hour_percentage 23.5 'state read: the five-hour gauge reads as written'
+Confirm-Equal @($neg.history).Count 1 'state read: a ring entry with a negative cost is dropped'
+Confirm-Equal $neg.history[0].cost_usd 0.5 'state read: and the honest entry is kept'
+# The pace arrow is where a negative five-hour figure would land, and it refuses one already.
+Confirm-Equal (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) (-3)) $null 'pace arrow: a negative percentage draws no arrow'
 
 # The file name is the id itself when it is clean and at most 64 characters, as a UUID is. An id that had
 # characters stripped, or was longer than that, gets a hash of the whole id as a suffix, so two ids that
@@ -1814,6 +1882,22 @@ Confirm-Equal (Get-CostText 1.07 $null) $costTotal 'cost delta: no state gives t
 Confirm-Equal (Get-CostText 1.07 @{ v = 1 }) $costTotal 'cost delta: a state record with no cost gives the plain total'
 Confirm-Equal (Get-CostText 1.07 (Get-CostState $null)) $costTotal 'cost delta: a null cost in the state gives the plain total'
 Confirm-Equal (Get-CostText 1.07 (Get-CostState 'lots')) $costTotal 'cost delta: a state cost that is not a figure gives the plain total'
+# A stored total no session could reach is not a baseline. Subtracting -100 from a real 1.07 would
+# render a confident (+$101.07); the figure is refused instead, and refused rather than clamped to zero,
+# because a clamp would answer with a delta measured from nothing and look entirely reasonable.
+Confirm-Equal (Get-CostText 1.07 (Get-CostState (-100))) $costTotal 'cost delta: a negative stored total gives the plain total, not fictitious spending'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState (-100))).Short $null 'cost delta: a negative stored total leaves no short form either'
+Confirm-Equal (Get-CostText 1.07 (Get-CostState (-0.01))) $costTotal 'cost delta: a stored total a hair below zero is refused too'
+# Both ends of the subtraction are asked the same question, so a negative payload total shows no delta
+# either - the total itself is formatted the way it always was, which is not this change's business.
+# It takes a config with no quiet table to see that, and the reason is worth writing down: with any
+# quiet threshold present, including the default 0, the guard tests `value -lt threshold` and a negative
+# total is below zero, so the whole segment is already hidden before the delta is ever asked. That is
+# this branch's inheritance rather than its doing, and it is pinned here so a later change to the guard
+# cannot quietly turn a nonsense total back on with a delta attached.
+Confirm-Equal (Get-CostSegment (Get-CostPayload (-1.07)) $quietOff (Get-CostState 0.5)) $null 'cost delta: the quiet guard hides a negative total before the delta is asked'
+Confirm-Equal (Get-CostSegment (Get-CostPayload (-1.07)) $bandCfg (Get-CostState 0.5)).Text (Get-CostTotalText (-1.07)) 'cost delta: a negative payload total gives no delta'
+Confirm-Equal (Get-CostSegment (Get-CostPayload (-1.07)) $bandCfg (Get-CostState 0.5)).Short $null 'cost delta: a negative payload total leaves no short form either'
 Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff).Text $costTotal 'cost delta: a caller that passes no state at all gives the plain total'
 # A record older than the previous render - a render in between that printed but wrote nothing, or one
 # that exited before the write - gives the change since the total the file holds. That figure is still
@@ -3975,6 +4059,18 @@ foreach ($case in @(@{ Name = 'truncated'; Text = '{ "v": 1, "cost' }, @{ Name =
     Confirm-Equal $file.cost_usd 2 "state $($case.Name) file: replaced by a good one"
     Confirm-Equal $file.history.Count 1 "state $($case.Name) file: history starts over"
 }
+
+# A hand-edited version 1 record holding a total no session can reach. The file parses, the version is
+# right and every other key is sound, so the record reads - and the delta still refuses it rather than
+# rendering the 101.07 that subtracting it would produce. The next write replaces it with a real figure.
+[System.IO.File]::WriteAllText((Join-Path $renderStateDir 'sess-1.json'),
+    '{ "v": 1, "updated_at": 5, "cost_usd": -100, "input_tokens": null, "output_tokens": null, "used_percentage": null, "five_hour_percentage": null, "history": [] }')
+$r = Invoke-StatusLine (Get-StatePayloadJson 1.07) $null 0
+Confirm-NormalRender $r '1.07' 'state negative file: the line is the total alone, with no fictitious delta'
+$file = Get-Content -LiteralPath (Join-Path $renderStateDir 'sess-1.json') -Raw | ConvertFrom-Json
+Confirm-Equal $file.cost_usd 1.07 'state negative file: the record is replaced by the real total'
+$r = Invoke-StatusLine (Get-StatePayloadJson 1.2) $null 0
+Confirm-NormalRender $r '1.20 (+$0.13)' 'state negative file: and the render after it measures from that real total'
 
 # "state": false and a payload without a session_id write nothing, not even the directory.
 Remove-Item -LiteralPath $renderStateDir -Recurse -Force
