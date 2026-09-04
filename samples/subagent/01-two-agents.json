@@ -1,0 +1,37 @@
+{
+  "session_id": "0f2a7c11-4b3e-4f5a-9c21-0e6b7d5a1234",
+  "transcript_path": "C:/Users/jim/.claude/projects/demo/0f2a7c11.jsonl",
+  "cwd": "C:/repo",
+  "columns": 62,
+  "tasks": [
+    {
+      "id": "task_01",
+      "name": "Explore",
+      "type": "local_agent",
+      "status": "running",
+      "description": "Find the segment registry",
+      "label": "Reading statusline.ps1",
+      "startTime": 1756900000000,
+      "model": "claude-opus-4-5-20251101",
+      "effort": "high",
+      "contextWindowSize": 200000,
+      "tokenCount": 48211,
+      "tokenSamples": [12000, 30110, 48211],
+      "cwd": "C:/repo"
+    },
+    {
+      "id": "task_02",
+      "name": "general-purpose",
+      "type": "local_agent",
+      "status": "running",
+      "description": "Run the suite",
+      "label": "Running test.ps1",
+      "startTime": 1756900050000,
+      "model": "claude-sonnet-4-5-20250929",
+      "contextWindowSize": 200000,
+      "tokenCount": 182450,
+      "tokenSamples": [180000, 182450],
+      "cwd": "C:/repo"
+    }
+  ]
+}

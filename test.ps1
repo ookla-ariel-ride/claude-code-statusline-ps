@@ -3218,7 +3218,7 @@ function Get-KeyList($Object) {
 }
 $installedScript = Join-Path $installHome '.claude\statusline.ps1'
 $installedConfig = Join-Path $installHome '.claude\statusline.json'
-$expectCommand = 'pwsh -NoProfile -NoLogo -NonInteractive -File ' + ($installedScript -replace '\\', '/')
+$expectCommand = 'pwsh -NoProfile -NoLogo -NonInteractive -File "' + ($installedScript -replace '\\', '/') + '"'
 
 # A fresh file: neither settings.json nor its parent directory exists yet.
 $fresh = Join-Path $installHome 'fresh\settings.json'
@@ -3923,6 +3923,626 @@ Confirm-True (@(Get-ChildItem -LiteralPath $matrixTemp -Recurse -Force -File).Co
 } finally {
     if ($null -ne $oldGitCeiling) { $env:GIT_CEILING_DIRECTORIES = $oldGitCeiling } else { Remove-Item Env:GIT_CEILING_DIRECTORIES -ErrorAction SilentlyContinue }
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+}
+
+# ---- Subagent group: subagent-statusline.ps1 ----
+# A separate script with a different contract from the main status line: Claude Code runs it once for
+# the whole agent panel, hands it every live row in one payload, and reads one JSON object per line,
+# {"id","content"}, keyed by the task id. It renders none of the segments, so it appears in none of
+# the tables above and gets its own temp tree here rather than sharing $tmp, which is already gone.
+Write-Host ''
+Write-Host '== subagent' -ForegroundColor Cyan
+$subScript = Join-Path $PSScriptRoot 'subagent-statusline.ps1'
+$subSampleDir = Join-Path $PSScriptRoot 'samples\subagent'
+$subTmp = Join-Path ([System.IO.Path]::GetTempPath()) "statusline-subagent-test-$PID"
+New-Item -ItemType Directory -Force $subTmp | Out-Null
+$iconRobot = [char]::ConvertFromUtf32(0xF06A9)
+$ellipsis = [char]::ConvertFromUtf32(0x2026)
+
+# Runs the subagent script in a child pwsh and reads stdout the way Claude Code does: line by line,
+# each line an object with a string id and a string content, anything else dropped. Rows holds the
+# replies in the order they arrived; Bad counts the lines Claude Code would have thrown away.
+function Invoke-SubagentLine([string] $Payload) {
+    $r = Invoke-ChildPwsh $subScript @() $Payload
+    $rows = [ordered]@{}
+    $bad = 0
+    foreach ($line in $r.Lines) {
+        if (-not "$line".Trim()) { continue }
+        $obj = try { "$line" | ConvertFrom-Json } catch { $null }
+        if ($obj -isnot [System.Management.Automation.PSCustomObject] -or
+            $obj.id -isnot [string] -or $obj.content -isnot [string]) { $bad++; continue }
+        $rows[$obj.id] = $obj.content
+    }
+    $r.Rows = $rows
+    $r.Bad = $bad
+    return $r
+}
+
+# The payload text of one sample by file name.
+function Get-SubagentSample([string] $Name) { return (Get-Content -LiteralPath (Join-Path $subSampleDir $Name) -Raw) }
+
+try {
+# Every sample end to end: exit 0, nothing on stderr, every line a well-formed reply, no row for a
+# task the payload does not have, one line of text per row carrying the robot glyph, and a width that
+# fits the columns the payload asked for.
+$subSamples = Get-ChildItem $subSampleDir -Filter *.json | Sort-Object Name
+Confirm-True ($subSamples.Count -gt 0) 'subagent samples: the directory holds payloads'
+foreach ($sample in $subSamples) {
+    $payload = Get-Content -LiteralPath $sample.FullName -Raw
+    $json = $payload | ConvertFrom-Json
+    $r = Invoke-SubagentLine $payload
+    $label = "subagent $($sample.Name)"
+    Confirm-True ($r.ExitCode -eq 0) "${label}: exit code $($r.ExitCode)"
+    Confirm-True ($r.Err.Count -eq 0) "${label}: stderr empty, got '$($r.Err -join ' | ')'"
+    Confirm-Equal $r.Bad 0 "${label}: every line parses as an id and a content string"
+    $ids = @($json.tasks | ForEach-Object { $_.id } | Where-Object { $_ -is [string] -and $_.Trim() })
+    $cols = if ($json.columns -is [ValueType]) { [int] $json.columns } else { 0 }
+    Confirm-True (@($r.Rows.Keys).Count -le $ids.Count) "${label}: no more rows than the payload has tasks"
+    foreach ($id in @($r.Rows.Keys)) {
+        $content = $r.Rows[$id]
+        Confirm-True ($ids -contains $id) "${label}: row id '$id' is one of the payload's tasks"
+        Confirm-True ($content -notmatch "[`r`n]") "${label}/${id}: one line, no newline inside it"
+        Confirm-True ((ConvertTo-PlainText $content).Contains($iconRobot)) "${label}/${id}: carries the robot glyph"
+        if ($cols -gt 0) {
+            $w = Measure-VisibleWidth $content
+            Confirm-True ($w -le $cols) "${label}/${id}: visible width $w fits the payload's $cols columns"
+        }
+    }
+}
+
+# 01: two running agents on a 200k window. The percentage takes the threshold colour and the token
+# figure is dim, the same palette roles the main line uses; the glyph and the name are the model role.
+$r = Invoke-SubagentLine (Get-SubagentSample '01-two-agents.json')
+Confirm-Equal (@($r.Rows.Keys) -join ',') 'task_01,task_02' 'subagent 01: one row per task, in payload order'
+Confirm-Equal (ConvertTo-PlainText $r.Rows['task_01']) "$iconRobot Explore  24%  48k" 'subagent 01: the registered name, the percentage and the token count'
+Confirm-True ($r.Rows['task_01'].Contains("$esc[1;36m$iconRobot Explore$esc[0m")) 'subagent 01: glyph and name in the model colour'
+Confirm-True ($r.Rows['task_01'].Contains("$esc[32m24%$esc[0m")) 'subagent 01: 24% of a 200k window is green'
+Confirm-Equal (ConvertTo-PlainText $r.Rows['task_02']) "$iconRobot general-purpose  91%  182k" 'subagent 01: the second row reads the same way'
+Confirm-True ($r.Rows['task_02'].Contains("$esc[31m91%$esc[0m")) 'subagent 01: 91% is red'
+Confirm-True ($r.Rows['task_02'].Contains("$esc[90m182k$esc[0m")) 'subagent 01: the token figure is dim'
+
+# 02: an id, a type and a status and nothing else. The type stands in for a name and the status word
+# stands in for a figure, so a row still says something.
+$r = Invoke-SubagentLine (Get-SubagentSample '02-minimal.json')
+Confirm-Equal (ConvertTo-PlainText $r.Rows['t1']) "$iconRobot local_bash  running" 'subagent 02: the type names the row and the status is the progress'
+
+# 03: an empty task list is not an error, and an empty stdout is what the panel expects for it.
+$r = Invoke-SubagentLine (Get-SubagentSample '03-no-tasks.json')
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent 03: exit code 0, stderr empty'
+Confirm-Equal (@($r.Lines | Where-Object { "$_".Trim() }).Count) 0 'subagent 03: no tasks, no output'
+
+# 04: hostile fields. A name carrying an escape is not text, so the label is used instead and the
+# escape never reaches the row; a blank id and an array id get no row at all, because a row only
+# renders when its id comes back; 20.0 and 2e1 arrive as Double and still count as whole numbers; a
+# zero window yields no percentage rather than a division by zero; the long label is clipped to 40.
+$r = Invoke-SubagentLine (Get-SubagentSample '04-hostile-fields.json')
+Confirm-Equal (@($r.Rows.Keys) -join ',') 'ok-1,ok-2,ok-3,ok-4' 'subagent 04: only the tasks with usable text for an id get a row'
+Confirm-Equal (ConvertTo-PlainText $r.Rows['ok-1']) "$iconRobot safe label  0%" 'subagent 04: an escape in the name falls through to the label, and 20 of 200000 is 0% with no token figure'
+Confirm-True (-not $r.Rows['ok-1'].Contains('red')) 'subagent 04: nothing of the escaped name reaches the row'
+Confirm-True ((ConvertTo-PlainText $r.Rows['ok-1']) -notmatch '\p{Cc}') 'subagent 04: the row carries no control character of its own'
+Confirm-True ((ConvertTo-PlainText $r.Rows['ok-2']).Contains($ellipsis)) 'subagent 04: the long label is clipped with an ellipsis'
+Confirm-True ((ConvertTo-PlainText $r.Rows['ok-2']).EndsWith('completed')) 'subagent 04: a zero window leaves no percentage, so the status word is the progress'
+Confirm-Equal (ConvertTo-PlainText $r.Rows['ok-3']) "$iconRobot remote_agent  pending" 'subagent 04: 2e1 tokens with no window is below a thousand, so the status shows instead'
+Confirm-True ($r.Rows['ok-4'].Contains("$esc[33m72%$esc[0m")) 'subagent 04: a 1M window uses the 70 and 90 bands, so 72% is yellow'
+
+# 05: a 1M window and no columns key. Nothing is clipped and 65% is still green under the wider bands.
+$r = Invoke-SubagentLine (Get-SubagentSample '05-wide-window.json')
+Confirm-Equal (ConvertTo-PlainText $r.Rows['wide_01']) "$iconRobot in-process teammate  65%  655k" 'subagent 05: no columns key means nothing is cut'
+Confirm-True ($r.Rows['wide_01'].Contains("$esc[32m65%$esc[0m")) 'subagent 05: 65% of a 1M window is still green'
+
+# Anything the script cannot read prints nothing and exits 0. A bare glyph could not stand in here the
+# way the main script's fallback line does: it is not JSON, so the panel would log it and drop it.
+foreach ($case in @(
+        @{ Name = 'malformed JSON'; Payload = 'not json at all' }
+        @{ Name = 'empty stdin'; Payload = '' }
+        @{ Name = 'a truncated object'; Payload = '{ "tasks": [ { "id": "x"' }
+        @{ Name = 'an array payload'; Payload = '[1, 2, 3]' }
+        @{ Name = 'a bare number'; Payload = '42' }
+        @{ Name = 'no tasks key'; Payload = '{ "columns": 80 }' }
+        @{ Name = 'tasks as an object'; Payload = '{ "tasks": { "id": "x" } }' }
+        @{ Name = 'tasks as a string'; Payload = '{ "tasks": "x" }' }
+        @{ Name = 'a task that is a number'; Payload = '{ "tasks": [ 1, 2 ] }' }
+        @{ Name = 'a task with no id'; Payload = '{ "tasks": [ { "name": "no id" } ] }' })) {
+    $r = Invoke-SubagentLine $case.Payload
+    $label = "subagent $($case.Name)"
+    Confirm-True ($r.ExitCode -eq 0) "${label}: exit code $($r.ExitCode)"
+    Confirm-True ($r.Err.Count -eq 0) "${label}: stderr empty, got '$($r.Err -join ' | ')'"
+    Confirm-Equal (@($r.Lines | Where-Object { "$_".Trim() }).Count) 0 "${label}: no output"
+}
+
+# A repeated id is answered once: the panel keys its map by id, so a second line would only overwrite.
+$r = Invoke-SubagentLine '{ "tasks": [ { "id": "same", "name": "first" }, { "id": "same", "name": "second" } ] }'
+Confirm-Equal (@($r.Lines | Where-Object { "$_".Trim() }).Count) 1 'subagent duplicate id: one line, not two'
+Confirm-True ((ConvertTo-PlainText $r.Rows['same']).Contains('first')) 'subagent duplicate id: the first task wins'
+
+# The panel can be very narrow. At every width the row still fits, and the glyph is the last thing to
+# go, so a row never disappears and never wraps the panel.
+$narrowTask = '{ "id": "n1", "name": "a name long enough to need clipping", "status": "running", "contextWindowSize": 200000, "tokenCount": 120000 }'
+foreach ($cols in @(80, 40, 20, 12, 8, 4, 2, 1)) {
+    $r = Invoke-SubagentLine ('{ "columns": ' + $cols + ', "tasks": [ ' + $narrowTask + ' ] }')
+    $label = "subagent columns $cols"
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) "${label}: exit code 0, stderr empty"
+    Confirm-Equal (@($r.Rows.Keys).Count) 1 "${label}: one row"
+    $w = Measure-VisibleWidth $r.Rows['n1']
+    Confirm-True ($w -le $cols) "${label}: visible width $w fits"
+    Confirm-True ((ConvertTo-PlainText $r.Rows['n1']).Contains($iconRobot)) "${label}: the glyph is never dropped"
+}
+# At a width that can hold them, the figures survive and the name is what gets clipped.
+$r = Invoke-SubagentLine ('{ "columns": 20, "tasks": [ ' + $narrowTask + ' ] }')
+Confirm-True ($r.Rows['n1'].Contains('60%') -and $r.Rows['n1'].Contains('120k')) 'subagent columns 20: the percentage and the token count are kept'
+Confirm-True ((ConvertTo-PlainText $r.Rows['n1']).Contains($ellipsis)) 'subagent columns 20: the name is what gets clipped'
+# An explicit columns of 0 is the panel saying it has no room, which is not the same as saying nothing
+# about the width: a row printed into no room would wrap or overwrite the panel, so none is printed.
+$r = Invoke-SubagentLine ('{ "columns": 0, "tasks": [ ' + $narrowTask + ' ] }')
+Confirm-True ($r.ExitCode -eq 0) "subagent columns 0: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "subagent columns 0: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-Equal (@($r.Lines | Where-Object { "$_".Trim() }).Count) 0 'subagent columns 0: no room means no row'
+# Every task in the payload goes, not just the one that would not have fitted.
+$r = Invoke-SubagentLine ('{ "columns": 0, "tasks": [ ' + $narrowTask + ', { "id": "n2", "name": "x" } ] }')
+Confirm-Equal (@($r.Lines | Where-Object { "$_".Trim() }).Count) 0 'subagent columns 0: no row for any task'
+# One is still a width, and the glyph fits in it, so zero is the only value that prints nothing.
+$r = Invoke-SubagentLine ('{ "columns": 1, "tasks": [ ' + $narrowTask + ' ] }')
+Confirm-Equal (@($r.Rows.Keys).Count) 1 'subagent columns 1: one column is still a column'
+
+# A columns value that is not a whole count says nothing about the width, so nothing is cut. This is
+# the fallback, and an explicit 0 above must not reach it.
+foreach ($bad in @('"columns": "80"', '"columns": 20.5', '"columns": true', '"columns": -5')) {
+    $r = Invoke-SubagentLine ('{ ' + $bad + ', "tasks": [ ' + $narrowTask + ' ] }')
+    Confirm-True ((ConvertTo-PlainText $r.Rows['n1']) -eq "$iconRobot a name long enough to need clipping  60%  120k") "subagent $($bad): an unusable columns value cuts nothing"
+}
+
+# The helpers the subagent script copies out of statusline.ps1. Both copies are pulled from the source
+# by the parser and compared as text, so a fix made to one and not the other fails here instead of
+# turning into two scripts that measure a line or colour a percentage differently.
+$sharedHelpers = @('G', 'C', 'Get-VisibleWidth', 'Get-Palette', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Test-PayloadText')
+foreach ($name in $sharedHelpers) {
+    $a = try { "$(Import-ScriptFunction $script @($name))" } catch { "not found in statusline.ps1" }
+    $b = try { "$(Import-ScriptFunction $subScript @($name))" } catch { "not found in subagent-statusline.ps1" }
+    Confirm-Equal $b $a "subagent drift: $name is the same text in both scripts"
+}
+
+
+# ---- Review findings: bounded capture, atomic settings write, ownership, quoting, explicit zero ----
+
+# The capture helper is bounded. It rotates over one sibling rather than growing forever, and a write
+# it cannot make stops it once, with a reason, instead of failing silently every five seconds.
+$capScript = Join-Path $PSScriptRoot 'tools\capture-stdin.ps1'
+$capFile = Join-Path $subTmp 'cap.jsonl'
+$capRecord = '{"tasks":[{"id":"x","name":"' + ('y' * 400) + '"}]}'
+$capMax = 1024
+$capRecordBytes = [System.Text.Encoding]::UTF8.GetByteCount($capRecord) + 2
+for ($i = 0; $i -lt 12; $i++) {
+    $c = Invoke-ChildPwsh $capScript @('-Path', $capFile, '-MaxBytes', "$capMax") $capRecord
+    if ($i -eq 0) { Confirm-True ($c.ExitCode -eq 0 -and $c.Err.Count -eq 0) 'capture: exit code 0, stderr empty' }
+    Confirm-Equal (@($c.Lines | Where-Object { "$_".Trim() }).Count) 0 "capture write $($i): nothing on stdout"
+}
+$capMain = (Get-Item -LiteralPath $capFile).Length
+Confirm-True (Test-Path -LiteralPath "$capFile.1") 'capture: the file rotated over its one sibling'
+Confirm-True (-not (Test-Path -LiteralPath "$capFile.2")) 'capture: only one generation is kept'
+Confirm-True ($capMain -le $capMax + $capRecordBytes) "capture: the live file is bounded, $capMain bytes against a $capMax cap"
+$capTotal = $capMain + (Get-Item -LiteralPath "$capFile.1").Length
+Confirm-True ($capTotal -le 2 * ($capMax + $capRecordBytes)) "capture: the whole capture is bounded, $capTotal bytes"
+# Twelve records of over 400 bytes each would be more than 4800 bytes unbounded.
+Confirm-True ($capTotal -lt 12 * $capRecordBytes) 'capture: twelve records did not all survive, so the bound is doing something'
+
+# A path that cannot be written (a directory of that name) stops the capture once and says why: a line
+# on stderr, never on stdout, a sidecar file, and exit 0 so the panel is not taken down with it.
+$capDir = Join-Path $subTmp 'cap-is-a-directory'
+New-Item -ItemType Directory -Force $capDir | Out-Null
+$c = Invoke-ChildPwsh $capScript @('-Path', $capDir) $capRecord
+Confirm-True ($c.ExitCode -eq 0) "capture failure: exit code $($c.ExitCode) is still 0"
+Confirm-Equal (@($c.Lines | Where-Object { "$_".Trim() }).Count) 0 'capture failure: nothing on stdout'
+Confirm-True (($c.Err -join ' ').Contains('capture-stdin:')) "capture failure: the reason went to stderr, got '$($c.Err -join ' | ')'"
+Confirm-True (Test-Path -LiteralPath "$capDir.error") 'capture failure: the sidecar names the failure'
+$sidecar = Get-Content -LiteralPath "$capDir.error" -Raw
+# A second run finds the sidecar and gives up quietly rather than retrying every tick.
+$c = Invoke-ChildPwsh $capScript @('-Path', $capDir) $capRecord
+Confirm-True ($c.ExitCode -eq 0 -and $c.Err.Count -eq 0) 'capture failure: a later run is silent while the sidecar is there'
+Confirm-Equal (Get-Content -LiteralPath "$capDir.error" -Raw) $sidecar 'capture failure: the sidecar is written once, not once per tick'
+
+# One payload bigger than the whole cap. Stdin is read to a ceiling and the record is cut to fit, so
+# neither memory nor the file follows the payload's size.
+$capBigFile = Join-Path $subTmp 'cap-big.jsonl'
+$capBigMax = 2048
+$capBigPayload = '{"x":"' + ('z' * 20000) + '"}'
+$c = Invoke-ChildPwsh $capScript @('-Path', $capBigFile, '-MaxBytes', "$capBigMax") $capBigPayload
+Confirm-True ($c.ExitCode -eq 0) "capture oversize: exit code $($c.ExitCode)"
+Confirm-True ($c.Err.Count -eq 0) "capture oversize: stderr empty, got '$($c.Err -join ' | ')'"
+$capBigLen = (Get-Item -LiteralPath $capBigFile).Length
+Confirm-True ($capBigLen -le $capBigMax) "capture oversize: one payload of $($capBigPayload.Length) bytes left a $capBigLen byte file, under the $capBigMax cap"
+Confirm-True ((Get-Content -LiteralPath $capBigFile -Raw).Contains('...[truncated]')) 'capture oversize: the record says it was cut'
+# And repeated oversize payloads leave both generations under the cap rather than one of them over it.
+for ($i = 0; $i -lt 6; $i++) { $null = Invoke-ChildPwsh $capScript @('-Path', $capBigFile, '-MaxBytes', "$capBigMax") $capBigPayload }
+$capBigLen = (Get-Item -LiteralPath $capBigFile).Length
+$capBigRotated = if (Test-Path -LiteralPath "$capBigFile.1") { (Get-Item -LiteralPath "$capBigFile.1").Length } else { 0 }
+Confirm-True ($capBigLen -le $capBigMax) "capture oversize: the live file stays under the cap at $capBigLen bytes"
+Confirm-True ($capBigRotated -le $capBigMax) "capture oversize: the rotated file stays under the cap at $capBigRotated bytes"
+Confirm-True (($capBigLen + $capBigRotated) -le 2 * $capBigMax) 'capture oversize: both generations together stay under twice the cap'
+Confirm-True (-not (Test-Path -LiteralPath "$capBigFile.2")) 'capture oversize: still only one generation is kept'
+
+
+# The two ownership tests, driven directly. Both decide whether the uninstaller may delete something, so
+# each one is checked against the forms that must NOT count as ours as well as the ones that must.
+. (Import-ScriptFunction $installer @('Split-CommandArgument', 'Test-SamePath', 'Test-OwnSubagentEntry', 'Test-OwnSubagentScript'))
+$subagentMarkerLine = '# claude-code-statusline-ps:subagent-statusline'
+$subagentMarkerWithin = 10
+Confirm-True ((Get-Content -LiteralPath $installer -Raw).Contains("`$subagentMarkerLine = '$subagentMarkerLine'")) 'ownership: the marker the tests use is the one install.ps1 defines'
+Confirm-True ((Get-Content -LiteralPath $installer -Raw).Contains("`$subagentMarkerWithin = $subagentMarkerWithin")) 'ownership: the header window the tests use is the one install.ps1 defines'
+
+# The command has to be the whole form this installer writes, with the target as the -File argument
+# itself. A command that merely carries the path somewhere is somebody else's, and deleting it would be
+# the destructive mistake; a command that runs our script under a different spelling is still ours.
+$ownTarget = 'C:\Users\me\.claude\subagent-statusline.ps1'
+foreach ($case in @(
+        @{ Own = $true;  Command = 'pwsh -NoProfile -NoLogo -NonInteractive -File "C:/Users/me/.claude/subagent-statusline.ps1"'; Label = 'the form the installer writes' }
+        @{ Own = $true;  Command = 'pwsh -NoProfile -NoLogo -NonInteractive -File C:/Users/me/.claude/subagent-statusline.ps1'; Label = 'the older unquoted form' }
+        @{ Own = $true;  Command = 'pwsh -File C:\Users\me\.claude\subagent-statusline.ps1'; Label = 'backslashes and fewer switches' }
+        @{ Own = $true;  Command = 'pwsh.exe -NoProfile -File "c:/users/me/.claude/SUBAGENT-STATUSLINE.PS1"'; Label = 'a different case and an .exe suffix' }
+        @{ Own = $false; Command = 'node wrapper.js "C:/Users/me/.claude/subagent-statusline.ps1"'; Label = 'a foreign wrapper that carries the path as an argument' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File other.ps1 # C:/Users/me/.claude/subagent-statusline.ps1'; Label = 'the path only in a trailing comment' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" --extra'; Label = 'an argument after the script' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" & rm -rf /'; Label = 'a chained command' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" | tee log'; Label = 'a pipeline' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -Command "& C:/Users/me/.claude/subagent-statusline.ps1"'; Label = '-Command rather than -File' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline-2.ps1"'; Label = 'a different file whose name starts the same' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/"'; Label = 'the directory rather than the script' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "$HOME/.claude/subagent-statusline.ps1"'; Label = 'an environment variable standing in for the path' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1'; Label = 'a quote that never closes' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File'; Label = 'no argument after -File' }
+        @{ Own = $false; Command = ''; Label = 'an empty command' })) {
+    $entry = [pscustomobject]@{ type = 'command'; command = $case.Command }
+    Confirm-Equal (Test-OwnSubagentEntry $entry $ownTarget) $case.Own "ownership entry: $($case.Label)"
+}
+# The shape of the entry matters as much as the command inside it.
+Confirm-Equal (Test-OwnSubagentEntry ([pscustomobject]@{ type = 'other'; command = "pwsh -File $ownTarget" }) $ownTarget) $false 'ownership entry: a type that is not command'
+Confirm-Equal (Test-OwnSubagentEntry ([pscustomobject]@{ type = 'command'; command = @('pwsh', '-File', $ownTarget) }) $ownTarget) $false 'ownership entry: a command that is an array, not a string'
+Confirm-Equal (Test-OwnSubagentEntry 'a bare string' $ownTarget) $false 'ownership entry: an entry that is not an object'
+Confirm-Equal (Test-OwnSubagentEntry $null $ownTarget) $false 'ownership entry: no entry at all'
+
+# The marker has to be a line of its own near the top. The token appearing anywhere else is not evidence
+# the file is ours, and treating it as such would delete somebody's script.
+$markerCases = @(
+    @{ Own = $true;  Label = 'the marker on its own line, as installed'; Text = "#Requires -Version 7.0`n$subagentMarkerLine`n# and the rest of the header" }
+    @{ Own = $true;  Label = 'the marker line indented'; Text = "#Requires -Version 7.0`n   $subagentMarkerLine   `n# rest" }
+    @{ Own = $false; Label = 'the token inside a longer comment line'; Text = "# see claude-code-statusline-ps:subagent-statusline for the marker rule" }
+    @{ Own = $false; Label = 'the token inside a string literal'; Text = "`$marker = 'claude-code-statusline-ps:subagent-statusline'" }
+    @{ Own = $false; Label = 'the token in a comment trailing real code'; Text = "Write-Host 'hi'  # claude-code-statusline-ps:subagent-statusline" }
+    @{ Own = $false; Label = 'the marker line below the header window'; Text = ((1..12 | ForEach-Object { "# filler $_" }) -join "`n") + "`n$subagentMarkerLine" }
+    @{ Own = $false; Label = 'the marker in the wrong case'; Text = '# CLAUDE-CODE-STATUSLINE-PS:SUBAGENT-STATUSLINE' }
+    @{ Own = $false; Label = 'the token as embedded data on a line of its own'; Text = "#Requires -Version 7.0`nclaude-code-statusline-ps:subagent-statusline" }
+    @{ Own = $false; Label = 'an empty file'; Text = '' }
+)
+$markerIndex = 0
+foreach ($case in $markerCases) {
+    $markerFile = Join-Path $subTmp "marker-$markerIndex.ps1"
+    $markerIndex++
+    Set-Content -LiteralPath $markerFile -Value $case.Text -Encoding utf8NoBOM
+    Confirm-Equal (Test-OwnSubagentScript $markerFile) $case.Own "ownership file: $($case.Label)"
+}
+Confirm-Equal (Test-OwnSubagentScript (Join-Path $subTmp 'no-such-file.ps1')) $false 'ownership file: a file that is not there'
+Confirm-Equal (Test-OwnSubagentScript $subScript) $true 'ownership file: the repo copy is recognised as ours'
+
+# Read-UserSetting and Write-UserSetting driven directly, so the write path can be failed on purpose
+# without a second process racing this one. $settingsBaseline is the script-scope table install.ps1
+# keeps, and has to exist here for the same reason it does there.
+. (Import-ScriptFunction $installer @('Read-UserSetting', 'Write-UserSetting', 'Get-SettingLock', 'Confirm-SettingUnchanged'))
+$settingsBaseline = @{}
+$settingsLockTimeoutMs = 5000
+
+# A change made between the read and the write is refused, and the other writer's file survives intact.
+$conflictPath = Join-Path $subTmp 'conflict.json'
+Set-Content -LiteralPath $conflictPath -Value '{ "a": 1 }' -Encoding utf8NoBOM
+Confirm-Equal $settingsBaseline.Count 0 'settings baseline: nothing is recorded before the first read'
+$conflictObj = Read-UserSetting $conflictPath
+Confirm-True ($settingsBaseline.ContainsKey($conflictPath)) 'settings baseline: the read records the text it saw, which is what the write compares against'
+Set-Content -LiteralPath $conflictPath -Value '{ "a": 2, "b": 3 }' -Encoding utf8NoBOM
+$threw = $false
+try { Write-UserSetting $conflictObj $conflictPath } catch { $threw = $true; $conflictMessage = "$_" }
+Confirm-True $threw 'settings conflict: a file that changed after the read is refused'
+Confirm-True ((Get-Content -LiteralPath $installer -Raw).Contains("`$settingsLockTimeoutMs = $settingsLockTimeoutMs")) 'settings conflict: the lock timeout the tests use is the one install.ps1 defines'
+Confirm-True ($conflictMessage -match 'changed after this installer read it') "settings conflict: the message says why, got '$conflictMessage'"
+Confirm-Equal (Get-Content -LiteralPath $conflictPath -Raw).Trim() '{ "a": 2, "b": 3 }' 'settings conflict: the other writer''s content is untouched'
+Confirm-Equal (@(Get-ChildItem -LiteralPath $subTmp -Filter 'conflict.json.tmp-*' -Force).Count) 0 'settings conflict: no temporary file is left behind'
+
+# A replace that cannot be made leaves the original exactly as it was. A read-only destination is the
+# failure that is deterministic on Windows; a full disk or a killed process lands in the same place,
+# because nothing is truncated in the first place - the new text goes to a sibling and is moved over.
+$roPath = Join-Path $subTmp 'readonly.json'
+Set-Content -LiteralPath $roPath -Value '{ "keep": "me" }' -Encoding utf8NoBOM
+$roObj = Read-UserSetting $roPath
+$roObj | Add-Member -NotePropertyName statusLine -NotePropertyValue 'would be written'
+Set-ItemProperty -LiteralPath $roPath -Name IsReadOnly -Value $true
+$threw = $false
+try { Write-UserSetting $roObj $roPath } catch { $threw = $true }
+Confirm-True $threw 'settings write failure: a replace that cannot be made throws'
+Confirm-Equal (Get-Content -LiteralPath $roPath -Raw).Trim() '{ "keep": "me" }' 'settings write failure: the original is neither emptied nor half-written'
+Confirm-Equal (@(Get-ChildItem -LiteralPath $subTmp -Filter 'readonly.json.tmp-*' -Force).Count) 0 'settings write failure: no temporary file is left behind'
+Set-ItemProperty -LiteralPath $roPath -Name IsReadOnly -Value $false
+
+# A write that does go through leaves no temporary file either, and the result parses.
+$okPath = Join-Path $subTmp 'ok.json'
+Set-Content -LiteralPath $okPath -Value '{ "a": 1 }' -Encoding utf8NoBOM
+$okObj = Read-UserSetting $okPath
+$okObj | Add-Member -NotePropertyName b -NotePropertyValue 2
+Write-UserSetting $okObj $okPath
+Confirm-Equal ((Get-Content -LiteralPath $okPath -Raw | ConvertFrom-Json).b) 2 'settings write: the new key landed'
+Confirm-Equal (@(Get-ChildItem -LiteralPath $subTmp -Filter 'ok.json.tmp-*' -Force).Count) 0 'settings write: no temporary file is left behind'
+Confirm-Equal (Get-Content -LiteralPath "$okPath.bak" -Raw).Trim() '{ "a": 1 }' 'settings write: the .bak holds the file as it was'
+# A second write in the same process must not mistake its own last write for somebody else's change.
+# The baseline is refreshed from the file, not from the serialized text, because the two differ by the
+# newline Set-Content adds.
+$okObj | Add-Member -NotePropertyName c -NotePropertyValue 3
+$threw = $false
+try { Write-UserSetting $okObj $okPath } catch { $threw = $true; $conflictMessage = "$_" }
+Confirm-True (-not $threw) "settings write: a second write in the same process is not a conflict, got '$conflictMessage'"
+Confirm-Equal ((Get-Content -LiteralPath $okPath -Raw | ConvertFrom-Json).c) 3 'settings write: the second write landed'
+
+# ---- Install group: install.ps1 -Subagents against a settings.json inside the temp tree ----
+# USERPROFILE is redirected under $subTmp and -SettingsPath points there too, so the copy target, the
+# settings file and the uninstall delete all land in the temp tree. The real ~/.claude files are
+# hashed before the group and compared after it: nothing here may write outside $subTmp.
+$subRealDir = Join-Path $env:USERPROFILE '.claude'
+$subRealNames = @('settings.json', 'settings.json.bak', 'statusline.ps1', 'statusline.json', 'subagent-statusline.ps1')
+$subRealHash = [ordered]@{}
+foreach ($n in $subRealNames) { $subRealHash[$n] = Get-ContentHash (Join-Path $subRealDir $n) }
+# The ownership cases below are the ones that delete files, so the guard is widened from the five files
+# the installer writes to every name in the real ~/.claude. Names only, not content: this suite runs
+# while Claude Code is live and its own files move underneath us, but nothing here may make one vanish.
+$subRealNamesBefore = @(Get-ChildItem -LiteralPath $subRealDir -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name } | Sort-Object)
+$subHome = Join-Path $subTmp 'install-home'
+New-Item -ItemType Directory -Force $subHome | Out-Null
+$subOldProfile = $env:USERPROFILE
+try {
+$env:USERPROFILE = $subHome
+$subSettings = Join-Path $subHome 'settings.json'
+Set-Content -LiteralPath $subSettings -Value '{ "theme": "dark" }' -Encoding utf8NoBOM
+$installedSub = Join-Path $subHome '.claude\subagent-statusline.ps1'
+$expectSubCommand = 'pwsh -NoProfile -NoLogo -NonInteractive -File "' + ($installedSub -replace '\\', '/') + '"'
+
+# Without the switch neither the file nor the key appears, so an existing install is left as it was.
+$r = Invoke-Installer 'install without -Subagents' @('-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0) "subagent install plain: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "subagent install plain: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-Equal (Get-KeyList (Read-SettingFile $subSettings)) 'theme,statusLine' 'subagent install plain: no subagentStatusLine key'
+Confirm-True (-not (Test-Path -LiteralPath $installedSub)) 'subagent install plain: subagent-statusline.ps1 not copied'
+
+$r = Invoke-Installer 'install -Subagents' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0) "subagent install: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "subagent install: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-True (Test-Path -LiteralPath $installedSub) 'subagent install: subagent-statusline.ps1 copied into the temp home'
+$s = Read-SettingFile $subSettings
+Confirm-Equal (Get-KeyList $s) 'theme,statusLine,subagentStatusLine' 'subagent install: the unrelated key is kept and both entries are there'
+Confirm-Equal $s.theme 'dark' 'subagent install: theme kept'
+Confirm-Equal (Get-KeyList $s.statusLine) 'type,command,padding,hideVimModeIndicator' 'subagent install: the statusLine entry is untouched'
+Confirm-Equal (Get-KeyList $s.subagentStatusLine) 'type,command' 'subagent install: the subagent entry is type and command only'
+Confirm-Equal $s.subagentStatusLine.type 'command' 'subagent install: type'
+Confirm-Equal $s.subagentStatusLine.command $expectSubCommand 'subagent install: command points at the temp home with forward slashes'
+Confirm-True (($r.Lines -join "`n").Contains('subagentStatusLine')) "subagent install: the message names the key, got '$($r.Lines -join ' | ')'"
+
+# The copy in the temp home is the script itself, so it answers for a real payload.
+if (Test-Path -LiteralPath $installedSub) {
+    $c = Invoke-ChildPwsh $installedSub @() (Get-SubagentSample '02-minimal.json')
+    Confirm-True ($c.ExitCode -eq 0 -and $c.Err.Count -eq 0) 'subagent install: the installed copy runs clean'
+    Confirm-True ((@($c.Lines) -join '').Contains('"id":"t1"')) 'subagent install: the installed copy answers for the task'
+}
+
+# A second run replaces the entry rather than adding another one.
+$r = Invoke-Installer 'install -Subagents again' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent install twice: exit code 0, stderr empty'
+Confirm-Equal (Get-KeyList (Read-SettingFile $subSettings)) 'theme,statusLine,subagentStatusLine' 'subagent install twice: still one subagentStatusLine key'
+
+# Uninstall takes both entries out in a single write, so the .bak still holds the settings as they
+# were, and deletes both scripts. The switch is not needed for the removal.
+$r = Invoke-Installer 'uninstall with a subagent line' @('-Uninstall', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0) "subagent uninstall: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "subagent uninstall: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-Equal (Get-KeyList (Read-SettingFile $subSettings)) 'theme' 'subagent uninstall: both entries removed, theme kept'
+Confirm-True (-not (Test-Path -LiteralPath $installedSub)) 'subagent uninstall: subagent-statusline.ps1 deleted from the temp home'
+Confirm-Equal (Get-KeyList (Read-SettingFile "$subSettings.bak")) 'theme,statusLine,subagentStatusLine' 'subagent uninstall: the .bak holds the settings as they were, both entries in it'
+$text = $r.Lines -join "`n"
+Confirm-True ($text -match 'Removed statusLine \([^)]+\) and subagentStatusLine') "subagent uninstall: the message names both keys, got '$text'"
+Confirm-True ($text.Contains('subagent-statusline.ps1')) "subagent uninstall: the message names the deleted script, got '$text'"
+
+# A settings file that never had a subagent line still uninstalls, and says only what it removed.
+$r = Invoke-Installer 'install before a plain uninstall' @('-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent plain uninstall: the install before it is clean'
+$r = Invoke-Installer 'uninstall without a subagent line' @('-Uninstall', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent plain uninstall: exit code 0, stderr empty'
+Confirm-Equal (Get-KeyList (Read-SettingFile $subSettings)) 'theme' 'subagent plain uninstall: statusLine removed, theme kept'
+Confirm-True (-not (($r.Lines -join "`n").Contains('subagentStatusLine'))) 'subagent plain uninstall: the message does not name a key that was not there'
+
+# Nothing left to remove: no rewrite, so the .bak from the run before it survives.
+$before = Get-Content -LiteralPath $subSettings -Raw
+$beforeStamp = Get-WriteStamp $subSettings
+$r = Invoke-Installer 'uninstall a third time' @('-Uninstall', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent empty uninstall: exit code 0, stderr empty'
+Confirm-Equal (Get-Content -LiteralPath $subSettings -Raw) $before 'subagent empty uninstall: settings.json content unchanged'
+Confirm-True ((Get-WriteStamp $subSettings) -eq $beforeStamp) 'subagent empty uninstall: settings.json not rewritten'
+
+# A subagentStatusLine somebody else set up, and a file of that name somebody else wrote, are not this
+# installer's to delete. The key is ours only when its command names ~/.claude/subagent-statusline.ps1
+# and the file is ours only when it carries the marker line, so both of these survive -Uninstall and
+# are reported. This is the case that would destroy a user's own configuration if it regressed.
+$r = Invoke-Installer 'install -Subagents before the ownership cases' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent ownership: the install before it is clean'
+Confirm-True (Test-Path -LiteralPath $installedSub) 'subagent ownership: the seam holds, the script is in the temp home'
+$foreignScript = '# not this project, someone else wrote this'
+Set-Content -LiteralPath $installedSub -Value $foreignScript -Encoding utf8NoBOM
+$s = Read-SettingFile $subSettings
+$s.subagentStatusLine.command = 'node /home/me/my-own-panel.js'
+$s | ConvertTo-Json -Depth 32 | Set-Content -LiteralPath $subSettings -Encoding utf8NoBOM
+$r = Invoke-Installer 'uninstall with a foreign subagent line' @('-Uninstall', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0) "subagent ownership: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "subagent ownership: stderr empty, got '$($r.Err -join ' | ')'"
+$s = Read-SettingFile $subSettings
+Confirm-Equal (Get-KeyList $s) 'theme,subagentStatusLine' 'subagent ownership: a foreign subagentStatusLine is kept, statusLine still removed'
+Confirm-Equal $s.subagentStatusLine.command 'node /home/me/my-own-panel.js' 'subagent ownership: the foreign command is untouched'
+Confirm-True (Test-Path -LiteralPath $installedSub) 'subagent ownership: a file without the marker is not deleted'
+Confirm-Equal (Get-Content -LiteralPath $installedSub -Raw).Trim() $foreignScript 'subagent ownership: the foreign file is untouched'
+$text = $r.Lines -join "`n"
+Confirm-True ($text -match 'Kept:.+does not point at') "subagent ownership: the run says the key was kept, got '$text'"
+Confirm-True ($text -match "Kept:.+does not carry this project's marker") "subagent ownership: the run says the file was kept, got '$text'"
+
+# A key that is ours but a file that is not, and the other way round, are judged one at a time. Getting
+# to that state now takes a detour, because the install path applies the same ownership rule as the
+# uninstall path: a foreign file cannot be reinstalled over, it has to be moved out of the way first.
+$r = Invoke-Installer 'install -Subagents over the foreign file' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -ne 0) "subagent ownership mixed: a reinstall over a foreign file is refused rather than forced, exit $($r.ExitCode)"
+Confirm-Equal (Get-Content -LiteralPath $installedSub -Raw).Trim() $foreignScript 'subagent ownership mixed: the foreign file survives the refused reinstall'
+Remove-Item -LiteralPath $installedSub -Force
+$r = Invoke-Installer 'install -Subagents once the foreign file is gone' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent ownership mixed: the install is clean once the foreign file is out of the way'
+Confirm-True ((Get-Content -LiteralPath $installedSub -Raw).Contains('claude-code-statusline-ps:subagent-statusline')) 'subagent ownership mixed: the installed file is ours, marker and all'
+Set-Content -LiteralPath $installedSub -Value $foreignScript -Encoding utf8NoBOM
+$r = Invoke-Installer 'uninstall, our key and a foreign file' @('-Uninstall', '-SettingsPath', $subSettings)
+Confirm-Equal (Get-KeyList (Read-SettingFile $subSettings)) 'theme' 'subagent ownership mixed: our key is removed'
+Confirm-True (Test-Path -LiteralPath $installedSub) 'subagent ownership mixed: the foreign file is still kept'
+Remove-Item -LiteralPath $installedSub -Force
+
+# The marker is what makes a file ours, so the installed copy has to carry it and the repo copy has to
+# be the source of it. A rename or a reword in either place breaks the uninstaller quietly otherwise.
+Confirm-True ((Get-Content -LiteralPath $subScript -Raw).Contains('claude-code-statusline-ps:subagent-statusline')) 'subagent ownership: the repo copy carries the marker'
+
+
+# Installing over a file this project did not write. The uninstall path got an ownership rule in the
+# round before this one and the install path did not, so -Subagents would replace it with -Force. It
+# now refuses, and refuses before anything at all has changed.
+$foreignInstall = '# someone elses subagent line'
+Set-Content -LiteralPath $installedSub -Value $foreignInstall -Encoding utf8NoBOM
+$settingsBefore = Get-Content -LiteralPath $subSettings -Raw
+$r = Invoke-Installer 'install -Subagents over an unowned file' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -ne 0) "install over unowned: exit code $($r.ExitCode) is non-zero"
+Confirm-True ((($r.Lines + $r.Err) -join ' ') -match 'is not this project') "install over unowned: the message names the file and says why, got '$(($r.Lines + $r.Err) -join ' | ')'"
+Confirm-Equal (Get-Content -LiteralPath $installedSub -Raw).Trim() $foreignInstall 'install over unowned: the file is not replaced'
+Confirm-Equal (Get-Content -LiteralPath $subSettings -Raw) $settingsBefore 'install over unowned: the settings are not written either'
+Confirm-Equal (@(Get-ChildItem -LiteralPath (Join-Path $subHome '.claude') -Filter '*.tmp-*' -Force).Count) 0 'install over unowned: nothing is staged and left behind'
+Remove-Item -LiteralPath $installedSub -Force
+
+# The rollback copy: a reinstall over our own file keeps the version it replaced, under a name carrying
+# this project's id rather than the generic .bak beside the script.
+$installedRollback = Join-Path $subHome '.claude\.claude-code-statusline-ps.subagent-rollback.ps1'
+$r = Invoke-Installer 'install -Subagents onto a clean home' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'install rollback copy: the first install is clean'
+Confirm-True (-not (Test-Path -LiteralPath $installedRollback)) 'install rollback copy: nothing kept when there was nothing to replace'
+$r = Invoke-Installer 'install -Subagents a second time' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'install rollback copy: the reinstall is clean'
+Confirm-True (Test-Path -LiteralPath $installedRollback) 'install rollback copy: the replaced version is kept'
+Confirm-True (-not (Test-Path -LiteralPath "$installedSub.bak")) 'install rollback copy: the generic .bak name beside the script is not used at all'
+$r = Invoke-Installer 'uninstall after a reinstall' @('-Uninstall', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'install rollback copy: the uninstall is clean'
+Confirm-True (-not (Test-Path -LiteralPath $installedRollback)) 'install rollback copy: the uninstall takes the rollback copy with it'
+
+# A .bak beside the script that this installer did not write. It used to be overwritten on install and
+# deleted on uninstall; nothing touches that name now, in either direction.
+$foreignBak = "$installedSub.bak"
+$foreignBakText = '# my own backup of my own subagent line'
+Set-Content -LiteralPath $foreignBak -Value $foreignBakText -Encoding utf8NoBOM
+$r = Invoke-Installer 'install -Subagents beside a foreign .bak' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'foreign .bak: the install is clean'
+Confirm-Equal (Get-Content -LiteralPath $foreignBak -Raw).Trim() $foreignBakText 'foreign .bak: an install does not overwrite it'
+$r = Invoke-Installer 'install -Subagents again beside a foreign .bak' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-Equal (Get-Content -LiteralPath $foreignBak -Raw).Trim() $foreignBakText 'foreign .bak: a reinstall, which does write a rollback copy, still does not overwrite it'
+$r = Invoke-Installer 'uninstall beside a foreign .bak' @('-Uninstall', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'foreign .bak: the uninstall is clean'
+Confirm-True (Test-Path -LiteralPath $foreignBak) 'foreign .bak: an uninstall does not delete it'
+Confirm-Equal (Get-Content -LiteralPath $foreignBak -Raw).Trim() $foreignBakText 'foreign .bak: its content is untouched throughout'
+Remove-Item -LiteralPath $foreignBak -Force
+
+# And a foreign file sitting at the rollback name itself. The name is this project's, which is not proof
+# that the file at it is, so it is checked by the marker before being overwritten or deleted.
+$foreignRollbackText = '# not ours either, despite the name'
+Set-Content -LiteralPath $installedRollback -Value $foreignRollbackText -Encoding utf8NoBOM
+$r = Invoke-Installer 'install -Subagents onto a foreign rollback name' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0) "foreign rollback: the install still succeeds, exit $($r.ExitCode)"
+Confirm-Equal (Get-Content -LiteralPath $installedRollback -Raw).Trim() $foreignRollbackText 'foreign rollback: the first install does not overwrite it'
+$r = Invoke-Installer 'install -Subagents again onto a foreign rollback name' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0) "foreign rollback: the reinstall still succeeds, exit $($r.ExitCode)"
+Confirm-Equal (Get-Content -LiteralPath $installedRollback -Raw).Trim() $foreignRollbackText 'foreign rollback: a reinstall skips the copy rather than overwriting it'
+Confirm-True ((($r.Lines + $r.Err) -join ' ') -match 'Kept:.+rollback') "foreign rollback: the run says the copy was skipped, got '$(($r.Lines + $r.Err) -join ' | ')'"
+$r = Invoke-Installer 'uninstall beside a foreign rollback name' @('-Uninstall', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'foreign rollback: the uninstall is clean'
+Confirm-True (Test-Path -LiteralPath $installedRollback) 'foreign rollback: an uninstall does not delete it'
+Confirm-Equal (Get-Content -LiteralPath $installedRollback -Raw).Trim() $foreignRollbackText 'foreign rollback: its content is untouched throughout'
+Confirm-True ((($r.Lines + $r.Err) -join ' ') -match "Kept:.+rollback.+marker line") "foreign rollback: the uninstall says it was left alone, got '$(($r.Lines + $r.Err) -join ' | ')'"
+Remove-Item -LiteralPath $installedRollback -Force
+
+# A second installer holding the lock. The settings write waits for it, and when it cannot have the
+# lock it writes nothing at all rather than racing the other one. This is the interprocess half of the
+# conflict rule: the in-process case above proves the comparison, this proves the exclusion.
+$lockHeld = $null
+try {
+    $lockHeld = [System.IO.File]::Open("$subSettings.lock", [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+} catch {
+    $lockHeld = $null
+}
+Confirm-True ($null -ne $lockHeld) 'settings lock: the test can take the lock the installer uses'
+if ($null -ne $lockHeld) {
+    $lockedBefore = Get-Content -LiteralPath $subSettings -Raw
+    $r = Invoke-Installer 'install while the lock is held' @('-SettingsPath', $subSettings)
+    Confirm-True ($r.ExitCode -ne 0) "settings lock: exit code $($r.ExitCode) is non-zero while another process holds it"
+    Confirm-True ((($r.Lines + $r.Err) -join ' ') -match 'Could not lock') "settings lock: the message says it could not lock, got '$(($r.Lines + $r.Err) -join ' | ')'"
+    Confirm-Equal (Get-Content -LiteralPath $subSettings -Raw) $lockedBefore 'settings lock: nothing was written while the lock was held'
+    $lockHeld.Dispose()
+    # And once it is free the same command goes through, so the lock is a wait and not a wall.
+    $r = Invoke-Installer 'install once the lock is free' @('-SettingsPath', $subSettings)
+    Confirm-True ($r.ExitCode -eq 0) "settings lock: exit code $($r.ExitCode) once the lock is released"
+    Confirm-True ((Get-KeyList (Read-SettingFile $subSettings)).Contains('statusLine')) 'settings lock: the write goes through once the lock is free'
+}
+
+# A user profile with a space and with characters cmd treats as syntax. Unquoted, the command parser
+# stops the -File argument at the first space and the status line never runs, so the path is quoted and
+# the generated command is run through cmd here to prove it.
+$spacedHome = Join-Path $subTmp 'home (a&b) c'
+New-Item -ItemType Directory -Force $spacedHome | Out-Null
+$spacedSettings = Join-Path $spacedHome 'settings.json'
+Set-Content -LiteralPath $spacedSettings -Value '{ "theme": "dark" }' -Encoding utf8NoBOM
+$env:USERPROFILE = $spacedHome
+$r = Invoke-Installer 'install -Subagents into a spaced profile' @('-Subagents', '-SettingsPath', $spacedSettings)
+Confirm-True ($r.ExitCode -eq 0) "spaced profile: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "spaced profile: stderr empty, got '$($r.Err -join ' | ')'"
+$s = Read-SettingFile $spacedSettings
+$spacedMain = Join-Path $spacedHome '.claude\statusline.ps1'
+$spacedSub = Join-Path $spacedHome '.claude\subagent-statusline.ps1'
+Confirm-Equal $s.statusLine.command ('pwsh -NoProfile -NoLogo -NonInteractive -File "' + ($spacedMain -replace '\\', '/') + '"') 'spaced profile: the statusLine path is quoted'
+Confirm-Equal $s.subagentStatusLine.command ('pwsh -NoProfile -NoLogo -NonInteractive -File "' + ($spacedSub -replace '\\', '/') + '"') 'spaced profile: the subagentStatusLine path is quoted'
+Confirm-True ($s.statusLine.command.Contains(' c/.claude/')) 'spaced profile: the path really does carry a space'
+Confirm-True ($s.statusLine.command.Contains('&')) 'spaced profile: the path really does carry an ampersand'
+# Through cmd, which is what Claude Code hands the command to on Windows. The subagent line answers a
+# payload, so its output is the proof; the main line prints a bar for the same reason.
+if (Test-Path -LiteralPath $spacedSub) {
+    $out = @('{ "tasks": [ { "id": "t1", "type": "local_bash", "status": "running" } ] }' | & cmd.exe /c $s.subagentStatusLine.command 2>&1)
+    Confirm-True ($LASTEXITCODE -eq 0) "spaced profile: the subagent command runs through cmd, exit $LASTEXITCODE"
+    Confirm-True ((@($out) -join '').Contains('"id":"t1"')) "spaced profile: the subagent command answers through cmd, got '$($out -join ' | ')'"
+}
+if (Test-Path -LiteralPath $spacedMain) {
+    $out = @('{ "model": { "display_name": "Fable 5.1" } }' | & cmd.exe /c $s.statusLine.command 2>&1)
+    Confirm-True ($LASTEXITCODE -eq 0) "spaced profile: the statusLine command runs through cmd, exit $LASTEXITCODE"
+    Confirm-True ((ConvertTo-PlainText (@($out) -join '')).Contains('Fable 5.1')) "spaced profile: the statusLine command renders through cmd, got '$($out -join ' | ')'"
+}
+# Git Bash is the other shell Claude Code may use, and it is not always on PATH; skip rather than fail.
+$shExe = Get-Command sh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($shExe -and (Test-Path -LiteralPath $spacedSub)) {
+    $out = @('{ "tasks": [ { "id": "t1", "type": "local_bash", "status": "running" } ] }' | & $shExe.Source -c $s.subagentStatusLine.command 2>&1)
+    Confirm-True ((@($out) -join '').Contains('"id":"t1"')) "spaced profile: the subagent command answers through sh, got '$($out -join ' | ')'"
+}
+# The uninstall path has to survive the same profile: it is the one that deletes files.
+$r = Invoke-Installer 'uninstall from a spaced profile' @('-Uninstall', '-SettingsPath', $spacedSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'spaced profile: uninstall is clean'
+Confirm-Equal (Get-KeyList (Read-SettingFile $spacedSettings)) 'theme' 'spaced profile: both entries removed, theme kept'
+Confirm-True (-not (Test-Path -LiteralPath $spacedSub)) 'spaced profile: the subagent script is deleted'
+$env:USERPROFILE = $subHome
+} finally {
+    $env:USERPROFILE = $subOldProfile
+}
+foreach ($n in $subRealNames) {
+    $p = Join-Path $subRealDir $n
+    Confirm-True ((Get-ContentHash $p) -eq $subRealHash[$n]) "subagent install: real $p untouched"
+}
+$subRealNamesAfter = @(Get-ChildItem -LiteralPath $subRealDir -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name } | Sort-Object)
+$subRealGone = @($subRealNamesBefore | Where-Object { $_ -notin $subRealNamesAfter })
+Confirm-Equal ($subRealGone -join ',') '' "subagent install: nothing was deleted from the real $subRealDir"
+} finally {
+    Remove-Item -Recurse -Force $subTmp -ErrorAction SilentlyContinue
 }
 
 Write-Host ''

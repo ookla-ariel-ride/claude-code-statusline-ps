@@ -1,0 +1,5 @@
+{
+  "tasks": [
+    { "id": "t1", "type": "local_bash", "status": "running" }
+  ]
+}
