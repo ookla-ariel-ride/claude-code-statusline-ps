@@ -151,11 +151,19 @@ value beneath it rather than to the built-in default. A project with no `.claude
 changes nothing, and so does an unreadable one. `-Config <path>` is the exception: it replaces the user
 file and skips the project file, so a render with it is the same whatever directory the payload names.
 
-That file arrives with the repository rather than from you, so it is read as untrusted input. It has to
-be an ordinary file, not a link or anything else that could point elsewhere; it is capped at 64 KiB, far
-past any config written by hand; and the read gives up after 250 ms, so a repository on a dead network
-share cannot hold up the line. Anything outside those bounds is refused the way a bad value is, in
-silence, and the config beneath it stands. Your own `statusline.json` is read as it always was.
+That file arrives with the repository rather than from you, so it is read as untrusted input. The file is
+opened first and then judged by the handle: a handle that cannot seek is a device or a pipe rather than a
+file, and the size that has to fit under 64 KiB is the one the handle reports, not one read off the path
+beforehand. A link or another reparse point is refused as well. One clock covers the lookup, the open and
+every read, and it starts before the first filesystem call: if 250 ms goes by the attempt is abandoned
+and the config beneath it stands, silently, the way a bad value does.
+
+What that buys is a bound on this read, not on the machine. A filesystem pathological enough to hang an
+open leaves a thread stuck behind it until the process exits, and the status line renders and exits
+without it. A filesystem that also hangs unrelated calls can still delay a render somewhere else, and
+64 KiB and 250 ms are the numbers this read promises rather than a guarantee about your disk. Your own
+`statusline.json` is read as it always was: it is yours, and it is the one whose text encoding the
+script does not choose.
 
 | Key | Values | What it does |
 |---|---|---|

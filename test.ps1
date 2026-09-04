@@ -141,7 +141,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ProjectConfigLimit', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
 # these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
@@ -581,7 +581,8 @@ Confirm-Equal $c.Style 'plain' 'project config: the broken user file falls back 
 $limit = Get-ProjectConfigLimit
 Confirm-True ($limit.MaxBytes -ge 4096 -and $limit.MaxBytes -le 262144) 'bounded read: the cap is tens of kilobytes, far past a hand-written config'
 Confirm-True ($limit.TimeoutMs -gt 0 -and $limit.TimeoutMs -le 1000) 'bounded read: the deadline is shorter than a render'
-Confirm-Equal (Read-BoundedFileText (Write-TempConfig 'bounded-small.json' '{ "layout": "two" }')) '{ "layout": "two" }' 'bounded read: a small file reads back whole'
+$smallProject = Write-TempConfig 'bounded-small.json' '{ "layout": "two" }'
+Confirm-Equal (Read-BoundedFileText $smallProject) '{ "layout": "two" }' 'bounded read: a small file reads back whole'
 Confirm-Equal (Read-BoundedFileText (Join-Path $tmp 'bounded-missing.json')) $null 'bounded read: a file that is not there is refused'
 Confirm-Equal (Read-BoundedFileText $tmp) $null 'bounded read: a directory is refused'
 Confirm-Equal (Read-BoundedFileText '') $null 'bounded read: an empty path is refused'
@@ -617,6 +618,51 @@ Confirm-Equal (Read-BoundedFileText $linkPath) $null "bounded read: $linkKind in
 $c = Read-StatusConfig $userPath $linkDir
 Confirm-Equal $c.Layout 'one' "project config: $linkKind in place of the file is refused"
 Confirm-Equal $c.Style 'powerline' 'project config: the user file stands over the refused link'
+
+# One clock covers the whole read and starts before the first filesystem call. A budget of zero shows
+# where it starts: a file that read back whole a few lines ago is refused, because the budget is spent
+# before anything is looked up. The real limit is rebuilt from the values captured here rather than
+# retyped, so this cannot drift from the script's own numbers.
+$realLimit = Get-ProjectConfigLimit
+. ([scriptblock]::Create("function Get-ProjectConfigLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = 0 } }"))
+$zeroSw = [System.Diagnostics.Stopwatch]::StartNew()
+Confirm-Equal (Read-BoundedFileText $smallProject) $null 'bounded read: a spent budget refuses a file that is otherwise fine'
+Confirm-True ($zeroSw.ElapsedMilliseconds -lt 1000) 'bounded read: a spent budget gives up at once'
+. ([scriptblock]::Create("function Get-ProjectConfigLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = $($realLimit.TimeoutMs) } }"))
+Confirm-Equal (Get-ProjectConfigLimit).TimeoutMs $realLimit.TimeoutMs 'bounded read: the real deadline is back'
+Confirm-Equal (Get-ProjectConfigLimit).MaxBytes $realLimit.MaxBytes 'bounded read: the real cap is back'
+Confirm-Equal (Read-BoundedFileText $smallProject) '{ "layout": "two" }' 'bounded read: the same file reads again with the deadline back'
+
+# What the handle says, not what the name said. The null device opens like a file on Windows and has the
+# shape a FIFO has on Unix - a handle that cannot seek - so it is the one non-regular file this machine
+# can produce without a privilege, and the check that refuses it is made after the open, from the handle.
+$deviceSeek = $null
+try { $h = [System.IO.File]::OpenRead('NUL'); $deviceSeek = $h.CanSeek; $h.Dispose() } catch { $deviceSeek = $null }
+Write-Host "  device handle case: $(if ($null -eq $deviceSeek) { 'the null device would not open here, so only the refusal is checked' } else { "the null device opens with CanSeek $deviceSeek" })" -ForegroundColor DarkGray
+Confirm-True ($null -eq $deviceSeek -or -not $deviceSeek) 'bounded read: a device handle cannot seek'
+Confirm-Equal (Read-BoundedFileText 'NUL') $null 'bounded read: a handle that cannot seek is refused'
+
+# A filesystem that does not answer. The open blocks inside the call, which is the case the budget exists
+# for and the one that tells this design from the last: a check made before the clock started could only
+# wait on the network stack. Where a machine's stack refuses at once this proves the refusal and nothing
+# more, so the log says which of the two happened rather than letting a green run imply the harder one.
+$deadPath = '\\192.0.2.1\statusline-test\statusline.json'
+$deadSw = [System.Diagnostics.Stopwatch]::StartNew()
+$deadText = Read-BoundedFileText $deadPath
+$deadMs = $deadSw.ElapsedMilliseconds
+Write-Host "  unreachable path case: $deadMs ms ($(if ($deadMs -ge $realLimit.TimeoutMs) { 'the open blocked and the budget ended it' } else { 'the network stack refused before the budget mattered' }))" -ForegroundColor DarkGray
+Confirm-Equal $deadText $null 'bounded read: a path on an unreachable filesystem is refused'
+Confirm-True ($deadMs -lt 2000) 'bounded read: an unreachable filesystem costs the budget, not the network timeout'
+$deadSw = [System.Diagnostics.Stopwatch]::StartNew()
+$c = Read-StatusConfig $userPath '\\192.0.2.1\statusline-test'
+Confirm-True ($deadSw.ElapsedMilliseconds -lt 2000) 'project config: an unreachable project directory costs the budget'
+Confirm-Equal $c.Style 'powerline' 'project config: an unreachable project directory leaves the user file in force'
+Confirm-Equal $c.Layout 'one' 'project config: an unreachable project directory changes nothing'
+# The swap this ordering defeats - a name that becomes a link, a device or a larger file between the
+# check and the read - cannot be staged from here, because there is no hook between the open and the
+# checks that follow it. What is shown instead is the property that closes the window: the two refusals
+# above are made from the handle rather than from the name.
+Write-Host '  swap-in-flight case: not staged; the handle checks above are what closes the window' -ForegroundColor DarkGray
 
 # The config that ships with the repo has to be valid JSON and to mean what the README says it means.
 $shippedConfig = Join-Path $PSScriptRoot 'statusline.json'
@@ -3389,6 +3435,17 @@ $r = Invoke-StatusLine $linkPayload $null 0
 Confirm-True ($r.ExitCode -eq 0) "render project: $renderLinkKind in place of the file, exit code $($r.ExitCode)"
 Confirm-True ($r.Err.Count -eq 0) "render project: $renderLinkKind in place of the file prints nothing on stderr"
 Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains($iconCost)) "render project: $renderLinkKind in place of the file leaves the user config in force"
+# An unreachable project directory through a whole render. The line still prints, and it prints without
+# waiting on the network stack: a render is a few hundred milliseconds of pwsh start-up, so the bound
+# here is loose, and what it catches is a filesystem wait of the tens of seconds an SMB timeout runs to.
+$deadRender = $payload06 | ConvertFrom-Json
+$deadRender.workspace | Add-Member -NotePropertyName project_dir -NotePropertyValue '\\192.0.2.1\statusline-test' -Force
+$r = Invoke-StatusLine ($deadRender | ConvertTo-Json -Depth 20 -Compress) $null 0
+Write-Host "  unreachable render: $($r.Ms) ms" -ForegroundColor DarkGray
+Confirm-True ($r.ExitCode -eq 0) "render project: an unreachable project directory, exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) 'render project: an unreachable project directory prints nothing on stderr'
+Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains($iconCost)) 'render project: an unreachable project directory leaves the user config in force'
+Confirm-True ($r.Ms -lt 20000) 'render project: an unreachable project directory does not wait on the filesystem timeout'
 # The icons a repository can ask for reach a whole render too: a right-to-left override in the project
 # config must not touch the line, and the built-in glyph has to survive it.
 $r = Invoke-StatusLine (Write-RenderProjectPayload 'render-project-bidi' '{ "icons": { "model": "202E", "cost": "2588" } }') $null 0

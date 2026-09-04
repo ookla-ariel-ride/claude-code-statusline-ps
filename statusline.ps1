@@ -238,30 +238,61 @@ function Get-StatusConfigKey {
 # config itself comes from.
 function Get-ProjectConfigLimit { return @{ MaxBytes = 65536; TimeoutMs = 250 } }
 
+# The two calls the bounded read makes, each closed over the path so it can go straight to the thread
+# pool. Nothing here can be a script block: converted to a delegate one needs a runspace, and a thread
+# pool thread has none. Delegate.CreateDelegate over a one-argument static method is plain .NET, needs no
+# runspace, and the pair costs about a sixth of a millisecond - which is what makes it possible to put a
+# blocking open behind a deadline without starting a process, and a process per render would cost more
+# than everything else the line does. Both APIs are .NET Standard, so they hold on the 7.0 floor.
+function Get-BoundedFileDelegate([string] $Path) {
+    return @{
+        Open       = [System.Delegate]::CreateDelegate([Func[System.IO.FileStream]], $Path, [System.IO.File].GetMethod('OpenRead', [type[]] @([string])))
+        Attributes = [System.Delegate]::CreateDelegate([Func[System.IO.FileAttributes]], $Path, [System.IO.File].GetMethod('GetAttributes', [type[]] @([string])))
+    }
+}
+
 # The text of a file a repository controls, or $null when it is anything but a small, ordinary, promptly
 # readable one. Test-Path and Get-Content are not enough for this file: they follow a link wherever it
 # leads and read whatever comes back, for as long as it takes, so a repository could point the path at a
 # device, a FIFO or a dead network share and hold up every render, or hand over a file large enough to
-# matter. Here the entry has to be a real file - not a directory, a link or any other reparse point -
-# its length is checked before the open and the bytes are capped again as they arrive, so a file that
-# grows in between cannot get past, and every wait is bounded, so a read that never completes ends the
-# attempt instead of the line. A stalled handle is left to the process exit rather than disposed, since
-# disposing it would wait on the same read. Every refusal is silent: the caller keeps the config it had.
+# matter. So one clock covers the whole thing, started before the first filesystem call of any kind, and
+# every call - the open, the attribute probe and each read - runs on the thread pool and is waited on for
+# what is left of it. When the budget runs out the attempt is abandoned and the caller keeps the config
+# it had, exactly like any other refusal. An abandoned thread may stay blocked in the kernel until the
+# process exits, and a handle it opens after that is never closed; that is the price of not waiting, and
+# this process renders one line and exits. A stream stuck mid-read is not disposed either, since
+# disposing it would wait on the same read.
 function Read-BoundedFileText([string] $Path) {
     $limit = Get-ProjectConfigLimit
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $fs = $null
     $stalled = $false
     try {
-        $info = [System.IO.FileInfo]::new($Path)
-        # Exists is false for a directory and for a path that is not there at all. LinkTarget is .NET 6
-        # and reads as $null on an older runtime, where the reparse point attribute catches a link anyway.
-        if (-not $info.Exists -or $null -ne $info.LinkTarget) { return $null }
-        if (($info.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $null }
-        if ($info.Length -gt $limit.MaxBytes) { return $null }
-        $fs = [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        if (-not $Path) { return $null }
+        $call = Get-BoundedFileDelegate $Path
+        # The open goes first and what it hands back is what gets judged, so there is no gap between a
+        # question asked about a name and a read of whatever that name means by then. A name swapped in
+        # that gap can still only point at another ordinary file, whose bytes this repository could have
+        # written into the config anyway; what it cannot do is make the line block on a device or read
+        # past the cap, because both of those are settled from the handle just below.
+        $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
+        if ($left -le 0) { return $null }
+        $open = [System.Threading.Tasks.Task]::Run($call.Open)
+        if (-not $open.Wait([int] $left)) { return $null }
+        $fs = $open.Result
+        # From the handle: a stream that cannot seek is not an ordinary file - a FIFO, a pipe, a
+        # character device - and the length is the one the handle reports, not one read off the path.
+        if (-not $fs.CanSeek -or $fs.Length -gt $limit.MaxBytes) { return $null }
+        # Belt and braces, and all this runtime offers against a link: a FileStream follows one, and the
+        # APIs that name a handle's own target arrived in .NET 6, past the floor. So the name is asked
+        # once more, and a reparse point or a directory is refused even though the handle looked ordinary.
+        $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
+        if ($left -le 0) { return $null }
+        $attr = [System.Threading.Tasks.Task]::Run($call.Attributes)
+        if (-not $attr.Wait([int] $left)) { return $null }
+        if (($attr.Result -band ([System.IO.FileAttributes]::ReparsePoint -bor [System.IO.FileAttributes]::Directory)) -ne 0) { return $null }
         $buf = [byte[]]::new($limit.MaxBytes + 1)
         $read = 0
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
         while ($read -lt $buf.Length) {
             $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
             if ($left -le 0) { $stalled = $true; return $null }
@@ -271,6 +302,7 @@ function Read-BoundedFileText([string] $Path) {
             if ($n -le 0) { break }
             $read += $n
         }
+        # The cap once more, in case the file grew past the length the handle reported.
         if ($read -gt $limit.MaxBytes) { return $null }
         $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
         # UTF8.GetString keeps a byte order mark as U+FEFF, which ConvertFrom-Json will not parse past.
@@ -376,12 +408,11 @@ function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Boun
 function Read-StatusConfig([string] $Path, $ProjectDir) {
     $cfg = Merge-StatusConfigFile (Get-DefaultStatusConfig) $Path
     if ($ProjectDir -isnot [string] -or -not $ProjectDir) { return $cfg }
-    try {
-        if (Test-Path -LiteralPath $ProjectDir -PathType Container) {
-            $cfg = Merge-StatusConfigFile $cfg (Join-Path $ProjectDir '.claude' 'statusline.json') -Bounded
-        }
-    } catch { return $cfg }
-    return $cfg
+    # No Test-Path on the project directory on the way in. It would be a filesystem call on a path the
+    # repository chose, outside the one budget below, which is the whole thing that budget is for; a
+    # directory that is not there is refused by the bounded read like anything else it cannot open.
+    # Join-Path only joins strings, so the first call to touch a disk is inside Read-BoundedFileText.
+    try { return Merge-StatusConfigFile $cfg (Join-Path $ProjectDir '.claude' 'statusline.json') -Bounded } catch { return $cfg }
 }
 
 # Colour table. Plain style uses the SGR codes the script has always used; powerline uses 256-colour
