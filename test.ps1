@@ -141,7 +141,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ProjectConfigLimit', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
 # these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
@@ -445,8 +445,11 @@ Confirm-Equal $c.Icons.model 0xF0E7 'config icons: the known name beside it is k
 $c = Read-StatusConfig (Write-TempConfig 'icons-invalid.json' '{ "icons": { "model": "zz", "cost": 61671, "folder": "", "lines": "110000", "limits": "D800", "fast": "DFFF", "think": "-1", "effort": "F0 E7", "vim": null, "home": ["F0E7"], "ahead": true, "behind": "1B", "conflict": "A", "chevron": "0" } }')
 Confirm-Equal $c.Icons.Count 0 'config icons: every invalid value is skipped'
 $c = Read-StatusConfig (Write-TempConfig 'icons-edges.json' '{ "icons": { "model": "10FFFF", "dirty": "E000", "ahead": "D7FF", "behind": "41" } }')
-Confirm-Equal $c.Icons.Count 4 'config icons: the edges of the range are allowed'
-Confirm-Equal $c.Icons.model 0x10FFFF 'config icons: 10FFFF'
+Confirm-Equal $c.Icons.Count 2 'config icons: the private use and letter edges are allowed'
+Confirm-Equal $c.Icons.dirty 0xE000 'config icons: the first private use code point'
+Confirm-Equal $c.Icons.behind 0x41 'config icons: a plain letter'
+Confirm-True (-not $c.Icons.ContainsKey('model')) 'config icons: 10FFFF is a noncharacter and is skipped'
+Confirm-True (-not $c.Icons.ContainsKey('ahead')) 'config icons: D7FF is unassigned and is skipped'
 Confirm-Equal (Read-StatusConfig (Write-TempConfig 'icons-array.json' '{ "icons": ["F0E7"] }')).Icons.Count 0 'config icons: array falls back'
 Confirm-Equal (Read-StatusConfig (Write-TempConfig 'icons-string.json' '{ "icons": "F0E7" }')).Icons.Count 0 'config icons: string falls back'
 $c = Read-StatusConfig (Write-TempConfig 'icons-good-thresholds-bad.json' '{ "icons": { "model": "F0E7" }, "thresholds": 5 }')
@@ -571,6 +574,50 @@ $c = Read-StatusConfig (Write-TempConfig 'project-user-broken.json' '{ "style": 
 Confirm-Equal $c.Layout 'two' 'project config: it still applies when the user file is broken'
 Confirm-Equal $c.Style 'plain' 'project config: the broken user file falls back to the defaults'
 
+# ---- The project file as bounded untrusted input ----
+# The project file comes with the repository, not from the user, so it is read through Read-BoundedFileText
+# rather than Get-Content: an ordinary file, no bigger than the cap, read under a deadline. Everything
+# else is refused silently, the same as a value of the wrong type.
+$limit = Get-ProjectConfigLimit
+Confirm-True ($limit.MaxBytes -ge 4096 -and $limit.MaxBytes -le 262144) 'bounded read: the cap is tens of kilobytes, far past a hand-written config'
+Confirm-True ($limit.TimeoutMs -gt 0 -and $limit.TimeoutMs -le 1000) 'bounded read: the deadline is shorter than a render'
+Confirm-Equal (Read-BoundedFileText (Write-TempConfig 'bounded-small.json' '{ "layout": "two" }')) '{ "layout": "two" }' 'bounded read: a small file reads back whole'
+Confirm-Equal (Read-BoundedFileText (Join-Path $tmp 'bounded-missing.json')) $null 'bounded read: a file that is not there is refused'
+Confirm-Equal (Read-BoundedFileText $tmp) $null 'bounded read: a directory is refused'
+Confirm-Equal (Read-BoundedFileText '') $null 'bounded read: an empty path is refused'
+# One byte under the cap reads, the cap plus a little does not. The pad keeps the file valid JSON either
+# way, so what separates the two cases is the size and nothing else.
+$underCap = Write-TempConfig 'bounded-under-cap.json' ('{ "layout": "two", "pad": "' + ('x' * ($limit.MaxBytes - 40)) + '" }')
+Confirm-True ((Get-Item -LiteralPath $underCap).Length -le $limit.MaxBytes) 'bounded read: the under-cap fixture is under the cap'
+Confirm-True ($null -ne (Read-BoundedFileText $underCap)) 'bounded read: a file just under the cap reads back'
+$overCap = Write-TempConfig 'bounded-over-cap.json' ('{ "layout": "two", "pad": "' + ('x' * $limit.MaxBytes) + '" }')
+Confirm-Equal (Read-BoundedFileText $overCap) $null 'bounded read: a file over the cap is refused'
+# A byte order mark is dropped, since ConvertFrom-Json will not parse past one.
+$bomPath = Join-Path $tmp 'bounded-bom.json'
+[System.IO.File]::WriteAllText($bomPath, '{ "layout": "two" }', [System.Text.UTF8Encoding]::new($true))
+Confirm-Equal (Read-BoundedFileText $bomPath) '{ "layout": "two" }' 'bounded read: a byte order mark is dropped'
+# The same rules through Read-StatusConfig: an oversized project config, and one that is not an ordinary
+# file, both leave the user config standing. A file symbolic link needs Developer Mode or an elevated
+# shell on Windows; where one cannot be made a directory stands in its place, which is the same rule
+# under test - the entry has to be an ordinary file.
+$c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-oversized' ('{ "layout": "two", "pad": "' + ('x' * $limit.MaxBytes) + '" }'))
+Confirm-Equal $c.Layout 'one' 'project config: a file over the byte cap is refused'
+Confirm-Equal $c.Style 'powerline' 'project config: the user file stands over the oversized one'
+$linkDir = Write-TempProjectDir 'proj-link' $null
+$linkPath = Join-Path (Join-Path $linkDir '.claude') 'statusline.json'
+$linkTarget = Write-TempConfig 'proj-link-target.json' '{ "layout": "two" }'
+$madeLink = $true
+try { New-Item -ItemType SymbolicLink -Path $linkPath -Target $linkTarget -ErrorAction Stop | Out-Null } catch { $madeLink = $false }
+if (-not $madeLink) { New-Item -ItemType Directory -Force $linkPath | Out-Null }
+$linkKind = if ($madeLink) { 'a link' } else { 'a directory' }
+# Say which one ran, so a green log cannot be read as proof that the link case was exercised on a
+# machine where a symbolic link could not be made.
+Write-Host "  project link case: $linkKind ($(if ($madeLink) { 'symbolic links available' } else { 'symbolic links need Developer Mode here' }))" -ForegroundColor DarkGray
+Confirm-Equal (Read-BoundedFileText $linkPath) $null "bounded read: $linkKind in place of the file is refused"
+$c = Read-StatusConfig $userPath $linkDir
+Confirm-Equal $c.Layout 'one' "project config: $linkKind in place of the file is refused"
+Confirm-Equal $c.Style 'powerline' 'project config: the user file stands over the refused link'
+
 # The config that ships with the repo has to be valid JSON and to mean what the README says it means.
 $shippedConfig = Join-Path $PSScriptRoot 'statusline.json'
 $shippedJson = try { Get-Content -LiteralPath $shippedConfig -Raw | ConvertFrom-Json } catch { $null }
@@ -634,14 +681,55 @@ Confirm-Equal $set.fast ([char]::ConvertFromUtf32(0xF0E7)) 'icons: the fast badg
 # the six-digit cap, so a zero-padded form reads. A control character (00 to 1F, 7F to 9F) is refused:
 # A is a newline and 1B a bare escape, either of which would break the line.
 foreach ($row in @(@('F0E7', 0xF0E7), @('f0e7', 0xF0E7), @('U+F0E7', 0xF0E7), @('u+f0e7', 0xF0E7), @('0xF0E7', 0xF0E7), @('0XF0E7', 0xF0E7),
-        @(' F0E7 ', 0xF0E7), @('10FFFF', 0x10FFFF), @('41', 0x41), @('0000F0E7', 0xF0E7), @('U+0000F0E7', 0xF0E7), @('0x0000F0E7', 0xF0E7),
-        @('000000000041', 0x41), @('20', 0x20), @('A0', 0xA0), @('7E', 0x7E))) {
+        @(' F0E7 ', 0xF0E7), @('E000', 0xE000), @('41', 0x41), @('0000F0E7', 0xF0E7), @('U+0000F0E7', 0xF0E7), @('0x0000F0E7', 0xF0E7),
+        @('000000000041', 0x41), @('2588', 0x2588), @('4E2D', 0x4E2D), @('7E', 0x7E))) {
     Confirm-Equal (Read-CodePoint $row[0]) $row[1] "code point: '$($row[0])' reads as $($row[1])"
 }
 foreach ($bad in @('', ' ', 'zz', '110000', 'D800', 'DBFF', 'DC00', 'DFFF', '-1', 'F0 E7', '+F0E7', 'U+', '0x', '1234567', 'U+0xF0E7',
         '0', '0000', 'U+0000', 'A', '1B', '1F', '7F', '9B', '9F', '0x0A', $null, 61671, $true, @('F0E7'))) {
     Confirm-Equal (Read-CodePoint $bad) $null "code point: '$bad' is refused"
 }
+# A code point can reach the icons table from a repository's own config, so it is admitted only when it
+# draws as one glyph standing by itself. A bidi override or isolate could reorder the visible line, a
+# zero-width or format character hide part of it, a line or paragraph separator break it in two, a
+# combining mark attach to whatever came before, a separator draw as blank, and a noncharacter or an
+# unassigned code point has no glyph at all - the last two also make the width count, and the fitting
+# that depends on it, a guess. Each is refused three ways: by the parser, in a parsed config, and in the
+# glyph set the line is built from, which has to keep the built-in glyph.
+$defaultModelGlyph = [char]::ConvertFromUtf32((Get-IconDefault).model)
+foreach ($case in @(
+        @{ Hex = '202E'; Name = 'a right-to-left override' }
+        @{ Hex = '202D'; Name = 'a left-to-right override' }
+        @{ Hex = '2066'; Name = 'a left-to-right isolate' }
+        @{ Hex = '2069'; Name = 'a pop directional isolate' }
+        @{ Hex = '200B'; Name = 'a zero width space' }
+        @{ Hex = '200D'; Name = 'a zero width joiner' }
+        @{ Hex = 'FEFF'; Name = 'a byte order mark' }
+        @{ Hex = '2028'; Name = 'a line separator' }
+        @{ Hex = '2029'; Name = 'a paragraph separator' }
+        @{ Hex = '0301'; Name = 'a combining acute accent' }
+        @{ Hex = 'FE0F'; Name = 'a variation selector' }
+        @{ Hex = '20E3'; Name = 'an enclosing keycap' }
+        @{ Hex = '0903'; Name = 'a spacing combining mark' }
+        @{ Hex = '20'; Name = 'a space' }
+        @{ Hex = 'A0'; Name = 'a no-break space' }
+        @{ Hex = 'FDD0'; Name = 'a noncharacter in the arabic block' }
+        @{ Hex = 'FFFE'; Name = 'a noncharacter' }
+        @{ Hex = '1FFFE'; Name = 'a noncharacter above the basic plane' }
+        @{ Hex = '10FFFF'; Name = 'the last code point, a noncharacter' }
+        @{ Hex = 'D7FF'; Name = 'an unassigned code point' })) {
+    Confirm-Equal (Read-CodePoint $case.Hex) $null "code point: $($case.Name) is refused"
+    $c = Read-StatusConfig (Write-TempConfig "icons-refused-$($case.Hex).json" ('{ "icons": { "model": "' + $case.Hex + '" } }'))
+    Confirm-Equal $c.Icons.Count 0 "config icons: $($case.Name) is skipped"
+    Confirm-Equal (Get-IconSet $c).model $defaultModelGlyph "icons: $($case.Name) leaves the built-in glyph"
+}
+# The categories the refusal list holds, so a later edit cannot quietly drop one.
+$refusedCategories = @(Get-IconRefusedCategory)
+Confirm-Equal $refusedCategories.Count 10 'code point: ten refused categories'
+foreach ($name in @('Control', 'Format', 'Surrogate', 'OtherNotAssigned', 'SpaceSeparator', 'LineSeparator', 'ParagraphSeparator', 'NonSpacingMark', 'SpacingCombiningMark', 'EnclosingMark')) {
+    Confirm-True (([System.Globalization.UnicodeCategory] $name) -in $refusedCategories) "code point: $name is refused"
+}
+Confirm-True (([System.Globalization.UnicodeCategory]::PrivateUse) -notin $refusedCategories) 'code point: private use is allowed, which is where the Nerd Font glyphs live'
 
 Write-Host '== unit: state' -ForegroundColor Cyan
 # The state helpers derive their directory from TEMP, so point it at a folder under $tmp for these cases
@@ -3274,16 +3362,41 @@ Confirm-True ($text.Contains($iconLines)) 'render project: a segment the project
 $r = Invoke-StatusLine $projectPayload (Write-TempConfig 'render-project-config.json' '{}') 0
 Confirm-True ($r.Err.Count -eq 0) 'render project: -Config stderr empty'
 Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains($iconCost)) 'render project: -Config does not read the project file'
-# A malformed project file, and a project directory with no config in it, leave the user file in force
-# and say nothing on stderr.
+# A malformed project file, a project directory with no config in it, and a file the bounded read
+# refuses all leave the user file in force and say nothing on stderr. The oversized case is the one that
+# matters most: it is a whole render, so a config a repository grew to megabytes would show up here as a
+# slow or hanging child rather than as a quiet fallback.
+$overSized = '{ "segments": { "cost": false }, "pad": "' + ('x' * (Get-ProjectConfigLimit).MaxBytes) + '" }'
 foreach ($case in @(
         @{ Name = 'render-project-broken'; Json = '{ "segments": '; Label = 'a malformed project file' }
-        @{ Name = 'render-project-none'; Json = $null; Label = 'an empty .claude directory' })) {
+        @{ Name = 'render-project-none'; Json = $null; Label = 'an empty .claude directory' }
+        @{ Name = 'render-project-huge'; Json = $overSized; Label = 'a project file over the byte cap' })) {
     $r = Invoke-StatusLine (Write-RenderProjectPayload $case.Name $case.Json) $null 0
     Confirm-True ($r.ExitCode -eq 0) "render project: $($case.Label) exit code $($r.ExitCode)"
     Confirm-True ($r.Err.Count -eq 0) "render project: $($case.Label) prints nothing on stderr"
     Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains($iconCost)) "render project: $($case.Label) leaves the user config in force"
 }
+# A link, or anything else that is not an ordinary file, where the project config should be. The payload
+# is built first with a real file so the directory exists, then the file is replaced.
+$linkPayload = Write-RenderProjectPayload 'render-project-link' '{ "segments": { "cost": false } }'
+$renderLink = Join-Path (Join-Path (Join-Path $tmp 'render-project-link') '.claude') 'statusline.json'
+Remove-Item -LiteralPath $renderLink -Force
+$renderLinkMade = $true
+try { New-Item -ItemType SymbolicLink -Path $renderLink -Target (Write-TempConfig 'render-link-target.json' '{ "segments": { "cost": false } }') -ErrorAction Stop | Out-Null } catch { $renderLinkMade = $false }
+if (-not $renderLinkMade) { New-Item -ItemType Directory -Force $renderLink | Out-Null }
+$renderLinkKind = if ($renderLinkMade) { 'a link' } else { 'a directory' }
+$r = Invoke-StatusLine $linkPayload $null 0
+Confirm-True ($r.ExitCode -eq 0) "render project: $renderLinkKind in place of the file, exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "render project: $renderLinkKind in place of the file prints nothing on stderr"
+Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains($iconCost)) "render project: $renderLinkKind in place of the file leaves the user config in force"
+# The icons a repository can ask for reach a whole render too: a right-to-left override in the project
+# config must not touch the line, and the built-in glyph has to survive it.
+$r = Invoke-StatusLine (Write-RenderProjectPayload 'render-project-bidi' '{ "icons": { "model": "202E", "cost": "2588" } }') $null 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render project: a bidi override in the project icons, exit code 0, stderr empty'
+$text = ConvertTo-PlainText ($r.Lines -join "`n")
+Confirm-True (-not $text.Contains([char]::ConvertFromUtf32(0x202E))) 'render project: the right-to-left override never reaches the line'
+Confirm-True ($text.Contains($iconModel)) 'render project: the built-in model glyph survives the refused override'
+Confirm-True ($text.Contains([char]::ConvertFromUtf32(0x2588))) 'render project: the valid override beside it is applied'
 Confirm-True (@(Get-ChildItem -LiteralPath $matrixTemp -Recurse -Force -File).Count -eq 0) 'render matrix: no state written for payloads without a session_id'
 } finally {
     if ($null -ne $oldTemp) { $env:TEMP = $oldTemp } else { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }

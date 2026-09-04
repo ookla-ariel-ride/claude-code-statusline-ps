@@ -47,10 +47,36 @@ function Get-IconDefault {
     }
 }
 
+# The Unicode categories an icon code point may not have. A config is not always the user's own - a
+# repository's .claude\statusline.json reaches the icons table too - so a code point is admitted only
+# when the terminal can draw it as one glyph standing by itself. Control and Format cover a bare escape,
+# a right-to-left override, a directional isolate, a zero-width joiner and a byte order mark, any of
+# which can reorder or hide the rest of the line without breaking the escape syntax; the two separators
+# would break the line in half; the three marks attach to whatever came before them instead of standing
+# alone; a surrogate half is not a character; and an unassigned code point has no glyph, so the terminal
+# draws a placeholder of its own choosing. Private use is deliberately not on the list: every Nerd Font
+# glyph the script ships lives there.
+function Get-IconRefusedCategory {
+    return @(
+        [System.Globalization.UnicodeCategory]::Control
+        [System.Globalization.UnicodeCategory]::Format
+        [System.Globalization.UnicodeCategory]::Surrogate
+        [System.Globalization.UnicodeCategory]::OtherNotAssigned
+        [System.Globalization.UnicodeCategory]::SpaceSeparator
+        [System.Globalization.UnicodeCategory]::LineSeparator
+        [System.Globalization.UnicodeCategory]::ParagraphSeparator
+        [System.Globalization.UnicodeCategory]::NonSpacingMark
+        [System.Globalization.UnicodeCategory]::SpacingCombiningMark
+        [System.Globalization.UnicodeCategory]::EnclosingMark
+    )
+}
+
 # A code point from a config value: a string of hex digits, with U+ or 0x allowed in front, space around
-# it and leading zeros, at most six digits once those are gone, up to 10FFFF, not a surrogate and not a
-# control character (00 to 1F and 7F to 9F, which would put a raw newline or a bare escape on the line).
-# $null for anything else, so the caller keeps the built-in glyph.
+# it and leading zeros, at most six digits once those are gone. What comes back is a code point that
+# draws as a single glyph: inside Unicode, not a noncharacter (xFFFE, xFFFF and FDD0 to FDEF, which no
+# process may interchange), none of the categories above, and one or two cells wide by the script's own
+# width rule, so an override can never throw the fitting off. $null for anything else, so the caller
+# keeps the built-in glyph.
 function Read-CodePoint($Value) {
     if ($Value -isnot [string]) { return $null }
     $hex = $Value.Trim()
@@ -59,7 +85,10 @@ function Read-CodePoint($Value) {
     if ($hex.Length -lt 1 -or $hex.Length -gt 6) { return $null }
     $cp = 0
     if (-not [int]::TryParse($hex, [System.Globalization.NumberStyles]::AllowHexSpecifier, [cultureinfo]::InvariantCulture, [ref] $cp)) { return $null }
-    if ($cp -gt 0x10FFFF -or ($cp -ge 0xD800 -and $cp -le 0xDFFF) -or $cp -le 0x1F -or ($cp -ge 0x7F -and $cp -le 0x9F)) { return $null }
+    if (-not [System.Text.Rune]::IsValid($cp)) { return $null }
+    if (($cp -band 0xFFFE) -eq 0xFFFE -or ($cp -ge 0xFDD0 -and $cp -le 0xFDEF)) { return $null }
+    if ([System.Text.Rune]::GetUnicodeCategory([System.Text.Rune]::new($cp)) -in (Get-IconRefusedCategory)) { return $null }
+    if ((Get-VisibleWidth ([char]::ConvertFromUtf32($cp))) -notin @(1, 2)) { return $null }
     return $cp
 }
 
@@ -202,14 +231,71 @@ function Get-StatusConfigKey {
     )
 }
 
+# What a project config may cost to read. A config a person wrote is a few hundred bytes, so 64 KiB is
+# far past any real one and still reads in under a millisecond from a disk; the deadline is what a read
+# that never finishes may cost, and the status line is redrawn on every event, so a quarter of a second
+# is already longer than a render. Both are constants rather than config keys: they guard the file the
+# config itself comes from.
+function Get-ProjectConfigLimit { return @{ MaxBytes = 65536; TimeoutMs = 250 } }
+
+# The text of a file a repository controls, or $null when it is anything but a small, ordinary, promptly
+# readable one. Test-Path and Get-Content are not enough for this file: they follow a link wherever it
+# leads and read whatever comes back, for as long as it takes, so a repository could point the path at a
+# device, a FIFO or a dead network share and hold up every render, or hand over a file large enough to
+# matter. Here the entry has to be a real file - not a directory, a link or any other reparse point -
+# its length is checked before the open and the bytes are capped again as they arrive, so a file that
+# grows in between cannot get past, and every wait is bounded, so a read that never completes ends the
+# attempt instead of the line. A stalled handle is left to the process exit rather than disposed, since
+# disposing it would wait on the same read. Every refusal is silent: the caller keeps the config it had.
+function Read-BoundedFileText([string] $Path) {
+    $limit = Get-ProjectConfigLimit
+    $fs = $null
+    $stalled = $false
+    try {
+        $info = [System.IO.FileInfo]::new($Path)
+        # Exists is false for a directory and for a path that is not there at all. LinkTarget is .NET 6
+        # and reads as $null on an older runtime, where the reparse point attribute catches a link anyway.
+        if (-not $info.Exists -or $null -ne $info.LinkTarget) { return $null }
+        if (($info.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $null }
+        if ($info.Length -gt $limit.MaxBytes) { return $null }
+        $fs = [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        $buf = [byte[]]::new($limit.MaxBytes + 1)
+        $read = 0
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($read -lt $buf.Length) {
+            $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
+            if ($left -le 0) { $stalled = $true; return $null }
+            $task = $fs.ReadAsync($buf, $read, $buf.Length - $read)
+            if (-not $task.Wait([int] $left)) { $stalled = $true; return $null }
+            $n = $task.Result
+            if ($n -le 0) { break }
+            $read += $n
+        }
+        if ($read -gt $limit.MaxBytes) { return $null }
+        $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+        # UTF8.GetString keeps a byte order mark as U+FEFF, which ConvertFrom-Json will not parse past.
+        if ($text.Length -gt 0 -and $text[0] -eq [char] 0xFEFF) { $text = $text.Substring(1) }
+        return $text
+    } catch { return $null } finally {
+        if ($null -ne $fs -and -not $stalled) { try { $fs.Dispose() } catch { $null = $_ } }
+    }
+}
+
 # Applies one config file over a table and returns it. Anything missing or invalid silently falls back to
 # the value already there, and each key falls back on its own: a valid order beside a broken thresholds
 # keeps the order. Files are applied lowest precedence first, so what an invalid value in the project
-# file falls back to is the user file's value rather than the built-in default.
-function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path) {
+# file falls back to is the user file's value rather than the built-in default. -Bounded reads the file
+# as untrusted input, which is what the project file is; the user's own file, written by the installer
+# or by the user, is read as it always was, so an encoding Get-Content works out still loads.
+function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Bounded) {
     try {
-        if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $Cfg }
-        $j = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if (-not $Path) { return $Cfg }
+        $text = if ($Bounded) { Read-BoundedFileText $Path } else {
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $Cfg }
+            Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+        }
+        if (-not $text) { return $Cfg }
+        $j = $text | ConvertFrom-Json -ErrorAction Stop
         if ($j -isnot [System.Management.Automation.PSCustomObject]) { return $Cfg }
         foreach ($rec in Get-StatusConfigKey) {
             $v = $j.($rec.Json)
@@ -281,7 +367,8 @@ function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path) {
 # The config a render runs on: the built-in defaults, the user file, then the project file when the
 # payload named a project directory holding .claude\statusline.json. The merge is per key, so a project
 # file of {"layout": "two"} keeps every user toggle. A project directory that is missing, holds no
-# .claude\statusline.json, or holds an unreadable one leaves the config below it exactly as it was.
+# .claude\statusline.json, or holds an unreadable one leaves the config below it exactly as it was. That
+# file arrives with the repository rather than from the user, so it is read as bounded untrusted input.
 # $ProjectDir is untyped and gated here rather than declared [string]: a payload spells project_dir
 # however it likes, and a [string] parameter would join an array into a path instead of rejecting it.
 # The caller passes it only when -Config named no file, so an explicit config renders the same whatever
@@ -291,7 +378,7 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
     if ($ProjectDir -isnot [string] -or -not $ProjectDir) { return $cfg }
     try {
         if (Test-Path -LiteralPath $ProjectDir -PathType Container) {
-            $cfg = Merge-StatusConfigFile $cfg (Join-Path $ProjectDir '.claude' 'statusline.json')
+            $cfg = Merge-StatusConfigFile $cfg (Join-Path $ProjectDir '.claude' 'statusline.json') -Bounded
         }
     } catch { return $cfg }
     return $cfg

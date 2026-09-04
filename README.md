@@ -151,6 +151,12 @@ value beneath it rather than to the built-in default. A project with no `.claude
 changes nothing, and so does an unreadable one. `-Config <path>` is the exception: it replaces the user
 file and skips the project file, so a render with it is the same whatever directory the payload names.
 
+That file arrives with the repository rather than from you, so it is read as untrusted input. It has to
+be an ordinary file, not a link or anything else that could point elsewhere; it is capped at 64 KiB, far
+past any config written by hand; and the read gives up after 250 ms, so a repository on a dead network
+share cannot hold up the line. Anything outside those bounds is refused the way a bad value is, in
+silence, and the config beneath it stands. Your own `statusline.json` is read as it always was.
+
 | Key | Values | What it does |
 |---|---|---|
 | `layout` | `one`, `two` | `two` puts model, folder, branch, pr and badges on the first line and context, limits, cost and lines on the second, unless `rows` says otherwise. |
@@ -161,7 +167,7 @@ file and skips the project file, so a render with it is the same whatever direct
 | `order` | `["model", "branch", "context"]` | The segments of layout `one`, left to right. A segment left out is not shown, an unknown name is skipped, a repeat keeps its first place. Left out altogether, as the installed file leaves it, the segments come in the script's order, new ones included. An empty list, a list naming no segment, or anything that is not a list does the same. |
 | `rows` | `[["model", "branch"], ["context", "cost"]]` | The two lines of layout `two`, with the same rules per row. A segment named on the first row is not repeated on the second, and a row may be empty. Left out, the script's own two rows apply, new segments included. Anything but exactly two lists, or two lists naming no segment, does the same. |
 | `thresholds` | `{ "warn": 20, "bad": 40 }` | Where the context meter and the rate limits turn yellow and red: whole numbers from 0 to 100 (`20` or `20.0`, not `20.5`), `warn` no higher than `bad`. Either value wrong keeps 60 and 85 for both. A 1M window keeps its own 70 and 90. |
-| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cost`, `folder`, `chevron`, `branch`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `pr`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`. A name the list does not have, or a value that is not a printable code point (not hex, above `10FFFF`, a surrogate, or a control character such as `A` or `1B`), keeps the built-in glyph. |
+| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cost`, `folder`, `chevron`, `branch`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `pr`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`. A name the list does not have, or a value that is not a single printable glyph, keeps the built-in one. To count as a glyph a code point has to be inside Unicode, not a surrogate half and not a noncharacter, one or two cells wide, and none of: a control (`A` is a newline, `1B` a bare escape), a format character (`202E` is a right-to-left override, `200D` a zero-width joiner), a line or paragraph separator, a space, or a combining mark. Private use is where the Nerd Font glyphs live, so it is allowed. |
 | `git.timeoutMs` | `100` to `10000` | How long the branch segment waits for `git status`, in milliseconds, before it gives up and leaves the segment out. A value outside the range is clamped to it. |
 | `git.cacheSeconds` | `0` to `300` | How long a `git status` result is reused for, in seconds, before git is asked again. `0` asks git on every render. Clamped like `timeoutMs`. |
 | `git.cache` | `true`, `false` | `false` asks git on every render, whatever `cacheSeconds` says. |
