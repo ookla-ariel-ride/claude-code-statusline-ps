@@ -1,0 +1,26 @@
+{
+  "columns": 40,
+  "tasks": [
+    {
+      "id": "ok-1",
+      "name": "esc\u001b[31mred\u009bmore",
+      "label": "safe label",
+      "type": "local_agent",
+      "status": "running",
+      "contextWindowSize": 200000,
+      "tokenCount": 20.0
+    },
+    { "id": "", "name": "blank id", "status": "running" },
+    { "id": ["a", "b"], "name": "array id", "status": "running" },
+    {
+      "id": "ok-2",
+      "label": "a very long label that runs on and on well past any panel width",
+      "type": "local_workflow",
+      "status": "completed",
+      "contextWindowSize": 0,
+      "tokenCount": 5
+    },
+    { "id": "ok-3", "type": "remote_agent", "status": "pending", "tokenCount": 2e1 },
+    { "id": "ok-4", "type": "local_bash", "status": "running", "contextWindowSize": 1000000, "tokenCount": 720000 }
+  ]
+}

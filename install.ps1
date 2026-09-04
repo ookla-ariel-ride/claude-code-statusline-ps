@@ -16,8 +16,15 @@
 .PARAMETER ConfigureWindowsTerminal
   Set Windows Terminal's default font face to "JetBrainsMono NF" (a backup of settings.json is kept).
 
+.PARAMETER Subagents
+  Also install subagent-statusline.ps1 and add a "subagentStatusLine" entry, the per-subagent line
+  Claude Code renders in the agent panel. Its settings schema is {type, command} only, so the entry
+  carries no padding or vim key. Leave the switch out and neither the file nor the key is written;
+  -Uninstall removes both whether or not the switch was ever used.
+
 .PARAMETER Uninstall
-  Remove the statusLine entry from settings.json and delete ~/.claude/statusline.ps1. ~/.claude/statusline.json is kept.
+  Remove the statusLine and subagentStatusLine entries from settings.json and delete
+  ~/.claude/statusline.ps1 and ~/.claude/subagent-statusline.ps1. ~/.claude/statusline.json is kept.
 
 .PARAMETER RefreshInterval
   Seconds between timed re-renders, written as statusLine.refreshInterval. Must be 1 or more. Leave it
@@ -39,6 +46,7 @@ param(
     [switch] $InstallFont,
     [switch] $ConfigureWindowsTerminal,
     [switch] $Uninstall,
+    [switch] $Subagents,
     [ValidateRange(1, [int]::MaxValue)] [int] $RefreshInterval,
     [string] $SettingsPath
 )
@@ -47,6 +55,7 @@ $ErrorActionPreference = 'Stop'
 $claudeDir = Join-Path $env:USERPROFILE '.claude'
 $target = Join-Path $claudeDir 'statusline.ps1'
 $configTarget = Join-Path $claudeDir 'statusline.json'
+$subagentTarget = Join-Path $claudeDir 'subagent-statusline.ps1'
 # PowerShell variable names are case-insensitive, so $settingsPath below is the -SettingsPath parameter.
 if (-not $SettingsPath) { $settingsPath = Join-Path $claudeDir 'settings.json' }
 $fontFace = 'JetBrainsMono NF'
@@ -74,13 +83,23 @@ function Write-UserSetting($obj, [string] $Path) {
 
 if ($Uninstall) {
     $s = Read-UserSetting $settingsPath
+    # Both keys go in one Write-UserSetting: a second write would overwrite the .bak with the state
+    # after the first, so the backup would no longer hold the settings as they were.
+    $removed = @()
     if ($s.PSObject.Properties['statusLine']) {
-        $keys = @($s.statusLine.PSObject.Properties.Name) -join ', '
+        $removed += "statusLine ($(@($s.statusLine.PSObject.Properties.Name) -join ', '))"
         $s.PSObject.Properties.Remove('statusLine')
+    }
+    if ($s.PSObject.Properties['subagentStatusLine']) {
+        $removed += 'subagentStatusLine'
+        $s.PSObject.Properties.Remove('subagentStatusLine')
+    }
+    if ($removed.Count -gt 0) {
         Write-UserSetting $s $settingsPath
-        Write-Host "Removed statusLine ($keys) from $settingsPath"
+        Write-Host "Removed $($removed -join ' and ') from $settingsPath"
     }
     if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force; Write-Host "Deleted $target" }
+    if (Test-Path -LiteralPath $subagentTarget) { Remove-Item -LiteralPath $subagentTarget -Force; Write-Host "Deleted $subagentTarget" }
     if (Test-Path -LiteralPath $configTarget) { Write-Host "Kept $configTarget (delete it yourself if you no longer want it)" }
     # The status line writes one small JSON file per session outside ~/.claude, so say where they are.
     $stateDir = if ($env:TEMP) { Join-Path $env:TEMP 'claude-statusline-state' } else { Join-Path $HOME '.claude' 'statusline-state' }
@@ -117,8 +136,21 @@ if ($old -and -not $wantRefresh -and $old.Value.PSObject.Properties['refreshInte
     Write-Warning "The existing statusLine.refreshInterval of $($old.Value.refreshInterval) is dropped; pass -RefreshInterval $($old.Value.refreshInterval) to keep it."
 }
 if ($old) { $s.statusLine = $entry } else { $s | Add-Member -NotePropertyName statusLine -NotePropertyValue $entry }
+# The per-subagent line is a second command Claude Code runs for the agent panel. Its settings schema
+# is {type, command}, so no padding and no vim key go with it, and it is written into the same object
+# so both entries land in one write and one .bak.
+if ($Subagents) {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'subagent-statusline.ps1') -Destination $subagentTarget -Force
+    $subagentEntry = [pscustomobject]@{ type = 'command'; command = 'pwsh -NoProfile -NoLogo -NonInteractive -File ' + ($subagentTarget -replace '\\', '/') }
+    if ($s.PSObject.Properties['subagentStatusLine']) { $s.subagentStatusLine = $subagentEntry }
+    else { $s | Add-Member -NotePropertyName subagentStatusLine -NotePropertyValue $subagentEntry }
+}
 Write-UserSetting $s $settingsPath
 Write-Host "Configured statusLine in $settingsPath (hideVimModeIndicator on$(if ($wantRefresh) { ", refreshInterval $RefreshInterval s" }))"
+if ($Subagents) {
+    Write-Host "Installed $subagentTarget"
+    Write-Host "Configured subagentStatusLine in $settingsPath"
+}
 
 if ($InstallFont) {
     Write-Host 'Installing JetBrainsMono Nerd Font (winget; expect an elevation prompt)...'

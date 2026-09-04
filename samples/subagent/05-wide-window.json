@@ -1,0 +1,20 @@
+{
+  "session_id": "9d4e1a22-7c6b-4a10-8f33-2b5c9e770099",
+  "cwd": "C:/repo",
+  "tasks": [
+    {
+      "id": "wide_01",
+      "name": "in-process teammate",
+      "type": "in_process_teammate",
+      "status": "running",
+      "description": "Pair on the parser",
+      "label": "Pair on the parser",
+      "startTime": 1756901000000,
+      "model": "claude-opus-4-5-20251101[1m]",
+      "contextWindowSize": 1000000,
+      "tokenCount": 655000,
+      "tokenSamples": [640000, 655000],
+      "cwd": "C:/repo"
+    }
+  ]
+}

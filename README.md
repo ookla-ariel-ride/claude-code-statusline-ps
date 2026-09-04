@@ -35,6 +35,7 @@ how close you are to a rate limit, and which modes are on.
 - Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory, cached for a few seconds so most renders never start git.
 - Counts beside the branch name: `↑N` `↓N` commits ahead of or behind the upstream, `+N` staged, `~N` changed, `?N` untracked, and a red triangle with a count when files are in conflict. See [Branch counts](#branch-counts).
 - One line or two, plain separators or powerline blocks, and any segment switched off, all from `statusline.json`.
+- A matching line for each running subagent in the agent panel, with `.\install.ps1 -Subagents`. See [Subagent status line](#subagent-status-line).
 - Fits the terminal width. A line that is too long first loses detail from the limits, context, branch and folder segments, then loses whole segments from the right, so lines stop wrapping in normal use.
 - If a field is missing from the payload, the script drops that segment. If the payload will not parse, it still prints the model glyph.
 - Icons come from Unicode code points rather than pasted characters, so the file's own encoding cannot corrupt them.
@@ -65,6 +66,7 @@ Restart Claude Code, or wait for its next status refresh.
 - Adds a `statusLine` entry to your user-level `~/.claude/settings.json`. It keeps every other key and writes a `.bak` copy first.
 - Sets `hideVimModeIndicator` inside that entry. The badges segment already shows the vim mode, so Claude Code's own indicator would be the same word twice on one bar.
 - With `-RefreshInterval <seconds>`, sets `refreshInterval` inside that entry so Claude Code re-renders the line on a timer as well as on events. Without the switch the key is not written. A value below 1 is refused and nothing is written.
+- With `-Subagents`, also copies `subagent-statusline.ps1` to `~/.claude/` and adds a `subagentStatusLine` entry. See [Subagent status line](#subagent-status-line).
 - With `-InstallFont`, installs JetBrainsMono Nerd Font through winget. Expect one elevation prompt.
 - With `-ConfigureWindowsTerminal`, sets Windows Terminal's default font to `JetBrainsMono NF` and backs up its settings.
 
@@ -91,6 +93,54 @@ reinstall without the switch writes an entry without the key. Pass the switch ag
 `statusline.json` copies, and the delete on `-Uninstall`, still use `~/.claude`. It exists for the
 test suite, which points it into a temp folder.
 
+### Subagent status line
+
+```powershell
+.\install.ps1 -Subagents
+```
+
+Claude Code shows a panel of the subagents a session is running, and `subagentStatusLine` is a second
+command that draws the row for each of them. `subagent-statusline.ps1` prints one short line per
+subagent in the same visual language as the main bar: the robot glyph, the agent's name, and how full
+its context window is.
+
+```
+󰚩 Explore  24%  48k
+󰚩 general-purpose  91%  182k
+```
+
+The contract is not the one the main status line uses. Claude Code runs the command once for the
+whole panel, hands it every live row in a single payload, and expects one JSON object per line back,
+`{"id": ..., "content": ...}`, keyed by the task id. So the script loops over `tasks` and answers for
+each one. A row that cannot be rendered falls back to the glyph alone; a payload that will not parse
+prints nothing, because a bare glyph is not JSON and the panel would only log it and drop it.
+
+The identity is the agent's registered name, or its label, description or type when there is no name.
+The progress is the context percentage, coloured green, yellow and red on the same 60 and 85 bands the
+context segment uses, 70 and 90 on a 1M window, then the token count. A task with no window size shows
+its status word instead. When the payload's `columns` value leaves too little room, the name is
+clipped with an ellipsis before any figure is dropped, and the glyph is never dropped, so a row never
+wraps the panel.
+
+There is no config file, no git probe and no powerline style: a panel row is not a full-width bar, and
+a git probe per row per tick is too much for something that ticks every five seconds.
+
+The entry it writes:
+
+```json
+"subagentStatusLine": {
+  "type": "command",
+  "command": "pwsh -NoProfile -NoLogo -NonInteractive -File C:/Users/<you>/.claude/subagent-statusline.ps1"
+}
+```
+
+`padding` and `hideVimModeIndicator` are left out on purpose: the setting's schema is `type` and
+`command` only.
+
+`tools/capture-stdin.ps1` is there if you want to see a payload for yourself. Point
+`subagentStatusLine` at it instead, run a session with a few subagents, and read the file it appends
+to. It prints nothing, so the panel renders as if the key were not set.
+
 ### Other terminals
 
 Any Nerd Font works. If you run Claude Code inside VS Code, ConEmu, or another terminal, set that
@@ -103,8 +153,10 @@ terminal's font to a Nerd Font yourself and skip `-ConfigureWindowsTerminal`.
 ```
 
 This removes the whole `statusLine` entry, `hideVimModeIndicator` and `refreshInterval` with it, and
-deletes `~/.claude/statusline.ps1`. Fonts and `~/.claude/statusline.json` stay. A `.bak` of the
-settings file from before the removal is kept beside it.
+deletes `~/.claude/statusline.ps1`. It removes `subagentStatusLine` and
+`~/.claude/subagent-statusline.ps1` too, whether or not you ever passed `-Subagents`. Both entries go
+in one write, so the `.bak` beside the settings file still holds them as they were. Fonts and
+`~/.claude/statusline.json` stay.
 
 ## Configuration
 
@@ -268,7 +320,7 @@ arrows. A `git` object with an empty branch name shows nothing.
 
 ## Test without Claude Code
 
-`test.ps1` runs five groups. Unit checks call the script's helper functions directly (width
+`test.ps1` runs six groups. Unit checks call the script's helper functions directly (width
 measurement, config parsing, the segment table, rendering, width fitting, the context meter, the
 limits, `git status` parsing, the payload counts, the branch and pr segments, the state file, the
 git cache). The git group runs the branch fallback against temporary repositories: clean, dirty,
@@ -278,7 +330,14 @@ render with a failing `git` on `PATH`, a fetch from a bare remote, a push, a wor
 group writes and reads session files in a temp folder. The install group runs `install.ps1` with
 `USERPROFILE` and `-SettingsPath` pointed into a temp folder: a fresh settings file, an existing one
 with unrelated keys, `-RefreshInterval`, a refused value, and `-Uninstall`. It checks afterwards
-that the real `~/.claude` files were not touched. The render matrix pipes every payload in
+that the real `~/.claude` files were not touched. The subagent group pipes every payload in
+`samples/subagent/` through `subagent-statusline.ps1` and reads the replies the way the panel does:
+each line must be an object with a string `id` and a string `content`, every id must belong to a task
+in the payload, every row must be one line carrying the robot glyph, and it must fit the payload's
+`columns` down to a single column. It also checks that malformed, empty, array-shaped and
+task-less payloads print nothing and still exit 0, and that the helpers `subagent-statusline.ps1`
+copies out of `statusline.ps1` are still the same text in both files. Its own install cases run
+`install.ps1 -Subagents` and `-Uninstall` against a second temp home. The render matrix pipes every payload in
 `samples/` through the script for each of seven configs (both layouts and styles, model only, a
 reversed `order`, swapped `rows`) at each width:
 
@@ -305,6 +364,7 @@ To try a payload of your own:
 ```powershell
 Get-Content my-payload.json -Raw | pwsh -NoProfile -File .\statusline.ps1
 Get-Content my-payload.json -Raw | pwsh -NoProfile -File .\statusline.ps1 -Config .\docs\statusline-two-line.json
+Get-Content .\samples\subagent\01-two-agents.json -Raw | pwsh -NoProfile -File .\subagent-statusline.ps1
 ```
 
 ## Customise
@@ -398,6 +458,7 @@ Done so far:
 - [x] Pull-request segment with a clickable link
 - [x] Segment order, rows, colour cut-offs and glyphs as `statusline.json` keys
 - [x] Cached `git status` with a configurable timeout
+- [x] A subagent status line for the agent panel, installed with `-Subagents`
 
 [Issues #2 to #43](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
 each with its own plan. In rough order: new segments (cache warmth, cost per turn, pace, session

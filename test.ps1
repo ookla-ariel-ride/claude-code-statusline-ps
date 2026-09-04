@@ -3138,6 +3138,256 @@ Confirm-True (@(Get-ChildItem -LiteralPath $matrixTemp -Recurse -Force -File).Co
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }
 
+# ---- Subagent group: subagent-statusline.ps1 ----
+# A separate script with a different contract from the main status line: Claude Code runs it once for
+# the whole agent panel, hands it every live row in one payload, and reads one JSON object per line,
+# {"id","content"}, keyed by the task id. It renders none of the segments, so it appears in none of
+# the tables above and gets its own temp tree here rather than sharing $tmp, which is already gone.
+Write-Host ''
+Write-Host '== subagent' -ForegroundColor Cyan
+$subScript = Join-Path $PSScriptRoot 'subagent-statusline.ps1'
+$subSampleDir = Join-Path $PSScriptRoot 'samples\subagent'
+$subTmp = Join-Path ([System.IO.Path]::GetTempPath()) "statusline-subagent-test-$PID"
+New-Item -ItemType Directory -Force $subTmp | Out-Null
+$iconRobot = [char]::ConvertFromUtf32(0xF06A9)
+$ellipsis = [char]::ConvertFromUtf32(0x2026)
+
+# Runs the subagent script in a child pwsh and reads stdout the way Claude Code does: line by line,
+# each line an object with a string id and a string content, anything else dropped. Rows holds the
+# replies in the order they arrived; Bad counts the lines Claude Code would have thrown away.
+function Invoke-SubagentLine([string] $Payload) {
+    $r = Invoke-ChildPwsh $subScript @() $Payload
+    $rows = [ordered]@{}
+    $bad = 0
+    foreach ($line in $r.Lines) {
+        if (-not "$line".Trim()) { continue }
+        $obj = try { "$line" | ConvertFrom-Json } catch { $null }
+        if ($obj -isnot [System.Management.Automation.PSCustomObject] -or
+            $obj.id -isnot [string] -or $obj.content -isnot [string]) { $bad++; continue }
+        $rows[$obj.id] = $obj.content
+    }
+    $r.Rows = $rows
+    $r.Bad = $bad
+    return $r
+}
+
+# The payload text of one sample by file name.
+function Get-SubagentSample([string] $Name) { return (Get-Content -LiteralPath (Join-Path $subSampleDir $Name) -Raw) }
+
+try {
+# Every sample end to end: exit 0, nothing on stderr, every line a well-formed reply, no row for a
+# task the payload does not have, one line of text per row carrying the robot glyph, and a width that
+# fits the columns the payload asked for.
+$subSamples = Get-ChildItem $subSampleDir -Filter *.json | Sort-Object Name
+Confirm-True ($subSamples.Count -gt 0) 'subagent samples: the directory holds payloads'
+foreach ($sample in $subSamples) {
+    $payload = Get-Content -LiteralPath $sample.FullName -Raw
+    $json = $payload | ConvertFrom-Json
+    $r = Invoke-SubagentLine $payload
+    $label = "subagent $($sample.Name)"
+    Confirm-True ($r.ExitCode -eq 0) "${label}: exit code $($r.ExitCode)"
+    Confirm-True ($r.Err.Count -eq 0) "${label}: stderr empty, got '$($r.Err -join ' | ')'"
+    Confirm-Equal $r.Bad 0 "${label}: every line parses as an id and a content string"
+    $ids = @($json.tasks | ForEach-Object { $_.id } | Where-Object { $_ -is [string] -and $_.Trim() })
+    $cols = if ($json.columns -is [ValueType]) { [int] $json.columns } else { 0 }
+    Confirm-True (@($r.Rows.Keys).Count -le $ids.Count) "${label}: no more rows than the payload has tasks"
+    foreach ($id in @($r.Rows.Keys)) {
+        $content = $r.Rows[$id]
+        Confirm-True ($ids -contains $id) "${label}: row id '$id' is one of the payload's tasks"
+        Confirm-True ($content -notmatch "[`r`n]") "${label}/${id}: one line, no newline inside it"
+        Confirm-True ((ConvertTo-PlainText $content).Contains($iconRobot)) "${label}/${id}: carries the robot glyph"
+        if ($cols -gt 0) {
+            $w = Measure-VisibleWidth $content
+            Confirm-True ($w -le $cols) "${label}/${id}: visible width $w fits the payload's $cols columns"
+        }
+    }
+}
+
+# 01: two running agents on a 200k window. The percentage takes the threshold colour and the token
+# figure is dim, the same palette roles the main line uses; the glyph and the name are the model role.
+$r = Invoke-SubagentLine (Get-SubagentSample '01-two-agents.json')
+Confirm-Equal (@($r.Rows.Keys) -join ',') 'task_01,task_02' 'subagent 01: one row per task, in payload order'
+Confirm-Equal (ConvertTo-PlainText $r.Rows['task_01']) "$iconRobot Explore  24%  48k" 'subagent 01: the registered name, the percentage and the token count'
+Confirm-True ($r.Rows['task_01'].Contains("$esc[1;36m$iconRobot Explore$esc[0m")) 'subagent 01: glyph and name in the model colour'
+Confirm-True ($r.Rows['task_01'].Contains("$esc[32m24%$esc[0m")) 'subagent 01: 24% of a 200k window is green'
+Confirm-Equal (ConvertTo-PlainText $r.Rows['task_02']) "$iconRobot general-purpose  91%  182k" 'subagent 01: the second row reads the same way'
+Confirm-True ($r.Rows['task_02'].Contains("$esc[31m91%$esc[0m")) 'subagent 01: 91% is red'
+Confirm-True ($r.Rows['task_02'].Contains("$esc[90m182k$esc[0m")) 'subagent 01: the token figure is dim'
+
+# 02: an id, a type and a status and nothing else. The type stands in for a name and the status word
+# stands in for a figure, so a row still says something.
+$r = Invoke-SubagentLine (Get-SubagentSample '02-minimal.json')
+Confirm-Equal (ConvertTo-PlainText $r.Rows['t1']) "$iconRobot local_bash  running" 'subagent 02: the type names the row and the status is the progress'
+
+# 03: an empty task list is not an error, and an empty stdout is what the panel expects for it.
+$r = Invoke-SubagentLine (Get-SubagentSample '03-no-tasks.json')
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent 03: exit code 0, stderr empty'
+Confirm-Equal (@($r.Lines | Where-Object { "$_".Trim() }).Count) 0 'subagent 03: no tasks, no output'
+
+# 04: hostile fields. A name carrying an escape is not text, so the label is used instead and the
+# escape never reaches the row; a blank id and an array id get no row at all, because a row only
+# renders when its id comes back; 20.0 and 2e1 arrive as Double and still count as whole numbers; a
+# zero window yields no percentage rather than a division by zero; the long label is clipped to 40.
+$r = Invoke-SubagentLine (Get-SubagentSample '04-hostile-fields.json')
+Confirm-Equal (@($r.Rows.Keys) -join ',') 'ok-1,ok-2,ok-3,ok-4' 'subagent 04: only the tasks with usable text for an id get a row'
+Confirm-Equal (ConvertTo-PlainText $r.Rows['ok-1']) "$iconRobot safe label  0%" 'subagent 04: an escape in the name falls through to the label, and 20 of 200000 is 0% with no token figure'
+Confirm-True (-not $r.Rows['ok-1'].Contains('red')) 'subagent 04: nothing of the escaped name reaches the row'
+Confirm-True ((ConvertTo-PlainText $r.Rows['ok-1']) -notmatch '\p{Cc}') 'subagent 04: the row carries no control character of its own'
+Confirm-True ((ConvertTo-PlainText $r.Rows['ok-2']).Contains($ellipsis)) 'subagent 04: the long label is clipped with an ellipsis'
+Confirm-True ((ConvertTo-PlainText $r.Rows['ok-2']).EndsWith('completed')) 'subagent 04: a zero window leaves no percentage, so the status word is the progress'
+Confirm-Equal (ConvertTo-PlainText $r.Rows['ok-3']) "$iconRobot remote_agent  pending" 'subagent 04: 2e1 tokens with no window is below a thousand, so the status shows instead'
+Confirm-True ($r.Rows['ok-4'].Contains("$esc[33m72%$esc[0m")) 'subagent 04: a 1M window uses the 70 and 90 bands, so 72% is yellow'
+
+# 05: a 1M window and no columns key. Nothing is clipped and 65% is still green under the wider bands.
+$r = Invoke-SubagentLine (Get-SubagentSample '05-wide-window.json')
+Confirm-Equal (ConvertTo-PlainText $r.Rows['wide_01']) "$iconRobot in-process teammate  65%  655k" 'subagent 05: no columns key means nothing is cut'
+Confirm-True ($r.Rows['wide_01'].Contains("$esc[32m65%$esc[0m")) 'subagent 05: 65% of a 1M window is still green'
+
+# Anything the script cannot read prints nothing and exits 0. A bare glyph could not stand in here the
+# way the main script's fallback line does: it is not JSON, so the panel would log it and drop it.
+foreach ($case in @(
+        @{ Name = 'malformed JSON'; Payload = 'not json at all' }
+        @{ Name = 'empty stdin'; Payload = '' }
+        @{ Name = 'a truncated object'; Payload = '{ "tasks": [ { "id": "x"' }
+        @{ Name = 'an array payload'; Payload = '[1, 2, 3]' }
+        @{ Name = 'a bare number'; Payload = '42' }
+        @{ Name = 'no tasks key'; Payload = '{ "columns": 80 }' }
+        @{ Name = 'tasks as an object'; Payload = '{ "tasks": { "id": "x" } }' }
+        @{ Name = 'tasks as a string'; Payload = '{ "tasks": "x" }' }
+        @{ Name = 'a task that is a number'; Payload = '{ "tasks": [ 1, 2 ] }' }
+        @{ Name = 'a task with no id'; Payload = '{ "tasks": [ { "name": "no id" } ] }' })) {
+    $r = Invoke-SubagentLine $case.Payload
+    $label = "subagent $($case.Name)"
+    Confirm-True ($r.ExitCode -eq 0) "${label}: exit code $($r.ExitCode)"
+    Confirm-True ($r.Err.Count -eq 0) "${label}: stderr empty, got '$($r.Err -join ' | ')'"
+    Confirm-Equal (@($r.Lines | Where-Object { "$_".Trim() }).Count) 0 "${label}: no output"
+}
+
+# A repeated id is answered once: the panel keys its map by id, so a second line would only overwrite.
+$r = Invoke-SubagentLine '{ "tasks": [ { "id": "same", "name": "first" }, { "id": "same", "name": "second" } ] }'
+Confirm-Equal (@($r.Lines | Where-Object { "$_".Trim() }).Count) 1 'subagent duplicate id: one line, not two'
+Confirm-True ((ConvertTo-PlainText $r.Rows['same']).Contains('first')) 'subagent duplicate id: the first task wins'
+
+# The panel can be very narrow. At every width the row still fits, and the glyph is the last thing to
+# go, so a row never disappears and never wraps the panel.
+$narrowTask = '{ "id": "n1", "name": "a name long enough to need clipping", "status": "running", "contextWindowSize": 200000, "tokenCount": 120000 }'
+foreach ($cols in @(80, 40, 20, 12, 8, 4, 2, 1)) {
+    $r = Invoke-SubagentLine ('{ "columns": ' + $cols + ', "tasks": [ ' + $narrowTask + ' ] }')
+    $label = "subagent columns $cols"
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) "${label}: exit code 0, stderr empty"
+    Confirm-Equal (@($r.Rows.Keys).Count) 1 "${label}: one row"
+    $w = Measure-VisibleWidth $r.Rows['n1']
+    Confirm-True ($w -le $cols) "${label}: visible width $w fits"
+    Confirm-True ((ConvertTo-PlainText $r.Rows['n1']).Contains($iconRobot)) "${label}: the glyph is never dropped"
+}
+# At a width that can hold them, the figures survive and the name is what gets clipped.
+$r = Invoke-SubagentLine ('{ "columns": 20, "tasks": [ ' + $narrowTask + ' ] }')
+Confirm-True ($r.Rows['n1'].Contains('60%') -and $r.Rows['n1'].Contains('120k')) 'subagent columns 20: the percentage and the token count are kept'
+Confirm-True ((ConvertTo-PlainText $r.Rows['n1']).Contains($ellipsis)) 'subagent columns 20: the name is what gets clipped'
+# A columns value that is not a whole count is no width at all, so nothing is cut.
+foreach ($bad in @('"columns": "80"', '"columns": 20.5', '"columns": true', '"columns": -5')) {
+    $r = Invoke-SubagentLine ('{ ' + $bad + ', "tasks": [ ' + $narrowTask + ' ] }')
+    Confirm-True ((ConvertTo-PlainText $r.Rows['n1']) -eq "$iconRobot a name long enough to need clipping  60%  120k") "subagent $($bad): an unusable columns value cuts nothing"
+}
+
+# The helpers the subagent script copies out of statusline.ps1. Both copies are pulled from the source
+# by the parser and compared as text, so a fix made to one and not the other fails here instead of
+# turning into two scripts that measure a line or colour a percentage differently.
+$sharedHelpers = @('G', 'C', 'Get-VisibleWidth', 'Get-Palette', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Test-PayloadText')
+foreach ($name in $sharedHelpers) {
+    $a = try { "$(Import-ScriptFunction $script @($name))" } catch { "not found in statusline.ps1" }
+    $b = try { "$(Import-ScriptFunction $subScript @($name))" } catch { "not found in subagent-statusline.ps1" }
+    Confirm-Equal $b $a "subagent drift: $name is the same text in both scripts"
+}
+
+# ---- Install group: install.ps1 -Subagents against a settings.json inside the temp tree ----
+# USERPROFILE is redirected under $subTmp and -SettingsPath points there too, so the copy target, the
+# settings file and the uninstall delete all land in the temp tree. The real ~/.claude files are
+# hashed before the group and compared after it: nothing here may write outside $subTmp.
+$subRealDir = Join-Path $env:USERPROFILE '.claude'
+$subRealNames = @('settings.json', 'settings.json.bak', 'statusline.ps1', 'statusline.json', 'subagent-statusline.ps1')
+$subRealHash = [ordered]@{}
+foreach ($n in $subRealNames) { $subRealHash[$n] = Get-ContentHash (Join-Path $subRealDir $n) }
+$subHome = Join-Path $subTmp 'install-home'
+New-Item -ItemType Directory -Force $subHome | Out-Null
+$subOldProfile = $env:USERPROFILE
+try {
+$env:USERPROFILE = $subHome
+$subSettings = Join-Path $subHome 'settings.json'
+Set-Content -LiteralPath $subSettings -Value '{ "theme": "dark" }' -Encoding utf8NoBOM
+$installedSub = Join-Path $subHome '.claude\subagent-statusline.ps1'
+$expectSubCommand = 'pwsh -NoProfile -NoLogo -NonInteractive -File ' + ($installedSub -replace '\\', '/')
+
+# Without the switch neither the file nor the key appears, so an existing install is left as it was.
+$r = Invoke-Installer 'install without -Subagents' @('-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0) "subagent install plain: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "subagent install plain: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-Equal (Get-KeyList (Read-SettingFile $subSettings)) 'theme,statusLine' 'subagent install plain: no subagentStatusLine key'
+Confirm-True (-not (Test-Path -LiteralPath $installedSub)) 'subagent install plain: subagent-statusline.ps1 not copied'
+
+$r = Invoke-Installer 'install -Subagents' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0) "subagent install: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "subagent install: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-True (Test-Path -LiteralPath $installedSub) 'subagent install: subagent-statusline.ps1 copied into the temp home'
+$s = Read-SettingFile $subSettings
+Confirm-Equal (Get-KeyList $s) 'theme,statusLine,subagentStatusLine' 'subagent install: the unrelated key is kept and both entries are there'
+Confirm-Equal $s.theme 'dark' 'subagent install: theme kept'
+Confirm-Equal (Get-KeyList $s.statusLine) 'type,command,padding,hideVimModeIndicator' 'subagent install: the statusLine entry is untouched'
+Confirm-Equal (Get-KeyList $s.subagentStatusLine) 'type,command' 'subagent install: the subagent entry is type and command only'
+Confirm-Equal $s.subagentStatusLine.type 'command' 'subagent install: type'
+Confirm-Equal $s.subagentStatusLine.command $expectSubCommand 'subagent install: command points at the temp home with forward slashes'
+Confirm-True (($r.Lines -join "`n").Contains('subagentStatusLine')) "subagent install: the message names the key, got '$($r.Lines -join ' | ')'"
+
+# The copy in the temp home is the script itself, so it answers for a real payload.
+if (Test-Path -LiteralPath $installedSub) {
+    $c = Invoke-ChildPwsh $installedSub @() (Get-SubagentSample '02-minimal.json')
+    Confirm-True ($c.ExitCode -eq 0 -and $c.Err.Count -eq 0) 'subagent install: the installed copy runs clean'
+    Confirm-True ((@($c.Lines) -join '').Contains('"id":"t1"')) 'subagent install: the installed copy answers for the task'
+}
+
+# A second run replaces the entry rather than adding another one.
+$r = Invoke-Installer 'install -Subagents again' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent install twice: exit code 0, stderr empty'
+Confirm-Equal (Get-KeyList (Read-SettingFile $subSettings)) 'theme,statusLine,subagentStatusLine' 'subagent install twice: still one subagentStatusLine key'
+
+# Uninstall takes both entries out in a single write, so the .bak still holds the settings as they
+# were, and deletes both scripts. The switch is not needed for the removal.
+$r = Invoke-Installer 'uninstall with a subagent line' @('-Uninstall', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0) "subagent uninstall: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "subagent uninstall: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-Equal (Get-KeyList (Read-SettingFile $subSettings)) 'theme' 'subagent uninstall: both entries removed, theme kept'
+Confirm-True (-not (Test-Path -LiteralPath $installedSub)) 'subagent uninstall: subagent-statusline.ps1 deleted from the temp home'
+Confirm-Equal (Get-KeyList (Read-SettingFile "$subSettings.bak")) 'theme,statusLine,subagentStatusLine' 'subagent uninstall: the .bak holds the settings as they were, both entries in it'
+$text = $r.Lines -join "`n"
+Confirm-True ($text -match 'Removed statusLine \([^)]+\) and subagentStatusLine') "subagent uninstall: the message names both keys, got '$text'"
+Confirm-True ($text.Contains('subagent-statusline.ps1')) "subagent uninstall: the message names the deleted script, got '$text'"
+
+# A settings file that never had a subagent line still uninstalls, and says only what it removed.
+$r = Invoke-Installer 'install before a plain uninstall' @('-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent plain uninstall: the install before it is clean'
+$r = Invoke-Installer 'uninstall without a subagent line' @('-Uninstall', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent plain uninstall: exit code 0, stderr empty'
+Confirm-Equal (Get-KeyList (Read-SettingFile $subSettings)) 'theme' 'subagent plain uninstall: statusLine removed, theme kept'
+Confirm-True (-not (($r.Lines -join "`n").Contains('subagentStatusLine'))) 'subagent plain uninstall: the message does not name a key that was not there'
+
+# Nothing left to remove: no rewrite, so the .bak from the run before it survives.
+$before = Get-Content -LiteralPath $subSettings -Raw
+$beforeStamp = Get-WriteStamp $subSettings
+$r = Invoke-Installer 'uninstall a third time' @('-Uninstall', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent empty uninstall: exit code 0, stderr empty'
+Confirm-Equal (Get-Content -LiteralPath $subSettings -Raw) $before 'subagent empty uninstall: settings.json content unchanged'
+Confirm-True ((Get-WriteStamp $subSettings) -eq $beforeStamp) 'subagent empty uninstall: settings.json not rewritten'
+} finally {
+    $env:USERPROFILE = $subOldProfile
+}
+foreach ($n in $subRealNames) {
+    $p = Join-Path $subRealDir $n
+    Confirm-True ((Get-ContentHash $p) -eq $subRealHash[$n]) "subagent install: real $p untouched"
+}
+} finally {
+    Remove-Item -Recurse -Force $subTmp -ErrorAction SilentlyContinue
+}
+
 Write-Host ''
 Write-Host "passed $script:passed, failed $script:failed" -ForegroundColor $(if ($script:failed -gt 0) { 'Red' } else { 'Green' })
 if ($script:failed -gt 0) { exit 1 }
