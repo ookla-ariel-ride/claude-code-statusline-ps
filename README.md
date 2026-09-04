@@ -75,7 +75,7 @@ The settings entry it writes after `.\install.ps1 -RefreshInterval 10`:
 ```json
 "statusLine": {
   "type": "command",
-  "command": "pwsh -NoProfile -NoLogo -NonInteractive -File C:/Users/<you>/.claude/statusline.ps1",
+  "command": "pwsh -NoProfile -NoLogo -NonInteractive -File \"C:/Users/<you>/.claude/statusline.ps1\"",
   "padding": 0,
   "hideVimModeIndicator": true,
   "refreshInterval": 10
@@ -83,7 +83,9 @@ The settings entry it writes after `.\install.ps1 -RefreshInterval 10`:
 ```
 
 The path uses forward slashes on purpose. Claude Code may run the command through Git Bash, which
-strips backslashes.
+strips backslashes. It is double-quoted for the same kind of reason: a profile with a space in it,
+such as `C:/Users/Jane Doe`, would otherwise end the `-File` argument at the space. See
+[Subagent status line](#subagent-status-line) for the one case the quoting cannot cover.
 
 `refreshInterval` is what keeps a clock, or a taskbar bar driven by the context percentage, moving
 between events. Nothing in the line needs it today, so the installer only writes it when asked. A
@@ -120,7 +122,9 @@ The progress is the context percentage, coloured green, yellow and red on the sa
 context segment uses, 70 and 90 on a 1M window, then the token count. A task with no window size shows
 its status word instead. When the payload's `columns` value leaves too little room, the name is
 clipped with an ellipsis before any figure is dropped, and the glyph is never dropped, so a row never
-wraps the panel.
+wraps the panel. A `columns` of exactly `0` is the panel saying it has no room at all, and nothing is
+printed for it; a `columns` that is missing or malformed says nothing about the width, so the row
+renders in full and the terminal decides.
 
 There is no config file, no git probe and no powerline style: a panel row is not a full-width bar, and
 a git probe per row per tick is too much for something that ticks every five seconds.
@@ -130,16 +134,24 @@ The entry it writes:
 ```json
 "subagentStatusLine": {
   "type": "command",
-  "command": "pwsh -NoProfile -NoLogo -NonInteractive -File C:/Users/<you>/.claude/subagent-statusline.ps1"
+  "command": "pwsh -NoProfile -NoLogo -NonInteractive -File \"C:/Users/<you>/.claude/subagent-statusline.ps1\""
 }
 ```
 
 `padding` and `hideVimModeIndicator` are left out on purpose: the setting's schema is `type` and
-`command` only.
+`command` only. The path is double-quoted, and so is the one in the `statusLine` entry, because a
+profile such as `C:/Users/Jane Doe` would otherwise end the `-File` argument at the space and the
+command would never run. Double quotes are the one form both cmd and Git Bash honour, and every
+character Windows forbids in a path is one that could break out of them. A `$` or a backtick is legal
+in a Windows path and still expands inside Git Bash's double quotes, so the installer warns about
+those two rather than writing a command that quietly does the wrong thing.
 
 `tools/capture-stdin.ps1` is there if you want to see a payload for yourself. Point
 `subagentStatusLine` at it instead, run a session with a few subagents, and read the file it appends
-to. It prints nothing, so the panel renders as if the key were not set.
+to. It prints nothing on stdout, so the panel renders as if the key were not set. The file is
+bounded: at 1 MiB (`-MaxBytes`) it rotates over a single `.1` sibling, so a capture command left in
+place cannot fill the volume. If a write fails, the reason goes to stderr and to a `.error` sidecar
+once, and capture stops until you delete that sidecar.
 
 ### Other terminals
 
@@ -153,10 +165,18 @@ terminal's font to a Nerd Font yourself and skip `-ConfigureWindowsTerminal`.
 ```
 
 This removes the whole `statusLine` entry, `hideVimModeIndicator` and `refreshInterval` with it, and
-deletes `~/.claude/statusline.ps1`. It removes `subagentStatusLine` and
-`~/.claude/subagent-statusline.ps1` too, whether or not you ever passed `-Subagents`. Both entries go
-in one write, so the `.bak` beside the settings file still holds them as they were. Fonts and
-`~/.claude/statusline.json` stay.
+deletes `~/.claude/statusline.ps1`. Fonts and `~/.claude/statusline.json` stay.
+
+It removes `subagentStatusLine` and `~/.claude/subagent-statusline.ps1` too, without needing
+`-Subagents` again, but only when they are this project's. The subagent line is opt-in, so those two
+names may well be something you set up yourself. The key counts as ours when its `command` points at
+`~/.claude/subagent-statusline.ps1`, and the file counts as ours when it carries the marker line in
+its header. Anything else of that name is left where it is and reported as kept.
+
+Both entries leave in one write, so the `.bak` beside the settings file still holds them as they were.
+Every settings write goes to a uniquely named file beside the real one and is then moved over it, so
+an interrupted or failed write leaves the previous settings intact rather than a truncated file, and a
+change made by something else between the read and the write is refused instead of overwritten.
 
 ## Configuration
 
@@ -337,7 +357,11 @@ in the payload, every row must be one line carrying the robot glyph, and it must
 `columns` down to a single column. It also checks that malformed, empty, array-shaped and
 task-less payloads print nothing and still exit 0, and that the helpers `subagent-statusline.ps1`
 copies out of `statusline.ps1` are still the same text in both files. Its own install cases run
-`install.ps1 -Subagents` and `-Uninstall` against a second temp home. The render matrix pipes every payload in
+`install.ps1 -Subagents` and `-Uninstall` against a second temp home: a foreign `subagentStatusLine`
+and a file without the marker survive an uninstall, a profile whose path holds a space and an `&`
+produces a command that really runs under cmd, a settings write that cannot complete leaves the old
+file intact and no temporary file behind, a file changed between the read and the write is refused,
+and the capture helper rotates rather than growing. The render matrix pipes every payload in
 `samples/` through the script for each of seven configs (both layouts and styles, model only, a
 reversed `order`, swapped `rows`) at each width:
 

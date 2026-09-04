@@ -1,4 +1,9 @@
 #Requires -Version 7.0
+# claude-code-statusline-ps:subagent-statusline
+# The line above is a provenance marker, not decoration: install.ps1 -Uninstall looks for it before it
+# deletes ~/.claude/subagent-statusline.ps1, so a file of that name this project did not install is
+# left where it is. Do not remove or reword it.
+#
 # Claude Code subagent status line (PowerShell 7) with Nerd Font glyphs and ANSI colour.
 # Wired up as the subagentStatusLine setting, which Claude Code runs for the agent panel. It is not
 # the same contract as the main status line: the command is run once for the whole panel and gets one
@@ -182,10 +187,11 @@ function Get-ClippedText([string] $Text, [int] $Width) {
 }
 
 # One panel row: the robot glyph and the identity in the model colour, then the progress parts, each
-# after two spaces. $Width of 0 means the payload gave no usable columns, so nothing is cut. Fitting
-# keeps the figures and clips the identity first, because a percentage that has been dropped looks
-# like a task reporting nothing; only when the identity is down to fewer than three cells does a
-# progress part go, right to left. The glyph is never dropped, so a row always renders.
+# after two spaces. A negative $Width means the payload named no usable width, so nothing is cut; a
+# width of 0 never reaches here, because the caller prints no row at all for it. Fitting keeps the
+# figures and clips the identity first, because a percentage that has been dropped looks like a task
+# reporting nothing; only when the identity is down to fewer than three cells does a progress part go,
+# right to left. The glyph is never dropped, so a row always renders.
 function Format-SubagentRow($task, [int] $Width) {
     $identity = Get-RowIdentity $task
     $progress = @(Get-RowProgress $task)
@@ -218,8 +224,14 @@ if ($d -isnot [System.Management.Automation.PSCustomObject]) { exit 0 }
 $tasks = $d.tasks
 if ($tasks -isnot [System.Object[]]) { exit 0 }
 
-$width = Get-PayloadNumber $d.columns
-if ($null -eq $width -or $width -lt 0) { $width = 0 }
+# Three states, not two. A columns value that is a whole count of 0 or more is the width the panel has,
+# and 0 genuinely means no room: a row printed into it would wrap or overwrite the panel, so none is.
+# Absent, or a value that is not a whole count at all (a string, a boolean, a fraction, a negative,
+# which the panel never sends), tells us nothing about the width, and that falls back to -1: render in
+# full and let the terminal decide, which is better than printing nothing because a field was malformed.
+$columns = Get-PayloadNumber $d.columns
+$width = if ($null -ne $columns -and $columns -ge 0) { $columns } else { -1 }
+if ($width -eq 0) { exit 0 }
 
 # A row only renders when its id comes back, so a task without usable text for an id is skipped, and a
 # repeated id is answered once: the panel keys its map by id and a second line would only overwrite.
