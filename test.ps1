@@ -165,7 +165,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Get-ContextSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Test-WideWindow', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
 # these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
@@ -379,6 +379,41 @@ $c = Read-StatusConfig (Write-TempConfig 'git-beside.json' '{ "layout": "two", "
 Confirm-Equal $c.Layout 'two' 'config git beside layout: layout kept'
 Confirm-Equal $c.State $false 'config git beside state: state kept'
 Confirm-Equal $c.Git.TimeoutMs 200 'config git beside others: timeout read'
+
+# The quiet block: the smallest value cost, context and limits are worth building at. Compared with -eq
+# rather than through Confirm-Equal, because a threshold is a double and its ToString is culture-bound.
+$c = Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')
+Confirm-True ($c.Quiet.cost -eq 0 -and $c.Quiet.context -eq 0 -and $c.Quiet.limits -eq 0) 'config missing: quiet is 0 for all three, which hides nothing'
+$c = Read-StatusConfig (Write-TempConfig 'quiet-absent.json' '{ "layout": "two" }')
+Confirm-True ($c.Quiet.cost -eq 0 -and $c.Quiet.context -eq 0 -and $c.Quiet.limits -eq 0) 'config quiet absent: all three default to 0'
+$c = Read-StatusConfig (Write-TempConfig 'quiet-valid.json' '{ "quiet": { "cost": 1.5, "context": 30, "limits": 70 } }')
+Confirm-True ($c.Quiet.cost -eq 1.5) 'config quiet valid: a fractional cost is kept as written'
+Confirm-True ($c.Quiet.context -eq 30) 'config quiet valid: context 30'
+Confirm-True ($c.Quiet.limits -eq 70) 'config quiet valid: limits 70'
+$c = Read-StatusConfig (Write-TempConfig 'quiet-one.json' '{ "quiet": { "cost": 2 } }')
+Confirm-True ($c.Quiet.cost -eq 2) 'config quiet one name: cost read'
+Confirm-True ($c.Quiet.context -eq 0 -and $c.Quiet.limits -eq 0) 'config quiet one name: the other two stay 0'
+# Each name falls back on its own, so a string beside a number keeps the number.
+$c = Read-StatusConfig (Write-TempConfig 'quiet-wrong-types.json' '{ "quiet": { "cost": "1", "context": true, "limits": [70] } }')
+Confirm-True ($c.Quiet.cost -eq 0) 'config quiet string cost: falls back to 0'
+Confirm-True ($c.Quiet.context -eq 0) 'config quiet boolean context: falls back to 0'
+Confirm-True ($c.Quiet.limits -eq 0) 'config quiet array limits: falls back to 0'
+$c = Read-StatusConfig (Write-TempConfig 'quiet-mixed.json' '{ "quiet": { "cost": "1", "context": 30 } }')
+Confirm-True ($c.Quiet.cost -eq 0 -and $c.Quiet.context -eq 30) 'config quiet mixed: the bad name falls back, the good one beside it is read'
+# A negative clamps to 0 rather than passing through, so a segment whose value is 0 is still shown.
+$c = Read-StatusConfig (Write-TempConfig 'quiet-negative.json' '{ "quiet": { "cost": -5, "context": -0.5, "limits": -1e3 } }')
+Confirm-True ($c.Quiet.cost -eq 0 -and $c.Quiet.context -eq 0 -and $c.Quiet.limits -eq 0) 'config quiet negative: clamped to 0'
+foreach ($case in @(@{ Name = 'array'; Json = '{ "quiet": [1, 2, 3] }' }, @{ Name = 'number'; Json = '{ "quiet": 5 }' },
+                    @{ Name = 'string'; Json = '{ "quiet": "loud" }' }, @{ Name = 'null'; Json = '{ "quiet": null }' })) {
+    $c = Read-StatusConfig (Write-TempConfig "quiet-$($case.Name).json" $case.Json)
+    Confirm-True ($c.Quiet.cost -eq 0 -and $c.Quiet.context -eq 0 -and $c.Quiet.limits -eq 0) "config quiet $($case.Name): all three stay 0"
+}
+# A name no segment has is ignored rather than added, and the block leaves the keys beside it alone.
+$c = Read-StatusConfig (Write-TempConfig 'quiet-beside.json' '{ "layout": "two", "state": false, "quiet": { "folder": 3, "cost": 1 } }')
+Confirm-Equal $c.Layout 'two' 'config quiet beside layout: layout kept'
+Confirm-Equal $c.State $false 'config quiet beside state: state kept'
+Confirm-True ($c.Quiet.cost -eq 1) 'config quiet beside others: cost read'
+Confirm-True ($c.Quiet.Count -eq 3 -and -not $c.Quiet.ContainsKey('folder')) 'config quiet unknown name: not added to the table'
 
 # The order key: the segment names of layout one. An unknown name is skipped, a name left out is not
 # shown, a repeat keeps its first place and case does not matter. An empty array, an array naming no
@@ -606,15 +641,17 @@ Confirm-Equal (Get-RowText $defaultCfg) $registryRows 'default config: rows are 
 Confirm-Equal (Get-ThresholdText $defaultCfg) '60/85' 'default config: thresholds 60 and 85'
 Confirm-Equal $defaultCfg.Icons.Count 0 'default config: no icon overrides'
 Confirm-Equal $defaultCfg.Git.TimeoutMs 1500 'default config: git timeout 1500'
+Confirm-True ($defaultCfg.Quiet.cost -eq 0 -and $defaultCfg.Quiet.context -eq 0 -and $defaultCfg.Quiet.limits -eq 0) 'default config: quiet is 0 for all three'
 Confirm-True (@($allSegments | Where-Object { -not $defaultCfg.Segments[$_] }).Count -eq 0) 'default config: every segment on'
 # A fresh table every call, nested tables included, so a caller that changes its copy cannot reach the next.
-$defaultCfg.Layout = 'two'; $defaultCfg.Segments.cost = $false; $defaultCfg.Git.TimeoutMs = 999; $defaultCfg.Thresholds.Warn = 1; $defaultCfg.Icons.model = 1
+$defaultCfg.Layout = 'two'; $defaultCfg.Segments.cost = $false; $defaultCfg.Git.TimeoutMs = 999; $defaultCfg.Thresholds.Warn = 1; $defaultCfg.Icons.model = 1; $defaultCfg.Quiet.cost = 9
 $fresh = Get-DefaultStatusConfig
 Confirm-Equal $fresh.Layout 'one' 'default config: a changed copy does not change the next table'
 Confirm-Equal $fresh.Segments.cost $true 'default config: the segment table is fresh too'
 Confirm-Equal $fresh.Git.TimeoutMs 1500 'default config: the git table is fresh too'
 Confirm-Equal $fresh.Thresholds.Warn 60 'default config: the thresholds table is fresh too'
 Confirm-Equal $fresh.Icons.Count 0 'default config: the icons table is fresh too'
+Confirm-True ($fresh.Quiet.cost -eq 0) 'default config: the quiet table is fresh too'
 $merged = Merge-StatusConfigFile $fresh (Write-TempConfig 'merge-one.json' '{ "layout": "two", "segments": { "cost": false } }')
 Confirm-Equal $merged.Layout 'two' 'merge file: the key the file names is applied'
 Confirm-Equal $merged.Segments.cost $false 'merge file: the segment toggle is applied'
@@ -909,6 +946,10 @@ Confirm-Equal (Get-ThresholdText $c) '60/85' 'shipped config: thresholds 60 and 
 Confirm-True ($shippedJson.thresholds.warn -eq 60 -and $shippedJson.thresholds.bad -eq 85) 'shipped config: the file itself says 60 and 85'
 Confirm-Equal $c.Icons.Count 0 'shipped config: no icon overrides'
 Confirm-True ($shippedJson.icons -is [System.Management.Automation.PSCustomObject] -and @($shippedJson.icons.PSObject.Properties).Count -eq 0) 'shipped config: the file itself has an empty icons object'
+# quiet is left out of the shipped file, the way order and rows are: its defaults hide nothing, so a
+# file that spelled them out would only be three zeros to keep in step with the segment list.
+Confirm-True ($c.Quiet.cost -eq 0 -and $c.Quiet.context -eq 0 -and $c.Quiet.limits -eq 0) 'shipped config: quiet is off for all three'
+Confirm-True ($null -eq $shippedJson.PSObject.Properties['quiet']) 'shipped config: the file itself has no quiet key'
 
 Write-Host '== unit: icons' -ForegroundColor Cyan
 # Get-IconSet turns the built-in table and the config's overrides into one glyph per name, and the
@@ -1618,6 +1659,71 @@ Confirm-Equal (Get-ContextSegment (Get-ContextPayload 10) $lowCfg).Role 'ok' 'co
 Confirm-Equal (Get-ContextSegment (Get-ContextPayload 20) $lowCfg).Role 'warn' 'context 20 at 20/40: warn at the edge'
 Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 65) $lowCfg).Role 'ok' 'context 1M 65 at 20/40: the 1M bands stay 70 and 90'
 
+# quiet.context hides the meter below the percentage it names. The comparison is on the clamped
+# percentage the segment would show, and it is strict, so the threshold itself still renders.
+$quietOff = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 0.0; context = 0.0; limits = 0.0 } }
+$quiet30 = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 0.0; context = 30.0; limits = 0.0 } }
+Confirm-True ("$((Get-ContextSegment (Get-ContextPayload 8) $quietOff).Text)".StartsWith("$iconCtx 8% ")) 'context quiet 0: an 8% meter is built'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 8) $quiet30) $null 'context quiet 30: an 8% meter is hidden'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 29) $quiet30) $null 'context quiet 30: 29% is still below the line'
+Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload 30) $quiet30)) 'context quiet 30: 30% is on the line and stays'
+# A payload at -5 clamps to 0 and is compared as 0, so a quiet of 0 keeps it and any threshold hides it.
+Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload -5) $quietOff)) 'context quiet 0: a clamped 0% meter is still built'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload -5) $quiet30) $null 'context quiet 30: a clamped 0% meter is hidden'
+# $bandCfg carries no Quiet table at all, which is what an older config object looks like to the guard.
+Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload 0) $bandCfg)) 'context quiet: a config with no Quiet table hides nothing'
+
+# Quiet never hides a segment carrying a warning or an error. With the bands moved down under the quiet
+# threshold, a percentage the threshold would hide is already yellow or red, and the meter has to stay.
+# Without the role check every one of these would vanish, which is the setting hiding its own alarm.
+$quietAlarm = @{ Thresholds = @{ Warn = 20; Bad = 40 }; Quiet = @{ cost = 0.0; context = 50.0; limits = 0.0 } }
+$seg = Get-ContextSegment (Get-ContextPayload 25) $quietAlarm
+Confirm-Equal $seg.Role 'warn' 'context quiet 50 at 20/40: 25% is warn'
+Confirm-True ($null -ne $seg) 'context quiet 50: a warn meter below the threshold is kept'
+$seg = Get-ContextSegment (Get-ContextPayload 45) $quietAlarm
+Confirm-Equal $seg.Role 'bad' 'context quiet 50 at 20/40: 45% is bad'
+Confirm-True ($null -ne $seg) 'context quiet 50: a bad meter below the threshold is kept'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 19) $quietAlarm) $null 'context quiet 50: 19% is still ok, so the threshold hides it'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 20) $quietAlarm).Role 'warn' 'context quiet 50: 20% is the first warn, kept at the edge of the band'
+# The 1M window keeps its own 70 and 90 whatever the config says, and the rule follows those bands, not
+# the config's, so a threshold above 70 cannot hide a wide window's yellow meter either.
+$quietWide = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 0.0; context = 80.0; limits = 0.0 } }
+$seg = Get-ContextSegment (Get-WideContextPayload 75) $quietWide
+Confirm-Equal $seg.Role 'warn' 'context quiet 80 on a 1M window: 75% is warn on the fixed bands'
+Confirm-True ($null -ne $seg) 'context quiet 80 on a 1M window: the warn meter is kept'
+Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 65) $quietWide) $null 'context quiet 80 on a 1M window: 65% is ok there, so the threshold hides it'
+
+Write-Host '== unit: cost' -ForegroundColor Cyan
+$iconCost = [char]::ConvertFromUtf32(0xF0155)
+function Get-CostPayload($Usd) { return [pscustomobject]@{ cost = [pscustomobject]@{ total_cost_usd = $Usd } } }
+$quiet1 = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 1.0; context = 0.0; limits = 0.0 } }
+Confirm-Equal (Get-CostSegment (Get-CostPayload 0.4312) $quietOff).Text ("$iconCost `$" + ('{0:N2}' -f 0.4312)) 'cost quiet 0: the figure is built'
+Confirm-Equal (Get-CostSegment ([pscustomobject]@{}) $quietOff) $null 'cost: no cost object'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 0.4312) $quiet1) $null 'cost quiet 1: 0.4312 is hidden'
+# The test is the raw number, not the rounded text: 0.996 prints as 1.00 and is still below 1.
+Confirm-Equal (Get-CostSegment (Get-CostPayload 0.996) $quiet1) $null 'cost quiet 1: 0.996 rounds to the threshold and is still hidden'
+Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload 1) $quiet1)) 'cost quiet 1: exactly 1 is on the line and stays'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 12.5) $quiet1).Text ("$iconCost `$" + ('{0:N2}' -f 12.5)) 'cost quiet 1: 12.50 stays, text unchanged'
+Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload 0) $quietOff)) 'cost quiet 0: a zero cost is still built'
+Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload 0.02) $bandCfg)) 'cost quiet: a config with no Quiet table hides nothing'
+# A cost that is not a number cannot be compared, so the guard stands aside and the builder does what
+# it always did with it, which is to format whatever converts.
+Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload '0.50') $quiet1)) 'cost quiet 1: a string cost is not a figure the guard can read, so it is not hidden'
+
+Write-Host '== unit: quiet guard' -ForegroundColor Cyan
+$quietTable = @{ Quiet = @{ cost = 1.0; context = 30.0; limits = 0.0 } }
+Confirm-True (Test-QuietValue $quietTable 'cost' 0.99) 'quiet guard: below the threshold is quiet'
+Confirm-True (-not (Test-QuietValue $quietTable 'cost' 1.0)) 'quiet guard: equal to the threshold is not quiet'
+Confirm-True (-not (Test-QuietValue $quietTable 'limits' 0)) 'quiet guard: a threshold of 0 hides nothing, not even 0'
+Confirm-True (-not (Test-QuietValue $quietTable 'lines' 0)) 'quiet guard: a name the table does not carry hides nothing'
+Confirm-True (-not (Test-QuietValue @{} 'cost' 0.5)) 'quiet guard: a config with no Quiet table hides nothing'
+Confirm-True (-not (Test-QuietValue @{ Quiet = 30 } 'cost' 0.5)) 'quiet guard: a Quiet that is not a table hides nothing'
+Confirm-True (-not (Test-QuietValue $quietTable 'cost' 'lots')) 'quiet guard: a value that is not a number hides nothing'
+Confirm-True (-not (Test-QuietValue $quietTable 'cost' $true)) 'quiet guard: a boolean is not a number'
+Confirm-True (-not (Test-QuietValue $quietTable 'cost' $null)) 'quiet guard: a missing value hides nothing'
+Confirm-True (-not (Test-QuietValue $quietTable 'cost' ([double]::NaN))) 'quiet guard: NaN hides nothing'
+Confirm-True (Test-QuietValue @{ Quiet = @{ cost = 1 } } 'COST' 0.5) 'quiet guard: the name is matched the way a hashtable matches, case and all'
+
 Write-Host '== unit: threshold' -ForegroundColor Cyan
 # Both bands are always passed; the function has no defaults, so a caller without a config is a bug
 # the tests would see as everything red, not as a quiet 60/85.
@@ -1707,6 +1813,11 @@ foreach ($paceRow in $paceTable) {
     }
     Confirm-Equal $pace.Arrow $paceRow.Arrow "pace: $($paceRow.Label) - arrow"
     Confirm-Equal $pace.Red $paceRow.Red "pace: $($paceRow.Label) - red flag"
+    # Over is the overrun projection named rather than read off the glyph, so it has to agree with the
+    # arrow on every row: the quiet guard reads Over, and the two drifting apart is what would let a
+    # threshold hide a warning. Red is the far end of Over, so it can never be set without it.
+    Confirm-Equal $pace.Over ($paceRow.Arrow -eq $paceUp) "pace: $($paceRow.Label) - over flag agrees with the arrow"
+    Confirm-True (-not $paceRow.Red -or $pace.Over) "pace: $($paceRow.Label) - red implies over"
 }
 # A reset or a usage figure that is not a number at all. Get-FiniteNumber is the type gate, so a string
 # that would cast, a boolean, an array, NaN and infinity all fall out here, as does a usage figure that
@@ -1737,9 +1848,11 @@ foreach ($paceRow in $noPaceTable) {
 $pace = Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) 80
 Confirm-Equal $pace.Arrow $paceUp 'pace on the default clock: half a window gone at 80% points up'
 Confirm-Equal $pace.Red $true 'pace on the default clock: 160% projected is red'
+Confirm-Equal $pace.Over $true 'pace on the default clock: 160% projected is an overrun'
 $pace = Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) 40
 Confirm-Equal $pace.Arrow $paceFlat 'pace on the default clock: half a window gone at 40% holds'
 Confirm-Equal $pace.Red $false 'pace on the default clock: 80% projected is not red'
+Confirm-Equal $pace.Over $false 'pace on the default clock: 80% projected is not an overrun'
 Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 100) 80)) 'pace on the default clock: a reset already past gives no arrow'
 Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 16400) 90)) 'pace on the default clock: the first half hour gives no arrow'
 Confirm-True ($null -eq (Get-PaceArrow 4102444800 80)) 'pace on the default clock: a far-future reset gives no arrow'
@@ -1808,6 +1921,102 @@ Confirm-True ($null -eq $seg.Short) 'limits 7d alone: short would equal text, so
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":70,"resets_at":4102444800},"seven_day":{"used_percentage":12,"resets_at":4102444800}}') $bandCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 70% (") -and $seg.Text.EndsWith(') 7d 12%')) 'limits 5h worst with a live reset: text carries the countdown'
 Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits 5h worst with a live reset: short drops the countdown'
+
+# quiet.limits is tested on the larger of the 5h and 7d figures, so a high 7-day window keeps the
+# segment even when the 5-hour one is calm. The comparison is strict, and it happens after the figures
+# are gathered, so a payload with no readable figure is already gone by then.
+# The bands here are 95 and 99 on purpose. Under the default 60 and 85 every figure this block feeds in
+# above 60 is already yellow, and the rule that quiet never hides a warning would keep the segment for
+# that reason instead - the assertions would pass without the cutoff working at all. High bands leave
+# every figure below 95 'ok', so the cutoff is the only thing deciding. The role rule gets its own
+# cases further down, where it is what is under test.
+$quiet70 = @{ Thresholds = @{ Warn = 95; Bad = 99 }; Quiet = @{ cost = 0.0; context = 0.0; limits = 70.0 } }
+# The same high bands with the cutoff off, so the role a hidden segment WOULD have carried can be read
+# from a call that returns one. Asserting Role on the hidden call would only ever read $null.
+$bands95 = @{ Thresholds = @{ Warn = 95; Bad = 99 }; Quiet = @{ cost = 0.0; context = 0.0; limits = 0.0 } }
+$limitsWorst61 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000},"spend_limit":{"used_percentage":44,"resets_at":1700000000}}'
+$limits7d88 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":24,"resets_at":1700000000},"seven_day":{"used_percentage":88,"resets_at":1700000000}}'
+Confirm-Equal (Get-LimitsSegment $limitsWorst61 $quietOff).Text "$iconLimit 5h 61% 7d 12% `$ 44%" 'limits quiet 0: the segment is built'
+Confirm-Equal (Get-LimitsSegment $limitsWorst61 $bands95).Role 'ok' 'limits quiet 70: under 95/99 a worst of 61 is ok, so only the cutoff is under test'
+Confirm-Equal (Get-LimitsSegment $limitsWorst61 $quiet70) $null 'limits quiet 70: a window figure of 61 is hidden'
+Confirm-Equal (Get-LimitsSegment $limits7d88 $quiet70).Text "$iconLimit 5h 24% 7d 88%" 'limits quiet 70: a 7d figure of 88 keeps the segment, calm 5h and all'
+# The same payload under the default bands: 61 is yellow there, and a yellow segment is an alarm the
+# cutoff may not touch. Same threshold, same figures, opposite answer, decided by the role alone.
+$quiet70Default = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 0.0; context = 0.0; limits = 70.0 } }
+Confirm-Equal (Get-LimitsSegment $limitsWorst61 $quiet70Default).Role 'warn' 'limits quiet 70 at 60/85: a worst of 61 is warn'
+Confirm-True ($null -ne (Get-LimitsSegment $limitsWorst61 $quiet70Default)) 'limits quiet 70 at 60/85: the warn segment is kept despite being under the cutoff'
+# The spend limit drives the colour but not the quiet cutoff: the key is a threshold on how much of an
+# allowance is gone, and a spend limit is not one of those. $quiet70's high bands are what make this
+# provable - under 60/85 a 90% spend is red and the role rule would keep the segment either way.
+$limitsSpend90 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"spend_limit":{"used_percentage":90,"resets_at":1700000000}}'
+Confirm-Equal (Get-LimitsSegment $limitsSpend90 $bands95).Role 'ok' 'limits quiet 70: a 90% spend under 95/99 bands is still ok, so only the cutoff is under test'
+Confirm-Equal (Get-LimitsSegment $limitsSpend90 $quiet70) $null 'limits quiet 70: a 5h of 10 is hidden even beside a 90% spend, which is not a window'
+Confirm-Equal (Get-LimitsSegment $limitsSpend90 $quietOff).Text "$iconLimit 5h 10% `$ 90%" 'limits quiet 0: the same payload builds both figures'
+# The spend figure still drives the colour, which is what $worst is for and what the split leaves alone.
+Confirm-Equal (Get-LimitsSegment $limitsSpend90 $quietOff).Role 'bad' 'limits: a 90% spend still drives the colour under the default bands'
+# Neither window present: nothing for the cutoff to compare, so the segment is kept whatever it says.
+$limitsSpendOnly = Get-JsonPayload 'rate_limits' '{"spend_limit":{"used_percentage":44,"resets_at":1700000000}}'
+Confirm-Equal (Get-LimitsSegment $limitsSpendOnly $quiet70).Text "$iconLimit `$ 44%" 'limits quiet 70: a payload with only a spend limit has no window to compare and is kept'
+$limitsSpendOnlyHigh = Get-JsonPayload 'rate_limits' '{"spend_limit":{"used_percentage":90,"resets_at":1700000000}}'
+Confirm-True ($null -ne (Get-LimitsSegment $limitsSpendOnlyHigh $quiet70)) 'limits quiet 70: a high spend alone is kept too, for the same reason'
+# The 7d window counts towards the cutoff even when the 5h one is calm, because both are allowances.
+$limits7dOnlyHigh = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"seven_day":{"used_percentage":75,"resets_at":1700000000}}'
+Confirm-True ($null -ne (Get-LimitsSegment $limits7dOnlyHigh $quiet70)) 'limits quiet 70: a 7d of 75 is a window above the cutoff and keeps the segment'
+
+# Quiet never hides a segment carrying a warning or an error. Two ways a limits segment can carry one.
+# First the role: with the bands under the cutoff, a figure the cutoff would hide is already coloured.
+$quietRoleAlarm = @{ Thresholds = @{ Warn = 20; Bad = 40 }; Quiet = @{ cost = 0.0; context = 0.0; limits = 70.0 } }
+$limits5h25 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":25,"resets_at":1700000000}}'
+Confirm-Equal (Get-LimitsSegment $limits5h25 $quietRoleAlarm).Role 'warn' 'limits quiet 70 at 20/40: a 5h of 25 is warn'
+Confirm-True ($null -ne (Get-LimitsSegment $limits5h25 $quietRoleAlarm)) 'limits quiet 70: a warn segment below the cutoff is kept'
+$limits5h45 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":45,"resets_at":1700000000}}'
+Confirm-Equal (Get-LimitsSegment $limits5h45 $quietRoleAlarm).Role 'bad' 'limits quiet 70 at 20/40: a 5h of 45 is bad'
+Confirm-True ($null -ne (Get-LimitsSegment $limits5h45 $quietRoleAlarm)) 'limits quiet 70: a bad segment below the cutoff is kept'
+$limits5h15 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":15,"resets_at":1700000000}}'
+Confirm-Equal (Get-LimitsSegment $limits5h15 $quietRoleAlarm) $null 'limits quiet 70: a 5h of 15 is still ok there, so the cutoff hides it'
+
+# Then the pace arrow, which is the dangerous one: early in a five-hour window a LOW current percentage
+# is exactly what projects an overrun, so a cutoff set above it would hide the warning at the moment it
+# is worth most. These resets are built from the live clock, because Get-LimitsSegment calls
+# Get-PaceArrow without a clock parameter. A tenth of the window gone (16200 seconds left) makes the
+# projection ten times the current figure; real time only moves the reading further into the window,
+# which lowers the projection, so each case sits far clear of the limit it is on the safe side of.
+$paceNow = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+function Get-PaceLimitsPayload([double] $Used, [long] $Left) {
+    return Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":' + ([string]::Format([cultureinfo]::InvariantCulture, '{0}', $Used)) + ',"resets_at":' + ($paceNow + $Left) + '}}')
+}
+# 15% a tenth of the way in projects 150%: a red up arrow on a segment whose role is still ok.
+# Every text check below reads the segment through "$($seg.Text)", which is the empty string when the
+# builder returned nothing. A regression that hides one of these then fails the assertion by name
+# instead of throwing on a null and taking the rest of the file down with it.
+$paceRed = Get-PaceLimitsPayload 15 16200
+$seg = Get-LimitsSegment $paceRed $quietOff
+Confirm-Equal $seg.Role 'ok' 'limits pace red: 15% current is still ok under the default bands'
+Confirm-True ("$($seg.Text)".Contains($paceUp)) 'limits pace red: the segment carries the up arrow'
+Confirm-True ("$($seg.Text)".Contains("$esc[31m")) 'limits pace red: the arrow is red'
+$seg = Get-LimitsSegment $paceRed $quietRoleAlarm
+Confirm-True ($null -ne $seg) 'limits quiet 70: a red overrun projection keeps a 15% segment the cutoff would hide'
+Confirm-True ("$($seg.Text)".Contains($paceUp)) 'limits quiet 70: and the arrow it was kept for is on the line'
+# 11% a tenth of the way in projects 110%: an up arrow that is not red yet. Still a warning, still kept.
+$paceUpNotRed = Get-PaceLimitsPayload 11 16200
+$seg = Get-LimitsSegment $paceUpNotRed $quietOff
+Confirm-True ("$($seg.Text)".Contains($paceUp)) 'limits pace up: the segment carries the up arrow'
+Confirm-True (-not "$($seg.Text)".Contains("$esc[31m")) 'limits pace up: 110% projected is not red'
+Confirm-True ($null -ne (Get-LimitsSegment $paceUpNotRed $quietRoleAlarm)) 'limits quiet 70: an overrun projection that is not red yet still keeps the segment'
+# 5% a tenth of the way in projects 50%: a flat arrow, which is not a warning, so the cutoff applies.
+$paceFlatLow = Get-PaceLimitsPayload 5 16200
+Confirm-True ("$((Get-LimitsSegment $paceFlatLow $quietOff).Text)".Contains($paceFlat)) 'limits pace flat: 50% projected holds, so the arrow is flat'
+Confirm-Equal (Get-LimitsSegment $paceFlatLow $quietRoleAlarm) $null 'limits quiet 70: a flat arrow is not a warning, so the cutoff still hides the segment'
+# No arrow at all, inside the first tenth of the window, and the cutoff applies as it always did.
+Confirm-Equal (Get-LimitsSegment (Get-PaceLimitsPayload 15 17500) $quietRoleAlarm) $null 'limits quiet 70: no arrow yet inside the first half hour, so the cutoff hides it'
+$limits70 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":70,"resets_at":1700000000}}'
+Confirm-True ($null -ne (Get-LimitsSegment $limits70 $quiet70)) 'limits quiet 70: exactly 70 is on the line and stays'
+$limits69 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":69,"resets_at":1700000000}}'
+Confirm-Equal (Get-LimitsSegment $limits69 $quiet70) $null 'limits quiet 70: 69 is still below the line'
+# The worst figure is the rounded one, so 69.6 reads as 70 in the comparison as well as in the text.
+$limits696 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":69.6,"resets_at":1700000000}}'
+Confirm-True ($null -ne (Get-LimitsSegment $limits696 $quiet70)) 'limits quiet 70: 69.6 rounds to 70 and stays'
+Confirm-True ($null -ne (Get-LimitsSegment $limitsWorst61 $bandCfg)) 'limits quiet: a config with no Quiet table hides nothing'
 
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000},"spend_limit":{"used_percentage":null,"resets_at":null}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit null percentage: unchanged text'
@@ -4181,6 +4390,61 @@ $r = Invoke-StatusLine $payload01 (Write-TempConfig 'render-icons-surrogate.json
 Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains("$iconModel Fable 5.1")) 'render icons: a surrogate falls back to the robot'
 $r = Invoke-StatusLine 'not json' (Write-TempConfig 'render-icons-bolt.json' '{ "icons": { "model": "F0E7" } }') 0
 Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) "$bolt claude" 'render icons: the bad-payload fallback line carries the override too'
+
+# The quiet key through the whole script, at the unset width, on the samples whose figures straddle it:
+# 01 spends $0.43 in an 8% context and carries no rate limits, 02 spends $12.50, 06 is at 32% context
+# with a 7-day figure of 88, and 07's window figures are 61 and 12 with a cost of $0.02. One config
+# covers all four, so the same three thresholds are seen to hide one sample's segment and keep another's.
+# The colour bands are raised to 95 and 99 in that config for the same reason the unit cases raise them:
+# under the default 60 and 85, 07's 5-hour figure of 61 is already yellow, and quiet may not hide a
+# segment carrying a warning, so the tachometer would stay for that reason and the cutoff would never be
+# under test. The default-band case is exercised on its own below, where the rule is the point.
+Write-Host ''
+Write-Host '== render: quiet' -ForegroundColor Cyan
+$payload02 = $samplePayloads['02-feature-dirty-high.json']
+$payload07 = $samplePayloads['07-limits-expired-default-effort.json']
+$quietPath = Write-TempConfig 'render-quiet.json' '{ "quiet": { "cost": 1, "context": 30, "limits": 70 }, "thresholds": { "warn": 95, "bad": 99 } }'
+$quietGlyph = @{ cost = $iconCost; context = $iconCtx; limits = $iconLimit }
+foreach ($case in @(
+        @{ Payload = $payload01; Label = '01'; Hidden = @('cost', 'context'); Shown = @() }
+        @{ Payload = $payload02; Label = '02'; Hidden = @(); Shown = @('cost', 'context') }
+        @{ Payload = $payload06; Label = '06'; Hidden = @(); Shown = @('cost', 'context', 'limits') }
+        @{ Payload = $payload07; Label = '07'; Hidden = @('cost', 'context', 'limits'); Shown = @() })) {
+    $r = Invoke-StatusLine $case.Payload $quietPath 0
+    Confirm-True ($r.ExitCode -eq 0) "render quiet $($case.Label): exit code $($r.ExitCode)"
+    Confirm-True ($r.Err.Count -eq 0) "render quiet $($case.Label): stderr empty"
+    $text = ConvertTo-PlainText ($r.Lines -join "`n")
+    foreach ($n in $case.Hidden) { Confirm-True (-not $text.Contains($quietGlyph[$n])) "render quiet $($case.Label): $n is below the line and gone" }
+    foreach ($n in $case.Shown) { Confirm-True ($text.Contains($quietGlyph[$n])) "render quiet $($case.Label): $n is at or above the line and shown" }
+    Confirm-True ($text.Contains($iconModel)) "render quiet $($case.Label): the model segment has no threshold and stays"
+}
+# 01 carries no rate_limits at all, so the tachometer is absent whatever quiet.limits says; asserting it
+# here would pass for the wrong reason, and the case above leaves it out on purpose. What is worth
+# pinning is that hiding two of 01's segments leaves the rest of its line exactly as it was.
+$r = Invoke-StatusLine $payload01 $quietPath 0
+Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains("$iconFolder my-project")) 'render quiet 01: the segments with no threshold are untouched'
+# The rule through a whole render: the same sample and the same cutoff, with the default bands back, so
+# 07's 5-hour figure of 61 is yellow. Quiet may not hide a segment carrying a warning, so the tachometer
+# stays even though 61 is under the cutoff of 70 - and the cost and context thresholds beside it, which
+# have no warning to preserve, still take effect. This is the case the feature would otherwise get wrong.
+$quietAlarmPath = Write-TempConfig 'render-quiet-alarm.json' '{ "quiet": { "cost": 1, "context": 30, "limits": 70 } }'
+$r = Invoke-StatusLine $payload07 $quietAlarmPath 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render quiet alarm: exit code 0, stderr empty'
+$text = ConvertTo-PlainText ($r.Lines -join "`n")
+Confirm-True ($text.Contains("$iconLimit 5h 61%")) 'render quiet alarm: a warn limits segment under the cutoff is kept, with its figure'
+Confirm-True (-not $text.Contains($iconCost)) 'render quiet alarm: cost has no warning state, so its threshold still hides it'
+Confirm-True (-not $text.Contains($iconCtx)) 'render quiet alarm: the 5% meter is ok, so its threshold still hides it'
+# A quiet block the script cannot read leaves every segment visible and says nothing on stderr.
+foreach ($case in @(
+        @{ Name = 'render-quiet-scalar'; Json = '{ "quiet": 5 }'; Label = 'a quiet that is not an object' }
+        @{ Name = 'render-quiet-strings'; Json = '{ "quiet": { "cost": "1", "context": "30", "limits": "70" } }'; Label = 'quiet values written as strings' }
+        @{ Name = 'render-quiet-negative'; Json = '{ "quiet": { "cost": -1, "context": -1, "limits": -1 } }'; Label = 'negative quiet values' })) {
+    $r = Invoke-StatusLine $payload07 (Write-TempConfig "$($case.Name).json" $case.Json) 0
+    Confirm-True ($r.ExitCode -eq 0) "render quiet: $($case.Label), exit code $($r.ExitCode)"
+    Confirm-True ($r.Err.Count -eq 0) "render quiet: $($case.Label) prints nothing on stderr"
+    $text = ConvertTo-PlainText ($r.Lines -join "`n")
+    Confirm-True ($text.Contains($iconCost) -and $text.Contains($iconCtx) -and $text.Contains($iconLimit)) "render quiet: $($case.Label) leaves every segment visible"
+}
 
 # The presets through the whole script, against the sample that carries every segment's data. What is
 # checked is glyphs on the line rather than a config table, so a preset that parsed and then failed to
