@@ -189,6 +189,10 @@ function Get-IconDefault {
         model    = 0xF06A9   # nf-md-robot
         context  = 0xF035B   # nf-md-memory
         cost     = 0xF0155   # nf-md-cash
+        # nf-md-timer_outline, the outline stopwatch. Issue #8 named that glyph and then wrote F13AB
+        # beside it, which is nf-md-timer, the filled one; the name is what says how the glyph should
+        # look, so this is F051B, the code point the Nerd Fonts glyph list gives that name.
+        clock    = 0xF051B   # nf-md-timer_outline
         folder   = 0xF07C    # nf-fa-folder_open
         chevron  = 0x203A    # single right-pointing angle quotation mark (between owner/name and the leaf)
         branch   = 0xE0A0    # powerline branch
@@ -370,14 +374,15 @@ function Get-SegmentRegistry {
     if (-not $script:segmentRegistry) {
         $script:segmentRegistry = @(
             @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 3;     DropRank = 8;     Row = 2; RowRank = 1 }
-            @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 3;     Row = 2; RowRank = 3 }
-            @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
-            @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 4;     Row = 2; RowRank = 2 }
-            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 6;     DropRank = 2;     Row = 1; RowRank = 5 }
-            @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 4 }
-            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 5;     DropRank = 6;     Row = 1; RowRank = 2 }
-            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 4;     DropRank = 7;     Row = 1; RowRank = 3 }
+            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 3;     DropRank = 9;     Row = 2; RowRank = 1 }
+            @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 3 }
+            @{ Name = 'clock';   Build = 'Get-ClockSegment';   Default = $true; ShrinkRank = 7;     DropRank = 2;     Row = 2; RowRank = 4 }
+            @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 5 }
+            @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 5;     Row = 2; RowRank = 2 }
+            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 6;     DropRank = 3;     Row = 1; RowRank = 5 }
+            @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 6;     Row = 1; RowRank = 4 }
+            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 5;     DropRank = 7;     Row = 1; RowRank = 2 }
+            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 4;     DropRank = 8;     Row = 1; RowRank = 3 }
         )
     }
     return $script:segmentRegistry
@@ -462,21 +467,24 @@ function Get-ConfigPreset($Name) {
     switch ($Name.ToLowerInvariant()) {
         'minimal' {
             return @{ Layout = 'one'; Style = 'plain'; Segments = @{
-                    model = $true; context = $true; cost = $false; lines = $false; limits = $false
+                    model = $true; context = $true; cost = $false; clock = $false; lines = $false; limits = $false
                     badges = $false; pr = $false; folder = $true; branch = $true
                 }
             }
         }
         'cost' {
+            # The clock is on here and not in `minimal`: this preset is the line of numbers, and the
+            # elapsed time is the denominator under every rate on it. `minimal` answers which model,
+            # how full and where am I, and how long the session has run is none of the three.
             return @{ Layout = 'one'; Style = 'plain'; Segments = @{
-                    model = $true; context = $true; cost = $true; lines = $true; limits = $true
+                    model = $true; context = $true; cost = $true; clock = $true; lines = $true; limits = $true
                     badges = $false; pr = $false; folder = $false; branch = $false
                 }
             }
         }
         'full' {
             return @{ Layout = 'two'; Style = 'powerline'; Segments = @{
-                    model = $true; context = $true; cost = $true; lines = $true; limits = $true
+                    model = $true; context = $true; cost = $true; clock = $true; lines = $true; limits = $true
                     badges = $true; pr = $true; folder = $true; branch = $true
                 }
             }
@@ -759,8 +767,10 @@ function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Boun
         # git keys are, because they are not a pair that has to agree: a file naming only context leaves
         # limits where it was, and a value that is not a whole number keeps the value beneath it. 0 turns
         # that alarm off outright, and a negative clamps to it. The top of the range is Int32's own end
-        # rather than 100, so a value above 100 is kept as written and can then never fire, which is the
-        # other way of saying "off"; clamping it to 100 would turn it into an alarm at every full window.
+        # rather than 100, so a value above 100 is kept as written and fires only if the payload reports
+        # a figure that high: a context window never does, because the meter clamps to 100, but a rate
+        # limit can, because a limit really at 105% is left unclamped to say so. Clamping the level to
+        # 100 instead would turn it into an alarm at every full window.
         $al = $j.alarm
         if ($al -is [System.Management.Automation.PSCustomObject]) {
             $Cfg.Alarm.Context = Get-ConfigInteger $al.context $Cfg.Alarm.Context 0 ([int]::MaxValue)
@@ -908,9 +918,9 @@ function Format-Line($Segments, [string] $Style) {
 }
 
 # Renders a line and, when a width is given, shrinks then drops segments until it fits.
-# Stage 1 swaps segments for their Short form in $ShrinkOrder (cost, limits, context, branch, then folder
-# by default: the cost segment's Short is the session total without its per-turn delta, so the delta is
-# the first detail on the line to go).
+# Stage 1 swaps segments for their Short form in $ShrinkOrder (cost, limits, context, branch, folder,
+# badges, then clock by default: the cost segment's Short is the session total without its per-turn
+# delta, so the delta is the first detail on the line to go, and the clock's api share is the last).
 # Stage 2 drops whole segments in $DropOrder. Either order left $null comes from the registry's ranks; an
 # empty array skips that stage. The model segment is never dropped whatever the drop order says, so it may
 # overflow on its own. Returns $null when nothing is left.
@@ -1459,6 +1469,7 @@ $icons = Get-IconSet $cfg
 $iconModel = $icons.model
 $iconCtx = $icons.context
 $iconCost = $icons.cost
+$iconClock = $icons.clock
 $iconFolder = $icons.folder
 $iconChevron = $icons.chevron
 $iconBranch = $icons.branch
@@ -1587,12 +1598,15 @@ function Get-ModelSegment($d, $cfg) {
     return @{ Name = 'model'; Text = $text; Short = $null; Role = $role; Bold = $true }
 }
 
-# THE RULE THIS FEATURE RESTS ON: quiet never hides a segment that is carrying a warning or an error.
-# It is a setting for hiding boring numbers, and one that also hid the alarm would be worse than not
-# having it at all, so every caller checks its own warning state before it asks this question - the
-# context and limits builders keep a segment whose role is warn or bad, and limits keeps one whose pace
-# arrow projects an overrun, whatever the threshold says. The cost segment has no warning state of its
-# own to preserve: its role is always dim and it has no thresholds, so the guard is the whole story there.
+# THE RULE THIS FEATURE RESTS ON: quiet never hides a segment that is carrying a warning, an error or
+# an alarm. It is a setting for hiding boring numbers, and one that also hid the alarm would be worse
+# than not having it at all, so every caller checks its own warning state before it asks this question -
+# the context and limits builders keep a segment whose role is warn or bad, limits keeps one whose pace
+# arrow projects an overrun, and both keep one whose figure is at or above its Test-AlarmLevel line,
+# whatever the threshold says. That last one is not implied by the first: alarm.context and alarm.limits
+# are allowed to sit below thresholds.warn, and there the role reads ok while the model segment is red.
+# The cost segment has no warning state of its own to preserve: its role is always dim, it has no
+# thresholds and no alarm is read against a dollar figure, so the guard is the whole story there.
 #
 # True when a segment has nothing worth saying yet: the value it would show is below the config's quiet
 # threshold for it, so the builder returns $null and the segment never reaches the line. The comparison
@@ -1662,15 +1676,23 @@ function Get-ContextSegment($d, $cfg) {
     $size = $d.context_window.context_window_size
     # ORDER MATTERS, and these three lines are why. $pct is normalised first - by Get-WholePercent,
     # which is the same rule the model segment's alarm compares against - the role is read from the
-    # normalised $pct, and only then is the quiet guard asked. Whoever changes how $pct is normalised
-    # must keep the role below it: a role read from the raw payload figure would band the wrong number,
-    # and the guard would then hide a meter the wrong colour says is calm. Both rules break at once,
-    # and a third with them: the alarm would then fire on a percentage this segment never printed.
+    # normalised $pct, and only then is the quiet guard asked, with the role and the alarm both settled
+    # in front of it. Whoever changes how $pct is normalised must keep the role below it: a role read
+    # from the raw payload figure would band the wrong number, and the guard would then hide a meter the
+    # wrong colour says is calm. Both rules break at once, and a third with them: the alarm would then
+    # fire on a percentage this segment never printed.
     $role = if (Test-WideWindow $size) { Get-ThresholdRole $pct 70 90 } else { Get-ThresholdRole $pct $cfg.Thresholds.Warn $cfg.Thresholds.Bad }
     # quiet.context compares the clamped percentage, which is what the segment would show. The role is
     # settled first so the rule above can hold: a meter already yellow or red is an alarm, and a
-    # threshold set above the warn band must not swallow it.
-    if ($role -eq 'ok' -and (Test-QuietValue $cfg 'context' $pct)) { return $null }
+    # threshold set above the warn band must not swallow it. The model segment's own alarm is the third
+    # thing weighed here, and the most serious of the three: alarm.context is allowed to sit below
+    # thresholds.warn, and there the role still reads 'ok' while the model turns red - a red bar with no
+    # meter under it saying which number it is about. What that test reads is the RAW payload figure and
+    # not the clamped $pct, so it asks exactly the question Test-AlarmState asks for the model segment
+    # and the two can never disagree, a payload above 100 against a level above 100 included.
+    # Test-AlarmLevel answers false for a level that is missing, so a config with no Alarm table hides
+    # what it always hid.
+    if ($role -eq 'ok' -and -not (Test-AlarmLevel $d.context_window.used_percentage $cfg.Alarm.Context) -and (Test-QuietValue $cfg 'context' $pct)) { return $null }
     $filled = [math]::Round($pct / 10)
     $bar = ((G 0x2588) * $filled) + ((G 0x2591) * (10 - $filled))
     $used = [double] ($d.context_window.total_input_tokens ?? 0) + [double] ($d.context_window.total_output_tokens ?? 0)
@@ -1709,8 +1731,9 @@ function Get-ContextSegment($d, $cfg) {
 # the threshold answers whether this session is worth a segment, not whether this turn was expensive, and
 # a segment the guard hides has no suffix to argue about.
 # There is no warning state to preserve here, unlike context and limits: this segment's role is always
-# dim and no config threshold colours it, so a spend the user called boring is only ever boring and the
-# quiet guard stands alone.
+# dim, no config threshold colours it, and no alarm is read against a dollar figure - Test-AlarmState
+# asks only the context window and the two rate limits - so a spend the user called boring is only ever
+# boring and the quiet guard stands alone.
 function Get-CostSegment($d, $cfg, $state) {
     $cost = $d.cost.total_cost_usd
     if ($null -eq $cost) { return $null }
@@ -1733,6 +1756,61 @@ function Get-CostSegment($d, $cfg, $state) {
         if ($delta -ge 0.01) { $suffix = " (+`$" + ('{0:N2}' -f $delta) + ')' }
     }
     return @{ Name = 'cost'; Text = "$total$suffix"; Short = $(if ($suffix) { $total } else { $null }); Role = 'dim'; Bold = $false }
+}
+
+# A count of milliseconds as one short elapsed string, or $null when it is not a duration any session
+# could have run for. Three forms: `<1m` under a minute, `12m` under an hour, and `1h12m` above one,
+# with the minutes zero-padded so an hour and five reads as 1h05m rather than as 1h50m.
+# Refusing rather than repairing is the whole of the guard, and the reason is that every repair here
+# produces a reading that looks real. Minus twenty minutes clamped to zero prints `<1m` and reads as a
+# session that has just started; a NaN clamped the same way reads identically; there is no elapsed time
+# that says "we cannot tell", so the segment goes instead. The upper end is refused on the same terms
+# rather than pinned to the largest value that fits: past what a [TimeSpan] can hold, a count of
+# milliseconds is not an interval at all. Going through a TimeSpan is also what keeps the format honest -
+# the total hours of a span that is in range fit an Int32, so the hours can never reach the scientific
+# notation a bare double would print.
+# Separate from Get-ClockSegment so the three forms and the refusals can be tested without a payload,
+# and separate from TimeLeft, which counts down to an epoch and has a days form this does not want: a
+# session is measured in the hours it has run, not rounded off to `2d`.
+function Format-Elapsed([object] $ms) {
+    $n = Get-FiniteNumber $ms
+    if ($null -eq $n -or $n -le 0) { return $null }
+    $span = try { [TimeSpan]::FromMilliseconds($n) } catch { return $null }
+    if ($span.TotalMinutes -lt 1) { return '<1m' }
+    if ($span.TotalHours -lt 1) { return '{0}m' -f $span.Minutes }
+    return '{0}h{1:00}m' -f [int] [math]::Floor($span.TotalHours), $span.Minutes
+}
+
+# How long the session has been running and how much of that went on waiting for the model:
+# `1h12m · api 38%`. Dim and never bold, with no threshold band and no alarm behind it, because a long
+# session is not an error - it is the one figure on the line that says nothing about what the session is
+# doing right now, which is also why it is the first whole segment worth dropping.
+# The separator is a middle dot with a space either side rather than a dash: a dash beside a percentage
+# reads as a range.
+# The share goes through Get-WholePercent, the one percentage rule on the line. It is not a candidate for
+# the [math]::Floor exception subagent-statusline.ps1 documents: that exception exists to stop a colour
+# band running ahead of the number under it, and nothing bands on this figure.
+# An api figure that could not be true is refused rather than clamped into range. A session cannot have
+# spent longer waiting on the API than it has existed, so a payload claiming it did is not a share to pin
+# at 100 - it is a pair of figures with nothing to say about the split, and the elapsed time on its own
+# is the honest answer, which is the answer a payload carrying no api figure at all already gets.
+# Clamping a figure that cannot be true is how a negative token count came to render `100% cached` and a
+# negative stored total a confident `+$101.07`.
+# The short form is the elapsed time without the share, and it is the last detail stage one of the
+# fitting sheds. No share means no short form, so a render with nothing to shed costs the fitting nothing,
+# the same way the cost segment's does.
+function Get-ClockSegment($d) {
+    $elapsed = Format-Elapsed $d.cost.total_duration_ms
+    if (-not $elapsed) { return $null }
+    $text = "$iconClock $elapsed"
+    # Format-Elapsed answered, so the total is a finite number above zero and the division below is safe.
+    $total = Get-FiniteNumber $d.cost.total_duration_ms
+    $api = Get-FiniteNumber $d.cost.total_api_duration_ms
+    $share = ''
+    if ($null -ne $api -and $api -gt 0 -and $api -le $total) {
+        $share = ' ' + (G 0xB7) + ' api ' + (Get-WholePercent ($api / $total * 100)) + '%'
+    }
+    return @{ Name = 'clock'; Text = "$text$share"; Short = $(if ($share) { $text } else { $null }); Role = 'dim'; Bold = $false }
 }
 
 # Lines added/removed this session; shown when either is non-zero. Inline colours keep the dim background intact.
@@ -1831,19 +1909,24 @@ function Get-LimitsSegment($d, $cfg) {
     # ORDER MATTERS here the same way it does in Get-ContextSegment. Each figure is normalised to a whole
     # percent inside the loop above - by Get-WholePercent, the rule the alarm compares against too -
     # $worst and $windowWorst are accumulated from those normalised figures, the role is read from
-    # $worst, and only then is the quiet guard asked. Whoever changes how a figure is normalised must
-    # keep that chain: a role read from a raw payload figure would band the wrong number, and the guard
-    # would then hide a segment the wrong colour says is calm. The pace arrow below is the one
-    # deliberate exception, and says so: it needs the raw figure because it is projecting from it.
+    # $worst, and only then is the quiet guard asked, with the role, the pace arrow and the alarm all
+    # settled in front of it. Whoever changes how a figure is normalised must keep that chain: a role
+    # read from a raw payload figure would band the wrong number, and the guard would then hide a
+    # segment the wrong colour says is calm. The pace arrow below is the one deliberate exception, and
+    # says so: it needs the raw figure because it is projecting from it.
     $role = Get-ThresholdRole $worst $cfg.Thresholds.Warn $cfg.Thresholds.Bad
     # quiet.limits is tested on the larger of the two rate-limit windows, not on $worst, which also
-    # carries the spend limit and stays the colour-driving figure. Two guards stand in front of it, both
-    # the rule above: a segment already yellow or red is an alarm, and so is a five-hour figure whose
+    # carries the spend limit and stays the colour-driving figure. Three guards stand in front of it,
+    # all the rule above: a segment already yellow or red is an alarm, so is a five-hour figure whose
     # projection overruns the window - that is the case a threshold would otherwise swallow at its most
-    # dangerous, because a low current percentage early in a window is exactly what projects red.
-    # With neither window present there is nothing to compare, and Test-QuietValue answers false on the
+    # dangerous, because a low current percentage early in a window is exactly what projects red - and
+    # so is a window figure at or above alarm.limits, which is allowed to sit below thresholds.warn and
+    # would otherwise turn the model red with no tachometer under it saying which limit it is. That last
+    # test reads $windowWorst, the same pair of windows Test-AlarmState reads for the model segment; the
+    # spend limit raises no alarm there and is not compared here either. With neither window present
+    # there is nothing to compare, and both Test-AlarmLevel and Test-QuietValue answer false on the
     # $null, so a payload carrying only a spend limit is never hidden by this key.
-    if ($role -eq 'ok' -and -not ($paceAt -ge 0 -and $pace.Over) -and (Test-QuietValue $cfg 'limits' $windowWorst)) { return $null }
+    if ($role -eq 'ok' -and -not ($paceAt -ge 0 -and $pace.Over) -and -not (Test-AlarmLevel $windowWorst $cfg.Alarm.Limits) -and (Test-QuietValue $cfg 'limits' $windowWorst)) { return $null }
     if ($paceAt -ge 0) {
         $arrow = if ($pace.Red) { Format-Inline 'removed' $pace.Arrow $role $cfg.Style } else { $pace.Arrow }
         $bits[$paceAt] = "$paceHead $arrow$paceTail"

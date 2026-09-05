@@ -15,6 +15,7 @@
     "model": true,
     "context": true,
     "cost": true,
+    "clock": true,
     "lines": true,
     "limits": true,
     "badges": true,
