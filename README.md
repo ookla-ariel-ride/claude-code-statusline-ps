@@ -286,7 +286,7 @@ whose text encoding the script does not get to choose.
 | `folder` | `repo`, `leaf` | `repo` shows `owner/name` from `workspace.repo` when the payload has one, with the current directory's name after a `›` when it differs from the project root. `leaf` always shows the directory name alone. |
 | `segments.<name>` | `true`, `false` | `false` hides that segment. The names are the ones in the file above; `segments.pr` is the pull-request link. |
 | `state` | `true`, `false` | `false` stops the script writing a state file for the session. |
-| `taskbar` | `true`, `false` | `true` draws the context percentage on the window's taskbar button, so how full the window is stays readable while Claude Code is minimised. Green below the `alarm` level and red at or above it, using the same alarm the model segment uses, so a rate limit at its level colours the bar too while the number stays the context window's. A render with no percentage to show — a session before its first API response, or a payload the script could not read — clears the bar rather than leaving the last one lit. Off by default, and see [Taskbar progress](#taskbar-progress) below before turning it on: Claude Code writes to the same taskbar button. |
+| `taskbar` | `true`, `false` | `true` draws the context percentage on the window's taskbar button, so how full the window is stays readable while Claude Code is minimised. Green below the `alarm` level and red at or above it, using the same alarm the model segment uses, so a rate limit at its level colours the bar too while the number stays the context window's. A render with no percentage to show — a session before its first API response, or a payload the script could not read — clears the bar rather than leaving the last one lit. Set it in your own `statusline.json` rather than a project's: a payload that will not parse names no project directory, so a project-only value is not read on the one render that most needs to clear the bar. Off by default, and see [Taskbar progress](#taskbar-progress) below before turning it on: Claude Code writes to the same taskbar button. |
 | `order` | `["model", "branch", "context"]` | The segments of layout `one`, left to right. A segment left out is not shown, an unknown name is skipped, a repeat keeps its first place. Left out altogether, as the installed file leaves it, the segments come in the script's order, new ones included. An empty list, a list naming no segment, or anything that is not a list does the same. |
 | `rows` | `[["model", "branch"], ["context", "cost"]]` | The two lines of layout `two`, with the same rules per row. A segment named on the first row is not repeated on the second, and a row may be empty. Left out, the script's own two rows apply, new segments included. Anything but exactly two lists, or two lists naming no segment, does the same. |
 | `thresholds` | `{ "warn": 20, "bad": 40 }` | Where the context meter and the rate limits turn yellow and red: whole numbers from 0 to 100 (`20` or `20.0`, not `20.5`), `warn` no higher than `bad`. Either value wrong keeps 60 and 85 for both. A 1M window keeps its own 70 and 90. |
@@ -359,6 +359,18 @@ so does one line in the same terminal:
 ```powershell
 Write-Host "`e]9;4;0;0`a" -NoNewline
 ```
+
+Turn it on in your own `~/.claude/statusline.json` rather than in a project's
+`.claude/statusline.json`. The taskbar belongs to the window, not to the repository, so a project
+deciding what your taskbar does is a stranger arrangement than a project pinning its own layout. There
+is a concrete difference too. When Claude Code hands the script something that is not JSON, the payload
+names no project directory, so the project file is not read on that render — a rule older than this key
+that every project-only value has always been subject to. Enabled only in a project file, that render
+writes no clear and the last bar drawn stays lit until the next payload that parses, which is the next
+event or the next `refreshInterval` tick. It lasts longer than that only if every payload after it also
+fails to parse, and by then the line itself has been reduced to the model glyph and the word `claude`,
+which is the visible half of the same fault. Enabled in the user file, that render clears the bar like
+any other, because the user file is read whatever the payload turns out to be.
 
 A terminal that does not know OSC 9;4 — Windows Terminal is the one that does; most others ignore it —
 shows nothing at all rather than stray characters, because an unknown OSC string is swallowed up to its
@@ -629,6 +641,12 @@ Set `"terminalProgressBarEnabled": false` in `settings.json`, or `"taskbar": fal
 `statusline.json`; see [Taskbar progress](#taskbar-progress). A bar that is stuck after turning
 `taskbar` off is the last one the status line drew — close the window, or run
 ``Write-Host "`e]9;4;0;0`a" -NoNewline`` in that terminal.
+
+The bar is stuck on an old percentage: it clears itself on the next render whose payload parses, so
+this means every render since has been given something that is not JSON — the line beside it will have
+been reduced to the model glyph and the word `claude`. If the bar is stale and the line is not, the key
+is set in a project's `.claude/statusline.json` rather than in your own; move it, and see
+[Taskbar progress](#taskbar-progress) for why that matters.
 
 Nothing to go on: the git probe, the probe cache and the state file swallow every failure, so a
 missing branch segment or a cache that never seems to hit leaves nothing behind to look at. Set

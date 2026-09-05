@@ -215,6 +215,21 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   key off writes nothing at all, not even a clear — a default-off feature must not fight Claude Code's
   own progress bar on every render of every user who never asked for it — and the cost of that choice
   is that the last bar drawn stays until the window closes, which the README says out loud.
+- **The one corner the taskbar does not repair, and why it is a documented limit rather than a fix.**
+  A payload that will not parse names no project directory, so the project file is not read on that
+  path. That rule predates this key and every project-only value has always been subject to it; for
+  every other key it is invisible, because a colour or a toggle that did not reach a line is replaced
+  on the next render. This key writes state that outlives the render, so `"taskbar": true` set **only**
+  in a project file leaves the last good render's bar lit with no clear behind it. Closing it would
+  need the script to know it had lit that terminal's bar before, and a malformed payload leaves nothing
+  to key that on: no `project_dir`, no `session_id`, and no terminal identifier of any kind. The
+  alternatives were both worse than the gap — reading a project config from somewhere the payload did
+  not name widens an untrusted read on the path with the least information, and clearing
+  unconditionally would have the default-off configuration write terminal state it was never asked to
+  write and wipe Claude Code's own bar. So: enabled in the user file there is no gap, enabled in a
+  project file the bar is stale until the next payload that parses, and both halves are pinned by
+  tests. The fix, if it is ever wanted, belongs in how the malformed path finds the project config,
+  not in this feature.
 - **One write site, and it is not a line.** The sequence goes out through a single
   `Write-Host -NoNewline` above every path that prints and above the one that prints nothing. The
   bytes are identical to gluing it onto the front of the first line, so a layout-one render is still

@@ -5857,6 +5857,61 @@ foreach ($seq in @("$esc]9;4;1;32`a", $taskbarClear, "$esc]9;4;2;100`a")) {
     Confirm-Equal ($seq.Substring(1, $seq.Length - 2) -replace '[0-9;\]]', '') '' "render taskbar: '$shown' carries nothing but digits, semicolons and the bracket between its ends"
 }
 
+# WHERE THE KEY IS ENABLED CHANGES WHAT A MALFORMED PAYLOAD CAN DO, and this is the one corner where
+# the taskbar is not self-repairing. A payload that will not parse names no project directory, so the
+# PROJECT file is not read on that path - a rule that predates this key and that every project-only
+# value has always been subject to. For every other key that is invisible: a colour or a toggle that
+# did not reach a line which is replaced on the next render anyway. This key writes state that outlives
+# the render, so a project-only "taskbar": true leaves the last good render's bar lit with no clear
+# behind it. The USER file has no such gap: it is read whatever the payload is. Both halves are pinned
+# here so the difference is a fact of the suite and not only a paragraph in the README.
+Write-Host ''
+Write-Host '== render: taskbar config location' -ForegroundColor Cyan
+$tbProjDir = Join-Path $tmp 'render-taskbar-project'
+New-Item -ItemType Directory -Force (Join-Path $tbProjDir '.claude') | Out-Null
+[System.IO.File]::WriteAllText((Join-Path (Join-Path $tbProjDir '.claude') 'statusline.json'), '{ "taskbar": true }', [System.Text.UTF8Encoding]::new($false))
+$tbProjPayload = (@{
+        model          = @{ display_name = 'Sonnet 5' }
+        context_window = @{ used_percentage = 95 }
+        workspace      = @{ project_dir = $tbProjDir; current_dir = $tbProjDir }
+    } | ConvertTo-Json -Depth 20 -Compress)
+# Ordinal on the StartsWith calls below for the usual reason: these are rendered lines carrying escapes.
+# 1. The project key really does reach a good render, so what follows is about the malformed payload and
+#    not about the key never having arrived. Run with no -Config at all, the way a real session runs.
+$r = Invoke-StatusLine $tbProjPayload $null 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render taskbar project: exit code 0, stderr empty'
+Confirm-True (($r.Lines -join "`n").StartsWith("$esc]9;4;2;95`a", [System.StringComparison]::Ordinal)) 'render taskbar project: a project-only key lights the bar red at 95%'
+# 2. THE GAP, pinned rather than described. Same session, next render, and this payload will not parse:
+#    there is no project directory to read the key from, so no sequence goes out at all and the red bar
+#    from the render above stays lit until the next payload that parses. If this check ever starts
+#    failing, the malformed path has gained a way to reach the project file and the limitation
+#    documented under Taskbar progress can go with it.
+$r = Invoke-StatusLine 'not json {' $null 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render taskbar project: bad payload exit code 0, stderr empty'
+Confirm-True (-not ($r.Lines -join "`n").Contains("$esc]9;4")) 'render taskbar project: KNOWN LIMIT - a project-only key writes no clear for a payload that will not parse'
+# 3. The other half, and the reason the README says to enable this in the user file: that file is read
+#    on every path, so the same malformed payload does get its clear. A copy of the script beside a
+#    statusline.json of our own, run with no -Config, so the child reads that file from its own
+#    $PSScriptRoot - the same technique the zero-segment user-file cases above use.
+$tbHome = Join-Path $tmp 'taskbar-user-config'
+New-Item -ItemType Directory -Force $tbHome | Out-Null
+$tbScript = Join-Path $tbHome 'statusline.ps1'
+Copy-Item -LiteralPath $script -Destination $tbScript -Force
+[System.IO.File]::WriteAllText((Join-Path $tbHome 'statusline.json'), '{ "taskbar": true }', [System.Text.UTF8Encoding]::new($false))
+foreach ($case in @(
+        @{ Name = 'good'; Payload = $tbProjPayload; Want = "$esc]9;4;2;95`a"; Label = 'a user-level key lights the bar red at 95%' }
+        @{ Name = 'bad'; Payload = 'not json {'; Want = "$esc]9;4;0;0`a"; Label = 'and clears it for a payload that will not parse' })) {
+    $tbOldCols = $env:COLUMNS
+    try {
+        Remove-Item Env:COLUMNS -ErrorAction SilentlyContinue
+        $r = Invoke-ChildPwsh $tbScript @() $case.Payload
+    } finally {
+        if ($null -ne $tbOldCols) { $env:COLUMNS = $tbOldCols } else { Remove-Item Env:COLUMNS -ErrorAction SilentlyContinue }
+    }
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) "render taskbar user-file $($case.Name): exit code 0, stderr empty"
+    Confirm-True (($r.Lines -join "`n").StartsWith($case.Want, [System.StringComparison]::Ordinal)) "render taskbar user-file $($case.Name): $($case.Label)"
+}
+
 # The project config through the whole script, at the unset width. 06 carries a cost figure, and the
 # payload names a project directory holding a .claude\statusline.json that turns the cost segment off.
 # With no -Config the script reads the user file beside it (the shipped one, every segment on) and then
