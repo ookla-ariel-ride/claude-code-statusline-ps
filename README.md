@@ -344,10 +344,15 @@ what changed, the script keeps one small JSON file per session in `claude-status
 your temp folder (`%TEMP%` on Windows, `~/.claude/statusline-state` when there is no temp folder).
 The file is named after the session id and holds numbers only: the last cost, input and output token
 totals, context and 5-hour usage percentages, and up to twenty timestamped cost readings. No prompt
-text, path or file name is written. Files not touched for a day are deleted on a later render.
-Nothing on the line uses the file yet. Set `state` to `false` and the script neither reads nor
-writes it. Upgrading over an existing `statusline.json` leaves that file alone, so a config without
-a `state` key gets the default, which is on. `.\install.ps1 -Uninstall` prints where the files are
+text, path or file name is written. Files not touched for a day are deleted on a later render. A
+payload that does not carry the cost or the token totals leaves the stored ones alone, so a figure is
+never replaced by nothing; the two percentages are read fresh each render and are simply absent when
+the payload is silent, because a carried-forward percentage would say something false about now.
+The cost segment uses it, for the change since the previous render: the file is read once, before the
+line is built, and written after it is printed. Set `state` to `false` and the script neither reads nor
+writes it, and the cost segment shows the session total alone. Upgrading over an existing
+`statusline.json` leaves that file alone, so a config without a `state` key gets the default, which is
+on. `.\install.ps1 -Uninstall` prints where the files are
 so you can delete the folder. The same goes for the `pr` segment: an existing `statusline.json`
 without a `pr` key shows it; add `"pr": false` under `segments` to turn it off.
 
@@ -369,10 +374,11 @@ cache on, five seconds, a 1.5 second timeout. Add `"git": { "cache": false }` to
 Claude Code tells the script the terminal width. When a line is too long the script shortens it in
 two stages:
 
-1. Detail comes off four segments, in this order: from limits, every figure but the one that drives
-   its colour (the worst one when the segment is yellow or red, otherwise the first one present) plus
-   the countdown and the pace arrow; the token counts from context; every count from the branch; and
-   the owner and directory name from the folder, which keeps only the repository name.
+1. Detail comes off five segments, in this order: the per-turn delta from cost, which is the first
+   thing on the line to go; from limits, every figure but the one that drives its colour (the worst
+   one when the segment is yellow or red, otherwise the first one present) plus the countdown and the
+   pace arrow; the token counts from context; every count from the branch; and the owner and directory
+   name from the folder, which keeps only the repository name.
 2. Whole segments go, from the right: lines, badges, cost, limits, pr, folder, branch, context.
 
 The model segment always stays.
@@ -393,7 +399,7 @@ still records what the session spent.
 |---|---|---|---|
 | model | <img src="docs/icons/robot.svg" height="18" alt="robot"> `nf-md-robot` | `model.display_name`, `context_window.context_window_size`, `exceeds_200k_tokens`, `context_window.used_percentage`, `rate_limits.five_hour`, `seven_day` | Bold cyan. On a 1M window `1M` follows the name in a lighter cyan, then a warning triangle when Claude Code reports `exceeds_200k_tokens` as true. The whole segment turns red once the context window or a rate limit reaches the `alarm` percentage, 90 unless the config moves it. The text does not change. This is the one segment that is never shortened and never dropped, which is why the alarm rides on it: at any width, and on either row of layout two, a full context window is still visible as a red line |
 | context | <img src="docs/icons/memory.svg" height="18" alt="memory"> `nf-md-memory` | `context_window.*` | Percent, ten-block bar, used/total tokens, then a dim `92% cached`. Green below 60%, yellow below 85%, red above, or the `thresholds` from the config. On a 1M window the cut-offs are 70% and 90% whatever the config says, so red still means about 100k tokens left. The cached share is `cache_read_input_tokens` over the whole of `current_usage`, absent on older Claude Code versions and before the first API response, and it goes when the token counts go. A block with a negative count is refused rather than repaired, so a malformed payload shows no share instead of a made-up one |
-| cost | <img src="docs/icons/cash.svg" height="18" alt="cash"> `nf-md-cash` | `cost.total_cost_usd` | Dimmed, two decimals |
+| cost | <img src="docs/icons/cash.svg" height="18" alt="cash"> `nf-md-cash` | `cost.total_cost_usd`, `cost_usd` from the session state file | Dimmed, two decimals, with the change since the previous render in parentheses: `$1.07 (+$0.12)`. The suffix is there only when the total rose by at least a cent, so most renders show the total alone, and so does the first render of a session, one with no state file, and one where `state` is off. With `statusLine.refreshInterval` set the command re-runs on a timer, and a render with no turn behind it has nothing to add. The delta is the first detail the width fitting sheds |
 | lines | <img src="docs/icons/code.svg" height="18" alt="code"> `nf-fa-code` | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
 | limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day`, `spend_limit` | `5h 24% → (1h12m) 7d 41% $ 62%`. Coloured by the worst of the figures, with the 60% and 85% bands, or the config's `thresholds`, whatever the window size. The countdown is omitted once the reset time has passed. The arrow after the 5-hour figure paces it against how much of the five-hour window has gone: `→` while carrying on at this rate still lands inside the window, `↑` once it would overrun, and a red `↑` once the projection reaches 120%. There is no arrow in the first half hour of a window, where the projection swings on a single busy minute, nor after the reset time, nor before anything has been used. Only the 5-hour figure gets one; a week is too long to pace from one payload. The `$` figure is the spend limit. Claude Code sends it only behind a Claude apps gateway with a spend limit, and only from 2.1.251 on |
 | badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
@@ -636,11 +642,11 @@ Done so far:
 - [x] A subagent status line for the agent panel, installed with `-Subagents`
 - [x] Named presets: `minimal`, `cost` and `full` under one `preset` key
 - [x] Worktree name beside the branch
+- [x] Cost per turn beside the session total, from the state file
 
 [Issues #2 to #43](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
-each with its own plan. In rough order: new segments (cache warmth, cost per turn, session
-clock, links on the folder and branch), and finally an ASCII style that
-needs no Nerd Font and a light palette.
+each with its own plan. In rough order: new segments (cache warmth, session clock, links on the folder
+and branch), and finally an ASCII style that needs no Nerd Font and a light palette.
 
 ## License
 

@@ -165,7 +165,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-CacheShare', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-CacheShare', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover', 'Get-CountedNumber'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
 # these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
@@ -227,14 +227,14 @@ Write-Host '== unit: registry' -ForegroundColor Cyan
 # out by hand, so a change there is a deliberate one. Array order is layout one.
 $registryTable = @(
     @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 2;     DropRank = 8;     Row = 2; RowRank = 1 }
-    @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = $null; DropRank = 3;     Row = 2; RowRank = 3 }
+    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 3;     DropRank = 8;     Row = 2; RowRank = 1 }
+    @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 3;     Row = 2; RowRank = 3 }
     @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
-    @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
+    @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 4;     Row = 2; RowRank = 2 }
     @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 5 }
     @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 4 }
-    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 4;     DropRank = 6;     Row = 1; RowRank = 2 }
-    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 3;     DropRank = 7;     Row = 1; RowRank = 3 }
+    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 5;     DropRank = 6;     Row = 1; RowRank = 2 }
+    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 4;     DropRank = 7;     Row = 1; RowRank = 3 }
 )
 $registry = @(Get-SegmentRegistry)
 Confirm-Equal $registry.Count $registryTable.Count 'registry: nine records'
@@ -247,7 +247,9 @@ for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
         Confirm-Equal $got[$key] $want[$key] "registry: $($want.Name) $key"
     }
 }
-Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'limits,context,branch,folder' 'registry: shrink order'
+# Cost is first in the shrink order and third in the drop order: its per-turn delta is the first detail
+# on the line to go, and the segment itself still goes after lines and badges, which is where it was.
+Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'cost,limits,context,branch,folder' 'registry: shrink order'
 Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,badges,cost,limits,pr,folder,branch,context' 'registry: drop order'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 1) -join ',') 'model,folder,branch,pr,badges' 'registry: layout two row 1'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 2) -join ',') 'context,limits,cost,lines' 'registry: layout two row 2'
@@ -1118,6 +1120,35 @@ Confirm-Equal (Get-PayloadNumber 2147483648) $null 'state number: a count must f
 Confirm-Equal (Get-StateNumber 2147483648 -Whole) 2147483648 'state number: a whole figure may exceed an Int32'
 Confirm-Equal (Get-StateNumber 1e300 -Whole) $null 'state number: a whole figure must fit a long'
 
+# Every negative literal below is parenthesised, and that is not style. A bare `-100` in argument
+# position is bound as the STRING "-100", not as the number: PowerShell reads a leading hyphen as the
+# start of a parameter name and falls back to passing the token through as text. An untyped parameter
+# then holds a string, Get-FiniteNumber refuses it because it is not a ValueType, and the check passes
+# for the wrong reason - it would pass against an implementation with no sign rule at all. A mutation
+# run is what found it here. `(-100)` is an expression and binds the number, so write it that way
+# wherever a negative figure is the thing under test.
+#
+# A cumulative figure has to be possible as well as finite: dollars spent and tokens sent only count up,
+# so a negative one is a corrupt record or a wrong payload, not a figure. It is refused rather than
+# clamped, because a clamp to zero would turn an impossible input into a delta measured from nothing,
+# which is the most reassuring answer available and the least true.
+Confirm-Equal (Get-CountedNumber 1.07) 1.07 'counted number: a positive figure passes'
+Confirm-Equal (Get-CountedNumber 0) 0 'counted number: zero is a figure and passes'
+Confirm-Equal (Get-CountedNumber (-0.01)) $null 'counted number: a fraction below zero is refused'
+Confirm-Equal (Get-CountedNumber (-100)) $null 'counted number: a negative figure is refused, not clamped'
+Confirm-Equal (Get-CountedNumber 60000 -Whole) 60000 'counted number: -Whole passes a positive count'
+Confirm-Equal (Get-CountedNumber (-4000) -Whole) $null 'counted number: -Whole refuses a negative count'
+Confirm-Equal (Get-CountedNumber 1.5 -Whole) 1 'counted number: -Whole still floors'
+foreach ($case in @(
+        @{ N = 'a string';           V = 'lots' }
+        @{ N = 'a missing value';    V = $null }
+        @{ N = 'a boolean';          V = $true }
+        @{ N = 'an array';           V = @(1, 2) }
+        @{ N = 'NaN';                V = [double]::NaN }
+        @{ N = 'negative infinity';  V = [double]::NegativeInfinity })) {
+    Confirm-Equal (Get-CountedNumber $case.V) $null "counted number: $($case.N) is refused the same way"
+}
+
 $state = Merge-SessionState $null (Get-StatePayload 1.07) 1767225600
 Confirm-Equal $state.v 1 'state merge: version 1'
 Confirm-Equal $state.updated_at 1767225600 'state merge: updated_at is the clock given'
@@ -1164,21 +1195,64 @@ Confirm-Equal @($next.history).Count 2 'state merge: changed cost adds an entry'
 Confirm-Equal $next.history[0].cost_usd 1.07 'state merge: old entry kept first'
 Confirm-Equal $next.history[1].cost_usd 1.2 'state merge: new entry last'
 Confirm-Equal $next.history[1].t 1767225720 'state merge: new entry carries the clock'
+# A payload that does not carry a figure is not a session that lost it. The three counters - the cost
+# and the two token totals - count up over a session, so a payload with no cost object or no context
+# window keeps the figure the record holds instead of replacing it with nothing. Without this one such
+# payload erases the total the next delta is measured from, and a real rise across it is never shown.
+# The two percentages are gauges rather than counters, so they are read fresh and left null: see the
+# checks below them.
 $noCost = Merge-SessionState $back ([pscustomobject]@{ session_id = 'abc' }) 1767225780
-Confirm-Equal $noCost.cost_usd $null 'state merge: payload without cost gives null cost'
-Confirm-Equal $noCost.input_tokens $null 'state merge: payload without context gives null tokens'
+Confirm-Equal $noCost.cost_usd 1.07 'state merge: a payload without cost keeps the total the record holds'
+Confirm-Equal $noCost.input_tokens 60000 'state merge: a payload without context keeps the input tokens'
+Confirm-Equal $noCost.output_tokens 4000 'state merge: a payload without context keeps the output tokens'
 Confirm-Equal @($noCost.history).Count 1 'state merge: payload without cost adds no entry'
+# The percentages are not carried: how full the window is now, and how much of this five-hour window
+# has gone, are both answers about this moment. A compaction, a new window or a changed model makes a
+# carried-forward percentage a confident lie, and the five-hour figure resets to zero at its boundary,
+# so a stale one reads as usage that has not happened. A reader that gets null knows it has nothing.
+Confirm-Equal $noCost.used_percentage $null 'state merge: the context percentage is read fresh, not carried forward'
+Confirm-Equal $noCost.five_hour_percentage $null 'state merge: the five-hour percentage is read fresh, not carried forward'
+# Carrying needs something to carry: with no previous record every missing figure is still null.
+$firstNoCost = Merge-SessionState $null ([pscustomobject]@{ session_id = 'abc' }) 1767225780
+Confirm-Equal $firstNoCost.cost_usd $null 'state merge: with no previous record a missing cost is null'
+Confirm-Equal $firstNoCost.input_tokens $null 'state merge: with no previous record missing tokens are null'
+# A figure that is there but is not a number is a figure the payload did not carry, so it carries the
+# same way. A real zero is a figure and replaces the one before it.
+$badCarry = Merge-SessionState $back ([pscustomobject]@{ cost = [pscustomobject]@{ total_cost_usd = 'lots' } }) 1767225790
+Confirm-Equal $badCarry.cost_usd 1.07 'state merge: a cost that is not a number keeps the one the record holds'
+Confirm-Equal @($badCarry.history).Count 1 'state merge: a cost that is not a number adds no entry'
+$zeroCost = Merge-SessionState $back (Get-StatePayload 0) 1767225800
+Confirm-Equal $zeroCost.cost_usd 0 'state merge: a cost of zero is a figure and replaces the one before it'
+# A negative counter is refused on both doors: coming in from a payload, and being carried out of a
+# record that already holds one. A carried negative would otherwise survive every payload without a
+# cost and keep producing a fictitious delta for the rest of the session.
+$negPayload = Merge-SessionState $back (Get-StatePayload (-100)) 1767225810
+Confirm-Equal $negPayload.cost_usd 1.07 'state merge: a negative cost in the payload is refused and the record keeps its total'
+Confirm-Equal @($negPayload.history).Count 1 'state merge: a negative cost adds no history entry'
+$negTokens = Merge-SessionState $back ([pscustomobject]@{ context_window = [pscustomobject]@{ total_input_tokens = -5; total_output_tokens = -5 } }) 1767225820
+Confirm-Equal $negTokens.input_tokens 60000 'state merge: negative input tokens are refused and the record keeps its count'
+Confirm-Equal $negTokens.output_tokens 4000 'state merge: negative output tokens are refused and the record keeps its count'
+$negCarry = Merge-SessionState @{ cost_usd = -100; input_tokens = -5 } ([pscustomobject]@{ session_id = 'abc' }) 1767225830
+Confirm-Equal $negCarry.cost_usd $null 'state merge: a negative total in the record is not carried forward'
+Confirm-Equal $negCarry.input_tokens $null 'state merge: a negative count in the record is not carried forward'
+# The gauges are deliberately not given the same rule, so that decision is pinned rather than left to be
+# rediscovered: a percentage's range is not this file's business - a rate limit really can report over
+# 100 - and the one reader a stored one has refuses anything at or below zero at its own door.
+$negGauge = Merge-SessionState $back ([pscustomobject]@{ context_window = [pscustomobject]@{ used_percentage = -3 }
+        rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{ used_percentage = -3 } } }) 1767225840
+Confirm-Equal $negGauge.used_percentage -3 'state merge: a negative context percentage is stored as it arrived, because a gauge is not a counter'
+Confirm-Equal $negGauge.five_hour_percentage -3 'state merge: and so is a negative five-hour percentage'
 $badCost = Merge-SessionState $null ([pscustomobject]@{ cost = [pscustomobject]@{ total_cost_usd = 'lots' } }) 1
 Confirm-Equal $badCost.cost_usd $null 'state merge: string cost is not a number'
 Confirm-Equal @($badCost.history).Count 0 'state merge: string cost starts no history'
 
-# A payload can arrive with no cost object at all (the minimal sample is that shape), which stores a
-# null cost. The comparison is against the last history entry, not that null, so the render after the
-# gap does not re-append a cost that never moved.
+# A payload can arrive with no cost object at all (the minimal sample is that shape). The record keeps
+# the total it had, and the ring is compared against its own last entry rather than against that
+# carried figure, so the render after the gap does not re-append a cost that never moved.
 $run = Merge-SessionState $null (Get-StatePayload 1.07) 1
 Confirm-Equal @($run.history).Count 1 'state merge: gap run starts with one entry'
 $run = Merge-SessionState $run ([pscustomobject]@{ session_id = 'abc' }) 2
-Confirm-Equal $run.cost_usd $null 'state merge: gap run stores a null cost'
+Confirm-Equal $run.cost_usd 1.07 'state merge: gap run keeps the cost it had'
 Confirm-Equal @($run.history).Count 1 'state merge: gap run keeps the entry it had'
 $run = Merge-SessionState $run (Get-StatePayload 1.07) 3
 Confirm-Equal @($run.history).Count 1 'state merge: the same cost after a gap adds no entry'
@@ -1191,6 +1265,7 @@ Write-SessionState 'gap' (Merge-SessionState (Read-SessionState 'gap') (Get-Stat
 $gap = Read-SessionState 'gap'
 Confirm-Equal @($gap.history).Count 1 'state merge: 1.07, no cost, 1.07 through the file leaves one entry'
 Confirm-Equal $gap.history[0].cost_usd 1.07 'state merge: and that entry is the first cost'
+Confirm-Equal $gap.cost_usd 1.07 'state merge: and the file still holds the total across the gap'
 
 # Twenty-five renders with a rising cost through the file: the ring keeps the newest twenty.
 $ring = $null
@@ -1222,6 +1297,26 @@ Confirm-True ($odd -is [hashtable]) 'state read: odd but versioned file still re
 Confirm-Equal $odd.cost_usd $null 'state read: string cost reads as null'
 Confirm-Equal @($odd.history).Count 1 'state read: history entries without both numbers are dropped'
 Confirm-Equal $odd.history[0].cost_usd 0.5 'state read: the whole entry is kept'
+
+# A version 1 record can be hand-edited into a shape no session reaches. A negative counter is refused
+# field by field, the way a string one already is, and the rest of the record still reads: throwing the
+# whole file away would cost the ring and the other counters for a fault that says nothing about them.
+# The percentages are not counters and keep the plain rule, which is pinned here so the difference is a
+# decision rather than an oversight - their one reader, the pace arrow's fallback, refuses anything at
+# or below zero at its own door, and no rate limit's upper end is this file's business.
+[System.IO.File]::WriteAllText((Join-Path $stateDir 'negative.json'), '{ "v": 1, "updated_at": 5, "cost_usd": -100, "input_tokens": -6, "output_tokens": 4000, "used_percentage": -3, "five_hour_percentage": 23.5, "history": [ { "t": 6, "cost_usd": -2 }, { "t": 7, "cost_usd": 0.5 } ] }')
+$neg = Read-SessionState 'negative'
+Confirm-True ($neg -is [hashtable]) 'state read: a record with a negative counter still reads'
+Confirm-Equal $neg.cost_usd $null 'state read: a negative cost reads as no figure'
+Confirm-Equal $neg.input_tokens $null 'state read: a negative input count reads as no figure'
+Confirm-Equal $neg.output_tokens 4000 'state read: the counter beside it is untouched'
+Confirm-Equal $neg.updated_at 5 'state read: updated_at is a clock reading and keeps the plain rule'
+Confirm-Equal $neg.used_percentage -3 'state read: a percentage is a gauge and is not refused here'
+Confirm-Equal $neg.five_hour_percentage 23.5 'state read: the five-hour gauge reads as written'
+Confirm-Equal @($neg.history).Count 1 'state read: a ring entry with a negative cost is dropped'
+Confirm-Equal $neg.history[0].cost_usd 0.5 'state read: and the honest entry is kept'
+# The pace arrow is where a negative five-hour figure would land, and it refuses one already.
+Confirm-Equal (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) (-3)) $null 'pace arrow: a negative percentage draws no arrow'
 
 # The file name is the id itself when it is clean and at most 64 characters, as a UUID is. An id that had
 # characters stripped, or was longer than that, gets a hash of the whole id as a suffix, so two ids that
@@ -1500,6 +1595,22 @@ Confirm-Equal (Get-FittedLine @($fit[2]) 'plain' 1) $null 'fit: line without mod
 Confirm-Equal (Get-FittedLine @() 'plain' 40) $null 'fit: no segments gives null'
 $line = Get-FittedLine $fit 'powerline' 30
 Confirm-True ((Get-VisibleWidth $line) -le 30) 'fit: powerline respects width'
+
+# A cost with a Short form (its per-turn delta stripped) sheds it first of all in stage 1, ahead of the
+# limits figures and the context counts, and long before any whole segment goes. Full width is 46 here;
+# cost short gives 44, and the set with no delta at all is the 44 the checks above measure.
+$fitCost = Get-FitSegmentSet
+$fitCost[2] = @{ Name = 'cost'; Text = 'AAAA'; Short = 'AA'; Role = 'dim'; Bold = $false }
+Confirm-Equal (Get-VisibleWidth (Get-FittedLine $fitCost 'plain' $null)) 46 'fit: the delta widens the line'
+$line = Get-FittedLine $fitCost 'plain' 45
+Confirm-Equal (Get-VisibleWidth $line) 44 'fit: stage 1 sheds the cost delta first'
+Confirm-True (-not $line.Contains('AAAA') -and $line.Contains('AA') -and $line.Contains('IIIIII') -and $line.Contains('CCCCCC') -and $line.Contains('LL')) 'fit: only the cost delta went at 45, limits and context untouched and nothing dropped'
+# And the shed happens before the limits figures whatever else is on the line: at 43 the delta is gone
+# and limits is short, at 44 the delta alone is enough.
+$line = Get-FittedLine $fitCost 'plain' 44
+Confirm-True (-not $line.Contains('AAAA') -and $line.Contains('IIIIII')) 'fit: the delta alone gets the line to 44'
+$line = Get-FittedLine $fitCost 'plain' 43
+Confirm-True (-not $line.Contains('AAAA') -and $line.Contains('III') -and -not $line.Contains('IIIIII')) 'fit: the delta goes before the limits figures'
 
 # A branch with a Short form (its ahead/behind counts stripped) sheds it in stage 1, after context and
 # before any whole segment goes. Full width is 46 here; limits short gives 43, context 40, branch 38.
@@ -1886,6 +1997,63 @@ Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload 0.02) $bandCfg)) 'cost
 # A cost that is not a number cannot be compared, so the guard stands aside and the builder does what
 # it always did with it, which is to format whatever converts.
 Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload '0.50') $quiet1)) 'cost quiet 1: a string cost is not a figure the guard can read, so it is not hidden'
+
+# The per-turn delta: the change since the total the previous render wrote into the state file, in
+# parentheses behind the total, and only when it is worth at least a cent. Every expected figure here is
+# built with the same '{0:N2}' the segment uses, so a culture that writes 12,50 is compared against its
+# own text rather than against an English one.
+function Get-CostState($Usd) { return @{ v = 1; cost_usd = $Usd } }
+function Get-CostTotalText($Usd) { return "$iconCost `$" + ('{0:N2}' -f $Usd) }
+function Get-CostDeltaText($Usd, $Delta) { return (Get-CostTotalText $Usd) + " (+`$" + ('{0:N2}' -f $Delta) + ')' }
+function Get-CostText($Usd, $State) { return (Get-CostSegment (Get-CostPayload $Usd) $quietOff $State).Text }
+$costTotal = Get-CostTotalText 1.07
+Confirm-Equal (Get-CostText 1.07 (Get-CostState 0.95)) (Get-CostDeltaText 1.07 0.12) 'cost delta: 0.95 to 1.07 shows twelve cents'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState 0.95)).Short $costTotal 'cost delta: the short form is the total on its own'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState 0.95)).Role 'dim' 'cost delta: the role is still dim'
+# Under a cent there is nothing to say. 1.07 - 1.066 is 0.004, which is not a cent however it is rounded.
+Confirm-Equal (Get-CostText 1.07 (Get-CostState 1.066)) $costTotal 'cost delta: a change under a cent shows nothing'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState 1.066)).Short $null 'cost delta: no suffix means no short form, so the fitting skips the segment as before'
+# Exactly a cent is the first delta that shows. 1.08 - 1.07 is 0.010000000000000009 in binary floating
+# point, and 0.03 - 0.02 is 0.009999999999999998: both are a cent, and the figure the text prints is the
+# figure the test reads, so both show.
+Confirm-Equal (Get-CostText 1.08 (Get-CostState 1.07)) (Get-CostDeltaText 1.08 0.01) 'cost delta: exactly a cent shows'
+Confirm-Equal (Get-CostText 0.03 (Get-CostState 0.02)) (Get-CostDeltaText 0.03 0.01) 'cost delta: a cent that binary floating point leaves just short still shows'
+# No previous total to compare with, in every shape that can take.
+Confirm-Equal (Get-CostText 1.07 $null) $costTotal 'cost delta: no state gives the plain total'
+Confirm-Equal (Get-CostText 1.07 @{ v = 1 }) $costTotal 'cost delta: a state record with no cost gives the plain total'
+Confirm-Equal (Get-CostText 1.07 (Get-CostState $null)) $costTotal 'cost delta: a null cost in the state gives the plain total'
+Confirm-Equal (Get-CostText 1.07 (Get-CostState 'lots')) $costTotal 'cost delta: a state cost that is not a figure gives the plain total'
+# A stored total no session could reach is not a baseline. Subtracting -100 from a real 1.07 would
+# render a confident (+$101.07); the figure is refused instead, and refused rather than clamped to zero,
+# because a clamp would answer with a delta measured from nothing and look entirely reasonable.
+Confirm-Equal (Get-CostText 1.07 (Get-CostState (-100))) $costTotal 'cost delta: a negative stored total gives the plain total, not fictitious spending'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState (-100))).Short $null 'cost delta: a negative stored total leaves no short form either'
+Confirm-Equal (Get-CostText 1.07 (Get-CostState (-0.01))) $costTotal 'cost delta: a stored total a hair below zero is refused too'
+# Both ends of the subtraction are asked the same question, so a negative payload total shows no delta
+# either - the total itself is formatted the way it always was, which is not this change's business.
+# It takes a config with no quiet table to see that, and the reason is worth writing down: with any
+# quiet threshold present, including the default 0, the guard tests `value -lt threshold` and a negative
+# total is below zero, so the whole segment is already hidden before the delta is ever asked. That is
+# this branch's inheritance rather than its doing, and it is pinned here so a later change to the guard
+# cannot quietly turn a nonsense total back on with a delta attached.
+Confirm-Equal (Get-CostSegment (Get-CostPayload (-1.07)) $quietOff (Get-CostState 0.5)) $null 'cost delta: the quiet guard hides a negative total before the delta is asked'
+Confirm-Equal (Get-CostSegment (Get-CostPayload (-1.07)) $bandCfg (Get-CostState 0.5)).Text (Get-CostTotalText (-1.07)) 'cost delta: a negative payload total gives no delta'
+Confirm-Equal (Get-CostSegment (Get-CostPayload (-1.07)) $bandCfg (Get-CostState 0.5)).Short $null 'cost delta: a negative payload total leaves no short form either'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff).Text $costTotal 'cost delta: a caller that passes no state at all gives the plain total'
+# A record older than the previous render - a render in between that printed but wrote nothing, or one
+# that exited before the write - gives the change since the total the file holds. That figure is still
+# the difference between two totals this session really reached, and no render in between showed a total
+# of its own for it to contradict.
+Confirm-Equal (Get-CostText 1.3 (Get-CostState 1.0)) (Get-CostDeltaText 1.3 0.3) 'cost delta: a state two turns old gives the change since the total it holds'
+# A total that did not move, and one that went backwards - a state file from another machine's clock -
+# print nothing. Only a rise is a delta.
+Confirm-Equal (Get-CostText 1.07 (Get-CostState 1.07)) $costTotal 'cost delta: an unchanged total shows nothing'
+Confirm-Equal (Get-CostText 1.07 (Get-CostState 2.5)) $costTotal 'cost delta: a total that went down shows nothing'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState 2.5)).Short $null 'cost delta: a total that went down leaves no short form either'
+# The quiet guard reads the session total, not the delta: an expensive turn inside a session the user
+# called boring is still boring, and a segment the guard hides has no delta to show.
+Confirm-Equal (Get-CostSegment (Get-CostPayload 0.4312) $quiet1 (Get-CostState 0.1)) $null 'cost delta: the quiet guard still hides the whole segment'
+Confirm-Equal (Get-CostSegment ([pscustomobject]@{}) $quietOff (Get-CostState 0.95)) $null 'cost delta: no cost object is still no segment'
 
 Write-Host '== unit: quiet guard' -ForegroundColor Cyan
 $quietTable = @{ Quiet = @{ cost = 1.0; context = 30.0; limits = 0.0 } }
@@ -3973,13 +4141,55 @@ Confirm-Equal $file.v 1 'state render: file is version 1'
 Confirm-Equal $file.cost_usd 1.07 'state render: cost_usd matches the payload'
 Confirm-Equal $file.history.Count 1 'state render: the same cost twice is one history entry'
 Confirm-True ([math]::Abs($file.updated_at - [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) -lt 120) 'state render: updated_at is now'
+# The third render is the first with a total that moved, so it is the first to carry a delta: the file
+# holds 1.07 and the payload says 1.50. This is the feature end to end - a figure built from a file
+# written by an earlier process.
 $r3 = Invoke-StatusLine (Get-StatePayloadJson 1.5) $null 0
-Confirm-NormalRender $r3 '1.50' 'state render third'
+Confirm-NormalRender $r3 '1.50 (+$0.43)' 'state render third'
 $file = Get-Content -LiteralPath (Join-Path $renderStateDir 'sess-1.json') -Raw | ConvertFrom-Json
 Confirm-Equal $file.cost_usd 1.5 'state render: cost_usd follows the payload'
 Confirm-Equal $file.history.Count 2 'state render: a new cost adds a history entry'
 Confirm-Equal $file.history[1].cost_usd 1.5 'state render: newest history entry last'
 Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f 'state render', $r3.Ms, (ConvertTo-PlainText ($r3.Lines -join ' ')))
+
+# The delta is the first thing the fitting sheds. The width here is the plain line's own, measured
+# rather than counted out by hand, so the render has room for everything except the suffix: it comes
+# back as the line it would have been with no state at all, with nothing dropped. COLUMNS is one more
+# than the target because the script leaves the last column free.
+$r4 = Invoke-StatusLine (Get-StatePayloadJson 1.62) $null 0
+Confirm-NormalRender $r4 '1.62 (+$0.12)' 'state render delta'
+$deltaPlain = "$iconModel M $chevron $iconCost `$1.74 $chevron $iconHome main"
+$r5 = Invoke-StatusLine (Get-StatePayloadJson 1.74) $null ((Measure-VisibleWidth $deltaPlain) + 1)
+Confirm-NormalRender $r5 '1.74' 'state render delta shed to fit'
+$r6 = Invoke-StatusLine (Get-StatePayloadJson 1.86) $null 120
+Confirm-NormalRender $r6 '1.86 (+$0.12)' 'state render delta at 120 columns'
+# A render that changes nothing - the refresh timer firing with no API call in between - sees a delta of
+# zero and prints the total alone, which is the documented behaviour rather than a missing figure.
+$r7 = Invoke-StatusLine (Get-StatePayloadJson 1.86) $null 0
+Confirm-NormalRender $r7 '1.86' 'state render: a repeat of the same total carries no delta'
+
+# A render that writes no state leaves the next delta spanning both turns. "state": false is the seam
+# used here, but a render that ends before the write - the zero-segment exit is one - has the same
+# effect, and this is what the next render does with it: the change since the last total the file holds,
+# which is a real difference between two totals this session reached. The render in between printed no
+# total of its own, so there is nothing on any line for the wider figure to contradict.
+$r8 = Invoke-StatusLine (Get-StatePayloadJson 1.9) $stateOffConfig 0
+Confirm-NormalRender $r8 '1.90' 'state stale: a render with the state file off shows no delta of its own'
+$r9 = Invoke-StatusLine (Get-StatePayloadJson 2.0) $null 0
+Confirm-NormalRender $r9 '2.00 (+$0.14)' 'state stale: the next delta spans both turns, from the last total the file holds'
+
+# A payload with no cost object at all: the line shows no cost segment, the render still writes state,
+# and the total the next delta is measured from survives it. This is the three-render shape the delta
+# has to hold up under - cost, no cost, cost - and without the carry in Merge-SessionState the middle
+# render would erase the total and the rise across the gap would never be shown.
+$noCostJson = ([ordered]@{ model = @{ display_name = 'M' }; session_id = 'sess-1'
+                           git = @{ branch = 'main'; status = 'clean' } } | ConvertTo-Json -Compress)
+$r10 = Invoke-StatusLine $noCostJson $null 0
+Confirm-Equal (ConvertTo-PlainText ($r10.Lines -join "`n")) "$iconModel M $chevron $iconHome main" 'state gap: a payload with no cost renders no cost segment'
+$file = Get-Content -LiteralPath (Join-Path $renderStateDir 'sess-1.json') -Raw | ConvertFrom-Json
+Confirm-Equal $file.cost_usd 2 'state gap: the stored total survives a payload that carries none'
+$r11 = Invoke-StatusLine (Get-StatePayloadJson 2.2) $null 0
+Confirm-NormalRender $r11 '2.20 (+$0.20)' 'state gap: the next delta is measured from the last real total'
 
 # A truncated or empty file is read as no state, the line is normal, and the file is replaced.
 foreach ($case in @(@{ Name = 'truncated'; Text = '{ "v": 1, "cost' }, @{ Name = 'empty'; Text = '' })) {
@@ -3990,6 +4200,18 @@ foreach ($case in @(@{ Name = 'truncated'; Text = '{ "v": 1, "cost' }, @{ Name =
     Confirm-Equal $file.cost_usd 2 "state $($case.Name) file: replaced by a good one"
     Confirm-Equal $file.history.Count 1 "state $($case.Name) file: history starts over"
 }
+
+# A hand-edited version 1 record holding a total no session can reach. The file parses, the version is
+# right and every other key is sound, so the record reads - and the delta still refuses it rather than
+# rendering the 101.07 that subtracting it would produce. The next write replaces it with a real figure.
+[System.IO.File]::WriteAllText((Join-Path $renderStateDir 'sess-1.json'),
+    '{ "v": 1, "updated_at": 5, "cost_usd": -100, "input_tokens": null, "output_tokens": null, "used_percentage": null, "five_hour_percentage": null, "history": [] }')
+$r = Invoke-StatusLine (Get-StatePayloadJson 1.07) $null 0
+Confirm-NormalRender $r '1.07' 'state negative file: the line is the total alone, with no fictitious delta'
+$file = Get-Content -LiteralPath (Join-Path $renderStateDir 'sess-1.json') -Raw | ConvertFrom-Json
+Confirm-Equal $file.cost_usd 1.07 'state negative file: the record is replaced by the real total'
+$r = Invoke-StatusLine (Get-StatePayloadJson 1.2) $null 0
+Confirm-NormalRender $r '1.20 (+$0.13)' 'state negative file: and the render after it measures from that real total'
 
 # "state": false and a payload without a session_id write nothing, not even the directory.
 Remove-Item -LiteralPath $renderStateDir -Recurse -Force
