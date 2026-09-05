@@ -32,7 +32,7 @@ how close you are to a rate limit, and which modes are on.
 - Session cost and lines added or removed.
 - Badges for fast mode, extended thinking, effort level, and vim mode, then the custom agent driving the thread and the name given to the session. They disappear when nothing is on.
 - The branch's pull request as `#12`, green when approved and red when changes are requested. Ctrl-click it in Windows Terminal to open the PR.
-- Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory, cached for a few seconds so most renders never start git.
+- Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory, cached for a few seconds so most renders never start git. Ctrl-click the folder to open the directory, or the branch to open it on the repository host.
 - Counts beside the branch name: `↑N` `↓N` commits ahead of or behind the upstream, `+N` staged, `~N` changed, `?N` untracked, and a red triangle with a count when files are in conflict. See [Branch counts](#branch-counts).
 - A fork glyph and the worktree name beside the branch when the session is in a git worktree, so a window on `wt-review` is not mistaken for the main checkout. See [Worktree name](#worktree-name).
 - One line or two, plain separators or powerline blocks, and any segment switched off, all from `statusline.json`.
@@ -222,6 +222,7 @@ The script reads `statusline.json` from its own folder, so after installing that
   "style": "plain",
   "folder": "repo",
   "state": true,
+  "links": true,
   "thresholds": { "warn": 60, "bad": 85 },
   "alarm": { "context": 90, "limits": 90 },
   "icons": {},
@@ -283,6 +284,7 @@ whose text encoding the script does not get to choose.
 | `folder` | `repo`, `leaf` | `repo` shows `owner/name` from `workspace.repo` when the payload has one, with the current directory's name after a `›` when it differs from the project root. `leaf` always shows the directory name alone. |
 | `segments.<name>` | `true`, `false` | `false` hides that segment. The names are the ones in the file above; `segments.pr` is the pull-request link. |
 | `state` | `true`, `false` | `false` stops the script writing a state file for the session. |
+| `links` | `true`, `false` | `false` turns off the OSC 8 hyperlinks on the folder, branch and pull-request segments. One key covers all three, because the reason to turn them off is never a segment: it is a terminal that prints the escape as text instead of rendering or swallowing it. The links add no width, so the line fits the same either way. |
 | `order` | `["model", "branch", "context"]` | The segments of layout `one`, left to right. A segment left out is not shown, an unknown name is skipped, a repeat keeps its first place. Left out altogether, as the installed file leaves it, the segments come in the script's order, new ones included. An empty list, a list naming no segment, or anything that is not a list does the same. |
 | `rows` | `[["model", "branch"], ["context", "cost"]]` | The two lines of layout `two`, with the same rules per row. A segment named on the first row is not repeated on the second, and a row may be empty. Left out, the script's own two rows apply, new segments included. Anything but exactly two lists, or two lists naming no segment, does the same. |
 | `thresholds` | `{ "warn": 20, "bad": 40 }` | Where the context meter and the rate limits turn yellow and red: whole numbers from 0 to 100 (`20` or `20.0`, not `20.5`), `warn` no higher than `bad`. Either value wrong keeps 60 and 85 for both. A 1M window keeps its own 70 and 90. |
@@ -404,9 +406,9 @@ still records what the session spent.
 | lines | <img src="docs/icons/code.svg" height="18" alt="code"> `nf-fa-code` | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
 | limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day`, `spend_limit` | `5h 24% → (1h12m) 7d 41% $ 62%`. Coloured by the worst of the figures, with the 60% and 85% bands, or the config's `thresholds`, whatever the window size. The countdown is omitted once the reset time has passed. The arrow after the 5-hour figure paces it against how much of the five-hour window has gone: `→` while carrying on at this rate still lands inside the window, `↑` once it would overrun, and a red `↑` once the projection reaches 120%. There is no arrow in the first half hour of a window, where the projection swings on a single busy minute, nor after the reset time, nor before anything has been used. Only the 5-hour figure gets one; a week is too long to pace from one payload. The `$` figure is the spend limit. Claude Code sends it only behind a Claude apps gateway with a spend limit, and only from 2.1.251 on |
 | badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim, <img src="docs/icons/user.svg" height="18" alt="user"> agent, <img src="docs/icons/tag.svg" height="18" alt="tag"> session | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode`, `agent.name`, `session_name` | Dimmed glyphs. The four mode badges come first, then the custom agent driving the main thread and the name given to the session, which change far less often. Effort is hidden at `high`. A name wider than 20 cells is cut and ends in `…`, measured in cells so a name in wide characters is cut where it draws rather than where it counts. The short form is the mode badges alone, so a narrow line sheds the agent and the session before the whole segment goes. The segment is hidden when none of the six is there, which now includes a plain unnamed session with every mode off. `session_id` is not shown: it is a UUID and says nothing at a glance |
-| pr | <img src="docs/icons/pull-request.svg" height="18" alt="pull request"> `nf-oct-git_pull_request` | `pr.number`, `pr.url`, `pr.review_state` | `#12`, wrapped in an [OSC 8 hyperlink](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda) to `pr.url` so ctrl-click in Windows Terminal opens it. Green when the review state is `approved`, red on `changes_requested`, dim otherwise. Hidden when the payload has no `pr` object or no whole, positive number in it; a `url` that is not `http` or `https` leaves the text unlinked |
-| folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.repo`, `workspace.project_dir`, `workspace.current_dir` | Blue. `owner/name` when the payload names the repository, then `›` and the directory name when it differs from the project root. Without a repository, the directory name alone. The short form is the repository name |
-| branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/fork.svg" height="18" alt="fork"> `nf-md-source_fork` in a worktree, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git status --porcelain=v1 --branch` run in `workspace.current_dir`, `worktree.name`, `worktree.path`, `workspace.git_worktree` | Magenta when clean, yellow with the pencil when the tree has changes. The worktree name follows the branch name, then the counts described below, then the pencil. Shows `detached` on a detached HEAD |
+| pr | <img src="docs/icons/pull-request.svg" height="18" alt="pull request"> `nf-oct-git_pull_request` | `pr.number`, `pr.url`, `pr.review_state` | `#12`, wrapped in an [OSC 8 hyperlink](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda) to `pr.url` so ctrl-click in Windows Terminal opens it. Green when the review state is `approved`, red on `changes_requested`, dim otherwise. Hidden when the payload has no `pr` object or no whole, positive number in it; a `url` that is not `http` or `https` leaves the text unlinked, and so does `"links": false` |
+| folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.repo`, `workspace.project_dir`, `workspace.current_dir` | Blue. `owner/name` when the payload names the repository, then `›` and the directory name when it differs from the project root. Without a repository, the directory name alone. The short form is the repository name. The whole text is wrapped in an OSC 8 hyperlink to `current_dir` as a `file:` URL, so ctrl-click opens the directory; a relative or UNC `current_dir` is left unlinked, and `"links": false` turns the link off |
+| branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/fork.svg" height="18" alt="fork"> `nf-md-source_fork` in a worktree, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git status --porcelain=v1 --branch` run in `workspace.current_dir`, `worktree.name`, `worktree.path`, `workspace.git_worktree` | Magenta when clean, yellow with the pencil when the tree has changes. The worktree name follows the branch name, then the counts described below, then the pencil. Shows `detached` on a detached HEAD. The whole text is wrapped in an OSC 8 hyperlink when the payload names the repository: on `github.com` the branch page, `https://github.com/<owner>/<name>/tree/<branch>`, and on any other host the repository home, since GitLab, Bitbucket and the rest each spell a branch path differently and a wrong guess is a 404. No `workspace.repo`, a detached HEAD, or `"links": false` leaves the text unlinked |
 | separator | <img src="docs/icons/chevron.svg" height="18" alt="chevron"> in `plain`, <img src="docs/icons/arrow.svg" height="18" alt="arrow"> in `powerline` | none | Dim chevron between segments, or a solid arrow coloured to blend the neighbouring blocks |
 
 A dim <img src="docs/icons/chevron.svg" height="14" alt="chevron"> separates the segments in plain
@@ -570,6 +572,16 @@ segment prints even when it does not fit.
 
 Colours look wrong: the script assumes a dark terminal theme.
 
+`]8;;` or a URL printed as text on the line: the terminal does not understand OSC 8 hyperlinks and does
+not swallow them either. Set `"links": false` in `statusline.json` and the folder, branch and
+pull-request segments render as plain text. Windows Terminal and the VS Code terminal both render them,
+and most others ignore them silently, so this is the third kind of terminal.
+
+Ctrl-click on the branch opens the wrong page: the link goes to the branch page only on `github.com`.
+Every other host gets the repository home instead, because GitLab, Bitbucket, Gitea and Azure DevOps
+each spell a branch path differently and a wrong guess is a 404. The folder link opens the session's
+current directory; a relative or UNC `current_dir` is left unlinked rather than guessed at.
+
 Nothing to go on: the git probe, the probe cache and the state file swallow every failure, so a
 missing branch segment or a cache that never seems to hit leaves nothing behind to look at. Set
 `CLAUDE_STATUSLINE_DEBUG` to `1` and each swallowed failure, each cache hit and miss, and each state
@@ -644,10 +656,11 @@ Done so far:
 - [x] Named presets: `minimal`, `cost` and `full` under one `preset` key
 - [x] Worktree name beside the branch
 - [x] Cost per turn beside the session total, from the state file
+- [x] Ctrl-clickable folder and branch, under a `links` key
 
 [Issues #2 to #43](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
-each with its own plan. In rough order: new segments (cache warmth, session clock, links on the folder
-and branch), and finally an ASCII style that needs no Nerd Font and a light palette.
+each with its own plan. In rough order: new segments (cache warmth, session clock), and finally an
+ASCII style that needs no Nerd Font and a light palette.
 
 ## License
 

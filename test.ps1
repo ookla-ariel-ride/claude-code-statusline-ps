@@ -30,6 +30,9 @@ $esc = [char]27
 # either terminator (ESC \ or BEL), or an SGR colour code. The one pattern behind ConvertTo-PlainText
 # and Measure-VisibleWidth, so the two cannot drift apart.
 $ansiPattern = "$esc\]8;[^\a$esc]*(?:\a|$esc\\)|$esc\[[0-9;]*m"
+# The closing half of an OSC 8 hyperlink, the same bytes whatever the url was. Up here rather than in
+# the pr section because the folder and branch segments are wrapped in one too.
+$linkClose = "$esc]8;;$esc\"
 $script:passed = 0
 $script:failed = 0
 
@@ -174,7 +177,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -385,6 +388,23 @@ Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-false.json' '{ "state"
 Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-absent.json' '{ "layout": "two" }')).State $true 'config state absent: on'
 Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-string.json' '{ "state": "false" }')).State $true 'config state string: on'
 Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-number.json' '{ "state": 0 }')).State $true 'config state number: on'
+
+# The links key: one switch in front of every OSC 8 hyperlink on the line, read the same way state is.
+# It defaults to on, because the terminals this script is written for render the sequence and the ones
+# that do not normally swallow it; the key is there for the third kind, which prints it as text.
+Confirm-Equal (Get-DefaultStatusConfig).Links $true 'config defaults: links on'
+Confirm-Equal (Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')).Links $true 'config missing: links on'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'links-true.json' '{ "links": true }')).Links $true 'config links true'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'links-false.json' '{ "links": false }')).Links $false 'config links false'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'links-absent.json' '{ "layout": "two" }')).Links $true 'config links absent: on'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'links-string.json' '{ "links": "false" }')).Links $true 'config links string: on'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'links-number.json' '{ "links": 0 }')).Links $true 'config links number: on'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'links-null.json' '{ "links": null }')).Links $true 'config links null: on'
+# One row in the key table and nothing else, which is what a one-value key costs.
+$linksRows = @(Get-StatusConfigKey | Where-Object { $_.Json -eq 'links' })
+Confirm-Equal $linksRows.Count 1 'config links: exactly one row in the key table'
+Confirm-Equal $linksRows[0].Key 'Links' 'config links: the row lands in the Links key'
+Confirm-Equal $linksRows[0].Kind 'Bool' 'config links: the row is read as a boolean'
 
 # The git object: timeoutMs and cacheSeconds are whole numbers clamped to their ranges, cache is a
 # boolean. A key of the wrong type falls back on its own; a git value that is not an object falls
@@ -1032,6 +1052,8 @@ Confirm-Equal $shippedFileSegments.Count 9 'shipped config: the file itself list
 Confirm-True (@($shippedFileSegments | Where-Object { $_.Value -isnot [bool] -or $_.Value -ne $true }).Count -eq 0) 'shipped config: the file itself sets them all to the boolean true'
 Confirm-Equal $c.State $true 'shipped config: state on'
 Confirm-True ($shippedJson.state -is [bool] -and $shippedJson.state) 'shipped config: the file itself sets state to the boolean true'
+Confirm-Equal $c.Links $true 'shipped config: links on'
+Confirm-True ($shippedJson.links -is [bool] -and $shippedJson.links) 'shipped config: the file itself sets links to the boolean true'
 Confirm-Equal $c.Git.TimeoutMs 1500 'shipped config: git timeout 1500'
 Confirm-Equal $c.Git.CacheSeconds 5 'shipped config: git cache 5 seconds'
 Confirm-Equal $c.Git.Cache $true 'shipped config: git cache on'
@@ -1536,8 +1558,10 @@ function Get-FolderPayload([string] $Dir, [string] $Root, $Owner, $Name) {
     if ($Owner -or $Name) { $ws.repo = [pscustomobject]@{ owner = $Owner; name = $Name } }
     return [pscustomobject]@{ workspace = [pscustomobject]$ws }
 }
-$cfgRepo = @{ Folder = 'repo'; Style = 'plain' }
-$cfgLeaf = @{ Folder = 'leaf'; Style = 'plain' }
+# Links off in both, so every check below is on the text the segment composes and nothing else. The
+# link is a wrapper around that finished text and has its own block at the end of this section.
+$cfgRepo = @{ Folder = 'repo'; Style = 'plain'; Links = $false }
+$cfgLeaf = @{ Folder = 'leaf'; Style = 'plain'; Links = $false }
 $seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo' 'C:\src\demo' 'octo' 'demo') $cfgRepo
 Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder at root: owner/name'
 Confirm-Equal $seg.Short "$iconFolder demo" 'folder at root: short is the name alone'
@@ -1606,6 +1630,46 @@ $seg = Get-FolderSegment (Get-FolderPayload "C:\src\de${fRlo}mo\to${fRlo}ols" "C
 Confirm-Equal $seg.Text "$iconFolder tools" 'folder override: the directory leaf is stripped as well'
 $seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' $fRlo 'demo') $cfgRepo
 Confirm-Equal $seg.Text "$iconFolder tools" 'folder override: an owner that is nothing but an override is not text, so the leaf stands in'
+
+# The link: the finished text, glyph included, wrapped whole in a file: url built from current_dir, so
+# ctrl-click opens the directory the session is in and the line draws exactly as it did before.
+$cfgLink = @{ Folder = 'repo'; Style = 'plain'; Links = $true }
+$cfgLinkLeaf = @{ Folder = 'leaf'; Style = 'plain'; Links = $true }
+$folderLinkOpen = "$esc]8;;file:///C:/src/my%20project$esc\"
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\my project' 'C:\src\my project' 'octo' 'demo') $cfgLink
+Confirm-Equal $seg.Text "$folderLinkOpen$iconFolder octo/demo${linkClose}" 'folder link: the whole text is wrapped in a file url'
+Confirm-Equal $seg.Short "$folderLinkOpen$iconFolder demo${linkClose}" 'folder link: the short form is linked too'
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconFolder octo/demo" 'folder link: the visible text is unchanged'
+Confirm-Equal (Get-VisibleWidth $seg.Text) (Get-VisibleWidth "$iconFolder octo/demo") 'folder link: the url adds no width'
+Confirm-Equal (Get-VisibleWidth $seg.Short) (Get-VisibleWidth "$iconFolder demo") 'folder link: the short form is no wider either'
+Confirm-Equal (Measure-VisibleWidth $seg.Text) (Get-VisibleWidth $seg.Text) 'folder link: the script and the test count the same width'
+Confirm-Equal $seg.Role 'folder' 'folder link: the role is untouched'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' 'octo' 'demo') $cfgLink
+Confirm-Equal $seg.Text "$esc]8;;file:///C:/src/demo/tools$esc\$iconFolder octo/demo $iconChevron tools${linkClose}" 'folder link: below the root the link is the current directory, not the project root'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' 'octo' 'demo') $cfgLinkLeaf
+Confirm-Equal $seg.Text "$esc]8;;file:///C:/src/demo/tools$esc\$iconFolder tools${linkClose}" 'folder link: leaf mode is linked as well'
+Confirm-Equal $seg.Short $null 'folder link: leaf mode still has no short form'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo') $cfgLink
+Confirm-Equal $seg.Text "$esc]8;;file:///C:/src/demo/tools$esc\$iconFolder tools${linkClose}" 'folder link: a payload with no repo is linked on the leaf'
+$seg = Get-FolderSegment (Get-FolderPayload 'demo' 'demo' 'octo' 'demo') $cfgLink
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder link: a relative current_dir leaves the text unlinked'
+Confirm-Equal $seg.Short "$iconFolder demo" 'folder link: and its short form unlinked'
+$seg = Get-FolderSegment (Get-FolderPayload '\\server\share\x' '\\server\share\x' 'octo' 'demo') $cfgLink
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder link: a UNC current_dir leaves the text unlinked'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\my project' 'C:\src\my project' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder link: links false leaves the text exactly as it was'
+Confirm-Equal $seg.Short "$iconFolder demo" 'folder link: links false leaves the short form as it was'
+Confirm-Equal (Get-FolderSegment (Get-FolderPayload 'C:\src\my project' 'C:\src\my project' 'octo' 'demo') @{ Folder = 'repo'; Style = 'plain' }).Text "$folderLinkOpen$iconFolder octo/demo${linkClose}" 'folder link: a config that does not mention the key gets the default, which is on'
+# The link changes nothing about what fits. Shrunk and dropped at the three widths from the issue, the
+# linked segment and the unlinked one give the same visible text and the same width.
+$linkedFolder = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' 'octo' 'demo') $cfgLink
+$plainFolder = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' 'octo' 'demo') $cfgRepo
+foreach ($w in @(120, 60, 20, 8)) {
+    $linkedLine = Get-FittedLine @($linkedFolder) 'powerline' $w
+    $plainLine = Get-FittedLine @($plainFolder) 'powerline' $w
+    Confirm-Equal (ConvertTo-PlainText $linkedLine) (ConvertTo-PlainText $plainLine) "folder link at ${w}: the same visible text as the unlinked segment"
+    Confirm-Equal (Get-VisibleWidth $linkedLine) (Get-VisibleWidth $plainLine) "folder link at ${w}: the same width as the unlinked segment"
+}
 
 Write-Host '== unit: renderer' -ForegroundColor Cyan
 $arrow = [char]::ConvertFromUtf32(0xE0B0)
@@ -1740,7 +1804,6 @@ Write-Host '== unit: pr' -ForegroundColor Cyan
 # an http or https URL leaves the text alone, so a bad payload can never put a stray escape on the line.
 $prUrl = 'https://github.com/octo/demo/pull/12'
 $linkOpen = "$esc]8;;$prUrl$esc\"
-$linkClose = "$esc]8;;$esc\"
 Confirm-Equal (Format-Link $prUrl 'abc') "${linkOpen}abc${linkClose}" 'link: exact bytes'
 Confirm-Equal (Format-Link '' 'abc') 'abc' 'link: empty url leaves the text alone'
 Confirm-Equal (Format-Link $null 'abc') 'abc' 'link: null url leaves the text alone'
@@ -1771,6 +1834,15 @@ $url2083 = 'https://example.com/' + ('x' * 2063)
 Confirm-Equal $url2083.Length 2083 'link: cap fixture is 2083 characters'
 Confirm-Equal (Format-Link $url2083 'abc') "$esc]8;;$url2083$esc\abc${linkClose}" 'link: 2083 characters is linked'
 Confirm-Equal (Format-Link ($url2083 + 'x') 'abc') 'abc' 'link: 2084 characters leaves the text alone'
+# file: is the third scheme, for the folder segment, and the only one with a rule of its own: the
+# authority has to be empty. file:///C:/x is a path on this machine; file://host/share is a UNC path,
+# and a click on one reaches out over SMB to a server the payload named.
+Confirm-Equal (Format-Link 'file:///C:/src/demo' 'abc') "$esc]8;;file:///C:/src/demo$esc\abc${linkClose}" 'link: a file url with an empty authority is linked'
+Confirm-Equal (Format-Link 'file:///C:/src/my%20project' 'abc') "$esc]8;;file:///C:/src/my%20project$esc\abc${linkClose}" 'link: an escaped space in a file url is linked'
+Confirm-Equal (Format-Link 'FILE:///C:/src/demo' 'abc') "$esc]8;;FILE:///C:/src/demo$esc\abc${linkClose}" 'link: the file scheme is matched case-insensitively'
+Confirm-Equal (Format-Link 'file://evil.example/share/x' 'abc') 'abc' 'link: a UNC file url leaves the text alone'
+Confirm-Equal (Format-Link 'file://localhost/C:/x' 'abc') 'abc' 'link: a file url naming a host leaves the text alone even when the host is localhost'
+Confirm-Equal (Get-VisibleWidth (Format-Link 'file:///C:/src/demo' 'abc')) 3 'link: a file url has no width either'
 
 # The segment: glyph, space, #number, the whole text wrapped in the link, coloured by the review state.
 $seg = Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"approved","kind":"pull_request"}'))
@@ -1841,6 +1913,93 @@ $line = Get-FittedLine $fitLong 'plain' 25
 Confirm-Equal (ConvertTo-PlainText $line) "M $chevron CCC $chevron FF $chevron BB $chevron $iconPr #12" 'pr drop order: at 25 pr is still on the line'
 $line = Get-FittedLine $fitLong 'plain' 24
 Confirm-Equal (ConvertTo-PlainText $line) "M $chevron CCC $chevron FF $chevron BB" 'pr drop order: at 24 pr goes before folder and branch'
+
+Write-Host '== unit: links' -ForegroundColor Cyan
+# The one switch. Only the boolean false turns the links off; a config that does not mention the key,
+# and a builder called with no config at all, get the built-in default, which is on.
+Confirm-Equal (Test-LinkWanted @{ Links = $true }) $true 'links switch: on when the config says true'
+Confirm-Equal (Test-LinkWanted @{ Links = $false }) $false 'links switch: off when the config says false'
+Confirm-Equal (Test-LinkWanted @{ Style = 'plain' }) $true 'links switch: on when the config does not mention it'
+Confirm-Equal (Test-LinkWanted $null) $true 'links switch: on with no config at all'
+Confirm-Equal (Test-LinkWanted (Get-DefaultStatusConfig)) $true 'links switch: on in the built-in defaults'
+Confirm-Equal (Test-LinkWanted (Read-StatusConfig (Write-TempConfig 'links-switch-off.json' '{ "links": false }'))) $false 'links switch: off through a config file'
+
+# The folder url: current_dir as a file: url, with the escaping done by AbsoluteUri. Anything that is
+# not an absolute path on this machine has no url, and the segment renders unlinked rather than
+# guessing: a relative path, a payload that put a web address in current_dir, or a UNC path.
+Confirm-Equal (Get-FolderUrl 'C:\src\demo') 'file:///C:/src/demo' 'folder url: a plain Windows path'
+Confirm-Equal (Get-FolderUrl 'C:\src\my project') 'file:///C:/src/my%20project' 'folder url: a space becomes %20'
+Confirm-Equal (Get-FolderUrl 'C:/src/demo') 'file:///C:/src/demo' 'folder url: forward slashes give the same url'
+Confirm-Equal (Get-FolderUrl 'C:\src\de#mo') 'file:///C:/src/de%23mo' 'folder url: a # is escaped rather than starting a fragment'
+Confirm-Equal (Get-FolderUrl "C:\src\na$([char]0xEF)ve") 'file:///C:/src/na%C3%AFve' 'folder url: a non-ASCII name is percent-encoded as UTF-8'
+Confirm-Equal (Get-FolderUrl 'demo') $null 'folder url: a relative path has none'
+Confirm-Equal (Get-FolderUrl '') $null 'folder url: an empty path has none'
+Confirm-Equal (Get-FolderUrl $null) $null 'folder url: null has none'
+Confirm-Equal (Get-FolderUrl 7) $null 'folder url: a number has none'
+Confirm-Equal (Get-FolderUrl @('C:\src\demo', 'x')) $null 'folder url: an array has none'
+Confirm-Equal (Get-FolderUrl 'https://evil.example/x') $null 'folder url: a current_dir that parses as a web address is not a folder'
+Confirm-Equal (Get-FolderUrl '\\server\share\x') $null 'folder url: a UNC path has none, so a click never reaches a named server'
+# An escape or an override in a directory name is percent-encoded by AbsoluteUri rather than carried
+# through, so the url Format-Link is handed has no control character left in it to end the sequence.
+Confirm-Equal (Get-FolderUrl "C:\src\de$([char]0x1B)mo") 'file:///C:/src/de%1Bmo' 'folder url: an escape in the path is percent-encoded'
+Confirm-Equal (Get-FolderUrl "C:\src\de$([char]0x202E)mo") 'file:///C:/src/de%E2%80%AEmo' 'folder url: an override in the path is percent-encoded'
+foreach ($case in @("C:\src\de$([char]0x1B)mo", "C:\src\a b", "C:\src\de#mo")) {
+    $built = Get-FolderUrl $case
+    Confirm-True ($built -is [string] -and $built -notmatch '[\s\p{Cc}]' -and $built.StartsWith('file:///C:/src/')) "folder url: '$($case -replace $esc, '<ESC>')' builds a whitespace-free file url"
+}
+
+# The branch url. github.com gets the branch page; every other host gets the repository home, because
+# GitLab, Bitbucket, Gitea and Azure DevOps each spell a branch path differently and a wrong guess is
+# a 404. Every field is payload text: the host has to look like a host and nothing else, and the owner,
+# the name and the branch are escaped before they are pasted into the url.
+function Get-RepoPayload($RepoHost, $Owner, $RepoName) {
+    $repo = [ordered]@{}
+    if ($null -ne $RepoHost) { $repo.host = $RepoHost }
+    if ($null -ne $Owner) { $repo.owner = $Owner }
+    if ($null -ne $RepoName) { $repo.name = $RepoName }
+    return [pscustomobject]@{ workspace = [pscustomobject]@{ repo = [pscustomobject]$repo } }
+}
+$ghPayload = Get-RepoPayload 'github.com' 'octo' 'demo'
+Confirm-Equal (Get-BranchUrl $ghPayload 'feature/x') 'https://github.com/octo/demo/tree/feature/x' 'branch url: github.com gets the branch page, slash and all'
+Confirm-Equal (Get-BranchUrl $ghPayload 'main') 'https://github.com/octo/demo/tree/main' 'branch url: github.com on main'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'GitHub.COM' 'octo' 'demo') 'main') 'https://GitHub.COM/octo/demo/tree/main' 'branch url: the host is matched case-insensitively and kept as it was written'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'gitlab.com' 'octo' 'demo') 'feature/x') 'https://gitlab.com/octo/demo' 'branch url: gitlab gets the repository home'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'bitbucket.org' 'octo' 'demo') 'feature/x') 'https://bitbucket.org/octo/demo' 'branch url: bitbucket gets the repository home'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'github.example.com' 'octo' 'demo') 'main') 'https://github.example.com/octo/demo' 'branch url: a host that is not github.com itself gets the home'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'github.com:8443' 'octo' 'demo') 'main') 'https://github.com:8443/octo/demo' 'branch url: a port is kept and the host is no longer github.com itself'
+Confirm-Equal (Get-BranchUrl $ghPayload 'my branch') 'https://github.com/octo/demo/tree/my%20branch' 'branch url: a space in the branch becomes %20'
+Confirm-Equal (Get-BranchUrl $ghPayload 'fix/#3') 'https://github.com/octo/demo/tree/fix/%233' 'branch url: a # in the branch is escaped rather than starting a fragment'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'github.com' 'oc/to' 'de/mo') 'main') 'https://github.com/oc%2Fto/de%2Fmo/tree/main' 'branch url: a slash in the owner or the name is escaped, so neither can climb the path'
+Confirm-Equal (Get-BranchUrl $ghPayload 'detached') $null 'branch url: detached is a state word, not a ref'
+Confirm-Equal (Get-BranchUrl $ghPayload '') $null 'branch url: no branch, no url'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload $null 'octo' 'demo') 'main') $null 'branch url: no host, no url'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'github.com' $null 'demo') 'main') $null 'branch url: no owner, no url'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'github.com' 'octo' $null) 'main') $null 'branch url: no name, no url'
+Confirm-Equal (Get-BranchUrl ([pscustomobject]@{ model = @{ display_name = 'M' } }) 'main') $null 'branch url: no workspace at all, no url'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 7 'octo' 'demo') 'main') $null 'branch url: a numeric host, no url'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload @('github.com') 'octo' 'demo') 'main') $null 'branch url: an array host, no url'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload '   ' 'octo' 'demo') 'main') $null 'branch url: a blank host, no url'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'evil.example/octo/demo?' 'octo' 'demo') 'main') $null 'branch url: a host carrying a path is refused rather than pasted into a url'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'evil.example@real.example' 'octo' 'demo') 'main') $null 'branch url: a host carrying userinfo is refused'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'evil.example:8443@real.example' 'octo' 'demo') 'main') $null 'branch url: a host with a port before an @ is refused too'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload "git$([char]0x1B)hub.com" 'octo' 'demo') 'main') $null 'branch url: an escape in the host is refused by the payload-text guard'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload "git$([char]0x202E)hub.com" 'octo' 'demo') 'main') 'https://github.com/octo/demo/tree/main' 'branch url: an override in the host is stripped, like every other rendered field'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'github.com' "oc$([char]0x202E)to" 'demo') 'main') 'https://github.com/octo/demo/tree/main' 'branch url: an override in the owner is stripped'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'github.com' "$([char]0x202E)" 'demo') 'main') $null 'branch url: an owner that is nothing but an override is not text'
+# Nothing this builder returns can ever end the escape sequence early or leave the http(s) family,
+# which is what Format-Link is asked to guarantee for the value it is handed.
+foreach ($case in @('feature/x', 'my branch', 'fix/#3', "a$([char]0x202E)b")) {
+    $built = Get-BranchUrl $ghPayload $case
+    Confirm-True ($built -is [string] -and $built -notmatch '[\s\p{Cc}]' -and $built.StartsWith('https://github.com/octo/demo')) "branch url: '$case' builds a whitespace-free url under the repository"
+}
+
+# The pull-request segment answers to the same key, so one switch covers every link on the line.
+$prLinkPayload = Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"approved"}')
+Confirm-Equal (Get-PrSegment $prLinkPayload @{ Links = $true }).Text "${linkOpen}$iconPr #12${linkClose}" 'pr links on: linked'
+Confirm-Equal (Get-PrSegment $prLinkPayload @{ Links = $false }).Text "$iconPr #12" 'pr links off: the one switch takes the pr link too'
+Confirm-Equal (Get-PrSegment $prLinkPayload @{ Links = $false }).Role 'ok' 'pr links off: still coloured by the review state'
+Confirm-Equal (Get-PrSegment $prLinkPayload (Read-StatusConfig (Write-TempConfig 'links-off-pr.json' '{ "links": false }'))).Text "$iconPr #12" 'pr links off through a config file: unlinked'
+Confirm-Equal (Get-PrSegment $prLinkPayload (Get-DefaultStatusConfig)).Text "${linkOpen}$iconPr #12${linkClose}" 'pr with the default config: linked'
 
 Write-Host '== unit: context' -ForegroundColor Cyan
 $iconCtx = [char]::ConvertFromUtf32(0xF035B)
@@ -3167,6 +3326,50 @@ $seg = Get-BranchSegment (('{"git":{"branch":"main","status":"clean"},"worktree"
 Confirm-Equal $seg.Text "$iconHome main $iconWorktree $wideName" 'branch worktree wide name: the name reaches the line'
 Confirm-Equal (Get-VisibleWidth $seg.Text) 13 'branch worktree wide name: two cells for each wide character'
 Confirm-Equal (Measure-VisibleWidth $seg.Text) (Get-VisibleWidth $seg.Text) 'branch worktree wide name: the script and the test count the same width'
+
+# The link. The finished text is wrapped whole - name, worktree badge, counts and pencil in one link,
+# and the short form in another - so nothing is reordered and the counts keep their inline colours
+# inside it. The url comes from workspace.repo, which the payload carries only for a checkout with a
+# recognised remote; without it the segment renders exactly as it always did.
+$branchLinkCfg = @{ Style = 'plain'; Links = $true; Git = (Get-DefaultGitConfig) }
+$branchLinkOffCfg = @{ Style = 'plain'; Links = $false; Git = (Get-DefaultGitConfig) }
+$ghRepoJson = '"workspace":{"repo":{"host":"github.com","owner":"octo","name":"demo"}}'
+$branchLinkOpen = "$esc]8;;https://github.com/octo/demo/tree/feature/x$esc\"
+$seg = Get-BranchSegment (('{"git":{"branch":"feature/x","status":"clean"},' + $ghRepoJson + '}') | ConvertFrom-Json) $branchLinkCfg
+Confirm-Equal $seg.Text "$branchLinkOpen$iconBranch feature/x${linkClose}" 'branch link: the whole text is wrapped'
+Confirm-Equal $seg.Short "$branchLinkOpen$iconBranch feature/x${linkClose}" 'branch link: the short form is wrapped too'
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x" 'branch link: the visible text is unchanged'
+Confirm-Equal (Get-VisibleWidth $seg.Text) (Get-VisibleWidth "$iconBranch feature/x") 'branch link: the url adds no width'
+Confirm-Equal (Measure-VisibleWidth $seg.Text) (Get-VisibleWidth $seg.Text) 'branch link: the script and the test count the same width'
+Confirm-Equal $seg.Role 'branch' 'branch link: the role is untouched'
+$seg = Get-BranchSegment ('{"git":{"branch":"feature/x","status":{"modified":2}},"worktree":{"name":"wt-review"},"workspace":{"git_worktree":true,"repo":{"host":"github.com","owner":"octo","name":"demo"}}}' | ConvertFrom-Json) $branchLinkCfg
+Confirm-Equal $seg.Text "$branchLinkOpen$iconBranch feature/x $iconWorktree wt-review $esc[90m~2$esc[33m $iconDirty${linkClose}" 'branch link: the badge, the counts and the pencil are all inside the one link'
+Confirm-Equal $seg.Short "$branchLinkOpen$iconBranch feature/x $iconDirty${linkClose}" 'branch link: the short form is the name and the pencil, linked'
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x $iconWorktree wt-review ~2 $iconDirty" 'branch link: the visible text is what it was without the link'
+$unlinkedBadge = Get-BranchSegment ('{"git":{"branch":"feature/x","status":{"modified":2}},"worktree":{"name":"wt-review"},"workspace":{"git_worktree":true}}' | ConvertFrom-Json) $branchLinkOffCfg
+Confirm-Equal (Get-VisibleWidth $seg.Text) (Get-VisibleWidth $unlinkedBadge.Text) 'branch link: a badge and counts inside the link measure the same as without it'
+$seg = Get-BranchSegment ('{"git":{"branch":"feature/x","status":"clean"},"workspace":{"repo":{"host":"gitlab.com","owner":"octo","name":"demo"}}}' | ConvertFrom-Json) $branchLinkCfg
+Confirm-Equal $seg.Text "$esc]8;;https://gitlab.com/octo/demo$esc\$iconBranch feature/x${linkClose}" 'branch link: a gitlab repo links to the repository home'
+$seg = Get-BranchSegment (('{"git":{"branch":"detached","status":"clean"},' + $ghRepoJson + '}') | ConvertFrom-Json) $branchLinkCfg
+Confirm-Equal $seg.Text "$iconBranch detached" 'branch link: a detached HEAD has no page to link to'
+$seg = Get-BranchSegment ('{"git":{"branch":"feature/x","status":"clean"}}' | ConvertFrom-Json) $branchLinkCfg
+Confirm-Equal $seg.Text "$iconBranch feature/x" 'branch link: a payload with no repo renders unlinked'
+$seg = Get-BranchSegment ('{"git":{"branch":"feature/x","status":"clean"},"workspace":{"repo":{"owner":"octo","name":"demo"}}}' | ConvertFrom-Json) $branchLinkCfg
+Confirm-Equal $seg.Text "$iconBranch feature/x" 'branch link: a repo with no host renders unlinked'
+$seg = Get-BranchSegment (('{"git":{"branch":"feature/x","status":"clean"},' + $ghRepoJson + '}') | ConvertFrom-Json) $branchLinkOffCfg
+Confirm-Equal $seg.Text "$iconBranch feature/x" 'branch link: links false leaves the text exactly as it was'
+Confirm-Equal $seg.Short "$iconBranch feature/x" 'branch link: links false leaves the short form as it was'
+$seg = Get-BranchSegment (('{"git":{"branch":"feature/x","status":"clean"},' + $ghRepoJson + '}') | ConvertFrom-Json) @{ Style = 'plain'; Git = (Get-DefaultGitConfig) }
+Confirm-Equal $seg.Text "$branchLinkOpen$iconBranch feature/x${linkClose}" 'branch link: a config that does not mention the key gets the default, which is on'
+# Linked and unlinked shrink and drop the same way, at the three widths from the issue and one narrower.
+$linkedBranch = Get-BranchSegment (('{"git":{"branch":"feature/x","status":{"modified":2}},' + $ghRepoJson + '}') | ConvertFrom-Json) $branchLinkCfg
+$plainBranch = Get-BranchSegment (('{"git":{"branch":"feature/x","status":{"modified":2}},' + $ghRepoJson + '}') | ConvertFrom-Json) $branchLinkOffCfg
+foreach ($w in @(120, 60, 20, 8)) {
+    $linkedLine = Get-FittedLine @($linkedBranch) 'plain' $w
+    $plainLine = Get-FittedLine @($plainBranch) 'plain' $w
+    Confirm-Equal (ConvertTo-PlainText $linkedLine) (ConvertTo-PlainText $plainLine) "branch link at ${w}: the same visible text as the unlinked segment"
+    Confirm-Equal (Get-VisibleWidth $linkedLine) (Get-VisibleWidth $plainLine) "branch link at ${w}: the same width as the unlinked segment"
+}
 
 # Ahead and behind counts only ever come from the git probe, so stand in for Get-GitBranch here and put
 # the real one back afterwards. The "not a repo" checks below then double as proof the restore worked.
@@ -5678,6 +5881,36 @@ Confirm-Equal ((Get-PresetRender 'unknown' '{ "preset": "nope" }').Lines -join "
 Confirm-Equal ((Get-PresetRender 'number' '{ "preset": 5 }').Lines -join "`n") $plainRender 'render preset: a non-string name renders the empty config byte for byte'
 $r = Invoke-StatusLine $payload06 (Join-Path $PSScriptRoot 'statusline.json') 0
 Confirm-Equal ($r.Lines -join "`n") $plainRender 'render preset: the shipped statusline.json still renders the default line'
+
+Write-Host ''
+Write-Host '== render: links' -ForegroundColor Cyan
+# The links key through the whole script, on the two segments it was added for. This payload names a
+# directory with a space in it, a branch and a repository with a host, so both urls are built; nothing
+# here runs git, because the payload carries the git object itself.
+$linkRenderPayload = '{"model":{"display_name":"Fable 5.1"},"context_window":{"context_window_size":200000,"used_percentage":8},' +
+    '"git":{"branch":"feature/x","status":"clean"},' +
+    '"workspace":{"current_dir":"C:\\src\\my project","project_dir":"C:\\src\\my project","repo":{"host":"github.com","owner":"octo","name":"demo"}}}'
+$r = Invoke-StatusLine $linkRenderPayload (Write-TempConfig 'render-links-on.json' '{ "links": true }') 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render links on: exit code 0, stderr empty'
+$linkedRender = $r.Lines -join "`n"
+Confirm-True ($linkedRender.Contains("$esc]8;;file:///C:/src/my%20project$esc\")) 'render links on: the folder segment carries the file url'
+Confirm-True ($linkedRender.Contains("$esc]8;;https://github.com/octo/demo/tree/feature/x$esc\")) 'render links on: the branch segment carries the branch url'
+$r = Invoke-StatusLine $linkRenderPayload (Write-TempConfig 'render-links-off.json' '{ "links": false }') 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render links off: exit code 0, stderr empty'
+$unlinkedRender = $r.Lines -join "`n"
+Confirm-True (-not $unlinkedRender.Contains("$esc]8;")) 'render links off: no OSC 8 introducer anywhere on the line'
+Confirm-Equal (ConvertTo-PlainText $linkedRender) (ConvertTo-PlainText $unlinkedRender) 'render links: the visible text is the same either way'
+Confirm-Equal (Measure-VisibleWidth $linkedRender) (Measure-VisibleWidth $unlinkedRender) 'render links: the width is the same either way'
+# Every width in the fitting path, so a link cannot change where a segment is shortened or dropped.
+foreach ($w in @(120, 60, 20)) {
+    $on = Invoke-StatusLine $linkRenderPayload (Join-Path $tmp 'render-links-on.json') $w
+    $off = Invoke-StatusLine $linkRenderPayload (Join-Path $tmp 'render-links-off.json') $w
+    Confirm-Equal (ConvertTo-PlainText ($on.Lines -join "`n")) (ConvertTo-PlainText ($off.Lines -join "`n")) "render links at ${w}: the same visible line either way"
+    Confirm-True ((Measure-VisibleWidth ($on.Lines -join "`n")) -le $w - 1) "render links at ${w}: the linked line still fits"
+}
+# The shipped config has the key on, so the default render is the linked one byte for byte.
+$r = Invoke-StatusLine $linkRenderPayload (Join-Path $PSScriptRoot 'statusline.json') 0
+Confirm-Equal ($r.Lines -join "`n") $linkedRender 'render links: the shipped statusline.json renders the linked line'
 
 # The project config through the whole script, at the unset width. 06 carries a cost figure, and the
 # payload names a project directory holding a .claude\statusline.json that turns the cost segment off.
