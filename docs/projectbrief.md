@@ -236,7 +236,11 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   bytes are identical to gluing it onto the front of the first line, so a layout-one render is still
   one line; a render with no line writes the sequence and no newline, so nothing moves on screen. The
   alternative, prefixing the first line printed, would have needed the same string threaded through
-  three print sites — one of which does not exist on the empty render.
+  three print sites — one of which does not exist on the empty render. It also has to stay outside the
+  line rather than merely at the front of it: the folder, branch and pr segments carry OSC 8 hyperlink
+  wrappers, folder and branch one each in `Text` and `Short`, so a line can hold six, and a progress
+  sequence written between a wrapper and its closer would sit inside a hyperlink's text run. Writing it
+  before any line exists is what rules that out.
 - **Per-session state on disk, one read and one write.** A render cannot see the previous payload, so a
   small JSON file per `session_id` carries the last cost and token totals forward. The cost segment's
   per-turn delta is the difference from the total in that file, so the read sits before the build and

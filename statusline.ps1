@@ -2022,6 +2022,14 @@ function Get-BranchSegment($d, $cfg) {
 #
 # It goes out before the payload check below, so a payload that will not parse still clears the bar
 # rather than freezing it. Nothing above this line prints, so nothing can get in front of it.
+#
+# AND IT MUST STAY OUTSIDE THE LINE, not merely at the front of it. The folder, branch and pr segments
+# each carry OSC 8 hyperlink wrappers, and folder and branch emit one in Text and another in Short, so
+# a single line can hold six of them. This sequence written between an `e]8;;url`e\ and its closer would
+# sit inside a hyperlink's text run, where a terminal that understands OSC 8 has to decide what to do
+# with a nested command string. Writing it here, before any line exists, is what rules that out: it is
+# never inside anything. A future reader who wants to prepend it to a line instead has to answer that
+# question first.
 $taskbar = Get-TaskbarSequence $d $cfg
 if ($taskbar) { Write-Host $taskbar -NoNewline }
 
