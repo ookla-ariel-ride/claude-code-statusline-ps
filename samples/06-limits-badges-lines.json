@@ -11,7 +11,13 @@
       "cache_read_input_tokens": 57500
     }
   },
-  "cost": { "total_cost_usd": 1.07, "total_lines_added": 156, "total_lines_removed": 23 },
+  "cost": {
+    "total_cost_usd": 1.07,
+    "total_duration_ms": 4320000,
+    "total_api_duration_ms": 1641600,
+    "total_lines_added": 156,
+    "total_lines_removed": 23
+  },
   "rate_limits": {
     "five_hour": { "used_percentage": 23.5, "resets_at": 4102444800 },
     "seven_day": { "used_percentage": 88.2, "resets_at": 4102444800 }
