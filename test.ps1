@@ -174,7 +174,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -200,6 +200,10 @@ $iconEffort = [char]::ConvertFromUtf32(0xF04C5)
 $iconVim = [char]::ConvertFromUtf32(0xE62B)
 $iconAgent = [char]::ConvertFromUtf32(0xF007)
 $iconSession = [char]::ConvertFromUtf32(0xF02B)
+$iconClock = [char]::ConvertFromUtf32(0xF051B)
+# The clock segment's separator: a middle dot with a space either side, spelled from its code point so
+# this file stays ASCII. A dash next to a percentage reads as a range, which is why it is not one.
+$middot = [char]::ConvertFromUtf32(0xB7)
 $ellipsis = [char]::ConvertFromUtf32(0x2026)
 $defaultEffort = 'high'
 $badgeNameCells = 20
@@ -261,6 +265,13 @@ $widthTable = @(
     @{ Text = [string][char]0x20E3; Width = 0 }                                        # lone enclosing keycap
     @{ Text = '1'; Width = 1 }                                                         # the keycap base alone
     @{ Text = '#'; Width = 1 }                                                         # the hash base alone
+    # The clock segment's own two characters. The fitting measures the whole line with this function,
+    # so a separator or a glyph counted at anything but one cell would throw every width off by that
+    # much: the middle dot is ordinary punctuation, not a combining mark, and the timer is a private
+    # use code point like every other Nerd Font glyph rather than one of the wide ranges.
+    @{ Text = $middot; Width = 1 }                                                     # middle dot separator
+    @{ Text = "1h12m $middot api 38%"; Width = 15 }                                    # the whole clock text
+    @{ Text = $iconClock; Width = 1 }                                                  # the timer glyph
 )
 foreach ($row in $widthTable) {
     $shown = $row.Text -replace $esc, '<ESC>'
@@ -274,17 +285,18 @@ Write-Host '== unit: registry' -ForegroundColor Cyan
 # out by hand, so a change there is a deliberate one. Array order is layout one.
 $registryTable = @(
     @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 3;     DropRank = 8;     Row = 2; RowRank = 1 }
-    @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 3;     Row = 2; RowRank = 3 }
-    @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
-    @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 4;     Row = 2; RowRank = 2 }
-    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 6;     DropRank = 2;     Row = 1; RowRank = 5 }
-    @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 4 }
-    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 5;     DropRank = 6;     Row = 1; RowRank = 2 }
-    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 4;     DropRank = 7;     Row = 1; RowRank = 3 }
+    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 3;     DropRank = 9;     Row = 2; RowRank = 1 }
+    @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 3 }
+    @{ Name = 'clock';   Build = 'Get-ClockSegment';   Default = $true; ShrinkRank = 7;     DropRank = 2;     Row = 2; RowRank = 4 }
+    @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 5 }
+    @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 5;     Row = 2; RowRank = 2 }
+    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 6;     DropRank = 3;     Row = 1; RowRank = 5 }
+    @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 6;     Row = 1; RowRank = 4 }
+    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 5;     DropRank = 7;     Row = 1; RowRank = 2 }
+    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 4;     DropRank = 8;     Row = 1; RowRank = 3 }
 )
 $registry = @(Get-SegmentRegistry)
-Confirm-Equal $registry.Count $registryTable.Count 'registry: nine records'
+Confirm-Equal $registry.Count $registryTable.Count 'registry: ten records'
 for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
     $want = $registryTable[$i]
     $got = $registry[$i]
@@ -296,12 +308,18 @@ for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
 }
 # Cost is first in the shrink order and third in the drop order: its per-turn delta is the first detail
 # on the line to go, and the segment itself still goes after lines and badges, which is where it was.
-# Badges is last of the six: its Short form sheds the agent and session names, which is the least
-# missed detail on the line, so it is the last thing tried before whole segments start going.
-Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'cost,limits,context,branch,folder,badges' 'registry: shrink order'
-Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,badges,cost,limits,pr,folder,branch,context' 'registry: drop order'
+# Badges was last of the six: its Short form sheds the agent and session names, which is the least
+# missed detail on the line, so it was the last thing tried before whole segments start going.
+# Clock is behind it now, seventh and last of the seven, and that is not a contradiction with its place
+# second in the drop order: stage one runs to the end before stage two starts, so a segment that is
+# dropped early is still offered the chance to shed its api share first. What the two ranks say together
+# is that the api share is the last detail worth keeping and the segment is the first number worth
+# losing, which is the order a session clock earns - it is the only figure on the line that says nothing
+# about what the session is doing right now.
+Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'cost,limits,context,branch,folder,badges,clock' 'registry: shrink order'
+Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,clock,badges,cost,limits,pr,folder,branch,context' 'registry: drop order'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 1) -join ',') 'model,folder,branch,pr,badges' 'registry: layout two row 1'
-Confirm-Equal ((Get-SegmentOrder 'RowRank' 2) -join ',') 'context,limits,cost,lines' 'registry: layout two row 2'
+Confirm-Equal ((Get-SegmentOrder 'RowRank' 2) -join ',') 'context,limits,cost,clock,lines' 'registry: layout two row 2'
 # The four assertions above pin what the order function returned; these pin the property that makes it
 # right. Get-SegmentOrder drops each record into a hashtable slot keyed by its rank number and then
 # reads slots 1..Count back, so a rank used twice silently OVERWRITES the earlier record - the loser
@@ -631,7 +649,7 @@ Confirm-Equal (Get-ThresholdText $c) '60/85' 'config icons: the invalid threshol
 function Get-SegmentText($c) { return (@($allSegments | Where-Object { $c.Segments[$_] }) -join ',') }
 $presetShape = @(
     @{ Name = 'minimal'; Layout = 'one'; Style = 'plain'; On = 'model,context,folder,branch' }
-    @{ Name = 'cost'; Layout = 'one'; Style = 'plain'; On = 'model,context,cost,lines,limits' }
+    @{ Name = 'cost'; Layout = 'one'; Style = 'plain'; On = 'model,context,cost,clock,lines,limits' }
     @{ Name = 'full'; Layout = 'two'; Style = 'powerline'; On = ($allSegments -join ',') }
 )
 foreach ($want in $presetShape) {
@@ -703,9 +721,9 @@ foreach ($case in @(
     Confirm-Equal (Get-SegmentText $c) 'model,context,folder,branch' "preset: a style $($case.Where) leaves the minimal segments"
 }
 $c = Read-StatusConfig (Write-TempConfig 'preset-segment-on.json' '{ "preset": "cost", "segments": { "branch": true } }')
-Confirm-Equal (Get-SegmentText $c) 'model,context,cost,lines,limits,branch' 'preset: a segment turned back on beside it'
+Confirm-Equal (Get-SegmentText $c) 'model,context,cost,clock,lines,limits,branch' 'preset: a segment turned back on beside it'
 $c = Read-StatusConfig (Write-TempConfig 'preset-segment-off.json' '{ "preset": "cost", "segments": { "cost": false } }')
-Confirm-Equal (Get-SegmentText $c) 'model,context,lines,limits' 'preset: a segment turned off beside it'
+Confirm-Equal (Get-SegmentText $c) 'model,context,clock,lines,limits' 'preset: a segment turned off beside it'
 $c = Read-StatusConfig (Write-TempConfig 'preset-layout.json' '{ "preset": "full", "layout": "one" }')
 Confirm-Equal $c.Layout 'one' 'preset: the layout beside it wins'
 Confirm-Equal $c.Style 'powerline' 'preset: the style it sets is kept'
@@ -772,7 +790,7 @@ $c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-layout' '{ "layout"
 Confirm-Equal $c.Layout 'two' 'project config: the project layout is applied'
 Confirm-Equal $c.Style 'powerline' 'project config: the user style is kept'
 Confirm-Equal $c.Segments.cost $false 'project config: the user segment toggle is kept'
-Confirm-True (@($allSegments | Where-Object { $_ -ne 'cost' -and -not $c.Segments[$_] }).Count -eq 0) 'project config: the other eight segments stay on'
+Confirm-True (@($allSegments | Where-Object { $_ -ne 'cost' -and -not $c.Segments[$_] }).Count -eq 0) 'project config: the other nine segments stay on'
 # The project file with no user file at all: it applies over the built-in defaults.
 $c = Read-StatusConfig $missingConfig (Write-TempProjectDir 'proj-alone' '{ "layout": "two", "state": false }')
 Confirm-Equal $c.Layout 'two' 'project config alone: the layout is applied'
@@ -820,11 +838,11 @@ $c = Read-StatusConfig (Write-TempConfig 'preset-project-user.json' '{ "preset":
 Confirm-Equal (Get-SegmentText $c) 'model,context,cost,folder,branch' 'project config: a project toggle lands on the user preset'
 Confirm-Equal $c.Layout 'one' 'project config: the user preset layout is kept'
 $c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-preset' '{ "preset": "cost" }')
-Confirm-Equal (Get-SegmentText $c) 'model,context,cost,lines,limits' 'project config: a project preset outranks the user segment toggles'
+Confirm-Equal (Get-SegmentText $c) 'model,context,cost,clock,lines,limits' 'project config: a project preset outranks the user segment toggles'
 Confirm-Equal $c.Style 'plain' 'project config: a project preset outranks the user style'
 $c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-preset-and-key' '{ "preset": "cost", "style": "powerline" }')
 Confirm-Equal $c.Style 'powerline' 'project config: a key beside the project preset wins'
-Confirm-Equal (Get-SegmentText $c) 'model,context,cost,lines,limits' 'project config: the project preset segments are kept'
+Confirm-Equal (Get-SegmentText $c) 'model,context,cost,clock,lines,limits' 'project config: the project preset segments are kept'
 $c = Read-StatusConfig (Write-TempConfig 'preset-project-user-full.json' '{ "preset": "full" }') (Write-TempProjectDir 'proj-preset-over' '{ "preset": "minimal" }')
 Confirm-Equal (Get-SegmentText $c) 'model,context,folder,branch' 'project config: the project preset wins the one the user file names'
 Confirm-Equal $c.Layout 'one' 'project config: the project preset layout wins'
@@ -1024,10 +1042,10 @@ Confirm-Equal $c.Style 'plain' 'shipped config: style plain'
 Confirm-Equal $c.Folder 'repo' 'shipped config: folder repo'
 Confirm-Equal $shippedJson.folder 'repo' 'shipped config: the file itself says folder repo'
 $shippedSegments = @($c.Segments.Keys)
-Confirm-Equal $shippedSegments.Count 9 'shipped config: nine segments'
+Confirm-Equal $shippedSegments.Count 10 'shipped config: ten segments'
 Confirm-True (@($shippedSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'shipped config: every segment on'
 $shippedFileSegments = @($shippedJson.segments.PSObject.Properties)
-Confirm-Equal $shippedFileSegments.Count 9 'shipped config: the file itself lists nine segments'
+Confirm-Equal $shippedFileSegments.Count 10 'shipped config: the file itself lists ten segments'
 # -ne coerces its right side to the left side's type, so 'true' -ne $true is False; test the type too.
 Confirm-True (@($shippedFileSegments | Where-Object { $_.Value -isnot [bool] -or $_.Value -ne $true }).Count -eq 0) 'shipped config: the file itself sets them all to the boolean true'
 Confirm-Equal $c.State $true 'shipped config: state on'
@@ -1062,19 +1080,25 @@ Write-Host '== unit: icons' -ForegroundColor Cyan
 # Get-IconSet turns the built-in table and the config's overrides into one glyph per name, and the
 # script assigns its $icon* constants from that set.
 $defaultIcons = Get-IconDefault
-Confirm-Equal $defaultIcons.Count 21 'icons: twenty-one built-in glyphs'
+Confirm-Equal $defaultIcons.Count 22 'icons: twenty-two built-in glyphs'
 Confirm-Equal $defaultIcons.pr 0xF407 'icons: pr is the pull-request glyph'
 Confirm-Equal $defaultIcons.model 0xF06A9 'icons: model is the robot'
 Confirm-Equal $defaultIcons.worktree 0xF04C1 'icons: worktree is the source fork'
 Confirm-Equal $defaultIcons.agent 0xF007 'icons: agent is nf-fa-user'
 Confirm-Equal $defaultIcons.session 0xF02B 'icons: session is nf-fa-tag'
+# The stopwatch, and the code point the Nerd Fonts glyph list gives that name. Issue #8 asked for
+# nf-md-timer-outline and then wrote F13AB beside it, which is nf-md-timer, the filled one; the name is
+# what says what the glyph should look like, so the outline it is. Pinned by number here because the
+# two are neighbours in the same font and neither draws a box, so a swapped digit would render a
+# perfectly reasonable stopwatch and nothing would say it was the wrong one.
+Confirm-Equal $defaultIcons.clock 0xF051B 'icons: clock is nf-md-timer_outline, not the filled nf-md-timer at F13AB'
 # Every built-in code point has to survive the guards a config value goes through. The glyph a config
 # may put in its place is held to that bar, so the one it replaces cannot sit below it.
 foreach ($e in $defaultIcons.GetEnumerator()) {
     Confirm-Equal (Read-CodePoint ('{0:X}' -f $e.Value)) $e.Value "icons: the built-in $($e.Key) code point passes the guards"
 }
 $set = Get-IconSet @{ Icons = @{} }
-Confirm-Equal $set.Count 21 'icons: one glyph per name'
+Confirm-Equal $set.Count 22 'icons: one glyph per name'
 Confirm-Equal $set.pr $iconPr 'icons: no override gives the built-in pr glyph'
 Confirm-Equal $set.model $iconModel 'icons: no override gives the built-in model glyph'
 Confirm-Equal $set.dirty $iconDirty 'icons: no override gives the built-in pencil'
@@ -1720,6 +1744,26 @@ $line = Get-FittedLine $fitBadges 'plain' 39
 Confirm-Equal (Get-VisibleWidth $line) 38 'fit: stage 1 shrinks badges fifth'
 Confirm-True ($line.Contains('GG') -and -not $line.Contains('GGGG') -and $line.Contains('LL')) 'fit: badges shortened, nothing dropped at 39'
 
+# The clock is the two ends of the fitting at once, and this is the block that proves the two do not
+# fight. Its api share is the last detail stage 1 sheds, behind every other Short form on the line, and
+# the segment itself is the second whole thing stage 2 drops, ahead of everything but lines. Stage 1
+# runs to the end before stage 2 starts, so the order is: shed the share last, then drop the segment
+# early. Full width here is 53; limits short gives 50, context 47, the clock 43, then dropping lines
+# gives 38 and dropping the clock 33.
+$fitClock = @(Get-FitSegmentSet) + @(@{ Name = 'clock'; Text = 'KKKKKK'; Short = 'KK'; Role = 'dim'; Bold = $false })
+Confirm-Equal (Get-VisibleWidth (Get-FittedLine $fitClock 'plain' $null)) 53 'fit: the clock set is fifty-three cells unfitted'
+$line = Get-FittedLine $fitClock 'plain' 47
+Confirm-True ($line.Contains('KKKKKK') -and $line.Contains('CCC') -and -not $line.Contains('CCCCCC')) 'fit: context shortened before the clock at 47'
+$line = Get-FittedLine $fitClock 'plain' 46
+Confirm-Equal (Get-VisibleWidth $line) 43 'fit: stage 1 sheds the api share last of all'
+Confirm-True (-not $line.Contains('KKKKKK') -and $line.Contains('KK') -and $line.Contains('LL')) 'fit: the clock shortened, nothing dropped at 46'
+$line = Get-FittedLine $fitClock 'plain' 42
+Confirm-Equal (Get-VisibleWidth $line) 38 'fit: stage 2 still drops lines first'
+Confirm-True (-not $line.Contains('LL') -and $line.Contains('KK')) 'fit: lines dropped, the clock kept at 42'
+$line = Get-FittedLine $fitClock 'plain' 37
+Confirm-Equal (Get-VisibleWidth $line) 33 'fit: the clock is the second whole segment to go'
+Confirm-True (-not $line.Contains('KK') -and $line.Contains('GG') -and $line.Contains('AA')) 'fit: the clock dropped, badges and cost kept at 37'
+
 # The shrink and drop orders are parameters that default to the registry, so a caller can hand in its own.
 # Shrinking context alone takes 44 to 41; dropping badges after the default shrink of limits and context
 # takes 38 to 33 (two cells of text and a three-cell separator).
@@ -2174,6 +2218,103 @@ Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState 2
 # called boring is still boring, and a segment the guard hides has no delta to show.
 Confirm-Equal (Get-CostSegment (Get-CostPayload 0.4312) $quiet1 (Get-CostState 0.1)) $null 'cost delta: the quiet guard still hides the whole segment'
 Confirm-Equal (Get-CostSegment ([pscustomobject]@{}) $quietOff (Get-CostState 0.95)) $null 'cost delta: no cost object is still no segment'
+
+Write-Host '== unit: clock' -ForegroundColor Cyan
+# Format-Elapsed alone: the three forms, and the boundaries between them. The minutes are zero-padded
+# once there is an hour in front of them and not before, so `1h05m` reads as an hour and five minutes
+# rather than as an hour and fifty.
+foreach ($row in @(
+        @{ Ms = 30000; Text = '<1m'; Label = 'half a minute is under a minute' }
+        @{ Ms = 59999; Text = '<1m'; Label = 'a millisecond under a minute' }
+        @{ Ms = 60000; Text = '1m'; Label = 'exactly a minute is a minute' }
+        @{ Ms = 120000; Text = '2m'; Label = 'the two minutes sample 01 carries' }
+        @{ Ms = 720000; Text = '12m'; Label = 'twelve minutes' }
+        @{ Ms = 900000; Text = '15m'; Label = 'the quarter hour sample 09 carries' }
+        @{ Ms = 3599999; Text = '59m'; Label = 'a millisecond under an hour' }
+        @{ Ms = 3600000; Text = '1h00m'; Label = 'exactly an hour, minutes padded' }
+        @{ Ms = 3900000; Text = '1h05m'; Label = 'a single-digit minute is zero-padded' }
+        @{ Ms = 4320000; Text = '1h12m'; Label = 'the hour and twelve of sample 06' }
+        @{ Ms = 172800000; Text = '48h00m'; Label = 'two days keeps counting in hours' }
+        @{ Ms = 4320000.4; Text = '1h12m'; Label = 'a fractional millisecond count still reads' }
+    )) {
+    Confirm-Equal (Format-Elapsed $row.Ms) $row.Text "elapsed: $($row.Label)"
+}
+# A duration is refused rather than repaired, which is the rule the cost delta already applies to a
+# stored total it cannot believe. Minus twenty minutes clamped to zero would print `<1m` and read as a
+# session that has just started; a NaN clamped the same way would read the same. Neither is a reading of
+# anything, so there is no segment. The upper end is the point past which the value is not a time span
+# at all - more milliseconds than [TimeSpan] can hold - and it is refused for the same reason and not
+# pinned to the largest span that fits.
+# Every negative is parenthesised: a bare negative literal in argument position binds as a string.
+foreach ($row in @(
+        @{ Value = $null; Label = 'missing' }
+        @{ Value = 0; Label = 'zero' }
+        @{ Value = (-1); Label = 'minus a millisecond' }
+        @{ Value = (-1200000); Label = 'minus twenty minutes' }
+        @{ Value = '120000'; Label = 'a string of digits' }
+        @{ Value = $true; Label = 'a boolean' }
+        @{ Value = ([double]::NaN); Label = 'NaN' }
+        @{ Value = ([double]::PositiveInfinity); Label = 'infinity' }
+        @{ Value = 1e18; Label = 'more milliseconds than a TimeSpan can hold' }
+        @{ Value = @(120000); Label = 'an array' }
+    )) {
+    Confirm-Equal (Format-Elapsed $row.Value) $null "elapsed: $($row.Label) is refused"
+}
+
+function Get-ClockPayload($Ms, $ApiMs) {
+    return [pscustomobject]@{ cost = [pscustomobject]@{ total_duration_ms = $Ms; total_api_duration_ms = $ApiMs } }
+}
+$clock1h12 = "$iconClock 1h12m"
+$clockFull = Get-ClockSegment (Get-ClockPayload 4320000 1641600)
+Confirm-Equal $clockFull.Name 'clock' 'clock: the record is named for the registry'
+Confirm-Equal $clockFull.Text "$clock1h12 $middot api 38%" 'clock: 1h12m beside a 38% api share'
+Confirm-Equal $clockFull.Short $clock1h12 'clock: the short form is the elapsed time alone'
+Confirm-Equal $clockFull.Role 'dim' 'clock: the role is dim'
+Confirm-Equal $clockFull.Bold $false 'clock: a long session is not an error, so it is not bold'
+Confirm-Equal (Get-ClockSegment (Get-ClockPayload 720000)).Text "$iconClock 12m" 'clock: no api duration renders the elapsed time alone'
+Confirm-Equal (Get-ClockSegment (Get-ClockPayload 720000)).Short $null 'clock: nothing to shed means no short form, so the fitting skips the segment'
+Confirm-Equal (Get-ClockSegment (Get-ClockPayload 30000)).Text "$iconClock <1m" 'clock: half a minute, with no api share'
+Confirm-Equal (Get-ClockSegment (Get-ClockPayload 120000)).Text "$iconClock 2m" 'clock: the two minutes sample 01 carries'
+Confirm-Equal (Get-ClockSegment (Get-ClockPayload 4320000 0)).Text $clock1h12 'clock: a zero api duration is no share at all'
+Confirm-Equal (Get-ClockSegment (Get-ClockPayload 4320000 4320000)).Text "$clock1h12 $middot api 100%" 'clock: a session spent entirely on the api is 100%'
+# The whole segment goes when there is no duration to report.
+Confirm-Equal (Get-ClockSegment ([pscustomobject]@{})) $null 'clock: no cost object'
+Confirm-Equal (Get-ClockSegment (Get-ClockPayload $null 1641600)) $null 'clock: an api duration with no total is no segment'
+Confirm-Equal (Get-ClockSegment (Get-ClockPayload 0)) $null 'clock: a zero duration'
+Confirm-Equal (Get-ClockSegment (Get-ClockPayload (-4320000) 1641600)) $null 'clock: a negative duration'
+Confirm-Equal (Get-ClockSegment (Get-ClockPayload 1e18 1e17)) $null 'clock: a duration past what a TimeSpan can hold, share and all'
+# The api share is refused rather than clamped. A session cannot have spent more time waiting on the API
+# than it has existed, so a payload saying it did is not a share to be pinned at the top of the range -
+# it is a pair of figures with nothing to say about the split, and the elapsed time alone is the honest
+# answer. Issue #8 asked for a clamp to 0..100 here; a clamp answers a confident `api 100%` to exactly
+# the evidence that the pair cannot be trusted, which is the shape of two defects this project has
+# already fixed - a negative token count that rendered `100% cached`, a negative stored cost that
+# rendered `+$101.07`.
+foreach ($row in @(
+        @{ Api = 4320001; Label = 'a millisecond more api time than the session has existed' }
+        @{ Api = 8640000; Label = 'twice the session in api time' }
+        @{ Api = (-1641600); Label = 'a negative api duration' }
+        @{ Api = ([double]::NaN); Label = 'an api duration of NaN' }
+        @{ Api = ([double]::PositiveInfinity); Label = 'an infinite api duration' }
+        @{ Api = 'lots'; Label = 'an api duration that is not a number' }
+        @{ Api = $true; Label = 'an api duration that is a boolean' }
+        @{ Api = @(1641600); Label = 'an api duration that is an array' }
+    )) {
+    Confirm-Equal (Get-ClockSegment (Get-ClockPayload 4320000 $row.Api)).Text $clock1h12 "clock: $($row.Label) leaves the elapsed time alone"
+    Confirm-Equal (Get-ClockSegment (Get-ClockPayload 4320000 $row.Api)).Short $null "clock: $($row.Label) leaves no short form either"
+}
+# The share goes through Get-WholePercent, the one percentage rule the line has, and not through a floor
+# of its own. Nothing bands on it - the segment is dim whatever it says, and no alarm reads a duration -
+# so the [math]::Floor exception subagent-statusline.ps1 earned, which exists because that figure feeds a
+# colour and a colour must not run ahead of its number, has nothing to attach to here. The rule is round
+# half to even: 37.5% and 38.5% both give 38.
+Confirm-Equal (Get-ClockSegment (Get-ClockPayload 3600000 1350000)).Text "$iconClock 1h00m $middot api 38%" 'clock: 37.5% rounds half to even, up to 38'
+Confirm-Equal (Get-ClockSegment (Get-ClockPayload 3600000 1386000)).Text "$iconClock 1h00m $middot api 38%" 'clock: 38.5% rounds half to even, down to 38'
+Confirm-Equal (Get-ClockSegment (Get-ClockPayload 3600000 1400000)).Text "$iconClock 1h00m $middot api 39%" 'clock: 38.9% rounds up'
+# A real but tiny share still says so, rounded the way every other percentage on the line is rounded.
+# It is a true statement about a session that spent a millisecond on the API, and the case that has to
+# stay distinguishable from it - no api figure at all - already renders with no dot and no `api` part.
+Confirm-Equal (Get-ClockSegment (Get-ClockPayload 4320000 1)).Text "$clock1h12 $middot api 0%" 'clock: a share that rounds to nothing still says so'
 
 Write-Host '== unit: quiet guard' -ForegroundColor Cyan
 $quietTable = @{ Quiet = @{ cost = 1.0; context = 30.0; limits = 0.0 } }
@@ -4866,6 +5007,23 @@ foreach ($sample in $sampleFiles) {
     $rows = @(if ($absentGlyphs.ContainsKey($sample.Name)) { $absentGlyphs[$sample.Name] })
     $absentGlyphs[$sample.Name] = $rows + @{ Icon = $iconAgent; Name = 'agent' } + @{ Icon = $iconSession; Name = 'session' }
 }
+# And once more for the timer: three samples carry a cost.total_duration_ms and the other ten have to
+# keep the glyph off their lines. Same loop, same reason - a builder that started drawing a clock from a
+# payload with no duration in it would show up on all ten at once rather than on the two the absence
+# table happens to name.
+$clockSamples = @('01-main-clean.json', '06-limits-badges-lines.json', '09-1m-context.json')
+foreach ($sample in $sampleFiles) {
+    if ($sample.Name -in $clockSamples) { continue }
+    $rows = @(if ($absentGlyphs.ContainsKey($sample.Name)) { $absentGlyphs[$sample.Name] })
+    $absentGlyphs[$sample.Name] = $rows + @{ Icon = $iconClock; Name = 'clock' }
+}
+# The list above is read back off the payload files rather than trusted, so a duration added to another
+# sample - or taken out of one of these three - fails here instead of quietly leaving the segment
+# untested on the sample that gained it, or asserting the absence of a glyph that is now on the line.
+foreach ($sample in $sampleFiles) {
+    $hasDuration = $null -ne ((Get-Content -LiteralPath $sample.FullName -Raw | ConvertFrom-Json).cost.total_duration_ms)
+    Confirm-Equal $hasDuration ($sample.Name -in $clockSamples) "sample $($sample.Name): the clock table agrees with the payload's total_duration_ms"
+}
 # What each sample renders when every segment is enabled and nothing is fitted away: 04 carries nothing
 # but a model, 05, 07 and 08 have no git object and their probe directory is not a repository, and 07's
 # badges are all off or at the default level. 13 is the other way round: every mode is off there and the
@@ -4873,15 +5031,15 @@ foreach ($sample in $sampleFiles) {
 # with a config's enabled set this gives the segments the line should actually show, which is what the
 # gates below are built on.
 $sampleSegments = @{
-    '01-main-clean.json'                    = @('model', 'context', 'cost', 'folder', 'branch')
+    '01-main-clean.json'                    = @('model', 'context', 'cost', 'clock', 'folder', 'branch')
     '02-feature-dirty-high.json'            = @('model', 'context', 'cost', 'folder', 'branch')
     '03-main-dirty-mid.json'                = @('model', 'context', 'cost', 'folder', 'branch')
     '04-minimal.json'                       = @('model')
     '05-no-git.json'                        = @('model', 'context', 'folder')
-    '06-limits-badges-lines.json'           = @('model', 'context', 'cost', 'lines', 'limits', 'badges', 'folder', 'branch')
+    '06-limits-badges-lines.json'           = @('model', 'context', 'cost', 'clock', 'lines', 'limits', 'badges', 'folder', 'branch')
     '07-limits-expired-default-effort.json' = @('model', 'context', 'cost', 'lines', 'limits', 'folder')
     '08-repo-identity.json'                 = @('model', 'context', 'cost', 'folder')
-    '09-1m-context.json'                    = @('model', 'context', 'cost', 'folder', 'branch')
+    '09-1m-context.json'                    = @('model', 'context', 'cost', 'clock', 'folder', 'branch')
     '10-pr.json'                            = @('model', 'context', 'cost', 'pr', 'folder', 'branch')
     '11-worktree.json'                      = @('model', 'context', 'cost', 'folder', 'branch')
     '12-context-alarm.json'                 = @('model', 'context', 'cost', 'folder')
@@ -4920,6 +5078,7 @@ $sampleShortForms = @{
 $sampleMarkers = @{
     '01-main-clean.json'                    = @{
         model  = "$iconModel Fable 5.1"; context = "$iconCtx 8%"; cost = "$iconCost `$$('{0:N2}' -f 0.4312)"
+        clock  = "$iconClock 2m"
         folder = "$iconFolder my-project"; branch = "$iconHome main"
     }
     '02-feature-dirty-high.json'            = @{
@@ -4942,6 +5101,7 @@ $sampleMarkers = @{
     '06-limits-badges-lines.json'           = @{
         model  = "$iconModel Fable 5.1"; cost = "$iconCost `$$('{0:N2}' -f 1.07)"
         context = "$iconCtx 32% $(($blockFull * 3) + ($blockLight * 7)) $(K 64000)/$(K 200000) 92% cached"
+        clock  = "$iconClock 1h12m $middot api 38%"
         lines  = "$iconLines +156 ${minus}23"; limits = "$iconLimit 5h 24%"
         badges = "$iconFast $iconThink $iconEffort xhigh $iconVim NORMAL"
         folder = "$iconFolder my-project"; branch = "$iconHome main"
@@ -4957,6 +5117,7 @@ $sampleMarkers = @{
     }
     '09-1m-context.json'                    = @{
         model  = "$iconModel Fable 5.1 1M $iconConflict"; context = "$iconCtx 65%"; cost = "$iconCost `$$('{0:N2}' -f 4.21)"
+        clock  = "$iconClock 15m"
         folder = "$iconFolder my-project"; branch = "$iconHome main"
     }
     '10-pr.json'                            = @{
@@ -4990,6 +5151,7 @@ $segmentGlyphs = @{
     model   = @($iconModel, $iconConflict)
     context = @($iconCtx)
     cost    = @($iconCost)
+    clock   = @($iconClock)
     lines   = @($iconLines)
     limits  = @($iconLimit)
     badges  = @($iconFast, $iconThink, $iconEffort, $iconVim, $iconAgent, $iconSession)
@@ -5000,7 +5162,7 @@ $segmentGlyphs = @{
 # The segment behind each row of the absence table, so a row can be skipped when its segment is off
 # (the per-segment absence assertions cover that case instead, for every glyph the segment owns).
 $glyphSegment = @{
-    context = 'context'; cost = 'cost'; folder = 'folder'; lines = 'lines'; limits = 'limits'; warn = 'model'
+    context = 'context'; cost = 'cost'; clock = 'clock'; folder = 'folder'; lines = 'lines'; limits = 'limits'; warn = 'model'
     home = 'branch'; pencil = 'branch'; branch = 'branch'; worktree = 'branch'
     fast = 'badges'; think = 'badges'; effort = 'badges'; vim = 'badges'
     agent = 'badges'; session = 'badges'
@@ -5060,9 +5222,9 @@ if ($Config) {
     foreach ($row in $swappedRows) { [array]::Reverse($row) }
     $path = Write-TempConfig 'rows-swapped.json' ('{ "layout": "two", "style": "powerline", "rows": ' + (ConvertTo-Json -InputObject $swappedRows -Compress) + ' }')
     $configSet.Add((Get-ConfigRecord 'rows-swapped' $path (Read-StatusConfig $path) $keyWidths))
-    Confirm-Equal ($configSet[$configSet.Count - 1].Rows[0] -join ',') 'lines,cost,limits,context' 'rows-swapped config: first row is the registry second row reversed'
+    Confirm-Equal ($configSet[$configSet.Count - 1].Rows[0] -join ',') 'lines,clock,cost,limits,context' 'rows-swapped config: first row is the registry second row reversed'
     Confirm-Equal ($configSet[$configSet.Count - 1].Rows[1] -join ',') 'badges,pr,branch,folder,model' 'rows-swapped config: second row is the registry first row reversed'
-    Confirm-Equal ($configSet[$configSet.Count - 2].Rows[0] -join ',') 'branch,folder,pr,badges,limits,lines,context,model' 'order-reversed config: one row, reversed, without cost'
+    Confirm-Equal ($configSet[$configSet.Count - 2].Rows[0] -join ',') 'branch,folder,pr,badges,limits,lines,clock,context,model' 'order-reversed config: one row, reversed, without cost'
 }
 
 # No sample carries a session_id, so no render in the matrix may write state. The child renders get a
@@ -5641,7 +5803,7 @@ Write-Host ''
 Write-Host '== render: presets' -ForegroundColor Cyan
 $presetArrow = [char]::ConvertFromUtf32(0xE0B0)
 $presetGlyph = @{
-    model = $iconModel; context = $iconCtx; cost = $iconCost; lines = $iconLines; limits = $iconLimit
+    model = $iconModel; context = $iconCtx; cost = $iconCost; clock = $iconClock; lines = $iconLines; limits = $iconLimit
     fast = $iconFast; think = $iconThink; effort = $iconEffort; vim = $iconVim; folder = $iconFolder; branch = $iconHome
 }
 function Get-PresetRender([string] $Name, [string] $Json) {
@@ -5657,16 +5819,16 @@ $r = Get-PresetRender 'minimal' '{ "preset": "minimal" }'
 $text = ConvertTo-PlainText ($r.Lines -join "`n")
 Confirm-Equal $r.Lines.Count 1 'render preset minimal: one line'
 Confirm-True (-not $text.Contains($presetArrow)) 'render preset minimal: plain style, no powerline arrow'
-Confirm-PresetGlyph 'minimal' $text @('model', 'context', 'folder', 'branch') @('cost', 'lines', 'limits', 'fast', 'think', 'effort', 'vim')
+Confirm-PresetGlyph 'minimal' $text @('model', 'context', 'folder', 'branch') @('cost', 'clock', 'lines', 'limits', 'fast', 'think', 'effort', 'vim')
 $r = Get-PresetRender 'cost' '{ "preset": "cost" }'
 $text = ConvertTo-PlainText ($r.Lines -join "`n")
 Confirm-Equal $r.Lines.Count 1 'render preset cost: one line'
-Confirm-PresetGlyph 'cost' $text @('model', 'context', 'cost', 'lines', 'limits') @('fast', 'think', 'effort', 'vim', 'folder', 'branch')
+Confirm-PresetGlyph 'cost' $text @('model', 'context', 'cost', 'clock', 'lines', 'limits') @('fast', 'think', 'effort', 'vim', 'folder', 'branch')
 $r = Get-PresetRender 'full' '{ "preset": "full" }'
 $text = ConvertTo-PlainText ($r.Lines -join "`n")
 Confirm-Equal $r.Lines.Count 2 'render preset full: two lines'
 Confirm-True (($r.Lines -join "`n").Contains($presetArrow)) 'render preset full: powerline arrows between the blocks'
-Confirm-PresetGlyph 'full' $text @('model', 'context', 'cost', 'lines', 'limits', 'fast', 'think', 'effort', 'vim', 'folder', 'branch') @()
+Confirm-PresetGlyph 'full' $text @('model', 'context', 'cost', 'clock', 'lines', 'limits', 'fast', 'think', 'effort', 'vim', 'folder', 'branch') @()
 # A segment turned off beside the preset it belongs to, through the whole script.
 $r = Get-PresetRender 'cost-no-cost' '{ "preset": "cost", "segments": { "cost": false } }'
 $text = ConvertTo-PlainText ($r.Lines -join "`n")
