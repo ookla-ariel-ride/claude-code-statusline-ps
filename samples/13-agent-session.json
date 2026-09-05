@@ -1,0 +1,14 @@
+{
+  "model": { "display_name": "Sonnet 5" },
+  "context_window": {
+    "total_input_tokens": 30000,
+    "total_output_tokens": 1500,
+    "context_window_size": 200000,
+    "used_percentage": 16
+  },
+  "cost": { "total_cost_usd": 0.31 },
+  "agent": { "name": "reviewer" },
+  "session_name": "nightly audit",
+  "workspace": { "current_dir": "C:\\Users\\jim\\src\\my-project" },
+  "git": { "branch": "main", "status": "clean" }
+}

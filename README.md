@@ -8,7 +8,7 @@ A PowerShell status line for [Claude Code](https://code.claude.com) on Windows. 
 
 ![Status line rendered in Windows Terminal with JetBrainsMono Nerd Font](docs/statusline.png)
 
-Left to right: model, context meter, cost, lines changed, rate limits, mode badges, the pull
+Left to right: model, context meter, cost, lines changed, rate limits, session badges, the pull
 request, folder, and the branch with its change counts. Each segment starts with a Nerd Font icon,
 which GitHub cannot show in text, so the rest of this file names the icons instead.
 
@@ -30,14 +30,14 @@ how close you are to a rate limit, and which modes are on.
 - Context meter with a ten-block bar, percent, and used/total tokens. Green, then yellow, then red. A dim `92% cached` after the counts says how much of the turn's input the prompt cache served, so a number that falls after an edit to a large file tells you why a small turn cost several cents.
 - Rate limits for the 5-hour and 7-day windows, with a countdown to the next 5-hour reset, and the spend limit when Claude Code reports one (accounts behind a Claude apps gateway with a spend limit).
 - Session cost and lines added or removed.
-- Badges for fast mode, extended thinking, effort level, and vim mode. They disappear when nothing is on.
+- Badges for fast mode, extended thinking, effort level, and vim mode, then the custom agent driving the thread and the name given to the session. They disappear when nothing is on.
 - The branch's pull request as `#12`, green when approved and red when changes are requested. Ctrl-click it in Windows Terminal to open the PR.
 - Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory, cached for a few seconds so most renders never start git.
 - Counts beside the branch name: `↑N` `↓N` commits ahead of or behind the upstream, `+N` staged, `~N` changed, `?N` untracked, and a red triangle with a count when files are in conflict. See [Branch counts](#branch-counts).
 - A fork glyph and the worktree name beside the branch when the session is in a git worktree, so a window on `wt-review` is not mistaken for the main checkout. See [Worktree name](#worktree-name).
 - One line or two, plain separators or powerline blocks, and any segment switched off, all from `statusline.json`.
 - A matching line for each running subagent in the agent panel, with `.\install.ps1 -Subagents`. See [Subagent status line](#subagent-status-line).
-- Fits the terminal width. A line that is too long first loses detail from the limits, context, branch and folder segments, then loses whole segments from the right, so lines stop wrapping in normal use.
+- Fits the terminal width. A line that is too long first loses detail from the limits, context, branch, folder and badges segments, then loses whole segments from the right, so lines stop wrapping in normal use.
 - If a field is missing from the payload, the script drops that segment. If the payload will not parse, it still prints the model glyph.
 - Icons come from Unicode code points rather than pasted characters, so the file's own encoding cannot corrupt them.
 - No modules to install. PowerShell 7 and a Nerd Font are the whole dependency list.
@@ -288,7 +288,7 @@ whose text encoding the script does not get to choose.
 | `thresholds` | `{ "warn": 20, "bad": 40 }` | Where the context meter and the rate limits turn yellow and red: whole numbers from 0 to 100 (`20` or `20.0`, not `20.5`), `warn` no higher than `bad`. Either value wrong keeps 60 and 85 for both. A 1M window keeps its own 70 and 90. |
 | `alarm` | `{ "context": 90, "limits": 90 }` | Where the model segment itself turns red: `context` is read against `context_window.used_percentage` and `limits` against the higher of the 5-hour and 7-day figures. Whole numbers, each read on its own, so a file naming one leaves the other at 90. `0` turns that alarm off, a negative counts as `0`, and a number above 100 is kept as written and fires only if the payload reports a figure that high — which a context window never does, since the meter clamps to 100, and a rate limit can, since a limit really at 105% is left unclamped to say so. The spend limit is a billing ceiling rather than a rate and raises no alarm; neither does a percentage that is missing or null, which is what a session sends before its first API response. What is compared is the whole number the segments print, rounded half to even, so the meter and the model can never disagree about whether 90% has been reached: at 89.6 the meter reads 90% and the alarm fires. The alarm reads the percentage whatever the window size, so on a 1M window it fires at the same figure as the window's own fixed 90 band. |
 | `quiet` | `{ "cost": 1.00, "context": 30, "limits": 50 }` | The smallest value a segment is worth showing at: dollars for `cost`, percent for `context`, and percent for `limits` against the larger of the 5-hour and 7-day figures (the spend limit is not one of them, and a payload carrying only a spend limit is never hidden here). Below it the segment is not built at all, so it takes no room and has nothing to shed at a narrow width. **Quiet never hides a segment that is carrying a warning, an error or an alarm**: a context meter or a limits segment already yellow or red stays whatever the threshold says, so does a 5-hour figure whose pace arrow projects an overrun — which is the case that matters most, because a low percentage early in a window is exactly the one that projects red — and so does a figure at or above its `alarm` level, since `alarm` may be set below `thresholds.warn` and a red model segment with no number under it explains nothing. `cost` has no warning state of its own and no alarm is read against a dollar figure, so there its threshold is the whole story. Fractions are allowed, a negative counts as zero, and the test is on the raw figure rather than the printed one, so `"cost": 1.00` hides a cost of 0.996 even though it would have printed `$1.00`. The default is `0` everywhere, which hides nothing; a value that is not a number leaves that one name at `0` and the other two alone. |
-| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cost`, `folder`, `chevron`, `branch`, `worktree`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `pr`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`. A name the list does not have, or a value that is not a single printable glyph, keeps the built-in one. To count as a glyph a code point has to be inside Unicode, not a surrogate half and not a noncharacter, one or two cells wide, and none of: a control (`A` is a newline, `1B` a bare escape), a format character (`202E` is a right-to-left override, `200D` a zero-width joiner), a line or paragraph separator, a space, or a combining mark. Private use is where the Nerd Font glyphs live, so it is allowed. |
+| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cost`, `folder`, `chevron`, `branch`, `worktree`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `pr`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`, `agent`, `session`. A name the list does not have, or a value that is not a single printable glyph, keeps the built-in one. To count as a glyph a code point has to be inside Unicode, not a surrogate half and not a noncharacter, one or two cells wide, and none of: a control (`A` is a newline, `1B` a bare escape), a format character (`202E` is a right-to-left override, `200D` a zero-width joiner), a line or paragraph separator, a space, or a combining mark. Private use is where the Nerd Font glyphs live, so it is allowed. |
 | `git.timeoutMs` | `100` to `10000` | How long the branch segment waits for `git status`, in milliseconds, before it gives up and leaves the segment out. A value outside the range is clamped to it. |
 | `git.cacheSeconds` | `0` to `300` | How long a `git status` result is reused for, in seconds, before git is asked again. `0` asks git on every render. Clamped like `timeoutMs`. |
 | `git.cache` | `true`, `false` | `false` asks git on every render, whatever `cacheSeconds` says. |
@@ -344,10 +344,15 @@ what changed, the script keeps one small JSON file per session in `claude-status
 your temp folder (`%TEMP%` on Windows, `~/.claude/statusline-state` when there is no temp folder).
 The file is named after the session id and holds numbers only: the last cost, input and output token
 totals, context and 5-hour usage percentages, and up to twenty timestamped cost readings. No prompt
-text, path or file name is written. Files not touched for a day are deleted on a later render.
-Nothing on the line uses the file yet. Set `state` to `false` and the script neither reads nor
-writes it. Upgrading over an existing `statusline.json` leaves that file alone, so a config without
-a `state` key gets the default, which is on. `.\install.ps1 -Uninstall` prints where the files are
+text, path or file name is written. Files not touched for a day are deleted on a later render. A
+payload that does not carry the cost or the token totals leaves the stored ones alone, so a figure is
+never replaced by nothing; the two percentages are read fresh each render and are simply absent when
+the payload is silent, because a carried-forward percentage would say something false about now.
+The cost segment uses it, for the change since the previous render: the file is read once, before the
+line is built, and written after it is printed. Set `state` to `false` and the script neither reads nor
+writes it, and the cost segment shows the session total alone. Upgrading over an existing
+`statusline.json` leaves that file alone, so a config without a `state` key gets the default, which is
+on. `.\install.ps1 -Uninstall` prints where the files are
 so you can delete the folder. The same goes for the `pr` segment: an existing `statusline.json`
 without a `pr` key shows it; add `"pr": false` under `segments` to turn it off.
 
@@ -369,10 +374,12 @@ cache on, five seconds, a 1.5 second timeout. Add `"git": { "cache": false }` to
 Claude Code tells the script the terminal width. When a line is too long the script shortens it in
 two stages:
 
-1. Detail comes off four segments, in this order: from limits, every figure but the one that drives
-   its colour (the worst one when the segment is yellow or red, otherwise the first one present) plus
-   the countdown and the pace arrow; the token counts from context; every count from the branch; and
-   the owner and directory name from the folder, which keeps only the repository name.
+1. Detail comes off six segments, in this order: the per-turn delta from cost, which is the first
+   thing on the line to go; from limits, every figure but the one that drives its colour (the worst
+   one when the segment is yellow or red, otherwise the first one present) plus the countdown and the
+   pace arrow; the token counts from context; every count from the branch; the owner and directory
+   name from the folder, which keeps only the repository name; and the agent and session badges,
+   which leaves the mode badges.
 2. Whole segments go, from the right: lines, badges, cost, limits, pr, folder, branch, context.
 
 The model segment always stays.
@@ -393,10 +400,10 @@ still records what the session spent.
 |---|---|---|---|
 | model | <img src="docs/icons/robot.svg" height="18" alt="robot"> `nf-md-robot` | `model.display_name`, `context_window.context_window_size`, `exceeds_200k_tokens`, `context_window.used_percentage`, `rate_limits.five_hour`, `seven_day` | Bold cyan. On a 1M window `1M` follows the name in a lighter cyan, then a warning triangle when Claude Code reports `exceeds_200k_tokens` as true. The whole segment turns red once the context window or a rate limit reaches the `alarm` percentage, 90 unless the config moves it. The text does not change. This is the one segment that is never shortened and never dropped, which is why the alarm rides on it: at any width, and on either row of layout two, a full context window is still visible as a red line |
 | context | <img src="docs/icons/memory.svg" height="18" alt="memory"> `nf-md-memory` | `context_window.*` | Percent, ten-block bar, used/total tokens, then a dim `92% cached`. Green below 60%, yellow below 85%, red above, or the `thresholds` from the config. On a 1M window the cut-offs are 70% and 90% whatever the config says, so red still means about 100k tokens left. The cached share is `cache_read_input_tokens` over the whole of `current_usage`, absent on older Claude Code versions and before the first API response, and it goes when the token counts go. A block with a negative count is refused rather than repaired, so a malformed payload shows no share instead of a made-up one |
-| cost | <img src="docs/icons/cash.svg" height="18" alt="cash"> `nf-md-cash` | `cost.total_cost_usd` | Dimmed, two decimals |
+| cost | <img src="docs/icons/cash.svg" height="18" alt="cash"> `nf-md-cash` | `cost.total_cost_usd`, `cost_usd` from the session state file | Dimmed, two decimals, with the change since the previous render in parentheses: `$1.07 (+$0.12)`. The suffix is there only when the total rose by at least a cent, so most renders show the total alone, and so does the first render of a session, one with no state file, and one where `state` is off. With `statusLine.refreshInterval` set the command re-runs on a timer, and a render with no turn behind it has nothing to add. The delta is the first detail the width fitting sheds |
 | lines | <img src="docs/icons/code.svg" height="18" alt="code"> `nf-fa-code` | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
 | limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day`, `spend_limit` | `5h 24% → (1h12m) 7d 41% $ 62%`. Coloured by the worst of the figures, with the 60% and 85% bands, or the config's `thresholds`, whatever the window size. The countdown is omitted once the reset time has passed. The arrow after the 5-hour figure paces it against how much of the five-hour window has gone: `→` while carrying on at this rate still lands inside the window, `↑` once it would overrun, and a red `↑` once the projection reaches 120%. There is no arrow in the first half hour of a window, where the projection swings on a single busy minute, nor after the reset time, nor before anything has been used. Only the 5-hour figure gets one; a week is too long to pace from one payload. The `$` figure is the spend limit. Claude Code sends it only behind a Claude apps gateway with a spend limit, and only from 2.1.251 on |
-| badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode` | Dimmed glyphs. Effort is hidden at `high`. The whole segment is hidden when nothing is on |
+| badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim, <img src="docs/icons/user.svg" height="18" alt="user"> agent, <img src="docs/icons/tag.svg" height="18" alt="tag"> session | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode`, `agent.name`, `session_name` | Dimmed glyphs. The four mode badges come first, then the custom agent driving the main thread and the name given to the session, which change far less often. Effort is hidden at `high`. A name wider than 20 cells is cut and ends in `…`, measured in cells so a name in wide characters is cut where it draws rather than where it counts. The short form is the mode badges alone, so a narrow line sheds the agent and the session before the whole segment goes. The segment is hidden when none of the six is there, which now includes a plain unnamed session with every mode off. `session_id` is not shown: it is a UUID and says nothing at a glance |
 | pr | <img src="docs/icons/pull-request.svg" height="18" alt="pull request"> `nf-oct-git_pull_request` | `pr.number`, `pr.url`, `pr.review_state` | `#12`, wrapped in an [OSC 8 hyperlink](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda) to `pr.url` so ctrl-click in Windows Terminal opens it. Green when the review state is `approved`, red on `changes_requested`, dim otherwise. Hidden when the payload has no `pr` object or no whole, positive number in it; a `url` that is not `http` or `https` leaves the text unlinked |
 | folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.repo`, `workspace.project_dir`, `workspace.current_dir` | Blue. `owner/name` when the payload names the repository, then `›` and the directory name when it differs from the project root. Without a repository, the directory name alone. The short form is the repository name |
 | branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/fork.svg" height="18" alt="fork"> `nf-md-source_fork` in a worktree, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git status --porcelain=v1 --branch` run in `workspace.current_dir`, `worktree.name`, `worktree.path`, `workspace.git_worktree` | Magenta when clean, yellow with the pencil when the tree has changes. The worktree name follows the branch name, then the counts described below, then the pencil. Shows `detached` on a detached HEAD |
@@ -496,8 +503,8 @@ reversed `order`, swapped `rows`) at each width:
 ```
 
 Every render must exit 0 with nothing on stderr, print the number of lines its layout allows, and fit
-the terminal width. At a set width a segment with a short form (limits, context, branch, folder)
-must be whole, shortened, or gone, never half shed. At the unset width the matrix also checks
+the terminal width. At a set width a segment with a short form (limits, context, branch, folder,
+badges) must be whole, shortened, or gone, never half shed. At the unset width the matrix also checks
 content: each segment the sample and config enable must appear on its row, in the configured order,
 with its glyph and value, disabled segments must not, and the separators must match the style. Those
 content checks only run when `-Columns` includes `0`, which the default does. A few renders after the
@@ -636,11 +643,11 @@ Done so far:
 - [x] A subagent status line for the agent panel, installed with `-Subagents`
 - [x] Named presets: `minimal`, `cost` and `full` under one `preset` key
 - [x] Worktree name beside the branch
+- [x] Cost per turn beside the session total, from the state file
 
 [Issues #2 to #43](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
-each with its own plan. In rough order: new segments (cache warmth, cost per turn, session
-clock, links on the folder and branch), and finally an ASCII style that
-needs no Nerd Font and a light palette.
+each with its own plan. In rough order: new segments (cache warmth, session clock, links on the folder
+and branch), and finally an ASCII style that needs no Nerd Font and a light palette.
 
 ## License
 

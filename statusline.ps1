@@ -110,6 +110,8 @@ function Get-IconDefault {
         think    = 0xF09D0   # nf-md-brain (extended thinking)
         effort   = 0xF04C5   # nf-md-speedometer (effort level)
         vim      = 0xE62B    # nf-custom-vim
+        agent    = 0xF007    # nf-fa-user (the custom agent driving the main thread)
+        session  = 0xF02B    # nf-fa-tag  (the name the user gave the session)
     }
 }
 
@@ -171,6 +173,10 @@ function Get-IconSet($cfg) {
 }
 
 $defaultEffort = 'high'   # effort badge is hidden at this level
+# How many cells the agent and session badges may each spend on their name. Twenty is about as much as
+# a name can take before the identity badges crowd out the branch and the folder on an ordinary window,
+# and both badges share the one limit so a long pair cannot push the line further than a short pair.
+$badgeNameCells = 20
 
 # The git probe's settings when statusline.json has no git object: how long the branch segment waits
 # for `git status` before giving up, how long a probe result is reused for, and whether it is reused at
@@ -206,6 +212,15 @@ function Get-VisibleWidth([string] $Text) {
             $cat -eq [System.Globalization.UnicodeCategory]::SpacingCombiningMark -or
             $cat -eq [System.Globalization.UnicodeCategory]::EnclosingMark -or
             $cat -eq [System.Globalization.UnicodeCategory]::Format -or $cp -eq 0xFE0F) { continue }
+        # Two graphemes whose first code point says nothing about how wide they draw, so the ranges
+        # below cannot see them: a flag is a pair of regional indicators, and a keycap is an ordinary
+        # digit or # or * carrying U+20E3. Both are one text element and both take two columns in a
+        # terminal, and left to fall through they would each be counted as one, which is the one
+        # direction that matters - a name measured narrower than it draws passes a width cap it does
+        # not fit and then overruns the line. Regional indicators are matched on the first code point,
+        # so an unpaired one is two columns as well; a keycap is matched on the enclosing mark it ends
+        # with, which a bare U+20E3 never reaches because the zero-width test above has already taken it.
+        if (($cp -ge 0x1F1E6 -and $cp -le 0x1F1FF) -or $el.Contains([char] 0x20E3)) { $width += 2; continue }
         if (($cp -ge 0x1100 -and $cp -le 0x115F) -or ($cp -ge 0x2E80 -and $cp -le 0xA4CF) -or
             ($cp -ge 0xAC00 -and $cp -le 0xD7A3) -or ($cp -ge 0xF900 -and $cp -le 0xFAFF) -or
             ($cp -ge 0xFE30 -and $cp -le 0xFE4F) -or ($cp -ge 0xFF00 -and $cp -le 0xFF60) -or
@@ -217,27 +232,57 @@ function Get-VisibleWidth([string] $Text) {
     return $width
 }
 
+$ellipsis = G 0x2026   # what a clipped name ends in
+
+# Plain text clipped to $Width cells, with a one-cell ellipsis when anything was cut. Measured by text
+# element, so a surrogate pair or a combining sequence is never split down the middle. The result is
+# never wider than $Width.
+# Cells, not characters, and deliberately: Get-VisibleWidth is what Get-FittedLine measures a line with,
+# so a version counting `.Length` would let a CJK or emoji name draw twice the room it was given and
+# push the line past the width the fitting stage thinks it has. A wide character straddling the boundary
+# is dropped whole rather than half-drawn, which can leave the result one cell short of the limit.
+# subagent-statusline.ps1 carries the same function verbatim, for the agent panel's row identities, and
+# test.ps1 compares the two copies as text; this one is the source.
+function Get-ClippedText([string] $Text, [int] $Width) {
+    if ($Width -le 0) { return '' }
+    if ((Get-VisibleWidth $Text) -le $Width) { return $Text }
+    if ($Width -eq 1) { return $ellipsis }
+    $out = ''
+    $used = 0
+    $en = [System.Globalization.StringInfo]::GetTextElementEnumerator($Text)
+    while ($en.MoveNext()) {
+        $el = [string] $en.Current
+        $w = Get-VisibleWidth $el
+        if ($used + $w -gt $Width - 1) { break }
+        $out += $el
+        $used += $w
+    }
+    return $out + $ellipsis
+}
+
 # The segment table: one record per segment, in layout-one order. It is the single source for the config
 # defaults, the shrink and drop order in Get-FittedLine, the build dispatch and the layout-two rows.
-# Build names the builder function; the build loop calls it with the payload and the config, and a builder
-# that only takes the payload leaves the config in $args. It returns the segment record or $null. Default
+# Build names the builder function; the build loop calls it with the payload, the config and the session
+# state, and a builder that wants fewer of those leaves the rest in $args, which is why the call shape is
+# one line there rather than a signature per segment. It returns the segment record or $null. Default
 # seeds Read-StatusConfig. ShrinkRank orders stage one of Get-FittedLine for the segments that can have a
-# Short form; a record whose Short is $null is skipped there. DropRank orders stage two, and the model
-# record has none because it is never dropped.
+# Short form; a record whose Short is $null is skipped there, so a rank costs nothing on a render where
+# that segment has no detail to shed. DropRank orders stage two, and the model record has none because it
+# is never dropped.
 # Row is the layout-two line and RowRank the position on it, because a row is not in layout-one order.
 # The table is built once per run: a render asks for it several times, and this is on the startup path.
 function Get-SegmentRegistry {
     if (-not $script:segmentRegistry) {
         $script:segmentRegistry = @(
             @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 2;     DropRank = 8;     Row = 2; RowRank = 1 }
-            @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = $null; DropRank = 3;     Row = 2; RowRank = 3 }
+            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 3;     DropRank = 8;     Row = 2; RowRank = 1 }
+            @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 3;     Row = 2; RowRank = 3 }
             @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
-            @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
-            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 5 }
+            @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 4;     Row = 2; RowRank = 2 }
+            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 6;     DropRank = 2;     Row = 1; RowRank = 5 }
             @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 4 }
-            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 4;     DropRank = 6;     Row = 1; RowRank = 2 }
-            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 3;     DropRank = 7;     Row = 1; RowRank = 3 }
+            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 5;     DropRank = 6;     Row = 1; RowRank = 2 }
+            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 4;     DropRank = 7;     Row = 1; RowRank = 3 }
         )
     }
     return $script:segmentRegistry
@@ -675,7 +720,9 @@ function Format-Line($Segments, [string] $Style) {
 }
 
 # Renders a line and, when a width is given, shrinks then drops segments until it fits.
-# Stage 1 swaps segments for their Short form in $ShrinkOrder (limits, context, branch, then folder by default).
+# Stage 1 swaps segments for their Short form in $ShrinkOrder (cost, limits, context, branch, then folder
+# by default: the cost segment's Short is the session total without its per-turn delta, so the delta is
+# the first detail on the line to go).
 # Stage 2 drops whole segments in $DropOrder. Either order left $null comes from the registry's ranks; an
 # empty array skips that stage. The model segment is never dropped whatever the drop order says, so it may
 # overflow on its own. Returns $null when nothing is left.
@@ -1008,9 +1055,10 @@ function Get-FiniteNumber($v) {
 
 # ---- Per-session state ----
 # Each render is a fresh process that sees one payload, so a small JSON file per session keeps the last
-# cost, token totals and a short cost history for the next render to compare against. Nothing on the line
-# reads it yet, and the read, merge and write all happen after the line is printed. Every failure here is
-# silent: no directory, no file, no state, and the line is unchanged.
+# cost, token totals and a short cost history for the next render to compare against. The cost segment's
+# per-turn delta reads it, so the read happens before the segments are built; the merge and the write
+# still happen after the line is printed. Every failure here is silent: no directory, no file, no state,
+# and the line is what it would have been with no previous render at all.
 
 # The state directory: claude-statusline-state under TEMP, or ~/.claude/statusline-state when TEMP is
 # empty. Created only when $Create is set, which the write path does. $null when it is not there and
@@ -1058,9 +1106,34 @@ function Get-StateNumber($v, [switch] $Whole) {
     return [long] [math]::Floor($n)
 }
 
+# A cumulative figure: a running total that only ever counts up, which is what the dollars spent and the
+# token counts are. Get-StateNumber first, then the sign, because finite is not the same question as
+# possible - no session has ever spent minus a hundred dollars or sent minus four thousand tokens, so a
+# negative here is evidence that a payload or a hand-edited file is wrong rather than a figure to keep.
+# It is refused exactly the way a string or a boolean already is: the figure becomes $null and every
+# reader treats it as a figure that is not there. That is deliberately not a clamp to zero. A clamp
+# would turn an impossible input into the most reassuring possible output - a delta measured from a
+# baseline of nothing - where a refusal makes the absence visible instead.
+# The refusal is per field, not per record, which is the rule the rest of this file already follows: a
+# figure of any other shape nulls itself and leaves the record's other keys alone, and a whole record is
+# thrown away only for a structural fault - not JSON, or not version 1. One corrupt counter is no
+# evidence about the ring or about the other counters, and discarding those would cost more deltas than
+# it saves. Every field that goes missing here fails safe: the segment renders without its delta, which
+# is the same path as a session that has no state file at all.
+# The two percentages do not come through here. They are gauges rather than counters, and their range is
+# not this function's to decide: a rate limit really can report over 100, and the one reader a stored
+# percentage has - the pace arrow's fallback - already refuses anything at or below zero at its own door.
+function Get-CountedNumber($v, [switch] $Whole) {
+    $n = Get-StateNumber $v -Whole:$Whole
+    if ($null -eq $n -or $n -lt 0) { return $null }
+    return $n
+}
+
 # The state last written for a session, as a hashtable with the schema's keys, or $null for no file,
 # unreadable JSON, or a version other than 1. Each figure is a number or $null; history entries without
-# both a time and a cost are dropped.
+# both a time and a cost are dropped. The three counters and the ring's costs go through
+# Get-CountedNumber, so a negative one - which no session can reach, and which a hand-edited file can
+# hold - reads as a figure that is not there rather than as a baseline to measure a delta from.
 function Read-SessionState([string] $SessionId) {
     try {
         $path = Get-SessionStatePath $SessionId $false
@@ -1070,25 +1143,31 @@ function Read-SessionState([string] $SessionId) {
         $history = [System.Collections.Generic.List[hashtable]]::new()
         foreach ($h in @($j.history)) {
             $t = Get-StateNumber $h.t -Whole
-            $c = Get-StateNumber $h.cost_usd
+            $c = Get-CountedNumber $h.cost_usd
             if ($null -ne $t -and $null -ne $c) { $history.Add(@{ t = $t; cost_usd = $c }) }
         }
         $state = @{ v = 1; history = @($history) }
-        foreach ($key in @('updated_at', 'input_tokens', 'output_tokens')) { $state[$key] = Get-StateNumber $j.$key -Whole }
-        foreach ($key in @('cost_usd', 'used_percentage', 'five_hour_percentage')) { $state[$key] = Get-StateNumber $j.$key }
+        # updated_at is a clock reading rather than a counter, so it keeps the plain rule.
+        $state['updated_at'] = Get-StateNumber $j.updated_at -Whole
+        foreach ($key in @('input_tokens', 'output_tokens')) { $state[$key] = Get-CountedNumber $j.$key -Whole }
+        $state['cost_usd'] = Get-CountedNumber $j.cost_usd
+        foreach ($key in @('used_percentage', 'five_hour_percentage')) { $state[$key] = Get-StateNumber $j.$key }
         Write-StatusDiag "state: read ($path)"
         return $state
     } catch { Write-StatusDiag "state read failed: $($_.Exception.Message)"; return $null }
 }
 
-# The next state for a session: the payload's figures now, and the history ring carried over from the
-# previous state with a new entry when the cost moved (a first render counts as moved). The ring keeps
-# the newest 20. Keys are in schema order so the file always reads the same way.
-# The comparison is against the last entry in the ring, not against the previous record's cost_usd: a
-# payload can arrive with no cost object at all (the minimal sample is that shape), which stores a null
-# cost, and comparing against that null would re-append an unchanged cost on the render after it.
+# The next state for a session: the payload's figures now, the counters the payload did not carry kept
+# from the previous state (see the block above the record), and the history ring carried over with a
+# new entry when the cost moved (a first render counts as moved). The ring keeps the newest 20. Keys
+# are in schema order so the file always reads the same way.
+# The comparison is against the last entry in the ring, not against the record's cost_usd: the ring
+# holds only figures a payload actually carried, so it is the honest answer to "has the cost moved
+# since it was last seen", while cost_usd may be one carried forward across a payload that had none.
+# A payload can arrive with no cost object at all - the minimal sample is that shape - and comparing
+# against a carried figure would be comparing against a reading that never happened.
 function Merge-SessionState($Previous, $Payload, [long] $Now) {
-    $cost = Get-StateNumber $Payload.cost.total_cost_usd
+    $cost = Get-CountedNumber $Payload.cost.total_cost_usd
     $history = [System.Collections.Generic.List[hashtable]]::new()
     if ($Previous) {
         foreach ($h in @($Previous.history)) { if ($h) { $history.Add($h) } }
@@ -1097,12 +1176,26 @@ function Merge-SessionState($Previous, $Payload, [long] $Now) {
     if ($null -ne $cost -and $cost -ne $last) { $history.Add(@{ t = $Now; cost_usd = $cost }) }
     while ($history.Count -gt 20) { $history.RemoveAt(0) }
     $ctx = $Payload.context_window
+    # A payload that does not carry a figure is not a session that lost it, so the three counters keep
+    # what the record holds rather than being overwritten with nothing. They count up over a session -
+    # dollars spent, tokens in, tokens out - and the next render measures its delta from them, so one
+    # payload without a cost object would otherwise erase the total a rise is measured against and that
+    # rise would never be shown on any line. This is the rule the history ring above already follows;
+    # the two disagreed until now. A figure that is present but is not a number is a figure the payload
+    # did not carry and carries the same way, while a real zero is a figure and replaces the one before.
+    # The two percentages are gauges, not counters: how full the window is now, how much of this
+    # five-hour window has gone. A carried-forward gauge is worse than none, because a compaction, a
+    # fresh window or a changed model makes the old figure a confident lie about the present, and the
+    # five-hour figure drops to zero at its own boundary, so a stale one reads as usage that has not
+    # happened. Both are read fresh every render and are simply absent when the payload is silent -
+    # which is what the pace arrow's optional fallback wants, since no figure is a fallback it can
+    # decline and a wrong one is not.
     return [ordered]@{
         v = 1
         updated_at = $Now
-        cost_usd = $cost
-        input_tokens = Get-StateNumber $ctx.total_input_tokens -Whole
-        output_tokens = Get-StateNumber $ctx.total_output_tokens -Whole
+        cost_usd = $cost ?? (Get-CountedNumber $Previous.cost_usd)
+        input_tokens = (Get-CountedNumber $ctx.total_input_tokens -Whole) ?? (Get-CountedNumber $Previous.input_tokens -Whole)
+        output_tokens = (Get-CountedNumber $ctx.total_output_tokens -Whole) ?? (Get-CountedNumber $Previous.output_tokens -Whole)
         used_percentage = Get-StateNumber $ctx.used_percentage
         five_hour_percentage = Get-StateNumber $Payload.rate_limits.five_hour.used_percentage
         history = @($history)
@@ -1190,6 +1283,8 @@ $iconFast = $icons.fast
 $iconThink = $icons.think
 $iconEffort = $icons.effort
 $iconVim = $icons.vim
+$iconAgent = $icons.agent
+$iconSession = $icons.session
 
 # The names on each printed line: the config's order for layout one, the two rows for layout two. Settled
 # here, above the first thing that prints, because three readers need it - both fallback lines and the
@@ -1410,16 +1505,54 @@ function Get-ContextSegment($d, $cfg) {
     return @{ Name = 'context'; Text = "$short$tail"; Short = $(if ($tail) { $short } else { $null }); Role = $role; Bold = $false }
 }
 
-# Session cost in dollars, two decimals. quiet.cost is tested on the raw figure rather than on the text,
-# so a threshold of 1 hides a cost of 0.996 even though it would have printed $1.00.
+# Session cost in dollars, two decimals, and the change since the previous render in parentheses behind
+# it, "$1.07 (+$0.12)", so the turn just paid for is visible and not only the running total that tells
+# you nothing about it. The previous total is $state.cost_usd, the figure the last render of this session
+# wrote; no state file, a first render, a total that did not move and one that went backwards (a state
+# file carried between machines) all print the total alone, which is exactly what this segment was before
+# the delta existed. With statusLine.refreshInterval set the command re-runs on a timer, so a render with
+# no API call behind it shows no suffix until the next turn.
+# "The previous render" is exactly the last render that wrote the file, which is not always the last
+# render there was: one that ends before the write - the zero-segment exit does - leaves the next delta
+# spanning both turns. That figure is still the difference between two totals this session really
+# reached, and a render that wrote nothing printed no total of its own for it to contradict.
+# The delta is rounded to cents once, and both the "is this worth showing" test and the printed figure
+# read that one number: binary floating point makes 1.08 - 1.07 a hair over a cent and 0.03 - 0.02 a hair
+# under, and rounding first is what stops those two from being answered differently. Both figures go
+# through the same '{0:N2}', so a culture that writes 12,50 writes the delta the way it writes the total
+# beside it.
+# Short is the total on its own, and $null when there is no delta, so the fitting sheds the suffix first
+# of anything on the line and a cost with no delta is skipped in stage one as it always was.
+# quiet.cost is tested on the raw figure rather than on the text, so a threshold of 1 hides a cost of
+# 0.996 even though it would have printed $1.00. It is tested on the session total and not on the delta:
+# the threshold answers whether this session is worth a segment, not whether this turn was expensive, and
+# a segment the guard hides has no suffix to argue about.
 # There is no warning state to preserve here, unlike context and limits: this segment's role is always
-# dim and no config threshold colours it, so a spend the user called boring is only ever boring and the
-# quiet guard stands alone.
-function Get-CostSegment($d, $cfg) {
+# dim, no config threshold colours it, and no alarm is read against a dollar figure - Test-AlarmState
+# asks only the context window and the two rate limits - so a spend the user called boring is only ever
+# boring and the quiet guard stands alone.
+function Get-CostSegment($d, $cfg, $state) {
     $cost = $d.cost.total_cost_usd
     if ($null -eq $cost) { return $null }
     if (Test-QuietValue $cfg 'cost' $cost) { return $null }
-    return @{ Name = 'cost'; Text = ("$iconCost `$" + ('{0:N2}' -f [double] $cost)); Short = $null; Role = 'dim'; Bold = $false }
+    $total = "$iconCost `$" + ('{0:N2}' -f [double] $cost)
+    # Both sides go through Get-CountedNumber, so a figure of any other shape, and a negative on either
+    # side, is simply a render with no delta: this arithmetic never decides whether the segment appears
+    # at all. The stored total is the side that matters - a hand-edited record holding -100 against a
+    # real total of 1.07 would otherwise render a confident (+$101.07). The payload's own total is asked
+    # the same question even though nothing today can reach a wrong answer through it: a negative
+    # payload total against an honest record makes the subtraction negative, which the rule below
+    # refuses anyway, and against a negative record the record is refused first. It is written as the
+    # invariant rather than left resting on that coincidence, because the coincidence belongs to the
+    # "at least a cent" rule and would go with it.
+    $suffix = ''
+    $spent = Get-CountedNumber $cost
+    $before = Get-CountedNumber $state.cost_usd
+    if ($null -ne $spent -and $null -ne $before) {
+        $delta = [math]::Round($spent - $before, 2)
+        if ($delta -ge 0.01) { $suffix = " (+`$" + ('{0:N2}' -f $delta) + ')' }
+    }
+    return @{ Name = 'cost'; Text = "$total$suffix"; Short = $(if ($suffix) { $total } else { $null }); Role = 'dim'; Bold = $false }
 }
 
 # Lines added/removed this session; shown when either is non-zero. Inline colours keep the dim background intact.
@@ -1546,7 +1679,21 @@ function Get-LimitsSegment($d, $cfg) {
     return @{ Name = 'limits'; Text = $text; Short = $short; Role = $role; Bold = $false }
 }
 
-# Session mode badges: fast mode, thinking, non-default effort, vim mode. Omitted when nothing is on.
+# Session badges in two groups. First the modes - fast mode, thinking, non-default effort, vim mode -
+# which come and go as the session runs, so they hold the left of the segment where the eye already
+# looks for them. Then the identities: the custom agent driving the main thread and the name the user
+# gave this session, both of which stay put for a whole session, so they sit on the right where a
+# change is not expected. The segment is omitted when neither group has anything, which now means a
+# session with every mode off still gets a badges segment once it is named or run by an agent.
+# agent.name and session_name are payload text, so they go through the same pair the branch name and
+# the repo owner go through: Test-PayloadText decides whether there is anything there at all (a control
+# character, a blank, a number, or a string of nothing but format characters is not a name), and
+# Format-PayloadText strips the format characters out of what is left, so neither badge can reorder or
+# hide the rest of the line. Then Get-ClippedText cuts each one to $badgeNameCells cells, measured the
+# way the fitting code measures, so a name in wide characters cannot take twice the room it was given.
+# Short is the modes alone, so a narrow line sheds the two identities before the whole segment goes;
+# it is $null when there is nothing to shed - no modes, or no identities - the way Get-LimitsSegment
+# leaves its Short $null rather than repeating the full text.
 function Get-BadgesSegment($d) {
     $badges = [System.Collections.Generic.List[string]]::new()
     if ($d.fast_mode -eq $true) { $badges.Add($iconFast) }
@@ -1555,8 +1702,17 @@ function Get-BadgesSegment($d) {
     if ($effort -and $effort -ne $defaultEffort) { $badges.Add("$iconEffort $effort") }
     $vim = $d.vim.mode
     if ($vim) { $badges.Add("$iconVim $vim") }
+    $modeCount = $badges.Count
+    $modes = if ($modeCount -gt 0) { $badges -join ' ' } else { $null }
+    if (Test-PayloadText $d.agent.name) {
+        $badges.Add("$iconAgent " + (Get-ClippedText (Format-PayloadText ([string] $d.agent.name)) $badgeNameCells))
+    }
+    if (Test-PayloadText $d.session_name) {
+        $badges.Add("$iconSession " + (Get-ClippedText (Format-PayloadText ([string] $d.session_name)) $badgeNameCells))
+    }
     if ($badges.Count -eq 0) { return $null }
-    return @{ Name = 'badges'; Text = ($badges -join ' '); Short = $null; Role = 'dim'; Bold = $false }
+    $short = if ($modes -and $badges.Count -gt $modeCount) { $modes } else { $null }
+    return @{ Name = 'badges'; Text = ($badges -join ' '); Short = $short; Role = 'dim'; Bold = $false }
 }
 
 # The pull request on the session's branch: the glyph and #number, the whole text wrapped in a link to
@@ -1750,12 +1906,24 @@ function Get-BranchSegment($d, $cfg) {
 
 # ---- Build, lay out, fit, print ----
 
+# The state this session's last render left behind, read before the segments are built because the cost
+# segment's per-turn delta is the difference from the total it holds. It is the only read of the file in
+# a render: the write at the foot of the script merges over this record rather than opening it again.
+# $null covers every way there is nothing to compare against - state turned off, no session id, no file
+# yet, an unreadable one - and every segment renders exactly as it did before deltas existed. The read
+# does not create the directory; only the write does, so a render that writes nothing still leaves none.
+# It sits below the bad-payload line rather than beside $lineSets, because a payload that will not parse
+# names no session to read state for; every render that gets this far reads once, including one that
+# goes on to print nothing at all.
+$sessionId = [string] $d.session_id
+$state = if ($cfg.State -and $sessionId) { Read-SessionState $sessionId } else { $null }
+
 # A segment that is toggled off, or that no line lists, is not built at all, so an order without branch
 # never runs the git probe. $lineSets and $listed are settled above, before the bad-payload line.
 $segments = [System.Collections.Generic.List[hashtable]]::new()
 foreach ($rec in Get-SegmentRegistry) {
     if (-not $cfg.Segments[$rec.Name] -or -not $listed[$rec.Name]) { continue }
-    $seg = & $rec.Build $d $cfg
+    $seg = & $rec.Build $d $cfg $state
     if ($seg) { $segments.Add($seg) }
 }
 # Every enabled and listed builder returned nothing. The stand-in line goes out under $modelWanted, the
@@ -1784,9 +1952,9 @@ foreach ($names in $lineSets) {
     if ($text) { Write-Host $text }
 }
 
-# All of the state work - the read, the merge and the write - sits after the last Write-Host, so none of
-# it is in front of the visible line. Nothing above this point reads the file.
-$sessionId = [string] $d.session_id
+# The merge and the write sit after the last Write-Host, so neither is in front of the visible line. The
+# read is the one part that had to move above it, because the cost segment's delta is built from it; it
+# is still one read and one write per render, because what is merged here is the record already read.
 if ($cfg.State -and $sessionId) {
-    Write-SessionState $sessionId (Merge-SessionState (Read-SessionState $sessionId) $d ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()))
+    Write-SessionState $sessionId (Merge-SessionState $state $d ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()))
 }

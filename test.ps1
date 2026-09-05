@@ -103,13 +103,22 @@ function Measure-VisibleWidth([string] $Text) {
                 $cat -eq [System.Globalization.UnicodeCategory]::EnclosingMark -or
                 $cat -eq [System.Globalization.UnicodeCategory]::Format -or $cp -eq 0xFE0F
         if ($zero) { continue }
+        # Emoji graphemes, decided before the ranges because the ranges only ever see the first code
+        # point: a regional indicator opens a flag or stands alone as one boxed letter, and a U+20E3
+        # anywhere in the grapheme makes it a keycap. Both are two columns.
+        # Honest note on independence: this is the same fact statusline.ps1 encodes, and there is no
+        # second way to state it, so for these two shapes this function is NOT an independent check -
+        # the width table is. What stays independent here is everything else: the twelve wide ranges,
+        # the zero-width categories and the escape stripping, all transcribed separately, which is
+        # what catches a typo in one copy that the other does not share.
+        $emoji = ($cp -ge 0x1F1E6 -and $cp -le 0x1F1FF) -or ($el.IndexOf([char] 0x20E3) -ge 0)
         $wide = ($cp -ge 0x1100 -and $cp -le 0x115F) -or ($cp -ge 0x2E80 -and $cp -le 0xA4CF) -or
                 ($cp -ge 0xAC00 -and $cp -le 0xD7A3) -or ($cp -ge 0xF900 -and $cp -le 0xFAFF) -or
                 ($cp -ge 0xFE30 -and $cp -le 0xFE4F) -or ($cp -ge 0xFF00 -and $cp -le 0xFF60) -or
                 ($cp -ge 0xFFE0 -and $cp -le 0xFFE6) -or ($cp -ge 0x20000 -and $cp -le 0x3FFFD) -or
                 ($cp -ge 0x1F300 -and $cp -le 0x1F64F) -or ($cp -ge 0x1F680 -and $cp -le 0x1F6FF) -or
                 ($cp -ge 0x1F900 -and $cp -le 0x1FAFF) -or ($cp -ge 0x2600 -and $cp -le 0x27BF)
-        $width += if ($wide) { 2 } else { 1 }
+        $width += if ($emoji -or $wide) { 2 } else { 1 }
     }
     return $width
 }
@@ -165,10 +174,11 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-CacheShare', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber'))
 
-# Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
-# these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
+# Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
+# Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
+# test has to supply them; the badges section reads the script's own copies back. The git timeout is not
 # one of them any more - the segment reads it from the config - so this is only the test's own
 # shorthand for the direct Get-GitBranch calls below, pinned to the script's default.
 $gitTimeoutMs = (Get-DefaultGitConfig).TimeoutMs
@@ -184,6 +194,15 @@ $iconBehind = [char]::ConvertFromUtf32(0x2193)
 $iconConflict = [char]::ConvertFromUtf32(0xF071)
 $iconPr = [char]::ConvertFromUtf32(0xF407)
 $iconWorktree = [char]::ConvertFromUtf32(0xF04C1)
+$iconFast = [char]::ConvertFromUtf32(0xF0E7)
+$iconThink = [char]::ConvertFromUtf32(0xF09D0)
+$iconEffort = [char]::ConvertFromUtf32(0xF04C5)
+$iconVim = [char]::ConvertFromUtf32(0xE62B)
+$iconAgent = [char]::ConvertFromUtf32(0xF007)
+$iconSession = [char]::ConvertFromUtf32(0xF02B)
+$ellipsis = [char]::ConvertFromUtf32(0x2026)
+$defaultEffort = 'high'
+$badgeNameCells = 20
 
 # A payload with one top-level key whose value is the given JSON. It goes through ConvertFrom-Json so
 # a null is a real null property, the way Claude Code sends it, and counts arrive as Int64, the way
@@ -193,6 +212,13 @@ function Get-JsonPayload([string] $Key, [string] $Json) {
 }
 
 Write-Host '== unit: width' -ForegroundColor Cyan
+# Emoji graphemes built from their code points, so this file stays ASCII and says what it means.
+# A flag is one grapheme made of two regional indicators; a keycap is one grapheme made of a base
+# character and U+20E3, with the U+FE0F presentation selector optional.
+$flagGb = [char]::ConvertFromUtf32(0x1F1EC) + [char]::ConvertFromUtf32(0x1F1E7)
+$flagJp = [char]::ConvertFromUtf32(0x1F1EF) + [char]::ConvertFromUtf32(0x1F1F5)
+$loneRegional = [char]::ConvertFromUtf32(0x1F1EC)
+$keycap1 = '1' + [string][char]0xFE0F + [string][char]0x20E3
 $widthTable = @(
     @{ Text = 'abc'; Width = 3 }
     @{ Text = ''; Width = 0 }
@@ -214,6 +240,27 @@ $widthTable = @(
     @{ Text = 'ab' + [string][char]0x2066 + 'cd'; Width = 4 }                          # directional isolate
     @{ Text = [string][char]0xFEFF + 'ab'; Width = 2 }                                 # byte order mark
     @{ Text = 'a' + [string][char]0x00AD + 'b'; Width = 2 }                            # soft hyphen
+    # Emoji graphemes whose FIRST code point does not say how wide the grapheme draws, which is all
+    # either implementation looks at. The expected cells below are what a terminal reserves for the
+    # whole grapheme, written down from that behaviour rather than read back off either function: a
+    # flag is one cluster and gets two columns, an unpaired regional indicator is drawn as one boxed
+    # letter and gets two, and a keycap is one cluster and gets two whether or not U+FE0F is in it.
+    # Over-counting is the safe direction and the reason these are pinned at two: a name measured
+    # wider than it draws is only clipped early, while one measured narrower passes a width cap it
+    # does not fit and then overruns the line. The last three rows are the negative controls - a bare
+    # enclosing keycap on its own is still zero, and a bare digit and hash are still one, so the rule
+    # has to key on U+20E3 being present in the grapheme and not on the base character.
+    @{ Text = $flagGb; Width = 2 }                                                     # one flag
+    @{ Text = $flagGb + $flagJp; Width = 4 }                                           # two flags
+    @{ Text = $loneRegional; Width = 2 }                                               # unpaired regional indicator
+    @{ Text = 'a' + $flagGb + 'b'; Width = 4 }                                         # a flag between letters
+    @{ Text = $flagGb + [char]::ConvertFromUtf32(0x1F680); Width = 4 }                 # flag beside an in-range emoji
+    @{ Text = $keycap1; Width = 2 }                                                    # keycap with the selector
+    @{ Text = '7' + [string][char]0x20E3; Width = 2 }                                  # keycap without it
+    @{ Text = '#' + [string][char]0xFE0F + [string][char]0x20E3; Width = 2 }           # hash keycap
+    @{ Text = [string][char]0x20E3; Width = 0 }                                        # lone enclosing keycap
+    @{ Text = '1'; Width = 1 }                                                         # the keycap base alone
+    @{ Text = '#'; Width = 1 }                                                         # the hash base alone
 )
 foreach ($row in $widthTable) {
     $shown = $row.Text -replace $esc, '<ESC>'
@@ -227,14 +274,14 @@ Write-Host '== unit: registry' -ForegroundColor Cyan
 # out by hand, so a change there is a deliberate one. Array order is layout one.
 $registryTable = @(
     @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 2;     DropRank = 8;     Row = 2; RowRank = 1 }
-    @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = $null; DropRank = 3;     Row = 2; RowRank = 3 }
+    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 3;     DropRank = 8;     Row = 2; RowRank = 1 }
+    @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 3;     Row = 2; RowRank = 3 }
     @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
-    @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 2 }
-    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 5 }
+    @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 4;     Row = 2; RowRank = 2 }
+    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 6;     DropRank = 2;     Row = 1; RowRank = 5 }
     @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 4 }
-    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 4;     DropRank = 6;     Row = 1; RowRank = 2 }
-    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 3;     DropRank = 7;     Row = 1; RowRank = 3 }
+    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 5;     DropRank = 6;     Row = 1; RowRank = 2 }
+    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 4;     DropRank = 7;     Row = 1; RowRank = 3 }
 )
 $registry = @(Get-SegmentRegistry)
 Confirm-Equal $registry.Count $registryTable.Count 'registry: nine records'
@@ -247,10 +294,34 @@ for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
         Confirm-Equal $got[$key] $want[$key] "registry: $($want.Name) $key"
     }
 }
-Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'limits,context,branch,folder' 'registry: shrink order'
+# Cost is first in the shrink order and third in the drop order: its per-turn delta is the first detail
+# on the line to go, and the segment itself still goes after lines and badges, which is where it was.
+# Badges is last of the six: its Short form sheds the agent and session names, which is the least
+# missed detail on the line, so it is the last thing tried before whole segments start going.
+Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'cost,limits,context,branch,folder,badges' 'registry: shrink order'
 Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,badges,cost,limits,pr,folder,branch,context' 'registry: drop order'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 1) -join ',') 'model,folder,branch,pr,badges' 'registry: layout two row 1'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 2) -join ',') 'context,limits,cost,lines' 'registry: layout two row 2'
+# The four assertions above pin what the order function returned; these pin the property that makes it
+# right. Get-SegmentOrder drops each record into a hashtable slot keyed by its rank number and then
+# reads slots 1..Count back, so a rank used twice silently OVERWRITES the earlier record - the loser
+# disappears from the order and stops shrinking or stops being dropped - and a gap in the numbering
+# leaves a $null in the list and strands the record above the gap. Neither is visible from a builder;
+# both are visible here. This matters most to whoever next edits the table, because the expected-order
+# strings above are hand-written from what the function returns, so a rank collision introduced and
+# then "fixed" by pasting in the new output would bake the broken order in as the expectation.
+# Ranks are dense 1..N within each key, and RowRank is dense within each row rather than overall.
+foreach ($rank in 'ShrinkRank', 'DropRank') {
+    $ranked = @(Get-SegmentRegistry | ForEach-Object { $_[$rank] } | Where-Object { $null -ne $_ } | Sort-Object)
+    Confirm-Equal ($ranked -join ',') ((1..$ranked.Count) -join ',') "registry: $rank is 1..$($ranked.Count) with no repeat and no gap"
+    Confirm-Equal (@(Get-SegmentOrder $rank | Where-Object { $null -eq $_ }).Count) 0 "registry: the $rank order has no empty slot"
+    Confirm-Equal (@(Get-SegmentOrder $rank).Count) $ranked.Count "registry: the $rank order lists every ranked segment"
+}
+foreach ($row in 1, 2) {
+    $ranked = @(Get-SegmentRegistry | Where-Object { $_.Row -eq $row } | ForEach-Object { $_.RowRank } | Where-Object { $null -ne $_ } | Sort-Object)
+    Confirm-Equal ($ranked -join ',') ((1..$ranked.Count) -join ',') "registry: row $row RowRank is 1..$($ranked.Count) with no repeat and no gap"
+    Confirm-Equal (@(Get-SegmentOrder 'RowRank' $row).Count) $ranked.Count "registry: row $row lists every segment on it"
+}
 
 Write-Host '== unit: config' -ForegroundColor Cyan
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "statusline-test-$PID"
@@ -991,17 +1062,19 @@ Write-Host '== unit: icons' -ForegroundColor Cyan
 # Get-IconSet turns the built-in table and the config's overrides into one glyph per name, and the
 # script assigns its $icon* constants from that set.
 $defaultIcons = Get-IconDefault
-Confirm-Equal $defaultIcons.Count 19 'icons: nineteen built-in glyphs'
+Confirm-Equal $defaultIcons.Count 21 'icons: twenty-one built-in glyphs'
 Confirm-Equal $defaultIcons.pr 0xF407 'icons: pr is the pull-request glyph'
 Confirm-Equal $defaultIcons.model 0xF06A9 'icons: model is the robot'
 Confirm-Equal $defaultIcons.worktree 0xF04C1 'icons: worktree is the source fork'
+Confirm-Equal $defaultIcons.agent 0xF007 'icons: agent is nf-fa-user'
+Confirm-Equal $defaultIcons.session 0xF02B 'icons: session is nf-fa-tag'
 # Every built-in code point has to survive the guards a config value goes through. The glyph a config
 # may put in its place is held to that bar, so the one it replaces cannot sit below it.
 foreach ($e in $defaultIcons.GetEnumerator()) {
     Confirm-Equal (Read-CodePoint ('{0:X}' -f $e.Value)) $e.Value "icons: the built-in $($e.Key) code point passes the guards"
 }
 $set = Get-IconSet @{ Icons = @{} }
-Confirm-Equal $set.Count 19 'icons: one glyph per name'
+Confirm-Equal $set.Count 21 'icons: one glyph per name'
 Confirm-Equal $set.pr $iconPr 'icons: no override gives the built-in pr glyph'
 Confirm-Equal $set.model $iconModel 'icons: no override gives the built-in model glyph'
 Confirm-Equal $set.dirty $iconDirty 'icons: no override gives the built-in pencil'
@@ -1118,6 +1191,35 @@ Confirm-Equal (Get-PayloadNumber 2147483648) $null 'state number: a count must f
 Confirm-Equal (Get-StateNumber 2147483648 -Whole) 2147483648 'state number: a whole figure may exceed an Int32'
 Confirm-Equal (Get-StateNumber 1e300 -Whole) $null 'state number: a whole figure must fit a long'
 
+# Every negative literal below is parenthesised, and that is not style. A bare `-100` in argument
+# position is bound as the STRING "-100", not as the number: PowerShell reads a leading hyphen as the
+# start of a parameter name and falls back to passing the token through as text. An untyped parameter
+# then holds a string, Get-FiniteNumber refuses it because it is not a ValueType, and the check passes
+# for the wrong reason - it would pass against an implementation with no sign rule at all. A mutation
+# run is what found it here. `(-100)` is an expression and binds the number, so write it that way
+# wherever a negative figure is the thing under test.
+#
+# A cumulative figure has to be possible as well as finite: dollars spent and tokens sent only count up,
+# so a negative one is a corrupt record or a wrong payload, not a figure. It is refused rather than
+# clamped, because a clamp to zero would turn an impossible input into a delta measured from nothing,
+# which is the most reassuring answer available and the least true.
+Confirm-Equal (Get-CountedNumber 1.07) 1.07 'counted number: a positive figure passes'
+Confirm-Equal (Get-CountedNumber 0) 0 'counted number: zero is a figure and passes'
+Confirm-Equal (Get-CountedNumber (-0.01)) $null 'counted number: a fraction below zero is refused'
+Confirm-Equal (Get-CountedNumber (-100)) $null 'counted number: a negative figure is refused, not clamped'
+Confirm-Equal (Get-CountedNumber 60000 -Whole) 60000 'counted number: -Whole passes a positive count'
+Confirm-Equal (Get-CountedNumber (-4000) -Whole) $null 'counted number: -Whole refuses a negative count'
+Confirm-Equal (Get-CountedNumber 1.5 -Whole) 1 'counted number: -Whole still floors'
+foreach ($case in @(
+        @{ N = 'a string';           V = 'lots' }
+        @{ N = 'a missing value';    V = $null }
+        @{ N = 'a boolean';          V = $true }
+        @{ N = 'an array';           V = @(1, 2) }
+        @{ N = 'NaN';                V = [double]::NaN }
+        @{ N = 'negative infinity';  V = [double]::NegativeInfinity })) {
+    Confirm-Equal (Get-CountedNumber $case.V) $null "counted number: $($case.N) is refused the same way"
+}
+
 $state = Merge-SessionState $null (Get-StatePayload 1.07) 1767225600
 Confirm-Equal $state.v 1 'state merge: version 1'
 Confirm-Equal $state.updated_at 1767225600 'state merge: updated_at is the clock given'
@@ -1164,21 +1266,64 @@ Confirm-Equal @($next.history).Count 2 'state merge: changed cost adds an entry'
 Confirm-Equal $next.history[0].cost_usd 1.07 'state merge: old entry kept first'
 Confirm-Equal $next.history[1].cost_usd 1.2 'state merge: new entry last'
 Confirm-Equal $next.history[1].t 1767225720 'state merge: new entry carries the clock'
+# A payload that does not carry a figure is not a session that lost it. The three counters - the cost
+# and the two token totals - count up over a session, so a payload with no cost object or no context
+# window keeps the figure the record holds instead of replacing it with nothing. Without this one such
+# payload erases the total the next delta is measured from, and a real rise across it is never shown.
+# The two percentages are gauges rather than counters, so they are read fresh and left null: see the
+# checks below them.
 $noCost = Merge-SessionState $back ([pscustomobject]@{ session_id = 'abc' }) 1767225780
-Confirm-Equal $noCost.cost_usd $null 'state merge: payload without cost gives null cost'
-Confirm-Equal $noCost.input_tokens $null 'state merge: payload without context gives null tokens'
+Confirm-Equal $noCost.cost_usd 1.07 'state merge: a payload without cost keeps the total the record holds'
+Confirm-Equal $noCost.input_tokens 60000 'state merge: a payload without context keeps the input tokens'
+Confirm-Equal $noCost.output_tokens 4000 'state merge: a payload without context keeps the output tokens'
 Confirm-Equal @($noCost.history).Count 1 'state merge: payload without cost adds no entry'
+# The percentages are not carried: how full the window is now, and how much of this five-hour window
+# has gone, are both answers about this moment. A compaction, a new window or a changed model makes a
+# carried-forward percentage a confident lie, and the five-hour figure resets to zero at its boundary,
+# so a stale one reads as usage that has not happened. A reader that gets null knows it has nothing.
+Confirm-Equal $noCost.used_percentage $null 'state merge: the context percentage is read fresh, not carried forward'
+Confirm-Equal $noCost.five_hour_percentage $null 'state merge: the five-hour percentage is read fresh, not carried forward'
+# Carrying needs something to carry: with no previous record every missing figure is still null.
+$firstNoCost = Merge-SessionState $null ([pscustomobject]@{ session_id = 'abc' }) 1767225780
+Confirm-Equal $firstNoCost.cost_usd $null 'state merge: with no previous record a missing cost is null'
+Confirm-Equal $firstNoCost.input_tokens $null 'state merge: with no previous record missing tokens are null'
+# A figure that is there but is not a number is a figure the payload did not carry, so it carries the
+# same way. A real zero is a figure and replaces the one before it.
+$badCarry = Merge-SessionState $back ([pscustomobject]@{ cost = [pscustomobject]@{ total_cost_usd = 'lots' } }) 1767225790
+Confirm-Equal $badCarry.cost_usd 1.07 'state merge: a cost that is not a number keeps the one the record holds'
+Confirm-Equal @($badCarry.history).Count 1 'state merge: a cost that is not a number adds no entry'
+$zeroCost = Merge-SessionState $back (Get-StatePayload 0) 1767225800
+Confirm-Equal $zeroCost.cost_usd 0 'state merge: a cost of zero is a figure and replaces the one before it'
+# A negative counter is refused on both doors: coming in from a payload, and being carried out of a
+# record that already holds one. A carried negative would otherwise survive every payload without a
+# cost and keep producing a fictitious delta for the rest of the session.
+$negPayload = Merge-SessionState $back (Get-StatePayload (-100)) 1767225810
+Confirm-Equal $negPayload.cost_usd 1.07 'state merge: a negative cost in the payload is refused and the record keeps its total'
+Confirm-Equal @($negPayload.history).Count 1 'state merge: a negative cost adds no history entry'
+$negTokens = Merge-SessionState $back ([pscustomobject]@{ context_window = [pscustomobject]@{ total_input_tokens = -5; total_output_tokens = -5 } }) 1767225820
+Confirm-Equal $negTokens.input_tokens 60000 'state merge: negative input tokens are refused and the record keeps its count'
+Confirm-Equal $negTokens.output_tokens 4000 'state merge: negative output tokens are refused and the record keeps its count'
+$negCarry = Merge-SessionState @{ cost_usd = -100; input_tokens = -5 } ([pscustomobject]@{ session_id = 'abc' }) 1767225830
+Confirm-Equal $negCarry.cost_usd $null 'state merge: a negative total in the record is not carried forward'
+Confirm-Equal $negCarry.input_tokens $null 'state merge: a negative count in the record is not carried forward'
+# The gauges are deliberately not given the same rule, so that decision is pinned rather than left to be
+# rediscovered: a percentage's range is not this file's business - a rate limit really can report over
+# 100 - and the one reader a stored one has refuses anything at or below zero at its own door.
+$negGauge = Merge-SessionState $back ([pscustomobject]@{ context_window = [pscustomobject]@{ used_percentage = -3 }
+        rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{ used_percentage = -3 } } }) 1767225840
+Confirm-Equal $negGauge.used_percentage -3 'state merge: a negative context percentage is stored as it arrived, because a gauge is not a counter'
+Confirm-Equal $negGauge.five_hour_percentage -3 'state merge: and so is a negative five-hour percentage'
 $badCost = Merge-SessionState $null ([pscustomobject]@{ cost = [pscustomobject]@{ total_cost_usd = 'lots' } }) 1
 Confirm-Equal $badCost.cost_usd $null 'state merge: string cost is not a number'
 Confirm-Equal @($badCost.history).Count 0 'state merge: string cost starts no history'
 
-# A payload can arrive with no cost object at all (the minimal sample is that shape), which stores a
-# null cost. The comparison is against the last history entry, not that null, so the render after the
-# gap does not re-append a cost that never moved.
+# A payload can arrive with no cost object at all (the minimal sample is that shape). The record keeps
+# the total it had, and the ring is compared against its own last entry rather than against that
+# carried figure, so the render after the gap does not re-append a cost that never moved.
 $run = Merge-SessionState $null (Get-StatePayload 1.07) 1
 Confirm-Equal @($run.history).Count 1 'state merge: gap run starts with one entry'
 $run = Merge-SessionState $run ([pscustomobject]@{ session_id = 'abc' }) 2
-Confirm-Equal $run.cost_usd $null 'state merge: gap run stores a null cost'
+Confirm-Equal $run.cost_usd 1.07 'state merge: gap run keeps the cost it had'
 Confirm-Equal @($run.history).Count 1 'state merge: gap run keeps the entry it had'
 $run = Merge-SessionState $run (Get-StatePayload 1.07) 3
 Confirm-Equal @($run.history).Count 1 'state merge: the same cost after a gap adds no entry'
@@ -1191,6 +1336,7 @@ Write-SessionState 'gap' (Merge-SessionState (Read-SessionState 'gap') (Get-Stat
 $gap = Read-SessionState 'gap'
 Confirm-Equal @($gap.history).Count 1 'state merge: 1.07, no cost, 1.07 through the file leaves one entry'
 Confirm-Equal $gap.history[0].cost_usd 1.07 'state merge: and that entry is the first cost'
+Confirm-Equal $gap.cost_usd 1.07 'state merge: and the file still holds the total across the gap'
 
 # Twenty-five renders with a rising cost through the file: the ring keeps the newest twenty.
 $ring = $null
@@ -1222,6 +1368,26 @@ Confirm-True ($odd -is [hashtable]) 'state read: odd but versioned file still re
 Confirm-Equal $odd.cost_usd $null 'state read: string cost reads as null'
 Confirm-Equal @($odd.history).Count 1 'state read: history entries without both numbers are dropped'
 Confirm-Equal $odd.history[0].cost_usd 0.5 'state read: the whole entry is kept'
+
+# A version 1 record can be hand-edited into a shape no session reaches. A negative counter is refused
+# field by field, the way a string one already is, and the rest of the record still reads: throwing the
+# whole file away would cost the ring and the other counters for a fault that says nothing about them.
+# The percentages are not counters and keep the plain rule, which is pinned here so the difference is a
+# decision rather than an oversight - their one reader, the pace arrow's fallback, refuses anything at
+# or below zero at its own door, and no rate limit's upper end is this file's business.
+[System.IO.File]::WriteAllText((Join-Path $stateDir 'negative.json'), '{ "v": 1, "updated_at": 5, "cost_usd": -100, "input_tokens": -6, "output_tokens": 4000, "used_percentage": -3, "five_hour_percentage": 23.5, "history": [ { "t": 6, "cost_usd": -2 }, { "t": 7, "cost_usd": 0.5 } ] }')
+$neg = Read-SessionState 'negative'
+Confirm-True ($neg -is [hashtable]) 'state read: a record with a negative counter still reads'
+Confirm-Equal $neg.cost_usd $null 'state read: a negative cost reads as no figure'
+Confirm-Equal $neg.input_tokens $null 'state read: a negative input count reads as no figure'
+Confirm-Equal $neg.output_tokens 4000 'state read: the counter beside it is untouched'
+Confirm-Equal $neg.updated_at 5 'state read: updated_at is a clock reading and keeps the plain rule'
+Confirm-Equal $neg.used_percentage -3 'state read: a percentage is a gauge and is not refused here'
+Confirm-Equal $neg.five_hour_percentage 23.5 'state read: the five-hour gauge reads as written'
+Confirm-Equal @($neg.history).Count 1 'state read: a ring entry with a negative cost is dropped'
+Confirm-Equal $neg.history[0].cost_usd 0.5 'state read: and the honest entry is kept'
+# The pace arrow is where a negative five-hour figure would land, and it refuses one already.
+Confirm-Equal (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) (-3)) $null 'pace arrow: a negative percentage draws no arrow'
 
 # The file name is the id itself when it is clean and at most 64 characters, as a UUID is. An id that had
 # characters stripped, or was longer than that, gets a hash of the whole id as a suffix, so two ids that
@@ -1501,6 +1667,22 @@ Confirm-Equal (Get-FittedLine @() 'plain' 40) $null 'fit: no segments gives null
 $line = Get-FittedLine $fit 'powerline' 30
 Confirm-True ((Get-VisibleWidth $line) -le 30) 'fit: powerline respects width'
 
+# A cost with a Short form (its per-turn delta stripped) sheds it first of all in stage 1, ahead of the
+# limits figures and the context counts, and long before any whole segment goes. Full width is 46 here;
+# cost short gives 44, and the set with no delta at all is the 44 the checks above measure.
+$fitCost = Get-FitSegmentSet
+$fitCost[2] = @{ Name = 'cost'; Text = 'AAAA'; Short = 'AA'; Role = 'dim'; Bold = $false }
+Confirm-Equal (Get-VisibleWidth (Get-FittedLine $fitCost 'plain' $null)) 46 'fit: the delta widens the line'
+$line = Get-FittedLine $fitCost 'plain' 45
+Confirm-Equal (Get-VisibleWidth $line) 44 'fit: stage 1 sheds the cost delta first'
+Confirm-True (-not $line.Contains('AAAA') -and $line.Contains('AA') -and $line.Contains('IIIIII') -and $line.Contains('CCCCCC') -and $line.Contains('LL')) 'fit: only the cost delta went at 45, limits and context untouched and nothing dropped'
+# And the shed happens before the limits figures whatever else is on the line: at 43 the delta is gone
+# and limits is short, at 44 the delta alone is enough.
+$line = Get-FittedLine $fitCost 'plain' 44
+Confirm-True (-not $line.Contains('AAAA') -and $line.Contains('IIIIII')) 'fit: the delta alone gets the line to 44'
+$line = Get-FittedLine $fitCost 'plain' 43
+Confirm-True (-not $line.Contains('AAAA') -and $line.Contains('III') -and -not $line.Contains('IIIIII')) 'fit: the delta goes before the limits figures'
+
 # A branch with a Short form (its ahead/behind counts stripped) sheds it in stage 1, after context and
 # before any whole segment goes. Full width is 46 here; limits short gives 43, context 40, branch 38.
 $fitBranch = Get-FitSegmentSet
@@ -1521,6 +1703,22 @@ Confirm-True ($line.Contains('FFFF') -and $line.Contains('BB') -and -not $line.C
 $line = Get-FittedLine $fitFolder 'plain' 39
 Confirm-Equal (Get-VisibleWidth $line) 38 'fit: stage 1 shrinks folder fourth'
 Confirm-True ($line.Contains('FF') -and -not $line.Contains('FFFF') -and $line.Contains('LL')) 'fit: folder shortened, nothing dropped at 39'
+
+# A badges segment with a Short form (its agent and session badges shed, its mode badges kept) goes
+# fifth in stage 1, last of the five and still before any whole segment is dropped. That order is the
+# point of the Short form: a narrow line loses the identity badges before it loses the segment, so a
+# window running a named agent still says which mode it is in. Full width is 50 here; limits short
+# gives 47, context 44, branch 42, folder 40, badges 38.
+$fitBadges = Get-FitSegmentSet
+$fitBadges[5] = @{ Name = 'badges'; Text = 'GGGG'; Short = 'GG'; Role = 'dim';    Bold = $false }
+$fitBadges[6] = @{ Name = 'folder'; Text = 'FFFF'; Short = 'FF'; Role = 'folder'; Bold = $false }
+$fitBadges[7] = @{ Name = 'branch'; Text = 'BBBB'; Short = 'BB'; Role = 'branch'; Bold = $false }
+Confirm-Equal (Get-VisibleWidth (Get-FittedLine $fitBadges 'plain' $null)) 50 'fit: the badges set is fifty cells unfitted'
+$line = Get-FittedLine $fitBadges 'plain' 40
+Confirm-True ($line.Contains('GGGG') -and $line.Contains('FF') -and -not $line.Contains('FFFF')) 'fit: folder shortened before badges at 40'
+$line = Get-FittedLine $fitBadges 'plain' 39
+Confirm-Equal (Get-VisibleWidth $line) 38 'fit: stage 1 shrinks badges fifth'
+Confirm-True ($line.Contains('GG') -and -not $line.Contains('GGGG') -and $line.Contains('LL')) 'fit: badges shortened, nothing dropped at 39'
 
 # The shrink and drop orders are parameters that default to the registry, so a caller can hand in its own.
 # Shrinking context alone takes 44 to 41; dropping badges after the default shrink of limits and context
@@ -1919,6 +2117,63 @@ Confirm-Equal (Get-CostSegment (Get-CostPayload 0.4312) $quiet1Alarm) $null 'cos
 # A cost that is not a number cannot be compared, so the guard stands aside and the builder does what
 # it always did with it, which is to format whatever converts.
 Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload '0.50') $quiet1)) 'cost quiet 1: a string cost is not a figure the guard can read, so it is not hidden'
+
+# The per-turn delta: the change since the total the previous render wrote into the state file, in
+# parentheses behind the total, and only when it is worth at least a cent. Every expected figure here is
+# built with the same '{0:N2}' the segment uses, so a culture that writes 12,50 is compared against its
+# own text rather than against an English one.
+function Get-CostState($Usd) { return @{ v = 1; cost_usd = $Usd } }
+function Get-CostTotalText($Usd) { return "$iconCost `$" + ('{0:N2}' -f $Usd) }
+function Get-CostDeltaText($Usd, $Delta) { return (Get-CostTotalText $Usd) + " (+`$" + ('{0:N2}' -f $Delta) + ')' }
+function Get-CostText($Usd, $State) { return (Get-CostSegment (Get-CostPayload $Usd) $quietOff $State).Text }
+$costTotal = Get-CostTotalText 1.07
+Confirm-Equal (Get-CostText 1.07 (Get-CostState 0.95)) (Get-CostDeltaText 1.07 0.12) 'cost delta: 0.95 to 1.07 shows twelve cents'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState 0.95)).Short $costTotal 'cost delta: the short form is the total on its own'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState 0.95)).Role 'dim' 'cost delta: the role is still dim'
+# Under a cent there is nothing to say. 1.07 - 1.066 is 0.004, which is not a cent however it is rounded.
+Confirm-Equal (Get-CostText 1.07 (Get-CostState 1.066)) $costTotal 'cost delta: a change under a cent shows nothing'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState 1.066)).Short $null 'cost delta: no suffix means no short form, so the fitting skips the segment as before'
+# Exactly a cent is the first delta that shows. 1.08 - 1.07 is 0.010000000000000009 in binary floating
+# point, and 0.03 - 0.02 is 0.009999999999999998: both are a cent, and the figure the text prints is the
+# figure the test reads, so both show.
+Confirm-Equal (Get-CostText 1.08 (Get-CostState 1.07)) (Get-CostDeltaText 1.08 0.01) 'cost delta: exactly a cent shows'
+Confirm-Equal (Get-CostText 0.03 (Get-CostState 0.02)) (Get-CostDeltaText 0.03 0.01) 'cost delta: a cent that binary floating point leaves just short still shows'
+# No previous total to compare with, in every shape that can take.
+Confirm-Equal (Get-CostText 1.07 $null) $costTotal 'cost delta: no state gives the plain total'
+Confirm-Equal (Get-CostText 1.07 @{ v = 1 }) $costTotal 'cost delta: a state record with no cost gives the plain total'
+Confirm-Equal (Get-CostText 1.07 (Get-CostState $null)) $costTotal 'cost delta: a null cost in the state gives the plain total'
+Confirm-Equal (Get-CostText 1.07 (Get-CostState 'lots')) $costTotal 'cost delta: a state cost that is not a figure gives the plain total'
+# A stored total no session could reach is not a baseline. Subtracting -100 from a real 1.07 would
+# render a confident (+$101.07); the figure is refused instead, and refused rather than clamped to zero,
+# because a clamp would answer with a delta measured from nothing and look entirely reasonable.
+Confirm-Equal (Get-CostText 1.07 (Get-CostState (-100))) $costTotal 'cost delta: a negative stored total gives the plain total, not fictitious spending'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState (-100))).Short $null 'cost delta: a negative stored total leaves no short form either'
+Confirm-Equal (Get-CostText 1.07 (Get-CostState (-0.01))) $costTotal 'cost delta: a stored total a hair below zero is refused too'
+# Both ends of the subtraction are asked the same question, so a negative payload total shows no delta
+# either - the total itself is formatted the way it always was, which is not this change's business.
+# It takes a config with no quiet table to see that, and the reason is worth writing down: with any
+# quiet threshold present, including the default 0, the guard tests `value -lt threshold` and a negative
+# total is below zero, so the whole segment is already hidden before the delta is ever asked. That is
+# this branch's inheritance rather than its doing, and it is pinned here so a later change to the guard
+# cannot quietly turn a nonsense total back on with a delta attached.
+Confirm-Equal (Get-CostSegment (Get-CostPayload (-1.07)) $quietOff (Get-CostState 0.5)) $null 'cost delta: the quiet guard hides a negative total before the delta is asked'
+Confirm-Equal (Get-CostSegment (Get-CostPayload (-1.07)) $bandCfg (Get-CostState 0.5)).Text (Get-CostTotalText (-1.07)) 'cost delta: a negative payload total gives no delta'
+Confirm-Equal (Get-CostSegment (Get-CostPayload (-1.07)) $bandCfg (Get-CostState 0.5)).Short $null 'cost delta: a negative payload total leaves no short form either'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff).Text $costTotal 'cost delta: a caller that passes no state at all gives the plain total'
+# A record older than the previous render - a render in between that printed but wrote nothing, or one
+# that exited before the write - gives the change since the total the file holds. That figure is still
+# the difference between two totals this session really reached, and no render in between showed a total
+# of its own for it to contradict.
+Confirm-Equal (Get-CostText 1.3 (Get-CostState 1.0)) (Get-CostDeltaText 1.3 0.3) 'cost delta: a state two turns old gives the change since the total it holds'
+# A total that did not move, and one that went backwards - a state file from another machine's clock -
+# print nothing. Only a rise is a delta.
+Confirm-Equal (Get-CostText 1.07 (Get-CostState 1.07)) $costTotal 'cost delta: an unchanged total shows nothing'
+Confirm-Equal (Get-CostText 1.07 (Get-CostState 2.5)) $costTotal 'cost delta: a total that went down shows nothing'
+Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState 2.5)).Short $null 'cost delta: a total that went down leaves no short form either'
+# The quiet guard reads the session total, not the delta: an expensive turn inside a session the user
+# called boring is still boring, and a segment the guard hides has no delta to show.
+Confirm-Equal (Get-CostSegment (Get-CostPayload 0.4312) $quiet1 (Get-CostState 0.1)) $null 'cost delta: the quiet guard still hides the whole segment'
+Confirm-Equal (Get-CostSegment ([pscustomobject]@{}) $quietOff (Get-CostState 0.95)) $null 'cost delta: no cost object is still no segment'
 
 Write-Host '== unit: quiet guard' -ForegroundColor Cyan
 $quietTable = @{ Quiet = @{ cost = 1.0; context = 30.0; limits = 0.0 } }
@@ -2462,6 +2717,146 @@ $paceEnd = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 50
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":55,"resets_at":' + $paceEnd + '}}')) $paceCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 55% $paceFlat" 'limits at the end of a window: the arrow with no countdown behind it'
 Confirm-Equal $seg.Short "$iconLimit 5h 55%" 'limits at the end of a window: a short form exists purely to drop the arrow'
+
+Write-Host '== unit: badges' -ForegroundColor Cyan
+# $badgeNameCells and $defaultEffort are script-level constants in statusline.ps1 and the builder closes
+# over them, but Import-ScriptFunction lifts functions and nothing else, so the values this section runs
+# against are the test's own copies at the top of this file. A copy that drifted from the script would
+# leave every assertion below passing against a number the script never uses, which is the same silent
+# agreement the separate Measure-VisibleWidth guards against. Read the script's own assignments back.
+$scriptText = Get-Content -LiteralPath $script -Raw
+Confirm-True ($scriptText -match '(?m)^\$badgeNameCells = (\d+)\s*$') 'badges: statusline.ps1 sets a badge name limit'
+Confirm-Equal $Matches[1] "$badgeNameCells" "badges: the script's name limit is the one this section tests against"
+Confirm-True ($scriptText -match "(?m)^\`$defaultEffort = '([^']+)'") 'badges: statusline.ps1 sets a default effort'
+Confirm-Equal $Matches[1] $defaultEffort "badges: the script's default effort is the one this section tests against"
+Confirm-True ($scriptText -match '(?m)^\$ellipsis = G (0x[0-9A-Fa-f]+)') 'badges: statusline.ps1 sets an ellipsis glyph'
+Confirm-Equal ([char]::ConvertFromUtf32([int] $Matches[1])) $ellipsis "badges: the script's ellipsis is the one this section tests against"
+# Get-ClippedText is the one truncation rule both identity badges use, and it counts cells rather than
+# characters on purpose: Get-VisibleWidth is what the fitting code measures a line with, so a helper
+# counting `.Length` would let a name of wide characters draw twice the room it was given and push the
+# line past the width the fitting stage thinks it has. Every case below built from a wide or a combined
+# character is there to catch exactly that substitution. One cell is always held back for the ellipsis,
+# so the result never exceeds the limit; a wide character straddling the boundary is dropped whole,
+# which is why a CJK name lands one cell short of it.
+Confirm-Equal (Get-ClippedText 'reviewer' 20) 'reviewer' 'clip: a name inside the limit is untouched'
+Confirm-Equal (Get-ClippedText '' 20) '' 'clip: an empty name stays empty'
+$twentyCells = 'a' * 20
+Confirm-Equal (Get-ClippedText $twentyCells 20) $twentyCells 'clip: exactly twenty cells is untouched'
+$fortyChars = 'a' * 40
+Confirm-Equal (Get-ClippedText $fortyChars 20) (('a' * 19) + $ellipsis) 'clip: forty characters keep nineteen and an ellipsis'
+Confirm-Equal (Get-VisibleWidth (Get-ClippedText $fortyChars 20)) 20 'clip: the cut name is twenty cells'
+Confirm-Equal (Get-ClippedText ('a' * 21) 20) (('a' * 19) + $ellipsis) 'clip: one cell over the limit is still cut'
+# Twenty CJK characters are forty cells. Cut on cells that is nine characters and the ellipsis: ten
+# UTF-16 units, nineteen cells. Cut on characters it would be nineteen of them, thirty-nine cells,
+# nearly twice the limit. The length check beside the width check is what tells the two apart.
+$cjkName = [string]([char]::ConvertFromUtf32(0x65E5)) * 20
+$cjkCut = Get-ClippedText $cjkName 20
+Confirm-Equal (Get-VisibleWidth $cjkCut) 19 'clip: twenty CJK characters are cut to nineteen cells'
+Confirm-Equal $cjkCut.Length 10 'clip: the CJK cut keeps nine characters and the ellipsis'
+Confirm-True ((Get-VisibleWidth $cjkCut) -le 20) 'clip: a CJK name never draws wider than the limit'
+# The same substitution seen through an emoji, which is two cells and two UTF-16 units at once, so a
+# helper measuring either one alone would be wrong in a different direction.
+$emojiName = [string]([char]::ConvertFromUtf32(0x1F680)) * 12
+$emojiCut = Get-ClippedText $emojiName 20
+Confirm-Equal (Get-VisibleWidth $emojiCut) 19 'clip: an emoji name is cut on cells'
+Confirm-Equal $emojiCut.Length 19 'clip: the emoji cut keeps nine rockets and the ellipsis'
+# A letter and the combining mark on it are one text element and one cell, so the mark is never left
+# behind on its own and never counted as a cell of its own.
+$accentCut = Get-ClippedText (('e' + [string][char]0x0301) * 25) 20
+Confirm-Equal (Get-VisibleWidth $accentCut) 20 'clip: combining marks are not cells'
+Confirm-Equal $accentCut.Length 39 'clip: the cut keeps nineteen letters with their marks, and the ellipsis'
+Confirm-Equal (Get-ClippedText 'abc' 0) '' 'clip: no cells at all gives nothing'
+Confirm-Equal (Get-ClippedText 'abc' (-3)) '' 'clip: a negative limit gives nothing'
+Confirm-Equal (Get-ClippedText $cjkName 1) $ellipsis 'clip: one cell leaves room for the ellipsis alone'
+# The emoji-grapheme gap, which the rocket above could never have found because it sits inside a range
+# the width rule already called wide. A flag and a keycap are each one grapheme drawing two columns
+# whose first code point is not in any wide range, so both used to measure one cell: a name of twenty
+# flags measured exactly twenty, passed the cap untouched, and then drew at forty. These assert the
+# property rather than the classification - whatever a grapheme is decided to be, the clipped name may
+# never draw wider than the limit it was given.
+Confirm-Equal (Get-VisibleWidth $flagGb) 2 'clip: a flag is two cells before anything is cut'
+Confirm-Equal (Get-VisibleWidth $keycap1) 2 'clip: a keycap is two cells before anything is cut'
+$flagName = $flagGb * 15
+Confirm-Equal (Get-VisibleWidth $flagName) 30 'clip: fifteen flags are thirty cells'
+$flagCut = Get-ClippedText $flagName $badgeNameCells
+Confirm-True ((Get-VisibleWidth $flagCut) -le $badgeNameCells) 'clip: a name of flags never draws wider than the limit'
+Confirm-Equal (Get-VisibleWidth $flagCut) 19 'clip: fifteen flags are cut to nine flags and an ellipsis'
+$keycapName = $keycap1 * 25
+Confirm-Equal (Get-VisibleWidth $keycapName) 50 'clip: twenty-five keycaps are fifty cells'
+$keycapCut = Get-ClippedText $keycapName $badgeNameCells
+Confirm-True ((Get-VisibleWidth $keycapCut) -le $badgeNameCells) 'clip: a name of keycaps never draws wider than the limit'
+Confirm-Equal (Get-VisibleWidth $keycapCut) 19 'clip: twenty-five keycaps are cut to nine keycaps and an ellipsis'
+$mixedName = ($flagGb + 'ab' + $keycap1) * 8
+Confirm-True ((Get-VisibleWidth (Get-ClippedText $mixedName $badgeNameCells)) -le $badgeNameCells) 'clip: a mixed name never draws wider than the limit'
+
+# The builder. The mode badges are unchanged; what is new is that agent.name and session_name each add
+# a badge, that either one alone is enough to give the segment, and that the modes become the Short
+# form so a narrow line sheds the identities before the whole segment goes.
+Confirm-Equal (Get-BadgesSegment ('{}' | ConvertFrom-Json)) $null 'badges: an empty payload has no segment'
+Confirm-Equal (Get-BadgesSegment (('{"effort":{"level":"' + $defaultEffort + '"}}') | ConvertFrom-Json)) $null 'badges: the default effort alone has no segment'
+$b = Get-BadgesSegment ('{"agent":{"name":"reviewer"}}' | ConvertFrom-Json)
+Confirm-Equal $b.Name 'badges' 'badges: an agent name alone gives the badges segment'
+Confirm-Equal $b.Text "$iconAgent reviewer" 'badges: an agent name alone renders the user glyph and the name'
+Confirm-Equal $b.Role 'dim' 'badges: an agent name keeps the segment dim'
+Confirm-Equal $b.Bold $false 'badges: an agent name does not embolden the segment'
+Confirm-Equal $b.Short $null 'badges: an agent name alone has no short form'
+$b = Get-BadgesSegment ('{"session_name":"nightly audit"}' | ConvertFrom-Json)
+Confirm-Equal $b.Text "$iconSession nightly audit" 'badges: a session name alone renders the tag glyph and the name'
+Confirm-Equal $b.Role 'dim' 'badges: a session name keeps the segment dim'
+Confirm-Equal $b.Short $null 'badges: a session name alone has no short form'
+$b = Get-BadgesSegment ('{"fast_mode":true,"vim":{"mode":"INSERT"}}' | ConvertFrom-Json)
+Confirm-Equal $b.Text "$iconFast $iconVim INSERT" 'badges: modes alone render as they always did'
+Confirm-Equal $b.Short $null 'badges: with no identity badges there is nothing to shed'
+$allSix = '{"fast_mode":true,"thinking":{"enabled":true},"effort":{"level":"xhigh"},"vim":{"mode":"NORMAL"},"agent":{"name":"reviewer"},"session_name":"nightly audit"}'
+$b = Get-BadgesSegment ($allSix | ConvertFrom-Json)
+Confirm-Equal $b.Text "$iconFast $iconThink $iconEffort xhigh $iconVim NORMAL $iconAgent reviewer $iconSession nightly audit" 'badges: fast, thinking, effort, vim, agent, session in that order'
+Confirm-Equal $b.Short "$iconFast $iconThink $iconEffort xhigh $iconVim NORMAL" 'badges: the short form is the four mode badges'
+Confirm-Equal $b.Role 'dim' 'badges: the identity badges do not change the colour'
+# Both names go through Get-ClippedText with the same limit, so a long pair cannot push the line further
+# than a short pair. The glyph and its space are two more cells on top of the twenty.
+$b = Get-BadgesSegment (('{"session_name":"' + ('s' * 40) + '"}') | ConvertFrom-Json)
+Confirm-Equal $b.Text ("$iconSession " + ('s' * ($badgeNameCells - 1)) + $ellipsis) 'badges: a forty-character session name is cut to twenty cells'
+Confirm-Equal (Get-VisibleWidth $b.Text) ($badgeNameCells + 2) 'badges: the cut session badge is the glyph, a space and twenty cells'
+$b = Get-BadgesSegment (('{"agent":{"name":"' + ('g' * 40) + '"}}') | ConvertFrom-Json)
+Confirm-Equal $b.Text ("$iconAgent " + ('g' * ($badgeNameCells - 1)) + $ellipsis) 'badges: a long agent name is cut the same way'
+$b = Get-BadgesSegment (('{"session_name":"' + ('s' * $badgeNameCells) + '"}') | ConvertFrom-Json)
+Confirm-Equal $b.Text ("$iconSession " + ('s' * $badgeNameCells)) 'badges: a twenty-cell session name is untouched'
+$b = Get-BadgesSegment (('{"session_name":"' + ('\u65e5' * 20) + '"}') | ConvertFrom-Json)
+Confirm-Equal (Get-VisibleWidth $b.Text) 21 'badges: a CJK session name is cut on cells, not characters'
+Confirm-Equal $b.Text.Length 12 'badges: the CJK session badge is the glyph, a space, nine characters and the ellipsis'
+# The payload-text pair, the one the branch name and the repo owner already go through. Test-PayloadText
+# says whether there is a name there at all; anything that is not visible text leaves the badge off, and
+# with nothing else on there is no segment either.
+foreach ($bad in @('""', '"   "', '12', 'true', 'null', '[]', '{}')) {
+    Confirm-Equal (Get-BadgesSegment (('{"session_name":' + $bad + '}') | ConvertFrom-Json)) $null "badges: session_name $bad is not a name"
+    Confirm-Equal (Get-BadgesSegment (('{"agent":{"name":' + $bad + '}}') | ConvertFrom-Json)) $null "badges: agent.name $bad is not a name"
+}
+Confirm-Equal (Get-BadgesSegment ('{"agent":"reviewer"}' | ConvertFrom-Json)) $null 'badges: an agent that is a bare string has no name'
+Confirm-Equal (Get-BadgesSegment ('{"session_name":"\u001b[31mred"}' | ConvertFrom-Json)) $null 'badges: a session name carrying an escape is refused outright'
+Confirm-Equal (Get-BadgesSegment ('{"agent":{"name":"\u001b[31mred"}}' | ConvertFrom-Json)) $null 'badges: an agent name carrying an escape is refused outright'
+Confirm-Equal (Get-BadgesSegment ('{"session_name":"\u202e\u2066"}' | ConvertFrom-Json)) $null 'badges: a session name of nothing but format characters is not a name'
+Confirm-Equal (Get-BadgesSegment ('{"agent":{"name":"\u202e"}}' | ConvertFrom-Json)) $null 'badges: an agent name of nothing but an override is not a name'
+# Format characters are stripped rather than refused, so one stray override costs the character and not
+# the badge. Compared ordinally on purpose: PowerShell's own string operators compare by culture, which
+# gives a format character no collation weight at all, so "oc<U+202E>to" -eq "octo" is $true and an
+# assertion written that way would pass whether or not the override was ever taken out.
+$b = Get-BadgesSegment ('{"agent":{"name":"oc\u202eto"},"session_name":"qu\u2066iet"}' | ConvertFrom-Json)
+Confirm-True ([string]::Equals($b.Text, "$iconAgent octo $iconSession quiet", [System.StringComparison]::Ordinal)) 'badges: the format characters are stripped out of both names'
+Confirm-True (-not $b.Text.Contains([string][char]0x202E)) 'badges: no right-to-left override survives into the agent badge'
+Confirm-True (-not $b.Text.Contains([string][char]0x2066)) 'badges: no directional isolate survives into the session badge'
+# Stripping happens before measuring, so a name padded out with overrides is not cut on room it never
+# took on the line in the first place.
+$b = Get-BadgesSegment (('{"session_name":"' + ('\u202e' * 30) + 'quiet"}') | ConvertFrom-Json)
+Confirm-True ([string]::Equals($b.Text, "$iconSession quiet", [System.StringComparison]::Ordinal)) 'badges: thirty stripped overrides leave a five-cell name uncut'
+# The same emoji-grapheme regression through the builder, which is where the cap is actually applied
+# and where a name arrives from a real payload as surrogate pairs. The badge is the glyph, a space and
+# at most $badgeNameCells cells, so the whole thing may never exceed that plus two.
+$b = Get-BadgesSegment (('{"session_name":"' + ('\ud83c\uddec\ud83c\udde7' * 15) + '"}') | ConvertFrom-Json)
+Confirm-True ((Get-VisibleWidth $b.Text) -le ($badgeNameCells + 2)) 'badges: a session name of flags fits the badge allowance'
+Confirm-Equal (Get-VisibleWidth $b.Text) 21 'badges: the flag session badge is the glyph, a space, nine flags and the ellipsis'
+$b = Get-BadgesSegment (('{"agent":{"name":"' + ('1\ufe0f\u20e3' * 25) + '"}}') | ConvertFrom-Json)
+Confirm-True ((Get-VisibleWidth $b.Text) -le ($badgeNameCells + 2)) 'badges: an agent name of keycaps fits the badge allowance'
+Confirm-Equal (Get-VisibleWidth $b.Text) 21 'badges: the keycap agent badge is the glyph, a space, nine keycaps and the ellipsis'
 
 Write-Host '== unit: porcelain' -ForegroundColor Cyan
 $r = Read-PorcelainStatus "## main...origin/main [ahead 1]`n"
@@ -4032,13 +4427,55 @@ Confirm-Equal $file.v 1 'state render: file is version 1'
 Confirm-Equal $file.cost_usd 1.07 'state render: cost_usd matches the payload'
 Confirm-Equal $file.history.Count 1 'state render: the same cost twice is one history entry'
 Confirm-True ([math]::Abs($file.updated_at - [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) -lt 120) 'state render: updated_at is now'
+# The third render is the first with a total that moved, so it is the first to carry a delta: the file
+# holds 1.07 and the payload says 1.50. This is the feature end to end - a figure built from a file
+# written by an earlier process.
 $r3 = Invoke-StatusLine (Get-StatePayloadJson 1.5) $null 0
-Confirm-NormalRender $r3 '1.50' 'state render third'
+Confirm-NormalRender $r3 '1.50 (+$0.43)' 'state render third'
 $file = Get-Content -LiteralPath (Join-Path $renderStateDir 'sess-1.json') -Raw | ConvertFrom-Json
 Confirm-Equal $file.cost_usd 1.5 'state render: cost_usd follows the payload'
 Confirm-Equal $file.history.Count 2 'state render: a new cost adds a history entry'
 Confirm-Equal $file.history[1].cost_usd 1.5 'state render: newest history entry last'
 Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f 'state render', $r3.Ms, (ConvertTo-PlainText ($r3.Lines -join ' ')))
+
+# The delta is the first thing the fitting sheds. The width here is the plain line's own, measured
+# rather than counted out by hand, so the render has room for everything except the suffix: it comes
+# back as the line it would have been with no state at all, with nothing dropped. COLUMNS is one more
+# than the target because the script leaves the last column free.
+$r4 = Invoke-StatusLine (Get-StatePayloadJson 1.62) $null 0
+Confirm-NormalRender $r4 '1.62 (+$0.12)' 'state render delta'
+$deltaPlain = "$iconModel M $chevron $iconCost `$1.74 $chevron $iconHome main"
+$r5 = Invoke-StatusLine (Get-StatePayloadJson 1.74) $null ((Measure-VisibleWidth $deltaPlain) + 1)
+Confirm-NormalRender $r5 '1.74' 'state render delta shed to fit'
+$r6 = Invoke-StatusLine (Get-StatePayloadJson 1.86) $null 120
+Confirm-NormalRender $r6 '1.86 (+$0.12)' 'state render delta at 120 columns'
+# A render that changes nothing - the refresh timer firing with no API call in between - sees a delta of
+# zero and prints the total alone, which is the documented behaviour rather than a missing figure.
+$r7 = Invoke-StatusLine (Get-StatePayloadJson 1.86) $null 0
+Confirm-NormalRender $r7 '1.86' 'state render: a repeat of the same total carries no delta'
+
+# A render that writes no state leaves the next delta spanning both turns. "state": false is the seam
+# used here, but a render that ends before the write - the zero-segment exit is one - has the same
+# effect, and this is what the next render does with it: the change since the last total the file holds,
+# which is a real difference between two totals this session reached. The render in between printed no
+# total of its own, so there is nothing on any line for the wider figure to contradict.
+$r8 = Invoke-StatusLine (Get-StatePayloadJson 1.9) $stateOffConfig 0
+Confirm-NormalRender $r8 '1.90' 'state stale: a render with the state file off shows no delta of its own'
+$r9 = Invoke-StatusLine (Get-StatePayloadJson 2.0) $null 0
+Confirm-NormalRender $r9 '2.00 (+$0.14)' 'state stale: the next delta spans both turns, from the last total the file holds'
+
+# A payload with no cost object at all: the line shows no cost segment, the render still writes state,
+# and the total the next delta is measured from survives it. This is the three-render shape the delta
+# has to hold up under - cost, no cost, cost - and without the carry in Merge-SessionState the middle
+# render would erase the total and the rise across the gap would never be shown.
+$noCostJson = ([ordered]@{ model = @{ display_name = 'M' }; session_id = 'sess-1'
+                           git = @{ branch = 'main'; status = 'clean' } } | ConvertTo-Json -Compress)
+$r10 = Invoke-StatusLine $noCostJson $null 0
+Confirm-Equal (ConvertTo-PlainText ($r10.Lines -join "`n")) "$iconModel M $chevron $iconHome main" 'state gap: a payload with no cost renders no cost segment'
+$file = Get-Content -LiteralPath (Join-Path $renderStateDir 'sess-1.json') -Raw | ConvertFrom-Json
+Confirm-Equal $file.cost_usd 2 'state gap: the stored total survives a payload that carries none'
+$r11 = Invoke-StatusLine (Get-StatePayloadJson 2.2) $null 0
+Confirm-NormalRender $r11 '2.20 (+$0.20)' 'state gap: the next delta is measured from the last real total'
 
 # A truncated or empty file is read as no state, the line is normal, and the file is replaced.
 foreach ($case in @(@{ Name = 'truncated'; Text = '{ "v": 1, "cost' }, @{ Name = 'empty'; Text = '' })) {
@@ -4049,6 +4486,18 @@ foreach ($case in @(@{ Name = 'truncated'; Text = '{ "v": 1, "cost' }, @{ Name =
     Confirm-Equal $file.cost_usd 2 "state $($case.Name) file: replaced by a good one"
     Confirm-Equal $file.history.Count 1 "state $($case.Name) file: history starts over"
 }
+
+# A hand-edited version 1 record holding a total no session can reach. The file parses, the version is
+# right and every other key is sound, so the record reads - and the delta still refuses it rather than
+# rendering the 101.07 that subtracting it would produce. The next write replaces it with a real figure.
+[System.IO.File]::WriteAllText((Join-Path $renderStateDir 'sess-1.json'),
+    '{ "v": 1, "updated_at": 5, "cost_usd": -100, "input_tokens": null, "output_tokens": null, "used_percentage": null, "five_hour_percentage": null, "history": [] }')
+$r = Invoke-StatusLine (Get-StatePayloadJson 1.07) $null 0
+Confirm-NormalRender $r '1.07' 'state negative file: the line is the total alone, with no fictitious delta'
+$file = Get-Content -LiteralPath (Join-Path $renderStateDir 'sess-1.json') -Raw | ConvertFrom-Json
+Confirm-Equal $file.cost_usd 1.07 'state negative file: the record is replaced by the real total'
+$r = Invoke-StatusLine (Get-StatePayloadJson 1.2) $null 0
+Confirm-NormalRender $r '1.20 (+$0.13)' 'state negative file: and the render after it measures from that real total'
 
 # "state": false and a payload without a session_id write nothing, not even the directory.
 Remove-Item -LiteralPath $renderStateDir -Recurse -Force
@@ -4386,6 +4835,17 @@ $absentGlyphs = @{
         @{ Icon = $iconLimit; Name = 'limits' }
         @{ Icon = $iconConflict; Name = 'warn' }
     )
+    '13-agent-session.json'                 = @(
+        @{ Icon = $iconFast; Name = 'fast' }
+        @{ Icon = $iconThink; Name = 'think' }
+        @{ Icon = $iconEffort; Name = 'effort' }
+        @{ Icon = $iconVim; Name = 'vim' }
+        @{ Icon = $iconBranch; Name = 'branch' }
+        @{ Icon = $iconDirty; Name = 'pencil' }
+        @{ Icon = $iconLines; Name = 'lines' }
+        @{ Icon = $iconLimit; Name = 'limits' }
+        @{ Icon = $iconConflict; Name = 'warn' }
+    )
 }
 # 11 is the only sample whose session is in a worktree, so every other one has to keep the fork glyph
 # off its line. One row per sample rather than ten written out by hand, and a sample added later is
@@ -4396,10 +4856,22 @@ foreach ($sample in $sampleFiles) {
     $rows = @(if ($absentGlyphs.ContainsKey($sample.Name)) { $absentGlyphs[$sample.Name] })
     $absentGlyphs[$sample.Name] = $rows + @{ Icon = $iconWorktree; Name = 'worktree' }
 }
+# The same rule for the two identity badges, and for the same reason: 13 is the only sample carrying an
+# agent.name or a session_name, so the user glyph and the tag have to stay off every other line. Written
+# as a loop rather than twelve rows by hand, so a builder that started drawing either badge from a
+# payload that names neither shows up on every sample at once - including 06, whose four mode badges
+# would otherwise give the segment cover.
+foreach ($sample in $sampleFiles) {
+    if ($sample.Name -eq '13-agent-session.json') { continue }
+    $rows = @(if ($absentGlyphs.ContainsKey($sample.Name)) { $absentGlyphs[$sample.Name] })
+    $absentGlyphs[$sample.Name] = $rows + @{ Icon = $iconAgent; Name = 'agent' } + @{ Icon = $iconSession; Name = 'session' }
+}
 # What each sample renders when every segment is enabled and nothing is fitted away: 04 carries nothing
 # but a model, 05, 07 and 08 have no git object and their probe directory is not a repository, and 07's
-# badges are all off or at the default level. Intersected with a config's enabled set this gives the
-# segments the line should actually show, which is what the gates below are built on.
+# badges are all off or at the default level. 13 is the other way round: every mode is off there and the
+# badges segment is on the line anyway, because the payload names an agent and a session. Intersected
+# with a config's enabled set this gives the segments the line should actually show, which is what the
+# gates below are built on.
 $sampleSegments = @{
     '01-main-clean.json'                    = @('model', 'context', 'cost', 'folder', 'branch')
     '02-feature-dirty-high.json'            = @('model', 'context', 'cost', 'folder', 'branch')
@@ -4413,6 +4885,7 @@ $sampleSegments = @{
     '10-pr.json'                            = @('model', 'context', 'cost', 'pr', 'folder', 'branch')
     '11-worktree.json'                      = @('model', 'context', 'cost', 'folder', 'branch')
     '12-context-alarm.json'                 = @('model', 'context', 'cost', 'folder')
+    '13-agent-session.json'                 = @('model', 'context', 'cost', 'badges', 'folder', 'branch')
 }
 # One marker per segment per sample: the segment's glyph plus the value this payload gives it, spelled
 # the way it reaches the line once the escapes are stripped. Every visible segment has to put its marker
@@ -4498,6 +4971,11 @@ $sampleMarkers = @{
         model = "$iconModel Sonnet 5"; context = "$iconCtx 92%"; cost = "$iconCost `$$('{0:N2}' -f 2.4)"
         folder = "$iconFolder alarm-demo"
     }
+    '13-agent-session.json'                 = @{
+        model  = "$iconModel Sonnet 5"; context = "$iconCtx 16%"; cost = "$iconCost `$$('{0:N2}' -f 0.31)"
+        badges = "$iconAgent reviewer $iconSession nightly audit"
+        folder = "$iconFolder my-project"; branch = "$iconHome main"
+    }
 }
 # The samples whose model segment the alarm turns red with the built-in alarm of 90: 12 sits at 92% of a
 # standard window and 02 at 90% of a 1M one, which is the boundary the alarm fires on. The alarm reads
@@ -4514,7 +4992,7 @@ $segmentGlyphs = @{
     cost    = @($iconCost)
     lines   = @($iconLines)
     limits  = @($iconLimit)
-    badges  = @($iconFast, $iconThink, $iconEffort, $iconVim)
+    badges  = @($iconFast, $iconThink, $iconEffort, $iconVim, $iconAgent, $iconSession)
     pr      = @($iconPr)
     folder  = @($iconFolder)
     branch  = @($iconHome, $iconBranch, $iconDirty, $iconAhead, $iconBehind, $iconConflict, $iconWorktree)
@@ -4525,6 +5003,7 @@ $glyphSegment = @{
     context = 'context'; cost = 'cost'; folder = 'folder'; lines = 'lines'; limits = 'limits'; warn = 'model'
     home = 'branch'; pencil = 'branch'; branch = 'branch'; worktree = 'branch'
     fast = 'badges'; think = 'badges'; effort = 'badges'; vim = 'badges'
+    agent = 'badges'; session = 'badges'
 }
 # A config record for the matrix. Rows is what the script prints from this config, read the way the
 # script reads it: the order key for layout one, the two rows for layout two. Enabled is the segments
@@ -5484,7 +5963,7 @@ foreach ($bad in @('"columns": "80"', '"columns": 20.5', '"columns": true', '"co
 # The helpers the subagent script copies out of statusline.ps1. Both copies are pulled from the source
 # by the parser and compared as text, so a fix made to one and not the other fails here instead of
 # turning into two scripts that measure a line or colour a percentage differently.
-$sharedHelpers = @('G', 'C', 'Get-VisibleWidth', 'Get-Palette', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText')
+$sharedHelpers = @('G', 'C', 'Get-VisibleWidth', 'Get-ClippedText', 'Get-Palette', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText')
 foreach ($name in $sharedHelpers) {
     $a = try { "$(Import-ScriptFunction $script @($name))" } catch { "not found in statusline.ps1" }
     $b = try { "$(Import-ScriptFunction $subScript @($name))" } catch { "not found in subagent-statusline.ps1" }
