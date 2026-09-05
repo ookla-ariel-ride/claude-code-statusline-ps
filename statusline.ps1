@@ -95,6 +95,10 @@ function Get-IconDefault {
         context  = 0xF035B   # nf-md-memory
         cache    = 0xF0238   # nf-md-fire  (prompt cache warmth)
         cost     = 0xF0155   # nf-md-cash
+        # nf-md-timer_outline, the outline stopwatch. Issue #8 named that glyph and then wrote F13AB
+        # beside it, which is nf-md-timer, the filled one; the name is what says how the glyph should
+        # look, so this is F051B, the code point the Nerd Fonts glyph list gives that name.
+        clock    = 0xF051B   # nf-md-timer_outline
         folder   = 0xF07C    # nf-fa-folder_open
         chevron  = 0x203A    # single right-pointing angle quotation mark (between owner/name and the leaf)
         branch   = 0xE0A0    # powerline branch
@@ -276,15 +280,16 @@ function Get-SegmentRegistry {
     if (-not $script:segmentRegistry) {
         $script:segmentRegistry = @(
             @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 4;     DropRank = 9;     Row = 2; RowRank = 1 }
-            @{ Name = 'cache';   Build = 'Get-CacheSegment';   Default = $true; ShrinkRank = 3;     DropRank = 2;     Row = 2; RowRank = 2 }
-            @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 4 }
-            @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 5 }
-            @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 5;     Row = 2; RowRank = 3 }
-            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 7;     DropRank = 3;     Row = 1; RowRank = 5 }
-            @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 6;     Row = 1; RowRank = 4 }
-            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 6;     DropRank = 7;     Row = 1; RowRank = 2 }
-            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 5;     DropRank = 8;     Row = 1; RowRank = 3 }
+            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 4;     DropRank = 10;    Row = 2; RowRank = 1 }
+            @{ Name = 'cache';   Build = 'Get-CacheSegment';   Default = $true; ShrinkRank = 3;     DropRank = 3;     Row = 2; RowRank = 2 }
+            @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 5;     Row = 2; RowRank = 4 }
+            @{ Name = 'clock';   Build = 'Get-ClockSegment';   Default = $true; ShrinkRank = 8;     DropRank = 2;     Row = 2; RowRank = 5 }
+            @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 6 }
+            @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 6;     Row = 2; RowRank = 3 }
+            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 7;     DropRank = 4;     Row = 1; RowRank = 5 }
+            @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 7;     Row = 1; RowRank = 4 }
+            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 6;     DropRank = 8;     Row = 1; RowRank = 2 }
+            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 5;     DropRank = 9;     Row = 1; RowRank = 3 }
         )
     }
     return $script:segmentRegistry
@@ -369,21 +374,24 @@ function Get-ConfigPreset($Name) {
     switch ($Name.ToLowerInvariant()) {
         'minimal' {
             return @{ Layout = 'one'; Style = 'plain'; Segments = @{
-                    model = $true; context = $true; cache = $false; cost = $false; lines = $false; limits = $false
+                    model = $true; context = $true; cache = $false; cost = $false; clock = $false; lines = $false; limits = $false
                     badges = $false; pr = $false; folder = $true; branch = $true
                 }
             }
         }
         'cost' {
+            # The clock is on here and not in `minimal`: this preset is the line of numbers, and the
+            # elapsed time is the denominator under every rate on it. `minimal` answers which model,
+            # how full and where am I, and how long the session has run is none of the three.
             return @{ Layout = 'one'; Style = 'plain'; Segments = @{
-                    model = $true; context = $true; cache = $true; cost = $true; lines = $true; limits = $true
+                    model = $true; context = $true; cache = $true; cost = $true; clock = $true; lines = $true; limits = $true
                     badges = $false; pr = $false; folder = $false; branch = $false
                 }
             }
         }
         'full' {
             return @{ Layout = 'two'; Style = 'powerline'; Segments = @{
-                    model = $true; context = $true; cache = $true; cost = $true; lines = $true; limits = $true
+                    model = $true; context = $true; cache = $true; cost = $true; clock = $true; lines = $true; limits = $true
                     badges = $true; pr = $true; folder = $true; branch = $true
                 }
             }
@@ -722,9 +730,11 @@ function Format-Line($Segments, [string] $Style) {
 }
 
 # Renders a line and, when a width is given, shrinks then drops segments until it fits.
-# Stage 1 swaps segments for their Short form in $ShrinkOrder (cost, limits, context, branch, then folder
-# by default: the cost segment's Short is the session total without its per-turn delta, so the delta is
-# the first detail on the line to go).
+# Stage 1 swaps segments for their Short form in $ShrinkOrder (cost, limits, cache, context, branch,
+# folder, badges, then clock by default: the cost segment's Short is the session total without its
+# per-turn delta, so the delta is the first detail on the line to go; the cache segment's Short drops
+# the word and keeps the countdown, which costs one word and loses nothing; and the clock's api share
+# is the last).
 # Stage 2 drops whole segments in $DropOrder. Either order left $null comes from the registry's ranks; an
 # empty array skips that stage. The model segment is never dropped whatever the drop order says, so it may
 # overflow on its own. Returns $null when nothing is left.
@@ -1270,6 +1280,7 @@ $iconModel = $icons.model
 $iconCtx = $icons.context
 $iconCache = $icons.cache
 $iconCost = $icons.cost
+$iconClock = $icons.clock
 $iconFolder = $icons.folder
 $iconChevron = $icons.chevron
 $iconBranch = $icons.branch
@@ -1559,6 +1570,18 @@ function Format-MinutesLeft([int] $Seconds) {
     return '{0}h{1:00}m' -f [int] [math]::Floor($minutes / 60), ($minutes % 60)
 }
 
+# The five-minute line: at or below it the segment is a warning, above it it is calm. Five minutes is
+# about one long turn, so it is the point where "send a cheap keep-alive now" stops being premature.
+# THIS IS A FUNCTION RATHER THAN AN INLINE COMPARISON FOR A TESTING REASON, and it is the same reason
+# Get-ThresholdRole is one. A boundary that lives inside a builder can only be reached through a
+# payload, and a payload's expires_at is measured against a clock read at one instant while the builder
+# reads its own an instant later. One tick turns an intended 300 into 299 - still 'warn', so the test
+# passes either way, and a `-lt 300` mutant survives it. Worse, the same tick turns the rendered text
+# from 5m into 4m, which fails correct code. As a pure function of whole seconds the boundary is pinned
+# exactly, with no clock between the input and the answer, and the builder's own cases can then sit
+# safely mid-minute where drift cannot reach them.
+function Get-CacheRole([int] $Seconds) { if ($Seconds -le 300) { 'warn' } else { 'ok' } }
+
 # Whether the prompt cache is still warm and how long it has left: "cache 42m" in green, "cache 4m" in
 # yellow inside the last five minutes, "cache cold" in red once it has lapsed, and "cache off" in red
 # when the client has been asking for caching and has never seen it work. A cache miss costs real money
@@ -1611,7 +1634,7 @@ function Get-CacheSegment($d) {
         return @{ Name = 'cache'; Text = "$iconCache cache warm"; Short = "$iconCache warm"; Role = 'ok'; Bold = $false }
     }
     $value = Format-MinutesLeft $left
-    $role = if ($left -le 300) { 'warn' } else { 'ok' }
+    $role = Get-CacheRole $left
     return @{ Name = 'cache'; Text = "$iconCache cache $value"; Short = "$iconCache $value"; Role = $role; Bold = $false }
 }
 
@@ -1663,6 +1686,64 @@ function Get-CostSegment($d, $cfg, $state) {
         if ($delta -ge 0.01) { $suffix = " (+`$" + ('{0:N2}' -f $delta) + ')' }
     }
     return @{ Name = 'cost'; Text = "$total$suffix"; Short = $(if ($suffix) { $total } else { $null }); Role = 'dim'; Bold = $false }
+}
+
+# A count of milliseconds as one short elapsed string, or $null when it is not a duration any session
+# could have run for. Three forms: `<1m` under a minute, `12m` under an hour, and `1h12m` above one,
+# with the minutes zero-padded so an hour and five reads as 1h05m rather than as 1h50m.
+# Refusing rather than repairing is the whole of the guard, and the reason is that every repair here
+# produces a reading that looks real. Minus twenty minutes clamped to zero prints `<1m` and reads as a
+# session that has just started; a NaN clamped the same way reads identically; there is no elapsed time
+# that says "we cannot tell", so the segment goes instead. The upper end is refused on the same terms
+# rather than pinned to the largest value that fits: past what a [TimeSpan] can hold, a count of
+# milliseconds is not an interval at all. Going through a TimeSpan is also what keeps the format honest -
+# the total hours of a span that is in range fit an Int32, so the hours can never reach the scientific
+# notation a bare double would print.
+# Separate from Get-ClockSegment so the three forms and the refusals can be tested without a payload,
+# and separate from TimeLeft, which counts down to an epoch and has a days form this does not want: a
+# session is measured in the hours it has run, not rounded off to `2d`.
+function Format-Elapsed([object] $ms) {
+    $n = Get-FiniteNumber $ms
+    if ($null -eq $n -or $n -le 0) { return $null }
+    $span = try { [TimeSpan]::FromMilliseconds($n) } catch { return $null }
+    if ($span.TotalMinutes -lt 1) { return '<1m' }
+    if ($span.TotalHours -lt 1) { return '{0}m' -f $span.Minutes }
+    return '{0}h{1:00}m' -f [int] [math]::Floor($span.TotalHours), $span.Minutes
+}
+
+# How long the session has been running and how much of that went on waiting for the model:
+# `1h12m · api 38%`. Dim and never bold, with no threshold band and no alarm behind it, because a long
+# session is not an error - it is the one figure on the line that says nothing about what the session is
+# doing right now, which is also why it is the first whole segment worth dropping once the lines
+# counts have gone. It goes ahead of the cache segment, which is the other candidate for that slot:
+# both are arguably the least urgent number on the line, but this one is dim by construction and that
+# one has a warn band and two bad states, and a dropped segment takes its colour with it.
+# The separator is a middle dot with a space either side rather than a dash: a dash beside a percentage
+# reads as a range.
+# The share goes through Get-WholePercent, the one percentage rule on the line. It is not a candidate for
+# the [math]::Floor exception subagent-statusline.ps1 documents: that exception exists to stop a colour
+# band running ahead of the number under it, and nothing bands on this figure.
+# An api figure that could not be true is refused rather than clamped into range. A session cannot have
+# spent longer waiting on the API than it has existed, so a payload claiming it did is not a share to pin
+# at 100 - it is a pair of figures with nothing to say about the split, and the elapsed time on its own
+# is the honest answer, which is the answer a payload carrying no api figure at all already gets.
+# Clamping a figure that cannot be true is how a negative token count came to render `100% cached` and a
+# negative stored total a confident `+$101.07`.
+# The short form is the elapsed time without the share, and it is the last detail stage one of the
+# fitting sheds. No share means no short form, so a render with nothing to shed costs the fitting nothing,
+# the same way the cost segment's does.
+function Get-ClockSegment($d) {
+    $elapsed = Format-Elapsed $d.cost.total_duration_ms
+    if (-not $elapsed) { return $null }
+    $text = "$iconClock $elapsed"
+    # Format-Elapsed answered, so the total is a finite number above zero and the division below is safe.
+    $total = Get-FiniteNumber $d.cost.total_duration_ms
+    $api = Get-FiniteNumber $d.cost.total_api_duration_ms
+    $share = ''
+    if ($null -ne $api -and $api -gt 0 -and $api -le $total) {
+        $share = ' ' + (G 0xB7) + ' api ' + (Get-WholePercent ($api / $total * 100)) + '%'
+    }
+    return @{ Name = 'clock'; Text = "$text$share"; Short = $(if ($share) { $text } else { $null }); Role = 'dim'; Bold = $false }
 }
 
 # Lines added/removed this session; shown when either is non-zero. Inline colours keep the dim background intact.
