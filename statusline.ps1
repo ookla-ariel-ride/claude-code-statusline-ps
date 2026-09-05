@@ -329,7 +329,7 @@ function Read-SegmentNameList($Value, [hashtable] $Known, [hashtable] $Seen) {
 # The built-in defaults: the table every config file is merged over. A fresh table each call, the nested
 # tables included, so a merge that changes one caller's copy cannot reach the next caller's.
 function Get-DefaultStatusConfig {
-    $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Segments = @{}; Git = Get-DefaultGitConfig }
+    $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Links = $true; Segments = @{}; Git = Get-DefaultGitConfig }
     foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
     $cfg.Order = @((Get-SegmentRegistry).Name)
     $cfg.Rows = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
@@ -352,6 +352,7 @@ function Get-StatusConfigKey {
         @{ Json = 'style';  Key = 'Style';  Kind = 'Enum'; Allowed = @('plain', 'powerline') }
         @{ Json = 'folder'; Key = 'Folder'; Kind = 'Enum'; Allowed = @('repo', 'leaf') }
         @{ Json = 'state';  Key = 'State';  Kind = 'Bool'; Allowed = $null }
+        @{ Json = 'links';  Key = 'Links';  Kind = 'Bool'; Allowed = $null }
     )
 }
 
@@ -689,7 +690,13 @@ function Format-Inline([string] $Role, [string] $Text, [string] $SegmentRole, [s
 # array into one that passes), at most 2083 characters (the classic browser cap), free of whitespace and
 # of any Unicode control character (category Cc: the C0 range, DEL and the C1 range, where U+009B,
 # U+009C and U+009D are CSI, ST and OSC in their 8-bit forms), and parses as an absolute http or https
-# URI. So nothing a payload puts there can end the sequence early or put a stray escape on the line.
+# URI whose scheme this allows. So nothing a payload puts there can end the sequence early or put a
+# stray escape on the line.
+# Three schemes: http and https for the pull request and the branch page, and file for the folder, which
+# is how a terminal is told to open a directory. file carries one rule the other two do not need - the
+# authority has to be empty. file:///C:/x is a path on this machine; file://server/share is a UNC path,
+# and a click on one reaches out over SMB to a machine the payload named, which is a request the person
+# at the keyboard did not make. Everything else is refused as it always was.
 # The link goes into the segment's Text, so Format-Line wraps it in the segment's colour codes in either
 # style: OSC 8 carries no SGR state, so a powerline background runs on through it, and Get-VisibleWidth
 # strips it before measuring.
@@ -697,7 +704,9 @@ function Format-Link($Url, [string] $Text) {
     if ($Url -isnot [string] -or $Url.Length -gt 2083 -or $Url -match '[\s\p{Cc}]') { return $Text }
     $uri = $null
     if (-not [System.Uri]::TryCreate($Url, [System.UriKind]::Absolute, [ref] $uri)) { return $Text }
-    if ($uri.Scheme -ne 'http' -and $uri.Scheme -ne 'https') { return $Text }
+    if ($uri.Scheme -eq 'file') {
+        if ($uri.Host) { return $Text }
+    } elseif ($uri.Scheme -ne 'http' -and $uri.Scheme -ne 'https') { return $Text }
     return "`e]8;;$Url`e\$Text`e]8;;`e\"
 }
 
@@ -1906,6 +1915,64 @@ function Get-BadgesSegment($d) {
     return @{ Name = 'badges'; Text = ($badges -join ' '); Short = $short; Role = 'dim'; Bold = $false }
 }
 
+# ---- Links. One switch and two URL builders, shared by the pr, folder and branch segments. ----
+
+# The switch. `links` is one key for every hyperlink on the line rather than one per segment, because
+# the reason to turn them off is never about a segment: it is a terminal that prints the escape as text
+# instead of swallowing it, and that terminal is broken for all three at once. The key defaults to true,
+# so only the boolean false turns them off; a config that does not name the key, and a builder called
+# with no config at all, get the default.
+function Test-LinkWanted($cfg) { return ($cfg.Links -ne $false) }
+
+# The folder segment's URL: the session's directory as a file: URL, so ctrl-click opens it. TryCreate
+# rather than a [uri] cast, because the cast throws on anything that is not an absolute URI and this
+# runs on every render; AbsoluteUri then does the escaping, so C:\src\my project becomes
+# file:///C:/src/my%20project and a # in a directory name becomes %23 instead of opening a fragment.
+# Three answers of $null, each rendering the segment unlinked rather than guessing: a path that is not
+# an absolute URI at all (a relative one, a bare name, an empty string, a value that is not a string),
+# a path that parses as something other than a file (current_dir is a payload field, and
+# "https://evil.example/x" parses perfectly well as an absolute URI), and a UNC path, whose authority
+# is a machine name. $Dir is untyped for the usual reason: a [string] parameter would join an array
+# into a path instead of refusing it.
+function Get-FolderUrl($Dir) {
+    if ($Dir -isnot [string] -or -not $Dir) { return $null }
+    $uri = $null
+    if (-not [System.Uri]::TryCreate($Dir, [System.UriKind]::Absolute, [ref] $uri)) { return $null }
+    if (-not $uri.IsFile -or $uri.Host) { return $null }
+    return $uri.AbsoluteUri
+}
+
+# The branch segment's URL, from workspace.repo, which the payload carries only for a checkout with a
+# recognised remote. github.com gets the branch page, /<owner>/<name>/tree/<branch>; every other host
+# gets the repository home, /<owner>/<name>. GitLab spells a branch /-/tree/, Bitbucket /src/ and Azure
+# DevOps something else again, and a wrong guess lands the click on a 404, while a repository home is
+# right everywhere. https always: the field is a host name rather than a URL, and there is no reason to
+# send a click over plaintext.
+# Every field here is repository-supplied text - a remote is written by whoever made the checkout - so
+# each is guarded rather than pasted in. The host has to look like a host and nothing else: a "host" of
+# "evil.example/a?" would put the owner and the name in a query string on somebody else's site, and one
+# carrying an @ would make the whole thing userinfo in front of a different host again. The owner and
+# the name go through EscapeDataString, so a slash in either cannot climb the path. The branch is
+# escaped a segment at a time, which keeps the slash in feature/x, where it is a real separator on the
+# branch page, and still turns a space into %20 and a # into %23; EscapeUriString, which the issue
+# suggested, leaves the # alone and would truncate the URL into a fragment. Format-Link is still the
+# last gate on all of it. A detached HEAD gets no link: "detached" is the word this script prints for
+# the state, not a ref anything can be looked up by.
+function Get-BranchUrl($d, [string] $Branch) {
+    if (-not $Branch -or $Branch -eq 'detached') { return $null }
+    $repo = $d.workspace.repo
+    if (-not (Test-PayloadText $repo.host) -or -not (Test-PayloadText $repo.owner) -or -not (Test-PayloadText $repo.name)) { return $null }
+    $repoHost = Format-PayloadText ([string] $repo.host)
+    if ($repoHost -notmatch '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$') { return $null }
+    $owner = [uri]::EscapeDataString((Format-PayloadText ([string] $repo.owner)))
+    $name = [uri]::EscapeDataString((Format-PayloadText ([string] $repo.name)))
+    $url = "https://$repoHost/$owner/$name"
+    if (-not [string]::Equals($repoHost, 'github.com', [System.StringComparison]::OrdinalIgnoreCase)) { return $url }
+    $parts = $Branch -split '/'
+    for ($i = 0; $i -lt $parts.Count; $i++) { $parts[$i] = [uri]::EscapeDataString($parts[$i]) }
+    return "$url/tree/$($parts -join '/')"
+}
+
 # The pull request on the session's branch: the glyph and #number, the whole text wrapped in a link to
 # pr.url, coloured by pr.review_state - approved is ok, changes requested (spaces or underscores, any
 # case) is bad, anything else is dim, including a state that is not text at all. The number goes
@@ -1913,14 +1980,15 @@ function Get-BadgesSegment($d) {
 # object holds. The url goes to Format-Link as it is, which leaves the text unlinked for anything that
 # is not a plain http(s) URL. pr.kind is not rendered. Omitted when the payload has no pr object, or
 # has something other than an object there.
-function Get-PrSegment($d) {
+function Get-PrSegment($d, $cfg) {
     $pr = $d.pr
     if ($pr -isnot [System.Management.Automation.PSCustomObject]) { return $null }
     $number = Get-PayloadNumber $pr.number
     if ($null -eq $number -or $number -le 0) { return $null }
     $state = if (Test-PayloadText $pr.review_state) { [regex]::Replace($pr.review_state, '[_\s]+', ' ').Trim().ToLowerInvariant() } else { '' }
     $role = switch ($state) { 'approved' { 'ok' } 'changes requested' { 'bad' } default { 'dim' } }
-    return @{ Name = 'pr'; Text = (Format-Link $pr.url "$iconPr #$number"); Short = $null; Role = $role; Bold = $false }
+    $url = if (Test-LinkWanted $cfg) { $pr.url } else { $null }
+    return @{ Name = 'pr'; Text = (Format-Link $url "$iconPr #$number"); Short = $null; Role = $role; Bold = $false }
 }
 
 # With workspace.repo in the payload and the folder config at repo, the text is owner/name, followed by a
@@ -1935,10 +2003,15 @@ function Get-FolderSegment($d, $cfg) {
     # Every piece of text this segment draws comes from outside it - a directory name, a repo owner -
     # and each one is stripped of its Format characters, so none of them can reorder the rest of the line.
     $leaf = Format-PayloadText (Split-Path $dir -Leaf)
+    # The link goes round the finished text, glyph included, in both shapes below and round the Short
+    # form as well, so a narrow line keeps the link it sheds the detail from. $null here, which is what
+    # a path with no URL and a config with links off both give, leaves Format-Link returning its text
+    # unchanged: the segment is then byte for byte what it was before this existed.
+    $link = if (Test-LinkWanted $cfg) { Get-FolderUrl $dir } else { $null }
     $owner = $d.workspace.repo.owner
     $name = $d.workspace.repo.name
     if ($cfg.Folder -eq 'leaf' -or -not (Test-PayloadText $owner) -or -not (Test-PayloadText $name)) {
-        return @{ Name = 'folder'; Text = "$iconFolder $leaf"; Short = $null; Role = 'folder'; Bold = $false }
+        return @{ Name = 'folder'; Text = (Format-Link $link "$iconFolder $leaf"); Short = $null; Role = 'folder'; Bold = $false }
     }
     $owner = Format-PayloadText ([string] $owner)
     $name = Format-PayloadText ([string] $name)
@@ -1947,7 +2020,7 @@ function Get-FolderSegment($d, $cfg) {
     $there = ($root -replace '/', '\').TrimEnd('\')
     $text = "$owner/$name"
     if ($root -and $here -ne $there) { $text += " $iconChevron $leaf" }
-    return @{ Name = 'folder'; Text = "$iconFolder $text"; Short = "$iconFolder $name"; Role = 'folder'; Bold = $false }
+    return @{ Name = 'folder'; Text = (Format-Link $link "$iconFolder $text"); Short = (Format-Link $link "$iconFolder $name"); Role = 'folder'; Bold = $false }
 }
 
 # A payload value as a count, or $null when it is not one: a whole number that fits an Int32. ConvertFrom-Json
@@ -2092,7 +2165,12 @@ function Get-BranchSegment($d, $cfg) {
         if ($n -gt 0) { $counts += ' ' + (Format-Inline $row[2] "$($row[1])$n" $role $cfg.Style) }
     }
     $pencil = if ($info.Dirty) { " $iconDirty" } else { '' }
-    return @{ Name = 'branch'; Text = "$name$badge$counts$pencil"; Short = "$name$pencil"; Role = $role; Bold = $false }
+    # The link goes round each finished string whole, so the badge, the counts and their inline colour
+    # codes keep the places they were built in; OSC 8 carries no colour state of its own, so wrapping
+    # text that already has SGR codes in it changes nothing about how it draws, and Get-VisibleWidth
+    # strips the wrapper before it measures. No link, or links off, leaves both strings as they were.
+    $link = if (Test-LinkWanted $cfg) { Get-BranchUrl $d $info.Branch } else { $null }
+    return @{ Name = 'branch'; Text = (Format-Link $link "$name$badge$counts$pencil"); Short = (Format-Link $link "$name$pencil"); Role = $role; Bold = $false }
 }
 
 # ---- Build, lay out, fit, print ----

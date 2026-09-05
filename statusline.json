@@ -3,6 +3,7 @@
   "style": "plain",
   "folder": "repo",
   "state": true,
+  "links": true,
   "thresholds": { "warn": 60, "bad": 85 },
   "alarm": { "context": 90, "limits": 90 },
   "icons": {},
