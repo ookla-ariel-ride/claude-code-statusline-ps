@@ -174,7 +174,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -4049,10 +4049,15 @@ try {
     Confirm-Equal (Measure-DiagMatch "config read: .* was not read: $diagLinkReason") 1 "diag config: $linkKind in place of the file says '$diagLinkReason', got '$((Get-DiagLine) -join ' | ')'"
     # A spent budget: the same file that reads back fine is refused, and the log says the deadline is why
     # rather than blaming the file. The limit is rebuilt from the script's own numbers, as above.
+    # The three cases below call the reader directly rather than through a config merge, so they also
+    # play the caller's part: the read records why it refused and the caller writes the record, which is
+    # what keeps every filesystem call the log makes off the reader's own clock.
     $diagRealLimit = Get-ProjectConfigLimit
     . ([scriptblock]::Create("function Get-ProjectConfigLimit { return @{ MaxBytes = $($diagRealLimit.MaxBytes); TimeoutMs = 0 } }"))
     Clear-DiagLog
     Confirm-Equal (Read-BoundedFileText $smallProject) $null 'diag config: a spent budget still refuses a file that is otherwise fine'
+    Confirm-Equal (Measure-DiagMatch 'was not read') 0 'diag config: the read itself writes nothing, so a refusal is silent until the caller asks'
+    Write-BoundedReadDiag
     Confirm-Equal (Measure-DiagMatch 'config read: .* was not read: the deadline was spent before the open') 1 "diag config: a spent budget says the deadline was spent, got '$((Get-DiagLine) -join ' | ')'"
     . ([scriptblock]::Create("function Get-ProjectConfigLimit { return @{ MaxBytes = $($diagRealLimit.MaxBytes); TimeoutMs = $($diagRealLimit.TimeoutMs) } }"))
     Confirm-Equal (Get-ProjectConfigLimit).TimeoutMs $diagRealLimit.TimeoutMs 'diag config: the real deadline is back'
@@ -4060,15 +4065,162 @@ try {
     # privilege. Where it will not open at all the refusal is still logged, under the other reason.
     Clear-DiagLog
     Confirm-Equal (Read-BoundedFileText 'NUL') $null 'diag config: the null device is still refused'
+    Write-BoundedReadDiag
     Confirm-Equal (Measure-DiagMatch 'config read: NUL was not read: (the handle cannot seek, so it is not an ordinary file|it could not be opened)') 1 "diag config: a handle that is not an ordinary file says which, got '$((Get-DiagLine) -join ' | ')'"
     # An empty path is refused before anything is looked up, and says that rather than nothing.
     Clear-DiagLog
     Confirm-Equal (Read-BoundedFileText '') $null 'diag config: an empty path is still refused'
+    Write-BoundedReadDiag
     Confirm-Equal (Measure-DiagMatch 'config read: .*was not read: no path was given') 1 'diag config: an empty path says no path was given'
-    # A file that reads is not reported as a refusal, and the log in a finally does not join the return.
+    # A file that reads leaves no record, so the caller's write is a no-op rather than a stale line.
     Clear-DiagLog
     Confirm-Equal (Read-BoundedFileText $smallProject) '{ "layout": "two" }' 'diag config: a file that reads still reads back exactly, with the log on'
+    Write-BoundedReadDiag
     Confirm-Equal (Measure-DiagMatch 'was not read') 0 'diag config: a file that reads is not reported as a refusal'
+    # A record is written once. A second caller finds the slot empty rather than repeating the last one.
+    Clear-DiagLog
+    $null = Read-BoundedFileText (Join-Path $tmp 'diag-twice-missing.json')
+    Write-BoundedReadDiag
+    Write-BoundedReadDiag
+    Confirm-Equal (Measure-DiagMatch 'was not read') 1 'diag config: a recorded reason is written once, not once per caller'
+    # ---- Text this script did not write, on its way into the log ----
+    # A reason can carry a message built from a repository's own file. ConvertFrom-Json quotes the
+    # property names it choked on, so a project config can put any bytes it likes into a log line. A log
+    # is read in a terminal, where an escape runs rather than being read: ESC [ 2 J clears the display,
+    # which destroys the evidence the log was opened to look at. Write-StatusDiag writes every control,
+    # format and surrogate code point as visible notation instead, centrally, so no call site can be the
+    # one that forgets. Notation and not removal: the log has to say an escape was there.
+    $diagEsc = [char] 27
+    Clear-DiagLog
+    Write-StatusDiag "clear$diagEsc[2Jscreen"
+    $diagLines = Get-DiagLine
+    Confirm-Equal $diagLines.Count 1 'diag escape: a reason carrying an escape is still one line'
+    Confirm-True ($diagLines[0].IndexOf($diagEsc) -lt 0) 'diag escape: no escape character reaches the log'
+    Confirm-True ($diagLines[0].EndsWith('clear<U+001B>[2Jscreen')) "diag escape: the escape is written as visible notation, got '$($diagLines[0])'"
+    # Format characters too, which is the class the rendered line already refuses: a right-to-left
+    # override in a log line would reverse the reading order of everything after it.
+    Clear-DiagLog
+    Write-StatusDiag ("before" + [char] 0x202E + "after")
+    Confirm-True ((Get-DiagLine)[0].EndsWith('before<U+202E>after')) "diag escape: a format character is written as notation too, got '$((Get-DiagLine)[0])'"
+    # Ordinary text is left exactly as it was: this escapes what a terminal would act on, nothing else.
+    Clear-DiagLog
+    Write-StatusDiag 'a plain reason with punctuation: (one) [two] {three} 100% $0.43'
+    Confirm-True ((Get-DiagLine)[0].EndsWith('a plain reason with punctuation: (one) [two] {three} 100% $0.43')) "diag escape: ordinary text is untouched, got '$((Get-DiagLine)[0])'"
+    # The cut comes after the escaping, so notation cannot push a record past the length bound.
+    Clear-DiagLog
+    Write-StatusDiag ([string] $diagEsc * 400)
+    $diagLines = Get-DiagLine
+    Confirm-Equal $diagLines.Count 1 'diag escape: four hundred escapes are still one line'
+    Confirm-True ($diagLines[0].EndsWith(' [cut]')) 'diag escape: escaping happens before the cut, so notation is cut like any other text'
+    Confirm-True ($diagLines[0].Length -lt 1100) "diag escape: the record is still bounded, length $($diagLines[0].Length)"
+    # And through the real path: a project config whose two keys differ only in case makes
+    # ConvertFrom-Json name them both, and the names here carry an escape apiece.
+    Clear-DiagLog
+    $diagEscDir = Write-TempProjectDir 'diag-proj-escape' "{ `"$diagEsc[2Jfoo`": 1, `"$diagEsc[2JFOO`": 2 }"
+    $diagEscCfg = Read-StatusConfig $userPath $diagEscDir
+    Confirm-Equal $diagEscCfg.Style 'powerline' 'diag escape: the conflicting config still falls back to the user file'
+    $diagLines = Get-DiagLine
+    Confirm-True ($diagLines.Count -ge 1) "diag escape: the refusal is logged, got '$($diagLines -join ' | ')'"
+    Confirm-Equal (@($diagLines | Where-Object { $_.IndexOf($diagEsc) -ge 0 }).Count) 0 "diag escape: no escape from a repository's own file reaches the log, got '$($diagLines -join ' | ')'"
+    Confirm-True (($diagLines -join ' ').Contains('<U+001B>')) "diag escape: the parser's message keeps the escape as notation, got '$($diagLines -join ' | ')'"
+
+    # ---- A logging sink that does not answer ----
+    # The log is written from the render path, and the temp folder can be a stalled network share like
+    # any other filesystem. Before this, a refused project config with the log on wrote straight through
+    # on the reader's own thread, inside the one clock #19 exists to keep, so a stalled sink could hold a
+    # render open for as long as the share took. Two things now stop that: the read records its reason
+    # and the caller writes it, so no filesystem call the log makes is inside the read's clock at all;
+    # and Write-StatusDiag puts its own calls on the pool under a clock of its own and drops the record
+    # rather than waiting past it. The double blocks for five seconds, which is twenty times the budget,
+    # so a check that comes back promptly cannot be one that happened to find a fast sink.
+    if (-not ('StatuslineTest.DiagSink' -as [type])) {
+        try {
+            Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.IO;
+using System.Threading;
+namespace StatuslineTest {
+    public class BlockingWriter : StreamWriter {
+        public BlockingWriter() : base(new MemoryStream()) { }
+        protected override void Dispose(bool disposing) { Thread.Sleep(DiagSink.CloseDelayMs); DiagSink.Closed = true; base.Dispose(disposing); }
+    }
+    public static class DiagSink {
+        public static int OpenDelayMs, LengthDelayMs, CloseDelayMs;
+        public static bool Closed;
+        public static long Length() { Thread.Sleep(LengthDelayMs); return 0L; }
+        public static StreamWriter Open() { Thread.Sleep(OpenDelayMs); return new BlockingWriter(); }
+    }
+}
+'@
+        } catch { $null = $_ }
+    }
+    $diagSinkType = 'StatuslineTest.DiagSink' -as [type]
+    if ($null -eq $diagSinkType) {
+        Write-Host '  blocked log sink case: the double would not compile here, so the log bound is not covered' -ForegroundColor DarkGray
+    } else {
+        Write-Host '  blocked log sink case: a compiled double holds the log open and the log close for 5000 ms' -ForegroundColor DarkGray
+        $diagBudget = (Get-StatusDiagLimit).TimeoutMs
+        Confirm-True ($diagBudget -gt 0 -and $diagBudget -le 1000) 'diag sink: a record has a budget, and it is shorter than a render'
+        function Get-StatusDiagDelegate([string] $Path) {
+            $null = $Path
+            return @{
+                Length = [System.Delegate]::CreateDelegate([Func[long]], [StatuslineTest.DiagSink].GetMethod('Length'))
+                Append = [System.Delegate]::CreateDelegate([Func[System.IO.StreamWriter]], [StatuslineTest.DiagSink].GetMethod('Open'))
+            }
+        }
+        # An open that never answers. The record is lost, which is the trade, and the call comes back.
+        [StatuslineTest.DiagSink]::OpenDelayMs = 5000
+        [StatuslineTest.DiagSink]::CloseDelayMs = 0
+        [StatuslineTest.DiagSink]::Closed = $false
+        Clear-DiagLog
+        $diagSinkSw = [System.Diagnostics.Stopwatch]::StartNew()
+        Write-StatusDiag 'into a sink that will not open'
+        $diagSinkMs = $diagSinkSw.ElapsedMilliseconds
+        Confirm-True ($diagSinkMs -lt 2000) "diag sink: an open that blocks costs the record's budget, not the sink's, took $diagSinkMs ms"
+        Confirm-True (-not (Test-Path -LiteralPath $diagLog)) 'diag sink: an open that never answers writes nothing'
+        # The one that matters for #19: a refused project config with the log on and the sink stalled.
+        # The reader writes nothing itself, so it is not waiting on the sink at all; the caller writes
+        # the record afterwards and is bounded by the record's own budget.
+        $diagSinkSw = [System.Diagnostics.Stopwatch]::StartNew()
+        $diagSinkText = Read-BoundedFileText (Join-Path $tmp 'diag-sink-missing.json')
+        $diagReadMs = $diagSinkSw.ElapsedMilliseconds
+        Confirm-Equal $diagSinkText $null 'diag sink: the refusal is still a refusal'
+        Confirm-True ($diagReadMs -lt 1000) "diag sink: the bounded read does no logging of its own, so a stalled sink does not reach its clock, took $diagReadMs ms"
+        $diagSinkSw = [System.Diagnostics.Stopwatch]::StartNew()
+        $diagSinkCfg = Read-StatusConfig $userPath (Join-Path $tmp 'diag-sink-dir')
+        $diagWholeMs = $diagSinkSw.ElapsedMilliseconds
+        Confirm-Equal $diagSinkCfg.Style 'powerline' 'diag sink: the config still falls back to the user file'
+        Confirm-True ($diagWholeMs -lt 2000) "diag sink: a whole config read with a stalled sink is bounded by the read plus one record, took $diagWholeMs ms"
+        # A close that never answers. The record is lost the same way and the handle is abandoned open,
+        # which is the answer the config read already gives to a close it cannot afford.
+        [StatuslineTest.DiagSink]::OpenDelayMs = 0
+        [StatuslineTest.DiagSink]::CloseDelayMs = 5000
+        Clear-DiagLog
+        $diagSinkSw = [System.Diagnostics.Stopwatch]::StartNew()
+        Write-StatusDiag 'into a sink that will not close'
+        $diagCloseMs = $diagSinkSw.ElapsedMilliseconds
+        Confirm-True ($diagCloseMs -lt 2000) "diag sink: a close that blocks costs the record's budget, not the sink's, took $diagCloseMs ms"
+        # A length probe that never answers stops the record before it opens anything.
+        [StatuslineTest.DiagSink]::CloseDelayMs = 0
+        [StatuslineTest.DiagSink]::LengthDelayMs = 5000
+        Clear-DiagLog
+        $diagSinkSw = [System.Diagnostics.Stopwatch]::StartNew()
+        Write-StatusDiag 'into a sink whose size never answers'
+        $diagLenMs = $diagSinkSw.ElapsedMilliseconds
+        Confirm-True ($diagLenMs -lt 2000) "diag sink: a size probe that blocks costs the record's budget, took $diagLenMs ms"
+        [StatuslineTest.DiagSink]::LengthDelayMs = 0
+        # A sink that answers at once still writes the record, so the checks above are of a path that
+        # would otherwise work rather than one that never wrote anything.
+        Clear-DiagLog
+        Write-StatusDiag 'into a sink that answers'
+        Confirm-True ([StatuslineTest.DiagSink]::Closed) 'diag sink: a sink that answers is written to and closed'
+        # The real delegate factory comes back, and the log is a file again.
+        . (Import-ScriptFunction $script @('Get-StatusDiagDelegate'))
+        Clear-DiagLog
+        Write-StatusDiag 'back to a real file'
+        Confirm-Equal (Get-DiagLine).Count 1 'diag sink: the real delegate factory is back and the log is written again'
+    }
+
     # With the variable unset none of it writes anything, which is the invariant the guards buy.
     Clear-DiagLog
     Sync-DiagFlag $null

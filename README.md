@@ -599,7 +599,13 @@ byte cap, the deadline was spent, the file is empty, or it would not parse — s
 config being ignored?" has an answer in the log rather than needing the script edited.
 
 The printed line is the same either way, and a log that cannot be written is as silent as the failure
-it records. The log rolls over into `claude-statusline-diag.log.1` once it would pass 4 MB, so
+it records. Writing a record is itself bounded: your temp folder is a filesystem like any other and
+can be a share that stalls, so each record gets a quarter of a second and is dropped if it cannot be
+written in that. A missing line is better than a status line that waits. Anything in a reason that a
+terminal would act on rather than show — an escape, a format character — is written as `<U+001B>`
+notation, because a repository's own config file can put text into a parser's error message, and a log
+you open to read should not be able to clear your screen. The log rolls over into
+`claude-statusline-diag.log.1` once it would pass 4 MB, so
 leaving the variable set costs two files of that size at most. Treat the 4 MB as approximate: the log
 is best-effort and never waits on anything, so two renders that overlap can leave the file a little
 over the cap, or lose one of their lines to each other. Unset the variable when you are done (`0`,

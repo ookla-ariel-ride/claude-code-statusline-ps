@@ -237,7 +237,30 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   environment variable stays the one thing that decides and a call site that forgets the guard is a
   missed optimisation rather than a log that writes when it should not. `test.ps1` checks the guard is
   at every call site by walking the script's syntax tree, not just the ones a test happens to reach.
-  The log is written the way the catch behaves: it never reaches the pipeline, a failure to write it
+- **Writing the log is bounded, and it is not done under anyone else's clock.** The temp folder is a
+  filesystem like any other and can be redirected onto a share that stalls, so a record's own
+  filesystem calls - the size the rollover decision needs, the append open, and the close that actually
+  writes - go to the thread pool and are waited on for what is left of one 250 ms clock, the same shape
+  the project config read uses. A record that cannot be written inside it is dropped, which is the
+  trade #43 already made when it took a zero wait on the rollover mutex and an approximate cap over
+  guaranteed ones. The one part still on the calling thread is the rename a rollover does: `File.Move`
+  has no zero-argument overload to close a delegate over, so it cannot be dispatched the way the rest
+  is. It is reached only with budget left and only just after the size probe answered inside that
+  budget, so it renames on a filesystem that was responding a moment ago - a smaller promise than the
+  rest, stated rather than glossed. `Read-BoundedFileText` writes no record at all: it records the
+  reason and `Merge-StatusConfigFile` writes it once the read has returned and its clock has stopped,
+  because a size probe, a rename, an open and a close inside that clock would be exactly the unbounded
+  filesystem work the clock exists to keep out, and would delay the queued close behind them.
+- **Nothing a repository writes can act on the log.** A reason can carry text this project did not
+  write: `ConvertFrom-Json` quotes the property names it choked on, and in a project config those come
+  from the repository. A log is read in a terminal, where an escape runs instead of being read - `ESC [
+  2 J` clears the display and takes the evidence with it. So `Write-StatusDiag` writes every control,
+  format and surrogate code point as `<U+XXXX>`, centrally and before the length cut, so no call site
+  can be the one that forgets and notation cannot push a record past the bound. Notation rather than
+  removal, which is the opposite of what `Format-PayloadText` does to payload text on its way to the
+  line, and deliberately so: the line has to be safe to look at, the log has to be honest about what it
+  found. Whitespace is folded first, so a tab or a newline is still a space rather than notation.
+- The log is written the way the catch behaves: it never reaches the pipeline, a failure to write it
   is swallowed in turn, and the
   rendered line is identical with the variable set and unset. The log rolls over into a `.log.1`
   sibling once an append would take it past 4 MB, from inside that same `try`, so a variable left set

@@ -65,25 +65,98 @@ function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap) {
     } finally { $mutex.Dispose() }
 }
 
+# What one record may cost. The log is written from the render path, and the temp folder is a filesystem
+# like any other: it can be redirected onto a network share, and a share can stall. A helper that wrote
+# straight through would then hold a render open for as long as the share took, which is worse than
+# anything the log is there to diagnose. So every filesystem call one record makes goes to the thread
+# pool and is waited on for what is left of one clock, the same shape the project config read uses, and
+# a record that cannot be written inside it is dropped. Losing a line is the right trade against holding
+# the line up, and it is the trade #43 already made when it took a zero wait on the rollover mutex and
+# an approximate cap over guaranteed ones.
+function Get-StatusDiagLimit { return @{ TimeoutMs = 250 } }
+
+# The two filesystem calls a record makes, each closed over a FileInfo for the log's path so it can go
+# straight to the pool. Same rule as the bounded config read, and for the same reason: a script block
+# converted to a delegate needs a runspace and a pool thread has none, so these are delegates over
+# zero-argument members of plain .NET types. Length is what the rollover decision needs and throws when
+# there is no file yet, which is read as a size of zero rather than as a failure. AppendText opens the
+# file for append and hands back a StreamWriter that is UTF-8 without a byte order mark, which is what
+# the log is; the writer buffers, so putting a line into it is memory and the bytes reach the disk on
+# the close, which is the one call after the open that touches the filesystem and is bounded like it.
+function Get-StatusDiagDelegate([string] $Path) {
+    $info = [System.IO.FileInfo]::new($Path)
+    return @{
+        Length = [System.Delegate]::CreateDelegate([Func[long]], $info, [System.IO.FileInfo].GetProperty('Length').GetMethod)
+        Append = [System.Delegate]::CreateDelegate([Func[System.IO.StreamWriter]], $info, [System.IO.FileInfo].GetMethod('AppendText'))
+    }
+}
+
 function Write-StatusDiag([string] $Reason) {
     $flag = $env:CLAUDE_STATUSLINE_DEBUG
     if (-not $flag -or $flag.Trim() -in @('0', 'false', 'no', 'off')) { return }
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $writer = $null
+    $budget = 0
     try {
+        $budget = (Get-StatusDiagLimit).TimeoutMs
         $base = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { [System.IO.Path]::GetTempPath() }
         $path = [System.IO.Path]::Combine($base, 'claude-statusline-diag.log')
         $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [System.Globalization.CultureInfo]::InvariantCulture)
         $text = [regex]::Replace($Reason, '\s+', ' ').Trim()
+        # A reason can carry text this script did not write. A JSON parser quotes the property names it
+        # choked on, and in a project config those names come from the repository. A log is read in a
+        # terminal, so an escape left in one runs there rather than being read: ESC [ 2 J clears the
+        # display, taking with it the evidence the log was opened to look at. Every control, format and
+        # surrogate code point is therefore written as visible notation, here rather than at any call
+        # site, so that no caller now or later can be the one that forgets. Notation rather than
+        # removal, because a log exists to show what was there: <U+001B> says an escape was in the text
+        # where dropping it would say nothing was. That is the opposite of what Format-PayloadText does
+        # to payload text on its way to the line, and deliberately so - the line has to be safe to look
+        # at, the log has to be honest about what it found. Folding runs first, so a tab or a newline is
+        # still a space rather than notation; \s does not match ESC, which is the point.
+        $text = [regex]::Replace($text, '[\p{Cc}\p{Cf}\p{Cs}]', { param($m) '<U+{0:X4}>' -f [int] $m.Value[0] })
         # A record is one line a person reads, and an exception message has no length limit, so a reason
-        # past 1000 characters is cut and marked. Without this one record could be larger than the whole
-        # cap and land in the file the rollover had just emptied, leaving the log over the cap again.
+        # past 1000 characters is cut and marked. The cut comes after the escaping, so a reason made
+        # long by notation is cut too and nothing can outgrow the cap by being escaped.
         if ($text.Length -gt 1000) { $text = $text.Substring(0, 1000) + ' [cut]' }
         $line = "$stamp $PID $text`n"
-        $utf8 = [System.Text.UTF8Encoding]::new($false)
-        $need = $utf8.GetByteCount($line)
-        $fi = [System.IO.FileInfo]::new($path)
-        if ($fi.Exists -and $fi.Length + $need -gt 4MB) { Invoke-StatusDiagRollover $path $need 4MB }
-        [System.IO.File]::AppendAllText($path, $line, $utf8)
-    } catch { $null = $_ }
+        $need = [System.Text.UTF8Encoding]::new($false).GetByteCount($line)
+        $call = Get-StatusDiagDelegate $path
+        $left = $budget - $sw.ElapsedMilliseconds
+        if ($left -le 0) { return }
+        $size = [System.Threading.Tasks.Task]::Run($call.Length)
+        if ([System.Threading.Tasks.Task]::WaitAny(@($size), [int] $left) -lt 0) { return }
+        # A faulted Length is a file that is not there yet, which is a size of zero and not a problem.
+        $have = if ($size.IsCompletedSuccessfully) { $size.Result } else { 0 }
+        $left = $budget - $sw.ElapsedMilliseconds
+        # The rollover is the one part that stays on this thread: a rename has no zero-argument overload
+        # to close a delegate over, so it cannot be dispatched the way everything else here is. It is
+        # reached only with budget left and only just after the size probe answered inside that budget,
+        # so the filesystem it renames on is one that was responding a moment ago. That is a smaller
+        # promise than the rest of this function makes, and it is stated rather than glossed.
+        if ($left -gt 0 -and $have + $need -gt 4MB) { Invoke-StatusDiagRollover $path $need 4MB }
+        $left = $budget - $sw.ElapsedMilliseconds
+        if ($left -le 0) { return }
+        $open = [System.Threading.Tasks.Task]::Run($call.Append)
+        if ([System.Threading.Tasks.Task]::WaitAny(@($open), [int] $left) -lt 0) { return }
+        if (-not $open.IsCompletedSuccessfully) { return }
+        $writer = $open.Result
+        # Into the writer's buffer, which is memory: a record is far shorter than the buffer, so nothing
+        # reaches the disk until the close below.
+        $writer.Write($line)
+    } catch { $null = $_ } finally {
+        # The close is what actually writes, so unlike the config read's close it is waited on - a record
+        # nobody waited for could not be read back by the next line of a test or the next render. It is
+        # waited on for what is left of the budget and no longer; past that the handle is abandoned open,
+        # the same answer the config read gives, and the process exit closes it.
+        if ($null -ne $writer) {
+            try {
+                $close = [System.Threading.Tasks.Task]::Run([System.Delegate]::CreateDelegate([Action], $writer, [System.IO.TextWriter].GetMethod('Dispose', [type[]] @())))
+                $left = $budget - $sw.ElapsedMilliseconds
+                if ($left -gt 0) { $null = [System.Threading.Tasks.Task]::WaitAny(@($close), [int] $left) }
+            } catch { $null = $_ }
+        }
+    }
 }
 
 # Whether the log is on, decided once for the process, and the thing every call site asks before it
@@ -488,6 +561,8 @@ function Read-BoundedFileText([string] $Path) {
     $stream = $null
     $why = $null
     $err = $null
+    $abandoned = $false
+    $closeErr = $null
     try {
         if (-not $Path) { $why = 'no path was given'; return $null }
         $call = Get-BoundedFileDelegate $Path
@@ -549,23 +624,45 @@ function Read-BoundedFileText([string] $Path) {
         $err = $_.Exception
         return $null
     } finally {
-        # One record for the whole attempt, on the way out, so every return above is covered by the one
-        # call and none of them can be the path that forgot to say why. Write-StatusDiag puts nothing on
-        # the pipeline, which is what lets it sit in a finally without changing what was returned.
-        if ($script:diagOn -and $why) {
-            $detail = if ($err) { " ($($err.GetBaseException().Message))" } else { '' }
-            Write-StatusDiag "config read: $Path was not read: $why$detail"
-        }
-        # Cleanup obeys the same clock. With budget left the close is queued on the pool and not waited
-        # on, so it cannot become the thing that overruns; with the budget gone the stream is abandoned
-        # outright, whichever stage spent it, because a close would only wait on what is already stuck.
-        # An abandoned handle is closed by the process exit that follows the line.
+        # Cleanup obeys the same clock, and goes first, with nothing on this thread in front of it. With
+        # budget left the close is queued on the pool and not waited on, so it cannot become the thing
+        # that overruns; with the budget gone the stream is abandoned outright, whichever stage spent it,
+        # because a close would only wait on what is already stuck. An abandoned handle is closed by the
+        # process exit that follows the line.
         if ($null -ne $stream -and ($limit.TimeoutMs - $sw.ElapsedMilliseconds) -gt 0) {
-            try { $null = [System.Threading.Tasks.Task]::Run($stream.Dispose) } catch { if ($script:diagOn) { Write-StatusDiag "config read: the close of $Path could not be queued: $($_.Exception.Message)" } }
+            try { $null = [System.Threading.Tasks.Task]::Run($stream.Dispose) } catch { $closeErr = $_.Exception }
         } elseif ($null -ne $stream) {
-            if ($script:diagOn) { Write-StatusDiag "config read: the handle on $Path was left open, the deadline was spent" }
+            $abandoned = $true
+        }
+        # The reason is recorded here and written by the caller, once this function has returned and its
+        # clock has stopped. Writing it is filesystem work of its own - a size probe, possibly a rename,
+        # an open and a close - and doing that work here would put calls inside the one clock this
+        # function exists to keep, and would delay the close above behind them. That is the property
+        # #19 bought, and a diagnostic added for #64 is not a good enough reason to give it up. Outside,
+        # Write-StatusDiag bounds itself, so handing the record out is not handing the problem on.
+        if ($script:diagOn -and ($why -or $abandoned -or $closeErr)) {
+            $script:diagBoundedRead = @{ Path = $Path; Why = $why; Err = $err; Abandoned = $abandoned; CloseErr = $closeErr }
         }
     }
+}
+
+# Writes whatever the last bounded read recorded, and forgets it. Called by the caller of
+# Read-BoundedFileText immediately after it returns: see the note in that function's finally for why
+# the read does not write its own record. Clearing the slot as it goes means a read that refused
+# nothing cannot be reported twice, and a caller that never asks cannot leave a record for the next one.
+function Write-BoundedReadDiag {
+    $record = $script:diagBoundedRead
+    if (-not $record) { return }
+    $script:diagBoundedRead = $null
+    # The flag is tested again at each call rather than once around the three, because that is the rule
+    # every other call site in this script follows and test.ps1 checks for by walking the syntax tree.
+    # A rule that holds everywhere is worth more than three lines of nesting saved here.
+    if ($script:diagOn -and $record.Why) {
+        $detail = if ($record.Err) { " ($($record.Err.GetBaseException().Message))" } else { '' }
+        Write-StatusDiag "config read: $($record.Path) was not read: $($record.Why)$detail"
+    }
+    if ($script:diagOn -and $record.Abandoned) { Write-StatusDiag "config read: the handle on $($record.Path) was left open, the deadline was spent" }
+    if ($script:diagOn -and $record.CloseErr) { Write-StatusDiag "config read: the close of $($record.Path) could not be queued: $($record.CloseErr.Message)" }
 }
 
 # Applies one config file over a table and returns it. Anything missing or invalid silently falls back to
@@ -581,9 +678,16 @@ function Read-BoundedFileText([string] $Path) {
 function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Bounded) {
     try {
         if (-not $Path) { return $Cfg }
-        $text = if ($Bounded) { Read-BoundedFileText $Path } else {
+        $text = $null
+        if ($Bounded) {
+            $text = Read-BoundedFileText $Path
+            # The read records why it refused rather than writing it, because writing is filesystem work
+            # and the read is under a clock that must not carry any. Out here that clock has stopped, so
+            # the record goes to the log now.
+            if ($script:diagOn) { Write-BoundedReadDiag }
+        } else {
             if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $Cfg }
-            Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+            $text = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
         }
         # $null is a refusal the read has already logged; an empty string is a file that is there and
         # says nothing, which nothing else would ever report.
