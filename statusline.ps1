@@ -1381,12 +1381,16 @@ function Test-QuietValue($cfg, [string] $Name, $Value) {
 # current_usage that is absent, and it is the honest one: not "everything was cached" but "we cannot
 # tell". A total of 0 or less is refused for the same reason, and because PowerShell throws on a
 # division by zero between doubles as readily as between integers.
-# There is no clamp on the result and it does not need one. With all three counts non-negative and a
-# positive total, the read is one of the terms of its own denominator, so the share is between 0 and
-# 100 by arithmetic rather than by correction. A clamp was here and it is what hid the 200% case above,
-# turning a payload this function should have refused into the most reassuring number on the line - so
-# whoever relaxes the refusal above has to put a clamp back, and should ask first why the payload is
-# being trusted at all.
+# There is no clamp on the result. With all three counts non-negative and a positive total, the read
+# is one of the terms of its own denominator, so the ratio is between 0 and 1 - but only if the scale
+# happens after the division. Written as 100 * $read / $total, a read above about 1.8e306 overflows
+# the multiply to Infinity before the divide ever runs, and Get-WholePercent's Int32 guard then prints
+# 2147483647% cached. Dividing first cannot overflow, because the ratio is at most 1. An earlier
+# version had it the other way round and claimed in this comment to be in range by arithmetic; it was
+# not, and nothing tested the range.
+# A clamp was here too and it is what hid the 200% case above, turning a payload this function should
+# have refused into the most reassuring number on the line - so whoever relaxes the refusal above has
+# to put a clamp back, and should ask first why the payload is being trusted at all.
 # The rounding is Get-WholePercent, the script's one percentage rule, and not a rule of its own. This
 # figure is printed as a whole percentage beside another whole percentage built by the same function,
 # and two rounding rules on one segment is exactly the disagreement that function exists to rule out.
@@ -1401,7 +1405,7 @@ function Get-CacheShare($usage) {
     if ($read -lt 0 -or $fresh -lt 0 -or $written -lt 0) { return $null }
     $total = $read + $fresh + $written
     if ($total -le 0) { return $null }
-    return Get-WholePercent (100 * $read / $total)
+    return Get-WholePercent (($read / $total) * 100)
 }
 
 function Get-ContextSegment($d, $cfg) {
