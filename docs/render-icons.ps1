@@ -13,12 +13,14 @@ Add-Type -AssemblyName System.Drawing
 $icons = [ordered]@{
     robot       = 0xF06A9
     memory      = 0xF035B
+    fire        = 0xF0238
     cash        = 0xF0155
     code        = 0xF121
     tachometer  = 0xF0E4
     bolt        = 0xF0E7
     brain       = 0xF09D0
     speedometer = 0xF04C5
+    'timer-outline' = 0xF051B
     vim         = 0xE62B
     user        = 0xF007
     tag         = 0xF02B

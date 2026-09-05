@@ -15,7 +15,9 @@
   "segments": {
     "model": true,
     "context": true,
+    "cache": true,
     "cost": true,
+    "clock": true,
     "lines": true,
     "limits": true,
     "badges": true,
