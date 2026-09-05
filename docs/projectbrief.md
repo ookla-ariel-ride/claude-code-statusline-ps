@@ -144,14 +144,19 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   of `0` mean off. What it compares differs by segment: `cost` reads the raw dollar figure, while
   `context` and `limits` read the same whole percentage `Get-WholePercent` gives the text and the
   bands, so a cutoff and the number printed beside it can never disagree. **Quiet never hides a
-  segment that is carrying a warning or an error**, which is the rule that makes the setting safe to
-  turn on: a hide-the-boring-numbers key that also hid the alarm would be worse than no key at all. So
-  each builder settles its warning state before it asks the guard — context and limits keep a segment
-  whose role is `warn` or `bad`, and limits also keeps one whose pace arrow projects an overrun, since
-  a low current percentage early in a five-hour window is precisely the reading that projects red.
-  `Get-PaceArrow` names that state `Over` rather than leaving it to be read off the glyph. Cost has no
-  warning state to preserve, its role being always `dim`, so there the threshold stands alone. What
-  `quiet.limits` compares is the larger of the 5-hour and 7-day figures, deliberately not the `$worst`
+  segment that is carrying a warning, an error or an alarm**, which is the rule that makes the setting
+  safe to turn on: a hide-the-boring-numbers key that also hid the alarm would be worse than no key at
+  all. So each builder settles its warning state before it asks the guard — context and limits keep a
+  segment whose role is `warn` or `bad`, and limits also keeps one whose pace arrow projects an
+  overrun, since a low current percentage early in a five-hour window is precisely the reading that
+  projects red. `Get-PaceArrow` names that state `Over` rather than leaving it to be read off the
+  glyph. The third state is the alarm of #23, and the most serious of them: `Test-AlarmLevel` is asked
+  the same question the model segment asks, on the raw payload figure for context and on the larger
+  window figure for limits, because `alarm` may be set below `thresholds.warn` and the role would then
+  still read `ok` while the model turned red — a red bar with no number under it explaining it. Cost
+  has no warning state to preserve, its role being always `dim`, and no alarm is read against a dollar
+  figure, so there the threshold stands alone. What `quiet.limits` compares is the larger of the
+  5-hour and 7-day figures, deliberately not the `$worst`
   that also carries the spend limit and drives the colour: the key is a threshold on how much of an
   allowance is gone, and a spend limit is not one of those. With neither window present there is
   nothing to compare and the segment is kept. `icons` maps a
