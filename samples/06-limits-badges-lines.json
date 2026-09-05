@@ -4,7 +4,12 @@
     "total_input_tokens": 60000,
     "total_output_tokens": 4000,
     "context_window_size": 200000,
-    "used_percentage": 32
+    "used_percentage": 32,
+    "current_usage": {
+      "input_tokens": 2000,
+      "cache_creation_input_tokens": 3000,
+      "cache_read_input_tokens": 57500
+    }
   },
   "cost": { "total_cost_usd": 1.07, "total_lines_added": 156, "total_lines_removed": 23 },
   "rate_limits": {
