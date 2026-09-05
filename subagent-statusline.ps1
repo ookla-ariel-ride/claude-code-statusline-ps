@@ -57,6 +57,15 @@ function Get-VisibleWidth([string] $Text) {
             $cat -eq [System.Globalization.UnicodeCategory]::SpacingCombiningMark -or
             $cat -eq [System.Globalization.UnicodeCategory]::EnclosingMark -or
             $cat -eq [System.Globalization.UnicodeCategory]::Format -or $cp -eq 0xFE0F) { continue }
+        # Two graphemes whose first code point says nothing about how wide they draw, so the ranges
+        # below cannot see them: a flag is a pair of regional indicators, and a keycap is an ordinary
+        # digit or # or * carrying U+20E3. Both are one text element and both take two columns in a
+        # terminal, and left to fall through they would each be counted as one, which is the one
+        # direction that matters - a name measured narrower than it draws passes a width cap it does
+        # not fit and then overruns the line. Regional indicators are matched on the first code point,
+        # so an unpaired one is two columns as well; a keycap is matched on the enclosing mark it ends
+        # with, which a bare U+20E3 never reaches because the zero-width test above has already taken it.
+        if (($cp -ge 0x1F1E6 -and $cp -le 0x1F1FF) -or $el.Contains([char] 0x20E3)) { $width += 2; continue }
         if (($cp -ge 0x1100 -and $cp -le 0x115F) -or ($cp -ge 0x2E80 -and $cp -le 0xA4CF) -or
             ($cp -ge 0xAC00 -and $cp -le 0xD7A3) -or ($cp -ge 0xF900 -and $cp -le 0xFAFF) -or
             ($cp -ge 0xFE30 -and $cp -le 0xFE4F) -or ($cp -ge 0xFF00 -and $cp -le 0xFF60) -or

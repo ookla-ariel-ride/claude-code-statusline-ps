@@ -110,6 +110,8 @@ function Get-IconDefault {
         think    = 0xF09D0   # nf-md-brain (extended thinking)
         effort   = 0xF04C5   # nf-md-speedometer (effort level)
         vim      = 0xE62B    # nf-custom-vim
+        agent    = 0xF007    # nf-fa-user (the custom agent driving the main thread)
+        session  = 0xF02B    # nf-fa-tag  (the name the user gave the session)
     }
 }
 
@@ -171,6 +173,10 @@ function Get-IconSet($cfg) {
 }
 
 $defaultEffort = 'high'   # effort badge is hidden at this level
+# How many cells the agent and session badges may each spend on their name. Twenty is about as much as
+# a name can take before the identity badges crowd out the branch and the folder on an ordinary window,
+# and both badges share the one limit so a long pair cannot push the line further than a short pair.
+$badgeNameCells = 20
 
 # The git probe's settings when statusline.json has no git object: how long the branch segment waits
 # for `git status` before giving up, how long a probe result is reused for, and whether it is reused at
@@ -206,6 +212,15 @@ function Get-VisibleWidth([string] $Text) {
             $cat -eq [System.Globalization.UnicodeCategory]::SpacingCombiningMark -or
             $cat -eq [System.Globalization.UnicodeCategory]::EnclosingMark -or
             $cat -eq [System.Globalization.UnicodeCategory]::Format -or $cp -eq 0xFE0F) { continue }
+        # Two graphemes whose first code point says nothing about how wide they draw, so the ranges
+        # below cannot see them: a flag is a pair of regional indicators, and a keycap is an ordinary
+        # digit or # or * carrying U+20E3. Both are one text element and both take two columns in a
+        # terminal, and left to fall through they would each be counted as one, which is the one
+        # direction that matters - a name measured narrower than it draws passes a width cap it does
+        # not fit and then overruns the line. Regional indicators are matched on the first code point,
+        # so an unpaired one is two columns as well; a keycap is matched on the enclosing mark it ends
+        # with, which a bare U+20E3 never reaches because the zero-width test above has already taken it.
+        if (($cp -ge 0x1F1E6 -and $cp -le 0x1F1FF) -or $el.Contains([char] 0x20E3)) { $width += 2; continue }
         if (($cp -ge 0x1100 -and $cp -le 0x115F) -or ($cp -ge 0x2E80 -and $cp -le 0xA4CF) -or
             ($cp -ge 0xAC00 -and $cp -le 0xD7A3) -or ($cp -ge 0xF900 -and $cp -le 0xFAFF) -or
             ($cp -ge 0xFE30 -and $cp -le 0xFE4F) -or ($cp -ge 0xFF00 -and $cp -le 0xFF60) -or
@@ -215,6 +230,34 @@ function Get-VisibleWidth([string] $Text) {
         $width += 1
     }
     return $width
+}
+
+$ellipsis = G 0x2026   # what a clipped name ends in
+
+# Plain text clipped to $Width cells, with a one-cell ellipsis when anything was cut. Measured by text
+# element, so a surrogate pair or a combining sequence is never split down the middle. The result is
+# never wider than $Width.
+# Cells, not characters, and deliberately: Get-VisibleWidth is what Get-FittedLine measures a line with,
+# so a version counting `.Length` would let a CJK or emoji name draw twice the room it was given and
+# push the line past the width the fitting stage thinks it has. A wide character straddling the boundary
+# is dropped whole rather than half-drawn, which can leave the result one cell short of the limit.
+# subagent-statusline.ps1 carries the same function verbatim, for the agent panel's row identities, and
+# test.ps1 compares the two copies as text; this one is the source.
+function Get-ClippedText([string] $Text, [int] $Width) {
+    if ($Width -le 0) { return '' }
+    if ((Get-VisibleWidth $Text) -le $Width) { return $Text }
+    if ($Width -eq 1) { return $ellipsis }
+    $out = ''
+    $used = 0
+    $en = [System.Globalization.StringInfo]::GetTextElementEnumerator($Text)
+    while ($en.MoveNext()) {
+        $el = [string] $en.Current
+        $w = Get-VisibleWidth $el
+        if ($used + $w -gt $Width - 1) { break }
+        $out += $el
+        $used += $w
+    }
+    return $out + $ellipsis
 }
 
 # The segment table: one record per segment, in layout-one order. It is the single source for the config
@@ -236,7 +279,7 @@ function Get-SegmentRegistry {
             @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 3;     Row = 2; RowRank = 3 }
             @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
             @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 4;     Row = 2; RowRank = 2 }
-            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 5 }
+            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 6;     DropRank = 2;     Row = 1; RowRank = 5 }
             @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 4 }
             @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 5;     DropRank = 6;     Row = 1; RowRank = 2 }
             @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 4;     DropRank = 7;     Row = 1; RowRank = 3 }
@@ -1238,6 +1281,8 @@ $iconFast = $icons.fast
 $iconThink = $icons.think
 $iconEffort = $icons.effort
 $iconVim = $icons.vim
+$iconAgent = $icons.agent
+$iconSession = $icons.session
 
 # The names on each printed line: the config's order for layout one, the two rows for layout two. Settled
 # here, above the first thing that prints, because three readers need it - both fallback lines and the
@@ -1615,7 +1660,21 @@ function Get-LimitsSegment($d, $cfg) {
     return @{ Name = 'limits'; Text = $text; Short = $short; Role = $role; Bold = $false }
 }
 
-# Session mode badges: fast mode, thinking, non-default effort, vim mode. Omitted when nothing is on.
+# Session badges in two groups. First the modes - fast mode, thinking, non-default effort, vim mode -
+# which come and go as the session runs, so they hold the left of the segment where the eye already
+# looks for them. Then the identities: the custom agent driving the main thread and the name the user
+# gave this session, both of which stay put for a whole session, so they sit on the right where a
+# change is not expected. The segment is omitted when neither group has anything, which now means a
+# session with every mode off still gets a badges segment once it is named or run by an agent.
+# agent.name and session_name are payload text, so they go through the same pair the branch name and
+# the repo owner go through: Test-PayloadText decides whether there is anything there at all (a control
+# character, a blank, a number, or a string of nothing but format characters is not a name), and
+# Format-PayloadText strips the format characters out of what is left, so neither badge can reorder or
+# hide the rest of the line. Then Get-ClippedText cuts each one to $badgeNameCells cells, measured the
+# way the fitting code measures, so a name in wide characters cannot take twice the room it was given.
+# Short is the modes alone, so a narrow line sheds the two identities before the whole segment goes;
+# it is $null when there is nothing to shed - no modes, or no identities - the way Get-LimitsSegment
+# leaves its Short $null rather than repeating the full text.
 function Get-BadgesSegment($d) {
     $badges = [System.Collections.Generic.List[string]]::new()
     if ($d.fast_mode -eq $true) { $badges.Add($iconFast) }
@@ -1624,8 +1683,17 @@ function Get-BadgesSegment($d) {
     if ($effort -and $effort -ne $defaultEffort) { $badges.Add("$iconEffort $effort") }
     $vim = $d.vim.mode
     if ($vim) { $badges.Add("$iconVim $vim") }
+    $modeCount = $badges.Count
+    $modes = if ($modeCount -gt 0) { $badges -join ' ' } else { $null }
+    if (Test-PayloadText $d.agent.name) {
+        $badges.Add("$iconAgent " + (Get-ClippedText (Format-PayloadText ([string] $d.agent.name)) $badgeNameCells))
+    }
+    if (Test-PayloadText $d.session_name) {
+        $badges.Add("$iconSession " + (Get-ClippedText (Format-PayloadText ([string] $d.session_name)) $badgeNameCells))
+    }
     if ($badges.Count -eq 0) { return $null }
-    return @{ Name = 'badges'; Text = ($badges -join ' '); Short = $null; Role = 'dim'; Bold = $false }
+    $short = if ($modes -and $badges.Count -gt $modeCount) { $modes } else { $null }
+    return @{ Name = 'badges'; Text = ($badges -join ' '); Short = $short; Role = 'dim'; Bold = $false }
 }
 
 # The pull request on the session's branch: the glyph and #number, the whole text wrapped in a link to

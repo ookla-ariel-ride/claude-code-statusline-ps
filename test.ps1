@@ -103,13 +103,22 @@ function Measure-VisibleWidth([string] $Text) {
                 $cat -eq [System.Globalization.UnicodeCategory]::EnclosingMark -or
                 $cat -eq [System.Globalization.UnicodeCategory]::Format -or $cp -eq 0xFE0F
         if ($zero) { continue }
+        # Emoji graphemes, decided before the ranges because the ranges only ever see the first code
+        # point: a regional indicator opens a flag or stands alone as one boxed letter, and a U+20E3
+        # anywhere in the grapheme makes it a keycap. Both are two columns.
+        # Honest note on independence: this is the same fact statusline.ps1 encodes, and there is no
+        # second way to state it, so for these two shapes this function is NOT an independent check -
+        # the width table is. What stays independent here is everything else: the twelve wide ranges,
+        # the zero-width categories and the escape stripping, all transcribed separately, which is
+        # what catches a typo in one copy that the other does not share.
+        $emoji = ($cp -ge 0x1F1E6 -and $cp -le 0x1F1FF) -or ($el.IndexOf([char] 0x20E3) -ge 0)
         $wide = ($cp -ge 0x1100 -and $cp -le 0x115F) -or ($cp -ge 0x2E80 -and $cp -le 0xA4CF) -or
                 ($cp -ge 0xAC00 -and $cp -le 0xD7A3) -or ($cp -ge 0xF900 -and $cp -le 0xFAFF) -or
                 ($cp -ge 0xFE30 -and $cp -le 0xFE4F) -or ($cp -ge 0xFF00 -and $cp -le 0xFF60) -or
                 ($cp -ge 0xFFE0 -and $cp -le 0xFFE6) -or ($cp -ge 0x20000 -and $cp -le 0x3FFFD) -or
                 ($cp -ge 0x1F300 -and $cp -le 0x1F64F) -or ($cp -ge 0x1F680 -and $cp -le 0x1F6FF) -or
                 ($cp -ge 0x1F900 -and $cp -le 0x1FAFF) -or ($cp -ge 0x2600 -and $cp -le 0x27BF)
-        $width += if ($wide) { 2 } else { 1 }
+        $width += if ($emoji -or $wide) { 2 } else { 1 }
     }
     return $width
 }
@@ -165,10 +174,11 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-CacheShare', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover', 'Get-CountedNumber'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber'))
 
-# Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment and Get-PrSegment close over
-# these script-level names in statusline.ps1, so the test has to supply them. The git timeout is not
+# Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
+# Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
+# test has to supply them; the badges section reads the script's own copies back. The git timeout is not
 # one of them any more - the segment reads it from the config - so this is only the test's own
 # shorthand for the direct Get-GitBranch calls below, pinned to the script's default.
 $gitTimeoutMs = (Get-DefaultGitConfig).TimeoutMs
@@ -184,6 +194,15 @@ $iconBehind = [char]::ConvertFromUtf32(0x2193)
 $iconConflict = [char]::ConvertFromUtf32(0xF071)
 $iconPr = [char]::ConvertFromUtf32(0xF407)
 $iconWorktree = [char]::ConvertFromUtf32(0xF04C1)
+$iconFast = [char]::ConvertFromUtf32(0xF0E7)
+$iconThink = [char]::ConvertFromUtf32(0xF09D0)
+$iconEffort = [char]::ConvertFromUtf32(0xF04C5)
+$iconVim = [char]::ConvertFromUtf32(0xE62B)
+$iconAgent = [char]::ConvertFromUtf32(0xF007)
+$iconSession = [char]::ConvertFromUtf32(0xF02B)
+$ellipsis = [char]::ConvertFromUtf32(0x2026)
+$defaultEffort = 'high'
+$badgeNameCells = 20
 
 # A payload with one top-level key whose value is the given JSON. It goes through ConvertFrom-Json so
 # a null is a real null property, the way Claude Code sends it, and counts arrive as Int64, the way
@@ -193,6 +212,13 @@ function Get-JsonPayload([string] $Key, [string] $Json) {
 }
 
 Write-Host '== unit: width' -ForegroundColor Cyan
+# Emoji graphemes built from their code points, so this file stays ASCII and says what it means.
+# A flag is one grapheme made of two regional indicators; a keycap is one grapheme made of a base
+# character and U+20E3, with the U+FE0F presentation selector optional.
+$flagGb = [char]::ConvertFromUtf32(0x1F1EC) + [char]::ConvertFromUtf32(0x1F1E7)
+$flagJp = [char]::ConvertFromUtf32(0x1F1EF) + [char]::ConvertFromUtf32(0x1F1F5)
+$loneRegional = [char]::ConvertFromUtf32(0x1F1EC)
+$keycap1 = '1' + [string][char]0xFE0F + [string][char]0x20E3
 $widthTable = @(
     @{ Text = 'abc'; Width = 3 }
     @{ Text = ''; Width = 0 }
@@ -214,6 +240,27 @@ $widthTable = @(
     @{ Text = 'ab' + [string][char]0x2066 + 'cd'; Width = 4 }                          # directional isolate
     @{ Text = [string][char]0xFEFF + 'ab'; Width = 2 }                                 # byte order mark
     @{ Text = 'a' + [string][char]0x00AD + 'b'; Width = 2 }                            # soft hyphen
+    # Emoji graphemes whose FIRST code point does not say how wide the grapheme draws, which is all
+    # either implementation looks at. The expected cells below are what a terminal reserves for the
+    # whole grapheme, written down from that behaviour rather than read back off either function: a
+    # flag is one cluster and gets two columns, an unpaired regional indicator is drawn as one boxed
+    # letter and gets two, and a keycap is one cluster and gets two whether or not U+FE0F is in it.
+    # Over-counting is the safe direction and the reason these are pinned at two: a name measured
+    # wider than it draws is only clipped early, while one measured narrower passes a width cap it
+    # does not fit and then overruns the line. The last three rows are the negative controls - a bare
+    # enclosing keycap on its own is still zero, and a bare digit and hash are still one, so the rule
+    # has to key on U+20E3 being present in the grapheme and not on the base character.
+    @{ Text = $flagGb; Width = 2 }                                                     # one flag
+    @{ Text = $flagGb + $flagJp; Width = 4 }                                           # two flags
+    @{ Text = $loneRegional; Width = 2 }                                               # unpaired regional indicator
+    @{ Text = 'a' + $flagGb + 'b'; Width = 4 }                                         # a flag between letters
+    @{ Text = $flagGb + [char]::ConvertFromUtf32(0x1F680); Width = 4 }                 # flag beside an in-range emoji
+    @{ Text = $keycap1; Width = 2 }                                                    # keycap with the selector
+    @{ Text = '7' + [string][char]0x20E3; Width = 2 }                                  # keycap without it
+    @{ Text = '#' + [string][char]0xFE0F + [string][char]0x20E3; Width = 2 }           # hash keycap
+    @{ Text = [string][char]0x20E3; Width = 0 }                                        # lone enclosing keycap
+    @{ Text = '1'; Width = 1 }                                                         # the keycap base alone
+    @{ Text = '#'; Width = 1 }                                                         # the hash base alone
 )
 foreach ($row in $widthTable) {
     $shown = $row.Text -replace $esc, '<ESC>'
@@ -231,7 +278,7 @@ $registryTable = @(
     @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 3;     Row = 2; RowRank = 3 }
     @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
     @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 4;     Row = 2; RowRank = 2 }
-    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = $null; DropRank = 2;     Row = 1; RowRank = 5 }
+    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 6;     DropRank = 2;     Row = 1; RowRank = 5 }
     @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 4 }
     @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 5;     DropRank = 6;     Row = 1; RowRank = 2 }
     @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 4;     DropRank = 7;     Row = 1; RowRank = 3 }
@@ -249,10 +296,32 @@ for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
 }
 # Cost is first in the shrink order and third in the drop order: its per-turn delta is the first detail
 # on the line to go, and the segment itself still goes after lines and badges, which is where it was.
-Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'cost,limits,context,branch,folder' 'registry: shrink order'
+# Badges is last of the six: its Short form sheds the agent and session names, which is the least
+# missed detail on the line, so it is the last thing tried before whole segments start going.
+Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'cost,limits,context,branch,folder,badges' 'registry: shrink order'
 Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,badges,cost,limits,pr,folder,branch,context' 'registry: drop order'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 1) -join ',') 'model,folder,branch,pr,badges' 'registry: layout two row 1'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 2) -join ',') 'context,limits,cost,lines' 'registry: layout two row 2'
+# The four assertions above pin what the order function returned; these pin the property that makes it
+# right. Get-SegmentOrder drops each record into a hashtable slot keyed by its rank number and then
+# reads slots 1..Count back, so a rank used twice silently OVERWRITES the earlier record - the loser
+# disappears from the order and stops shrinking or stops being dropped - and a gap in the numbering
+# leaves a $null in the list and strands the record above the gap. Neither is visible from a builder;
+# both are visible here. This matters most to whoever next edits the table, because the expected-order
+# strings above are hand-written from what the function returns, so a rank collision introduced and
+# then "fixed" by pasting in the new output would bake the broken order in as the expectation.
+# Ranks are dense 1..N within each key, and RowRank is dense within each row rather than overall.
+foreach ($rank in 'ShrinkRank', 'DropRank') {
+    $ranked = @(Get-SegmentRegistry | ForEach-Object { $_[$rank] } | Where-Object { $null -ne $_ } | Sort-Object)
+    Confirm-Equal ($ranked -join ',') ((1..$ranked.Count) -join ',') "registry: $rank is 1..$($ranked.Count) with no repeat and no gap"
+    Confirm-Equal (@(Get-SegmentOrder $rank | Where-Object { $null -eq $_ }).Count) 0 "registry: the $rank order has no empty slot"
+    Confirm-Equal (@(Get-SegmentOrder $rank).Count) $ranked.Count "registry: the $rank order lists every ranked segment"
+}
+foreach ($row in 1, 2) {
+    $ranked = @(Get-SegmentRegistry | Where-Object { $_.Row -eq $row } | ForEach-Object { $_.RowRank } | Where-Object { $null -ne $_ } | Sort-Object)
+    Confirm-Equal ($ranked -join ',') ((1..$ranked.Count) -join ',') "registry: row $row RowRank is 1..$($ranked.Count) with no repeat and no gap"
+    Confirm-Equal (@(Get-SegmentOrder 'RowRank' $row).Count) $ranked.Count "registry: row $row lists every segment on it"
+}
 
 Write-Host '== unit: config' -ForegroundColor Cyan
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "statusline-test-$PID"
@@ -993,17 +1062,19 @@ Write-Host '== unit: icons' -ForegroundColor Cyan
 # Get-IconSet turns the built-in table and the config's overrides into one glyph per name, and the
 # script assigns its $icon* constants from that set.
 $defaultIcons = Get-IconDefault
-Confirm-Equal $defaultIcons.Count 19 'icons: nineteen built-in glyphs'
+Confirm-Equal $defaultIcons.Count 21 'icons: twenty-one built-in glyphs'
 Confirm-Equal $defaultIcons.pr 0xF407 'icons: pr is the pull-request glyph'
 Confirm-Equal $defaultIcons.model 0xF06A9 'icons: model is the robot'
 Confirm-Equal $defaultIcons.worktree 0xF04C1 'icons: worktree is the source fork'
+Confirm-Equal $defaultIcons.agent 0xF007 'icons: agent is nf-fa-user'
+Confirm-Equal $defaultIcons.session 0xF02B 'icons: session is nf-fa-tag'
 # Every built-in code point has to survive the guards a config value goes through. The glyph a config
 # may put in its place is held to that bar, so the one it replaces cannot sit below it.
 foreach ($e in $defaultIcons.GetEnumerator()) {
     Confirm-Equal (Read-CodePoint ('{0:X}' -f $e.Value)) $e.Value "icons: the built-in $($e.Key) code point passes the guards"
 }
 $set = Get-IconSet @{ Icons = @{} }
-Confirm-Equal $set.Count 19 'icons: one glyph per name'
+Confirm-Equal $set.Count 21 'icons: one glyph per name'
 Confirm-Equal $set.pr $iconPr 'icons: no override gives the built-in pr glyph'
 Confirm-Equal $set.model $iconModel 'icons: no override gives the built-in model glyph'
 Confirm-Equal $set.dirty $iconDirty 'icons: no override gives the built-in pencil'
@@ -1632,6 +1703,22 @@ Confirm-True ($line.Contains('FFFF') -and $line.Contains('BB') -and -not $line.C
 $line = Get-FittedLine $fitFolder 'plain' 39
 Confirm-Equal (Get-VisibleWidth $line) 38 'fit: stage 1 shrinks folder fourth'
 Confirm-True ($line.Contains('FF') -and -not $line.Contains('FFFF') -and $line.Contains('LL')) 'fit: folder shortened, nothing dropped at 39'
+
+# A badges segment with a Short form (its agent and session badges shed, its mode badges kept) goes
+# fifth in stage 1, last of the five and still before any whole segment is dropped. That order is the
+# point of the Short form: a narrow line loses the identity badges before it loses the segment, so a
+# window running a named agent still says which mode it is in. Full width is 50 here; limits short
+# gives 47, context 44, branch 42, folder 40, badges 38.
+$fitBadges = Get-FitSegmentSet
+$fitBadges[5] = @{ Name = 'badges'; Text = 'GGGG'; Short = 'GG'; Role = 'dim';    Bold = $false }
+$fitBadges[6] = @{ Name = 'folder'; Text = 'FFFF'; Short = 'FF'; Role = 'folder'; Bold = $false }
+$fitBadges[7] = @{ Name = 'branch'; Text = 'BBBB'; Short = 'BB'; Role = 'branch'; Bold = $false }
+Confirm-Equal (Get-VisibleWidth (Get-FittedLine $fitBadges 'plain' $null)) 50 'fit: the badges set is fifty cells unfitted'
+$line = Get-FittedLine $fitBadges 'plain' 40
+Confirm-True ($line.Contains('GGGG') -and $line.Contains('FF') -and -not $line.Contains('FFFF')) 'fit: folder shortened before badges at 40'
+$line = Get-FittedLine $fitBadges 'plain' 39
+Confirm-Equal (Get-VisibleWidth $line) 38 'fit: stage 1 shrinks badges fifth'
+Confirm-True ($line.Contains('GG') -and -not $line.Contains('GGGG') -and $line.Contains('LL')) 'fit: badges shortened, nothing dropped at 39'
 
 # The shrink and drop orders are parameters that default to the registry, so a caller can hand in its own.
 # Shrinking context alone takes 44 to 41; dropping badges after the default shrink of limits and context
@@ -2571,6 +2658,146 @@ $paceEnd = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 50
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":55,"resets_at":' + $paceEnd + '}}')) $paceCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 55% $paceFlat" 'limits at the end of a window: the arrow with no countdown behind it'
 Confirm-Equal $seg.Short "$iconLimit 5h 55%" 'limits at the end of a window: a short form exists purely to drop the arrow'
+
+Write-Host '== unit: badges' -ForegroundColor Cyan
+# $badgeNameCells and $defaultEffort are script-level constants in statusline.ps1 and the builder closes
+# over them, but Import-ScriptFunction lifts functions and nothing else, so the values this section runs
+# against are the test's own copies at the top of this file. A copy that drifted from the script would
+# leave every assertion below passing against a number the script never uses, which is the same silent
+# agreement the separate Measure-VisibleWidth guards against. Read the script's own assignments back.
+$scriptText = Get-Content -LiteralPath $script -Raw
+Confirm-True ($scriptText -match '(?m)^\$badgeNameCells = (\d+)\s*$') 'badges: statusline.ps1 sets a badge name limit'
+Confirm-Equal $Matches[1] "$badgeNameCells" "badges: the script's name limit is the one this section tests against"
+Confirm-True ($scriptText -match "(?m)^\`$defaultEffort = '([^']+)'") 'badges: statusline.ps1 sets a default effort'
+Confirm-Equal $Matches[1] $defaultEffort "badges: the script's default effort is the one this section tests against"
+Confirm-True ($scriptText -match '(?m)^\$ellipsis = G (0x[0-9A-Fa-f]+)') 'badges: statusline.ps1 sets an ellipsis glyph'
+Confirm-Equal ([char]::ConvertFromUtf32([int] $Matches[1])) $ellipsis "badges: the script's ellipsis is the one this section tests against"
+# Get-ClippedText is the one truncation rule both identity badges use, and it counts cells rather than
+# characters on purpose: Get-VisibleWidth is what the fitting code measures a line with, so a helper
+# counting `.Length` would let a name of wide characters draw twice the room it was given and push the
+# line past the width the fitting stage thinks it has. Every case below built from a wide or a combined
+# character is there to catch exactly that substitution. One cell is always held back for the ellipsis,
+# so the result never exceeds the limit; a wide character straddling the boundary is dropped whole,
+# which is why a CJK name lands one cell short of it.
+Confirm-Equal (Get-ClippedText 'reviewer' 20) 'reviewer' 'clip: a name inside the limit is untouched'
+Confirm-Equal (Get-ClippedText '' 20) '' 'clip: an empty name stays empty'
+$twentyCells = 'a' * 20
+Confirm-Equal (Get-ClippedText $twentyCells 20) $twentyCells 'clip: exactly twenty cells is untouched'
+$fortyChars = 'a' * 40
+Confirm-Equal (Get-ClippedText $fortyChars 20) (('a' * 19) + $ellipsis) 'clip: forty characters keep nineteen and an ellipsis'
+Confirm-Equal (Get-VisibleWidth (Get-ClippedText $fortyChars 20)) 20 'clip: the cut name is twenty cells'
+Confirm-Equal (Get-ClippedText ('a' * 21) 20) (('a' * 19) + $ellipsis) 'clip: one cell over the limit is still cut'
+# Twenty CJK characters are forty cells. Cut on cells that is nine characters and the ellipsis: ten
+# UTF-16 units, nineteen cells. Cut on characters it would be nineteen of them, thirty-nine cells,
+# nearly twice the limit. The length check beside the width check is what tells the two apart.
+$cjkName = [string]([char]::ConvertFromUtf32(0x65E5)) * 20
+$cjkCut = Get-ClippedText $cjkName 20
+Confirm-Equal (Get-VisibleWidth $cjkCut) 19 'clip: twenty CJK characters are cut to nineteen cells'
+Confirm-Equal $cjkCut.Length 10 'clip: the CJK cut keeps nine characters and the ellipsis'
+Confirm-True ((Get-VisibleWidth $cjkCut) -le 20) 'clip: a CJK name never draws wider than the limit'
+# The same substitution seen through an emoji, which is two cells and two UTF-16 units at once, so a
+# helper measuring either one alone would be wrong in a different direction.
+$emojiName = [string]([char]::ConvertFromUtf32(0x1F680)) * 12
+$emojiCut = Get-ClippedText $emojiName 20
+Confirm-Equal (Get-VisibleWidth $emojiCut) 19 'clip: an emoji name is cut on cells'
+Confirm-Equal $emojiCut.Length 19 'clip: the emoji cut keeps nine rockets and the ellipsis'
+# A letter and the combining mark on it are one text element and one cell, so the mark is never left
+# behind on its own and never counted as a cell of its own.
+$accentCut = Get-ClippedText (('e' + [string][char]0x0301) * 25) 20
+Confirm-Equal (Get-VisibleWidth $accentCut) 20 'clip: combining marks are not cells'
+Confirm-Equal $accentCut.Length 39 'clip: the cut keeps nineteen letters with their marks, and the ellipsis'
+Confirm-Equal (Get-ClippedText 'abc' 0) '' 'clip: no cells at all gives nothing'
+Confirm-Equal (Get-ClippedText 'abc' (-3)) '' 'clip: a negative limit gives nothing'
+Confirm-Equal (Get-ClippedText $cjkName 1) $ellipsis 'clip: one cell leaves room for the ellipsis alone'
+# The emoji-grapheme gap, which the rocket above could never have found because it sits inside a range
+# the width rule already called wide. A flag and a keycap are each one grapheme drawing two columns
+# whose first code point is not in any wide range, so both used to measure one cell: a name of twenty
+# flags measured exactly twenty, passed the cap untouched, and then drew at forty. These assert the
+# property rather than the classification - whatever a grapheme is decided to be, the clipped name may
+# never draw wider than the limit it was given.
+Confirm-Equal (Get-VisibleWidth $flagGb) 2 'clip: a flag is two cells before anything is cut'
+Confirm-Equal (Get-VisibleWidth $keycap1) 2 'clip: a keycap is two cells before anything is cut'
+$flagName = $flagGb * 15
+Confirm-Equal (Get-VisibleWidth $flagName) 30 'clip: fifteen flags are thirty cells'
+$flagCut = Get-ClippedText $flagName $badgeNameCells
+Confirm-True ((Get-VisibleWidth $flagCut) -le $badgeNameCells) 'clip: a name of flags never draws wider than the limit'
+Confirm-Equal (Get-VisibleWidth $flagCut) 19 'clip: fifteen flags are cut to nine flags and an ellipsis'
+$keycapName = $keycap1 * 25
+Confirm-Equal (Get-VisibleWidth $keycapName) 50 'clip: twenty-five keycaps are fifty cells'
+$keycapCut = Get-ClippedText $keycapName $badgeNameCells
+Confirm-True ((Get-VisibleWidth $keycapCut) -le $badgeNameCells) 'clip: a name of keycaps never draws wider than the limit'
+Confirm-Equal (Get-VisibleWidth $keycapCut) 19 'clip: twenty-five keycaps are cut to nine keycaps and an ellipsis'
+$mixedName = ($flagGb + 'ab' + $keycap1) * 8
+Confirm-True ((Get-VisibleWidth (Get-ClippedText $mixedName $badgeNameCells)) -le $badgeNameCells) 'clip: a mixed name never draws wider than the limit'
+
+# The builder. The mode badges are unchanged; what is new is that agent.name and session_name each add
+# a badge, that either one alone is enough to give the segment, and that the modes become the Short
+# form so a narrow line sheds the identities before the whole segment goes.
+Confirm-Equal (Get-BadgesSegment ('{}' | ConvertFrom-Json)) $null 'badges: an empty payload has no segment'
+Confirm-Equal (Get-BadgesSegment (('{"effort":{"level":"' + $defaultEffort + '"}}') | ConvertFrom-Json)) $null 'badges: the default effort alone has no segment'
+$b = Get-BadgesSegment ('{"agent":{"name":"reviewer"}}' | ConvertFrom-Json)
+Confirm-Equal $b.Name 'badges' 'badges: an agent name alone gives the badges segment'
+Confirm-Equal $b.Text "$iconAgent reviewer" 'badges: an agent name alone renders the user glyph and the name'
+Confirm-Equal $b.Role 'dim' 'badges: an agent name keeps the segment dim'
+Confirm-Equal $b.Bold $false 'badges: an agent name does not embolden the segment'
+Confirm-Equal $b.Short $null 'badges: an agent name alone has no short form'
+$b = Get-BadgesSegment ('{"session_name":"nightly audit"}' | ConvertFrom-Json)
+Confirm-Equal $b.Text "$iconSession nightly audit" 'badges: a session name alone renders the tag glyph and the name'
+Confirm-Equal $b.Role 'dim' 'badges: a session name keeps the segment dim'
+Confirm-Equal $b.Short $null 'badges: a session name alone has no short form'
+$b = Get-BadgesSegment ('{"fast_mode":true,"vim":{"mode":"INSERT"}}' | ConvertFrom-Json)
+Confirm-Equal $b.Text "$iconFast $iconVim INSERT" 'badges: modes alone render as they always did'
+Confirm-Equal $b.Short $null 'badges: with no identity badges there is nothing to shed'
+$allSix = '{"fast_mode":true,"thinking":{"enabled":true},"effort":{"level":"xhigh"},"vim":{"mode":"NORMAL"},"agent":{"name":"reviewer"},"session_name":"nightly audit"}'
+$b = Get-BadgesSegment ($allSix | ConvertFrom-Json)
+Confirm-Equal $b.Text "$iconFast $iconThink $iconEffort xhigh $iconVim NORMAL $iconAgent reviewer $iconSession nightly audit" 'badges: fast, thinking, effort, vim, agent, session in that order'
+Confirm-Equal $b.Short "$iconFast $iconThink $iconEffort xhigh $iconVim NORMAL" 'badges: the short form is the four mode badges'
+Confirm-Equal $b.Role 'dim' 'badges: the identity badges do not change the colour'
+# Both names go through Get-ClippedText with the same limit, so a long pair cannot push the line further
+# than a short pair. The glyph and its space are two more cells on top of the twenty.
+$b = Get-BadgesSegment (('{"session_name":"' + ('s' * 40) + '"}') | ConvertFrom-Json)
+Confirm-Equal $b.Text ("$iconSession " + ('s' * ($badgeNameCells - 1)) + $ellipsis) 'badges: a forty-character session name is cut to twenty cells'
+Confirm-Equal (Get-VisibleWidth $b.Text) ($badgeNameCells + 2) 'badges: the cut session badge is the glyph, a space and twenty cells'
+$b = Get-BadgesSegment (('{"agent":{"name":"' + ('g' * 40) + '"}}') | ConvertFrom-Json)
+Confirm-Equal $b.Text ("$iconAgent " + ('g' * ($badgeNameCells - 1)) + $ellipsis) 'badges: a long agent name is cut the same way'
+$b = Get-BadgesSegment (('{"session_name":"' + ('s' * $badgeNameCells) + '"}') | ConvertFrom-Json)
+Confirm-Equal $b.Text ("$iconSession " + ('s' * $badgeNameCells)) 'badges: a twenty-cell session name is untouched'
+$b = Get-BadgesSegment (('{"session_name":"' + ('\u65e5' * 20) + '"}') | ConvertFrom-Json)
+Confirm-Equal (Get-VisibleWidth $b.Text) 21 'badges: a CJK session name is cut on cells, not characters'
+Confirm-Equal $b.Text.Length 12 'badges: the CJK session badge is the glyph, a space, nine characters and the ellipsis'
+# The payload-text pair, the one the branch name and the repo owner already go through. Test-PayloadText
+# says whether there is a name there at all; anything that is not visible text leaves the badge off, and
+# with nothing else on there is no segment either.
+foreach ($bad in @('""', '"   "', '12', 'true', 'null', '[]', '{}')) {
+    Confirm-Equal (Get-BadgesSegment (('{"session_name":' + $bad + '}') | ConvertFrom-Json)) $null "badges: session_name $bad is not a name"
+    Confirm-Equal (Get-BadgesSegment (('{"agent":{"name":' + $bad + '}}') | ConvertFrom-Json)) $null "badges: agent.name $bad is not a name"
+}
+Confirm-Equal (Get-BadgesSegment ('{"agent":"reviewer"}' | ConvertFrom-Json)) $null 'badges: an agent that is a bare string has no name'
+Confirm-Equal (Get-BadgesSegment ('{"session_name":"\u001b[31mred"}' | ConvertFrom-Json)) $null 'badges: a session name carrying an escape is refused outright'
+Confirm-Equal (Get-BadgesSegment ('{"agent":{"name":"\u001b[31mred"}}' | ConvertFrom-Json)) $null 'badges: an agent name carrying an escape is refused outright'
+Confirm-Equal (Get-BadgesSegment ('{"session_name":"\u202e\u2066"}' | ConvertFrom-Json)) $null 'badges: a session name of nothing but format characters is not a name'
+Confirm-Equal (Get-BadgesSegment ('{"agent":{"name":"\u202e"}}' | ConvertFrom-Json)) $null 'badges: an agent name of nothing but an override is not a name'
+# Format characters are stripped rather than refused, so one stray override costs the character and not
+# the badge. Compared ordinally on purpose: PowerShell's own string operators compare by culture, which
+# gives a format character no collation weight at all, so "oc<U+202E>to" -eq "octo" is $true and an
+# assertion written that way would pass whether or not the override was ever taken out.
+$b = Get-BadgesSegment ('{"agent":{"name":"oc\u202eto"},"session_name":"qu\u2066iet"}' | ConvertFrom-Json)
+Confirm-True ([string]::Equals($b.Text, "$iconAgent octo $iconSession quiet", [System.StringComparison]::Ordinal)) 'badges: the format characters are stripped out of both names'
+Confirm-True (-not $b.Text.Contains([string][char]0x202E)) 'badges: no right-to-left override survives into the agent badge'
+Confirm-True (-not $b.Text.Contains([string][char]0x2066)) 'badges: no directional isolate survives into the session badge'
+# Stripping happens before measuring, so a name padded out with overrides is not cut on room it never
+# took on the line in the first place.
+$b = Get-BadgesSegment (('{"session_name":"' + ('\u202e' * 30) + 'quiet"}') | ConvertFrom-Json)
+Confirm-True ([string]::Equals($b.Text, "$iconSession quiet", [System.StringComparison]::Ordinal)) 'badges: thirty stripped overrides leave a five-cell name uncut'
+# The same emoji-grapheme regression through the builder, which is where the cap is actually applied
+# and where a name arrives from a real payload as surrogate pairs. The badge is the glyph, a space and
+# at most $badgeNameCells cells, so the whole thing may never exceed that plus two.
+$b = Get-BadgesSegment (('{"session_name":"' + ('\ud83c\uddec\ud83c\udde7' * 15) + '"}') | ConvertFrom-Json)
+Confirm-True ((Get-VisibleWidth $b.Text) -le ($badgeNameCells + 2)) 'badges: a session name of flags fits the badge allowance'
+Confirm-Equal (Get-VisibleWidth $b.Text) 21 'badges: the flag session badge is the glyph, a space, nine flags and the ellipsis'
+$b = Get-BadgesSegment (('{"agent":{"name":"' + ('1\ufe0f\u20e3' * 25) + '"}}') | ConvertFrom-Json)
+Confirm-True ((Get-VisibleWidth $b.Text) -le ($badgeNameCells + 2)) 'badges: an agent name of keycaps fits the badge allowance'
+Confirm-Equal (Get-VisibleWidth $b.Text) 21 'badges: the keycap agent badge is the glyph, a space, nine keycaps and the ellipsis'
 
 Write-Host '== unit: porcelain' -ForegroundColor Cyan
 $r = Read-PorcelainStatus "## main...origin/main [ahead 1]`n"
@@ -4549,6 +4776,17 @@ $absentGlyphs = @{
         @{ Icon = $iconLimit; Name = 'limits' }
         @{ Icon = $iconConflict; Name = 'warn' }
     )
+    '13-agent-session.json'                 = @(
+        @{ Icon = $iconFast; Name = 'fast' }
+        @{ Icon = $iconThink; Name = 'think' }
+        @{ Icon = $iconEffort; Name = 'effort' }
+        @{ Icon = $iconVim; Name = 'vim' }
+        @{ Icon = $iconBranch; Name = 'branch' }
+        @{ Icon = $iconDirty; Name = 'pencil' }
+        @{ Icon = $iconLines; Name = 'lines' }
+        @{ Icon = $iconLimit; Name = 'limits' }
+        @{ Icon = $iconConflict; Name = 'warn' }
+    )
 }
 # 11 is the only sample whose session is in a worktree, so every other one has to keep the fork glyph
 # off its line. One row per sample rather than ten written out by hand, and a sample added later is
@@ -4559,10 +4797,22 @@ foreach ($sample in $sampleFiles) {
     $rows = @(if ($absentGlyphs.ContainsKey($sample.Name)) { $absentGlyphs[$sample.Name] })
     $absentGlyphs[$sample.Name] = $rows + @{ Icon = $iconWorktree; Name = 'worktree' }
 }
+# The same rule for the two identity badges, and for the same reason: 13 is the only sample carrying an
+# agent.name or a session_name, so the user glyph and the tag have to stay off every other line. Written
+# as a loop rather than twelve rows by hand, so a builder that started drawing either badge from a
+# payload that names neither shows up on every sample at once - including 06, whose four mode badges
+# would otherwise give the segment cover.
+foreach ($sample in $sampleFiles) {
+    if ($sample.Name -eq '13-agent-session.json') { continue }
+    $rows = @(if ($absentGlyphs.ContainsKey($sample.Name)) { $absentGlyphs[$sample.Name] })
+    $absentGlyphs[$sample.Name] = $rows + @{ Icon = $iconAgent; Name = 'agent' } + @{ Icon = $iconSession; Name = 'session' }
+}
 # What each sample renders when every segment is enabled and nothing is fitted away: 04 carries nothing
 # but a model, 05, 07 and 08 have no git object and their probe directory is not a repository, and 07's
-# badges are all off or at the default level. Intersected with a config's enabled set this gives the
-# segments the line should actually show, which is what the gates below are built on.
+# badges are all off or at the default level. 13 is the other way round: every mode is off there and the
+# badges segment is on the line anyway, because the payload names an agent and a session. Intersected
+# with a config's enabled set this gives the segments the line should actually show, which is what the
+# gates below are built on.
 $sampleSegments = @{
     '01-main-clean.json'                    = @('model', 'context', 'cost', 'folder', 'branch')
     '02-feature-dirty-high.json'            = @('model', 'context', 'cost', 'folder', 'branch')
@@ -4576,6 +4826,7 @@ $sampleSegments = @{
     '10-pr.json'                            = @('model', 'context', 'cost', 'pr', 'folder', 'branch')
     '11-worktree.json'                      = @('model', 'context', 'cost', 'folder', 'branch')
     '12-context-alarm.json'                 = @('model', 'context', 'cost', 'folder')
+    '13-agent-session.json'                 = @('model', 'context', 'cost', 'badges', 'folder', 'branch')
 }
 # One marker per segment per sample: the segment's glyph plus the value this payload gives it, spelled
 # the way it reaches the line once the escapes are stripped. Every visible segment has to put its marker
@@ -4661,6 +4912,11 @@ $sampleMarkers = @{
         model = "$iconModel Sonnet 5"; context = "$iconCtx 92%"; cost = "$iconCost `$$('{0:N2}' -f 2.4)"
         folder = "$iconFolder alarm-demo"
     }
+    '13-agent-session.json'                 = @{
+        model  = "$iconModel Sonnet 5"; context = "$iconCtx 16%"; cost = "$iconCost `$$('{0:N2}' -f 0.31)"
+        badges = "$iconAgent reviewer $iconSession nightly audit"
+        folder = "$iconFolder my-project"; branch = "$iconHome main"
+    }
 }
 # The samples whose model segment the alarm turns red with the built-in alarm of 90: 12 sits at 92% of a
 # standard window and 02 at 90% of a 1M one, which is the boundary the alarm fires on. The alarm reads
@@ -4677,7 +4933,7 @@ $segmentGlyphs = @{
     cost    = @($iconCost)
     lines   = @($iconLines)
     limits  = @($iconLimit)
-    badges  = @($iconFast, $iconThink, $iconEffort, $iconVim)
+    badges  = @($iconFast, $iconThink, $iconEffort, $iconVim, $iconAgent, $iconSession)
     pr      = @($iconPr)
     folder  = @($iconFolder)
     branch  = @($iconHome, $iconBranch, $iconDirty, $iconAhead, $iconBehind, $iconConflict, $iconWorktree)
@@ -4688,6 +4944,7 @@ $glyphSegment = @{
     context = 'context'; cost = 'cost'; folder = 'folder'; lines = 'lines'; limits = 'limits'; warn = 'model'
     home = 'branch'; pencil = 'branch'; branch = 'branch'; worktree = 'branch'
     fast = 'badges'; think = 'badges'; effort = 'badges'; vim = 'badges'
+    agent = 'badges'; session = 'badges'
 }
 # A config record for the matrix. Rows is what the script prints from this config, read the way the
 # script reads it: the order key for layout one, the two rows for layout two. Enabled is the segments
@@ -5603,7 +5860,7 @@ foreach ($bad in @('"columns": "80"', '"columns": 20.5', '"columns": true', '"co
 # The helpers the subagent script copies out of statusline.ps1. Both copies are pulled from the source
 # by the parser and compared as text, so a fix made to one and not the other fails here instead of
 # turning into two scripts that measure a line or colour a percentage differently.
-$sharedHelpers = @('G', 'C', 'Get-VisibleWidth', 'Get-Palette', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText')
+$sharedHelpers = @('G', 'C', 'Get-VisibleWidth', 'Get-ClippedText', 'Get-Palette', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText')
 foreach ($name in $sharedHelpers) {
     $a = try { "$(Import-ScriptFunction $script @($name))" } catch { "not found in statusline.ps1" }
     $b = try { "$(Import-ScriptFunction $subScript @($name))" } catch { "not found in subagent-statusline.ps1" }
