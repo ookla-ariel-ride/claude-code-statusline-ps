@@ -264,7 +264,15 @@ file, and the size that has to fit under 64 KiB is the one the handle reports, n
 beforehand. A link or another reparse point is refused as well. One clock covers every step — the open,
 the size, the link check, each read and the close at the end — and it starts before the first filesystem
 call: if 250 ms goes by the attempt is abandoned and the config beneath it stands, silently, the way a
-bad value does.
+bad value does. Silently on the line, that is — every one of those refusals names itself in the
+diagnostics log below, so a config that is being ignored can say why.
+
+A project directory with no `.claude\statusline.json` — the usual case if you keep no per-project
+config — costs one attempted open on the thread pool and nothing else: no attribute probe, no read and
+no close. It is not free, and cannot be: the deadline is the reason the open is dispatched rather than
+made here, and a cheaper check made first would either block on the render's own thread or cost a
+dispatch of its own and reopen the gap between asking about a name and opening it. `test.ps1` counts
+those operations rather than timing them, so the shape is pinned and the count cannot drift.
 
 What that buys is a bound on this read, not on the machine. Abandoning is literal: a thread can stay
 stuck behind a hung open until the process exits, and a file left open that way is not closed on the way
@@ -467,8 +475,10 @@ because the name only ever appears beside a branch.
 `test.ps1` runs six groups. Unit checks call the script's helper functions directly (width
 measurement, config parsing, the segment table, rendering, width fitting, the context meter, the
 limits, `git status` parsing, the payload counts, the branch and pr segments, the state file, the
-git cache). The git group runs the branch fallback against temporary repositories: clean, dirty,
-unborn, detached, one commit ahead, one behind, a mixed tree with a staged, a modified and an
+git cache, and the count of filesystem operations a config read costs for each shape of payload —
+counted rather than timed, so it is deterministic). The git group runs the branch fallback against
+temporary repositories: clean, dirty, unborn, detached, one commit ahead, one behind, a mixed tree
+with a staged, a modified and an
 untracked file, a fake `git` that fails and one that hangs, then the cache end to end: a second
 render with a failing `git` on `PATH`, a fetch from a bare remote, a push, a worktree. The state
 group writes and reads session files in a temp folder. The install group runs `install.ps1` with
@@ -570,16 +580,23 @@ segment prints even when it does not fit.
 
 Colours look wrong: the script assumes a dark terminal theme.
 
-Nothing to go on: the git probe, the probe cache and the state file swallow every failure, so a
-missing branch segment or a cache that never seems to hit leaves nothing behind to look at. Set
-`CLAUDE_STATUSLINE_DEBUG` to `1` and each swallowed failure, each cache hit and miss, and each state
-read and write appends a line to `claude-statusline-diag.log` in your temp folder:
+Nothing to go on: the git probe, the probe cache, the project config read and the state file swallow
+every failure, so a missing branch segment, a project config that never seems to apply, or a cache
+that never seems to hit leaves nothing behind to look at. Set `CLAUDE_STATUSLINE_DEBUG` to `1` and
+each swallowed failure, each cache hit and miss, each refused config and each state read and write
+appends a line to `claude-statusline-diag.log` in your temp folder:
 
 ```text
 2026-09-03T09:14:02.118Z 24880 git cache: miss (no entry yet)
 2026-09-03T09:14:02.402Z 24880 git probe: git exited 128
+2026-09-03T09:14:02.409Z 24880 config read: D:\repo\.claude\statusline.json was not read: it is 91204 bytes, over the 65536 byte cap
 2026-09-03T09:14:02.415Z 24880 state: written (C:\Users\jim\AppData\Local\Temp\claude-statusline-state\abc.json)
 ```
+
+A project `.claude\statusline.json` that is not applied says which of the refusals it hit — it could
+not be opened, the handle is not an ordinary file, it is a link or a reparse point, it is over the
+byte cap, the deadline was spent, the file is empty, or it would not parse — so "why is my project
+config being ignored?" has an answer in the log rather than needing the script edited.
 
 The printed line is the same either way, and a log that cannot be written is as silent as the failure
 it records. The log rolls over into `claude-statusline-diag.log.1` once it would pass 4 MB, so

@@ -174,7 +174,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -1012,6 +1012,220 @@ if ($null -eq $blockingType) {
     Confirm-True ($quickTask.Wait(5000)) 'bounded read: a close that answers finishes'
     Confirm-True ($quick.Disposed) 'bounded read: the queued close really closes the stream'
     Confirm-Equal ([System.Threading.Tasks.Task]::Run($quickCall.Length).Result) 0 'bounded read: the length delegate reads the stream it was closed over'
+}
+
+Write-Host '== unit: render cost' -ForegroundColor Cyan
+# Four closed issues - #19, #21, #22 and #43 - each state a success criterion of the form "no measurable
+# render cost" or "render cost unchanged", and until this group nothing checked any of them. Wall clock
+# is the obvious way to check and the wrong one: the timing assertions elsewhere in this file bound
+# hangs rather than cost, and a ceiling on a render is exactly the shape that fails under parallel load
+# for reasons that have nothing to do with the code. So what is counted here is filesystem operations.
+# That is what these claims are really about - a status line runs on every event and again on a timer,
+# and a call to a disk is the only thing on this path that costs more than arithmetic - it is
+# deterministic, and it cannot flake.
+#
+# The counter is a compiled double for the calls the bounded read dispatches. Get-BoundedFileDelegate is
+# the only place in the script where a path becomes something the thread pool can run, so a version of
+# it closed over counting methods sees every open and every attribute probe the read makes. The open
+# hands back a FileStream subclass whose Length, ReadAsync and Dispose count as well, and the script
+# reaches all three through Stream's own virtual members, which is the same dispatch a real FileStream
+# takes. The open itself is still File.OpenRead over the same path, so a file that is not there fails
+# where and how it really fails, rather than being reported missing by a cheaper call.
+if (-not ('StatuslineTest.FsCount' -as [type])) {
+    try {
+        Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Win32.SafeHandles;
+namespace StatuslineTest {
+    public class CountingStream : FileStream {
+        public CountingStream(SafeFileHandle handle) : base(handle, FileAccess.Read) { }
+        public override long Length { get { Interlocked.Increment(ref FsCount.Lengths); return base.Length; } }
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken token) {
+            Interlocked.Increment(ref FsCount.Reads);
+            return base.ReadAsync(buffer, offset, count, token);
+        }
+        protected override void Dispose(bool disposing) { Interlocked.Increment(ref FsCount.Closes); base.Dispose(disposing); }
+    }
+    public static class FsCount {
+        public static int Opens, Attributes, Lengths, Reads, Closes;
+        public static void Reset() { Opens = 0; Attributes = 0; Lengths = 0; Reads = 0; Closes = 0; }
+        public static string Text {
+            get { return "opens " + Opens + ", attributes " + Attributes + ", lengths " + Lengths + ", reads " + Reads + ", closes " + Closes; }
+        }
+        // The real open, so a refusal is the real refusal; the handle is then handed to the counting
+        // stream, which becomes its owner. Nothing is counted past the increment when this throws.
+        public static FileStream Open(string path) {
+            Interlocked.Increment(ref Opens);
+            FileStream probe = File.OpenRead(path);
+            GC.SuppressFinalize(probe);
+            return new CountingStream(probe.SafeFileHandle);
+        }
+        public static FileAttributes GetAttributes(string path) {
+            Interlocked.Increment(ref Attributes);
+            return File.GetAttributes(path);
+        }
+    }
+}
+'@
+    } catch { $null = $_ }
+}
+$costType = 'StatuslineTest.FsCount' -as [type]
+if ($null -eq $costType) {
+    Write-Host '  operation counter: the double would not compile here, so the four cost claims are not checked' -ForegroundColor DarkGray
+} else {
+    Write-Host '  operation counter: a compiled double counts every open, attribute probe, length, read and close' -ForegroundColor DarkGray
+    # The four project directories the claims talk about, plus a user file to stand over.
+    $costUser = Write-TempConfig 'cost-user.json' '{ "style": "powerline" }'
+    $costNoClaude = Join-Path $tmp 'cost-plain-dir'
+    New-Item -ItemType Directory -Force $costNoClaude | Out-Null
+    $costEmptyClaude = Write-TempProjectDir 'cost-empty-claude' $null
+    $costWithFile = Write-TempProjectDir 'cost-with-file' '{ "layout": "two" }'
+    $costPreset = Write-TempProjectDir 'cost-preset' '{ "preset": "minimal" }'
+    $costPlainKeys = Write-TempProjectDir 'cost-plain-keys' '{ "layout": "one", "style": "plain" }'
+    $costQuiet = Write-TempProjectDir 'cost-quiet' '{ "quiet": { "cost": 1, "context": 30, "limits": 70 } }'
+    $costNoQuiet = Write-TempProjectDir 'cost-no-quiet' '{ "layout": "two" }'
+    # The counting stand-in, in place only for the checks below and put back straight after them.
+    function Get-BoundedFileDelegate([string] $Path) {
+        return @{
+            Open       = [System.Delegate]::CreateDelegate([Func[System.IO.FileStream]], $Path, [StatuslineTest.FsCount].GetMethod('Open'))
+            Attributes = [System.Delegate]::CreateDelegate([Func[System.IO.FileAttributes]], $Path, [StatuslineTest.FsCount].GetMethod('GetAttributes'))
+        }
+    }
+    # The stand-in has to be the real thing first, or every count below would be counting a double that
+    # does not behave like the script: it reads a file back whole and refuses one that is not there.
+    Confirm-Equal (Read-BoundedFileText $smallProject) '{ "layout": "two" }' 'render cost: the counting delegate reads a real file back whole'
+    Confirm-Equal (Read-BoundedFileText (Join-Path $tmp 'cost-missing.json')) $null 'render cost: the counting delegate refuses a file that is not there'
+    # Ops leaves the close out and Text keeps it. The close is queued on the pool and never waited on, by
+    # design, so how many have run by the time a line here reads the counter is not decidable; every
+    # comparison between two reads is made on Ops, and the close is only ever bounded, never pinned.
+    function Measure-ConfigRead($ProjectDir) {
+        [StatuslineTest.FsCount]::Reset()
+        $result = Read-StatusConfig $costUser $ProjectDir
+        return @{ Cfg = $result; Opens = [StatuslineTest.FsCount]::Opens; Attributes = [StatuslineTest.FsCount]::Attributes
+            Lengths = [StatuslineTest.FsCount]::Lengths; Reads = [StatuslineTest.FsCount]::Reads
+            Closes = [StatuslineTest.FsCount]::Closes; Text = [StatuslineTest.FsCount]::Text
+            Ops = 'opens {0}, attributes {1}, lengths {2}, reads {3}' -f [StatuslineTest.FsCount]::Opens, [StatuslineTest.FsCount]::Attributes, [StatuslineTest.FsCount]::Lengths, [StatuslineTest.FsCount]::Reads
+        }
+    }
+
+    # ---- #19: "No measurable render cost when project_dir has no .claude\statusline.json" ----
+    # The claim as written was false: that shape built two delegates, dispatched File.OpenRead to the
+    # thread pool and raised and caught a FileNotFoundException on every render. The deadline is what
+    # forces the dispatch - a check made on this thread could block on a dead share, which is the whole
+    # thing the budget exists to stop, and a check made on the pool costs a dispatch of its own and
+    # reopens the gap between asking about a name and opening it. So the dispatch stays and the caught
+    # exception goes, and what is pinned here is the shape rather than a number of microseconds: one
+    # open is attempted, and nothing else on the disk is touched at all.
+    $costNone = Measure-ConfigRead $null
+    Confirm-Equal $costNone.Opens 0 "render cost: a payload with no project_dir opens nothing, got '$($costNone.Text)'"
+    Confirm-Equal $costNone.Attributes 0 'render cost: a payload with no project_dir probes no attributes'
+    Confirm-Equal $costNone.Cfg.Style 'powerline' 'render cost: a payload with no project_dir still reads the user file'
+    $costPlain = Measure-ConfigRead $costNoClaude
+    Confirm-Equal $costPlain.Opens 1 "render cost: a project directory with no .claude attempts one open, got '$($costPlain.Text)'"
+    Confirm-Equal $costPlain.Attributes 0 'render cost: a project directory with no .claude probes no attributes'
+    Confirm-Equal $costPlain.Lengths 0 'render cost: a project directory with no .claude asks for no length'
+    Confirm-Equal $costPlain.Reads 0 'render cost: a project directory with no .claude reads nothing'
+    Confirm-Equal $costPlain.Closes 0 'render cost: a project directory with no .claude closes nothing, because it opened nothing'
+    Confirm-Equal $costPlain.Cfg.Style 'powerline' 'render cost: a project directory with no .claude leaves the user file in force'
+    # A .claude directory with no statusline.json in it costs exactly the same.
+    $costEmpty = Measure-ConfigRead $costEmptyClaude
+    Confirm-Equal $costEmpty.Opens 1 "render cost: an empty .claude attempts one open, got '$($costEmpty.Text)'"
+    Confirm-Equal ($costEmpty.Attributes + $costEmpty.Lengths + $costEmpty.Reads + $costEmpty.Closes) 0 'render cost: an empty .claude touches nothing else'
+    # And the shape that does have a config pays for what it uses and no more: the open, the length, the
+    # attribute probe, one read that returns the bytes and one that returns nothing. The close is queued
+    # on the pool and never waited on, so how many have finished by this line is not deterministic and is
+    # bounded rather than pinned; that it is queued at all is checked in the bounded read group above.
+    $costReal = Measure-ConfigRead $costWithFile
+    Confirm-Equal $costReal.Opens 1 "render cost: a real project config opens the file once, got '$($costReal.Text)'"
+    Confirm-Equal $costReal.Attributes 1 'render cost: a real project config probes the attributes once'
+    Confirm-Equal $costReal.Lengths 1 'render cost: a real project config asks the handle its length once'
+    Confirm-Equal $costReal.Reads 2 'render cost: a real project config takes one read of bytes and one that ends it'
+    Confirm-True ($costReal.Closes -le 1) 'render cost: a real project config closes the handle at most once'
+    Confirm-Equal $costReal.Cfg.Layout 'two' 'render cost: a real project config is still applied'
+
+    # ---- #21: presets, "no measurable render cost" ----
+    # A preset is a table built into the script, so naming one opens no second file and costs a project
+    # config exactly what any other key costs it. Pinned as an equality rather than a number, so it
+    # holds whatever the shape of a bounded read becomes.
+    $costWithPreset = Measure-ConfigRead $costPreset
+    $costWithKeys = Measure-ConfigRead $costPlainKeys
+    Confirm-Equal $costWithPreset.Ops $costWithKeys.Ops "render cost: a preset costs a config read exactly what plain keys cost it, got '$($costWithPreset.Ops)' against '$($costWithKeys.Ops)'"
+    Confirm-Equal (Get-SegmentText $costWithPreset.Cfg) 'model,context,folder,branch' 'render cost: the preset was applied, so the counts above are of a read that did something'
+
+    # ---- #22: the quiet block, "render cost unchanged: three numeric comparisons" ----
+    # Two halves. A quiet block opens no file of its own, and it is read at exactly three places: the
+    # context, cost and limits builders each ask Test-QuietValue once and nothing else calls it. The
+    # second half is counted in the script's own syntax tree rather than by rendering, because "three
+    # comparisons" is a statement about the code and a render cannot tell three from four.
+    $costQuietRead = Measure-ConfigRead $costQuiet
+    $costNoQuietRead = Measure-ConfigRead $costNoQuiet
+    Confirm-Equal $costQuietRead.Ops $costNoQuietRead.Ops "render cost: a quiet block costs a config read nothing extra, got '$($costQuietRead.Ops)' against '$($costNoQuietRead.Ops)'"
+    Confirm-True ($costQuietRead.Cfg.Quiet.cost -eq 1 -and $costQuietRead.Cfg.Quiet.context -eq 30 -and $costQuietRead.Cfg.Quiet.limits -eq 70) 'render cost: the quiet block was applied, so the counts above are of a read that did something'
+    $costTokens = $null
+    $costErrors = $null
+    $costAst = [System.Management.Automation.Language.Parser]::ParseFile($script, [ref] $costTokens, [ref] $costErrors)
+    Confirm-Equal $costErrors.Count 0 'render cost: statusline.ps1 parses, so the syntax tree checks below mean something'
+    $costQuietCalls = @($costAst.FindAll({ param($n)
+                $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Test-QuietValue' }, $true))
+    Confirm-Equal $costQuietCalls.Count 3 "render cost: quiet is three comparisons, one each in context, cost and limits, got $($costQuietCalls.Count)"
+
+    # ---- #43: the diagnostics log, "no cost when the variable is unset" ----
+    # The gate inside Write-StatusDiag is cheap but reached too late: the reason is built and the call is
+    # made whatever the flag says. So every call site tests $script:diagOn first, and unset means no call
+    # at all. Counted with a stand-in helper: a config read that would log several lines logs none.
+    $costDiagOld = $script:diagOn
+    function Write-StatusDiag([string] $Reason) { $script:costDiagCalls++; $null = $Reason }
+    $script:diagOn = $false
+    $script:costDiagCalls = 0
+    $null = Read-StatusConfig $costUser $costNoClaude
+    Confirm-Equal $script:costDiagCalls 0 'render cost: with the flag off a config read makes no diagnostics call at all'
+    $script:diagOn = $true
+    $script:costDiagCalls = 0
+    $null = Read-StatusConfig $costUser $costNoClaude
+    Confirm-True ($script:costDiagCalls -gt 0) 'render cost: with the flag on the same read does call, so the check above is of a path that had something to say'
+    $script:diagOn = $costDiagOld
+    . (Import-ScriptFunction $script @('Write-StatusDiag'))
+    # And the guard is at every call site, not just the ones a test happens to walk through. Each
+    # Write-StatusDiag call in the script has to sit inside an if that tests the flag; a new call site
+    # added without one is a call this file would otherwise never notice.
+    $costDiagCallSites = @($costAst.FindAll({ param($n)
+                $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Write-StatusDiag' }, $true))
+    Confirm-True ($costDiagCallSites.Count -ge 20) "render cost: the script has the call sites this check is about, got $($costDiagCallSites.Count)"
+    $costUnguarded = @($costDiagCallSites | Where-Object {
+            $node = $_
+            $guarded = $false
+            while ($null -ne $node -and -not $guarded) {
+                if ($node -is [System.Management.Automation.Language.IfStatementAst]) {
+                    foreach ($clause in $node.Clauses) { if ($clause.Item1.Extent.Text -match 'diagOn') { $guarded = $true } }
+                }
+                $node = $node.Parent
+            }
+            -not $guarded })
+    Confirm-Equal $costUnguarded.Count 0 "render cost: every Write-StatusDiag call site is behind the flag, unguarded: $(($costUnguarded | ForEach-Object { $_.Extent.Text }) -join ' | ')"
+    # Test-StatusDiagFlag is the one place the environment variable is read, and it reads it the way the
+    # helper's own gate does, so the two cannot come to different answers about the same value.
+    $costFlagOld = $env:CLAUDE_STATUSLINE_DEBUG
+    try {
+        foreach ($costOff in @($null, '', '0', 'false', 'FALSE', 'no', 'off', ' off ')) {
+            if ($null -eq $costOff) { Remove-Item Env:CLAUDE_STATUSLINE_DEBUG -ErrorAction SilentlyContinue } else { $env:CLAUDE_STATUSLINE_DEBUG = $costOff }
+            Confirm-Equal (Test-StatusDiagFlag) $false "render cost: the flag reads as off for '$costOff'"
+        }
+        foreach ($costOn in @('1', 'true', 'yes', 'please')) {
+            $env:CLAUDE_STATUSLINE_DEBUG = $costOn
+            Confirm-Equal (Test-StatusDiagFlag) $true "render cost: the flag reads as on for '$costOn'"
+        }
+    } finally {
+        if ($null -ne $costFlagOld) { $env:CLAUDE_STATUSLINE_DEBUG = $costFlagOld } else { Remove-Item Env:CLAUDE_STATUSLINE_DEBUG -ErrorAction SilentlyContinue }
+    }
+
+    # The counting stand-in goes away here, and the script's own delegate factory comes back.
+    . (Import-ScriptFunction $script @('Get-BoundedFileDelegate'))
+    [StatuslineTest.FsCount]::Reset()
+    Confirm-Equal (Read-BoundedFileText $smallProject) '{ "layout": "two" }' 'render cost: the real delegate factory is back and still reads a file'
+    Confirm-Equal ([StatuslineTest.FsCount]::Opens) 0 'render cost: the real delegate factory is back, so nothing counts any more'
 }
 
 # The config that ships with the repo has to be valid JSON and to mean what the README says it means.
@@ -3680,15 +3894,26 @@ function Get-DiagLine {
 }
 function Clear-DiagLog { if (Test-Path -LiteralPath $diagLog) { Remove-Item -LiteralPath $diagLog -Force } }
 function Measure-DiagMatch([string] $Pattern) { return @(Get-DiagLine | Where-Object { $_ -match $Pattern }).Count }
+# statusline.ps1 reads CLAUDE_STATUSLINE_DEBUG once at load into $script:diagOn, and every call site
+# tests that variable before it builds a reason or calls anything - which is what makes an unset
+# variable cost nothing. Import-ScriptFunction lifts functions and not the script-level assignment, and
+# a test process flips the variable many times where a render reads it once, so the flag is re-read here
+# the same way the script reads it, through the script's own Test-StatusDiagFlag, whenever it changes.
+# Passing $null clears the variable. The end-to-end render checks at the end of this group are what
+# prove the script really does the assignment; this only stands in for it inside the test process.
+function Sync-DiagFlag($Value) {
+    if ($null -eq $Value) { Remove-Item Env:CLAUDE_STATUSLINE_DEBUG -ErrorAction SilentlyContinue } else { $env:CLAUDE_STATUSLINE_DEBUG = $Value }
+    $script:diagOn = Test-StatusDiagFlag
+}
 try {
     $script:cacheProbe = Get-BranchRecord 'main' $false
     # Unset - the normal case - the helper writes nothing at all.
-    Remove-Item Env:CLAUDE_STATUSLINE_DEBUG -ErrorAction SilentlyContinue
+    Sync-DiagFlag $null
     Write-StatusDiag 'nobody asked for this'
     Confirm-True (-not (Test-Path -LiteralPath $diagLog)) 'diag off: no log file'
 
     # Set, one call appends one line: the UTC time, the process id, then the reason.
-    $env:CLAUDE_STATUSLINE_DEBUG = '1'
+    Sync-DiagFlag '1'
     Write-StatusDiag 'hello'
     $diagLines = Get-DiagLine
     Confirm-Equal $diagLines.Count 1 'diag on: one call writes one line'
@@ -3715,20 +3940,20 @@ try {
     # The values that read as off, and a sample of the values that read as on.
     foreach ($off in @('0', 'false', 'FALSE', 'no', 'off', ' false ')) {
         Clear-DiagLog
-        $env:CLAUDE_STATUSLINE_DEBUG = $off
+        Sync-DiagFlag $off
         Write-StatusDiag 'not this one'
         Confirm-True (-not (Test-Path -LiteralPath $diagLog)) "diag off: '$off' writes nothing"
     }
     foreach ($on in @('1', 'true', 'yes', 'please')) {
         Clear-DiagLog
-        $env:CLAUDE_STATUSLINE_DEBUG = $on
+        Sync-DiagFlag $on
         Write-StatusDiag 'this one'
         Confirm-Equal (Get-DiagLine).Count 1 "diag on: '$on' writes"
     }
 
     # A log that cannot be written costs the line and nothing else. TEMP points at a file here, so the
     # append throws inside the helper the way a read-only temp folder would.
-    $env:CLAUDE_STATUSLINE_DEBUG = '1'
+    Sync-DiagFlag '1'
     $diagBlocked = Join-Path $tmp 'diag-blocked'
     [System.IO.File]::WriteAllText($diagBlocked, 'not a directory')
     $env:TEMP = $diagBlocked
@@ -3765,14 +3990,14 @@ try {
 
     # With the variable unset the same calls leave no log at all.
     Clear-DiagLog
-    Remove-Item Env:CLAUDE_STATUSLINE_DEBUG -ErrorAction SilentlyContinue
+    Sync-DiagFlag $null
     $diagQuietDir = Join-Path $diagTemp 'cache-quiet'
     $null = Get-CachedGitBranch $cacheRepo 1500 $diagQuietDir 5
     $null = Get-CachedGitBranch $cacheRepo 1500 $diagQuietDir 5
     Confirm-True (-not (Test-Path -LiteralPath $diagLog)) 'diag off: the cache writes no log'
 
     # The state file: a corrupt file still reads as no state, and now says why; a write says it wrote.
-    $env:CLAUDE_STATUSLINE_DEBUG = '1'
+    Sync-DiagFlag '1'
     Clear-DiagLog
     $diagStateDir = Join-Path $diagTemp 'claude-statusline-state'
     New-Item -ItemType Directory -Force $diagStateDir | Out-Null
@@ -3786,6 +4011,73 @@ try {
     Clear-DiagLog
     Confirm-Equal (Read-SessionState 'diag-session').cost_usd 1.07 'diag state: the record still reads back'
     Confirm-Equal (Measure-DiagMatch 'state: read') 1 'diag state: the read is logged'
+
+    # ---- The config read: why a project file was ignored ----
+    # A project .claude\statusline.json falls back quietly when it is oversized, a link, not an ordinary
+    # file, past the read deadline or malformed. All of that is right for a status line and none of it
+    # was written down anywhere, which left "why is my project config being ignored?" unanswerable -
+    # close to the exact question this log exists to answer. So each refusal the bounded read already
+    # tells apart now names itself, and the merge names the two the read cannot see: a file that is
+    # there and empty, and one that will not parse.
+    #
+    # Each case checks three things: the config really did fall back, one line was written, and that line
+    # says which refusal it was rather than that something went wrong. The reasons are asked for by the
+    # words a person would search the log for.
+    Sync-DiagFlag '1'
+    $diagLimit = Get-ProjectConfigLimit
+    function Test-DiagConfigCase([string] $Name, $ProjectDir, [string] $Pattern, [string] $Label) {
+        Clear-DiagLog
+        $cfg = Read-StatusConfig $userPath $ProjectDir
+        Confirm-Equal $cfg.Style 'powerline' "diag config: $Label still leaves the user file in force"
+        Confirm-Equal $cfg.Layout 'one' "diag config: $Label changes nothing"
+        Confirm-Equal (Measure-DiagMatch $Pattern) 1 "diag config: $Label says so, got '$((Get-DiagLine) -join ' | ')'"
+        Confirm-Equal (Measure-DiagMatch ([regex]::Escape((Join-Path (Join-Path "$ProjectDir" '.claude') 'statusline.json')))) 1 "diag config: $Label names the path it refused"
+    }
+    $diagPlainDir = Join-Path $tmp 'diag-proj-plain'
+    New-Item -ItemType Directory -Force $diagPlainDir | Out-Null
+    Test-DiagConfigCase 'plain' $diagPlainDir 'config read: .* was not read: it could not be opened' 'a project directory with no .claude'
+    Test-DiagConfigCase 'empty-claude' (Write-TempProjectDir 'diag-proj-empty-claude' $null) 'config read: .* was not read: it could not be opened' 'a .claude directory with no statusline.json'
+    Test-DiagConfigCase 'oversized' (Write-TempProjectDir 'diag-proj-oversized' ('{ "layout": "two", "pad": "' + ('x' * $diagLimit.MaxBytes) + '" }')) "config read: .* was not read: it is \d+ bytes, over the $($diagLimit.MaxBytes) byte cap" 'a project config over the byte cap'
+    Test-DiagConfigCase 'empty-file' (Write-TempProjectDir 'diag-proj-empty-file' '') 'config merge: .* was not applied: the file is empty' 'a project config that is empty'
+    Test-DiagConfigCase 'broken' (Write-TempProjectDir 'diag-proj-broken' '{ "layout": ') 'config merge: .* was not applied: ' 'a project config that will not parse'
+    Test-DiagConfigCase 'array' (Write-TempProjectDir 'diag-proj-array' '[1, 2]') 'config merge: .* was not applied: its JSON is not an object' 'a project config whose JSON is an array'
+    # The link case, on the fixture the bounded read group made: whichever of a symbolic link or a
+    # directory this machine could put there, the reason has to name that one and not the other.
+    Clear-DiagLog
+    $null = Read-StatusConfig $userPath $linkDir
+    $diagLinkReason = if ($madeLink) { 'it is a link or a reparse point' } else { 'it could not be opened' }
+    Confirm-Equal (Measure-DiagMatch "config read: .* was not read: $diagLinkReason") 1 "diag config: $linkKind in place of the file says '$diagLinkReason', got '$((Get-DiagLine) -join ' | ')'"
+    # A spent budget: the same file that reads back fine is refused, and the log says the deadline is why
+    # rather than blaming the file. The limit is rebuilt from the script's own numbers, as above.
+    $diagRealLimit = Get-ProjectConfigLimit
+    . ([scriptblock]::Create("function Get-ProjectConfigLimit { return @{ MaxBytes = $($diagRealLimit.MaxBytes); TimeoutMs = 0 } }"))
+    Clear-DiagLog
+    Confirm-Equal (Read-BoundedFileText $smallProject) $null 'diag config: a spent budget still refuses a file that is otherwise fine'
+    Confirm-Equal (Measure-DiagMatch 'config read: .* was not read: the deadline was spent before the open') 1 "diag config: a spent budget says the deadline was spent, got '$((Get-DiagLine) -join ' | ')'"
+    . ([scriptblock]::Create("function Get-ProjectConfigLimit { return @{ MaxBytes = $($diagRealLimit.MaxBytes); TimeoutMs = $($diagRealLimit.TimeoutMs) } }"))
+    Confirm-Equal (Get-ProjectConfigLimit).TimeoutMs $diagRealLimit.TimeoutMs 'diag config: the real deadline is back'
+    # A handle that is not an ordinary file: the null device, the one this machine can produce without a
+    # privilege. Where it will not open at all the refusal is still logged, under the other reason.
+    Clear-DiagLog
+    Confirm-Equal (Read-BoundedFileText 'NUL') $null 'diag config: the null device is still refused'
+    Confirm-Equal (Measure-DiagMatch 'config read: NUL was not read: (the handle cannot seek, so it is not an ordinary file|it could not be opened)') 1 "diag config: a handle that is not an ordinary file says which, got '$((Get-DiagLine) -join ' | ')'"
+    # An empty path is refused before anything is looked up, and says that rather than nothing.
+    Clear-DiagLog
+    Confirm-Equal (Read-BoundedFileText '') $null 'diag config: an empty path is still refused'
+    Confirm-Equal (Measure-DiagMatch 'config read: .*was not read: no path was given') 1 'diag config: an empty path says no path was given'
+    # A file that reads is not reported as a refusal, and the log in a finally does not join the return.
+    Clear-DiagLog
+    Confirm-Equal (Read-BoundedFileText $smallProject) '{ "layout": "two" }' 'diag config: a file that reads still reads back exactly, with the log on'
+    Confirm-Equal (Measure-DiagMatch 'was not read') 0 'diag config: a file that reads is not reported as a refusal'
+    # With the variable unset none of it writes anything, which is the invariant the guards buy.
+    Clear-DiagLog
+    Sync-DiagFlag $null
+    $diagQuietCfg = Read-StatusConfig $userPath $diagPlainDir
+    $null = Read-StatusConfig $userPath (Write-TempProjectDir 'diag-proj-quiet-broken' '{ "layout": ')
+    $null = Read-BoundedFileText 'NUL'
+    Confirm-True (-not (Test-Path -LiteralPath $diagLog)) 'diag config: with the variable unset a refused config writes no log'
+    Confirm-Equal $diagQuietCfg.Style 'powerline' 'diag config: and the config is the same one the log-on run produced'
+    Sync-DiagFlag '1'
 
     # The log is rolled over rather than left to grow: an append that would take the file past the cap
     # moves it aside first. The cap is spelled out here rather than read from the script, so the two
@@ -3919,10 +4211,10 @@ $m.Dispose()
     New-Item -ItemType Directory -Force $diagRenderDir | Out-Null
     $diagPayload = ([ordered]@{ model = @{ display_name = 'M' }; session_id = 'diag-render'
                                 cost = @{ total_cost_usd = 0.5 }; workspace = @{ current_dir = $diagRenderDir } } | ConvertTo-Json -Compress)
-    Remove-Item Env:CLAUDE_STATUSLINE_DEBUG -ErrorAction SilentlyContinue
+    Sync-DiagFlag $null
     $diagQuietRun = Invoke-StatusLine $diagPayload $null 0
     Confirm-True (-not (Test-Path -LiteralPath $diagLog)) 'diag render: a render with the variable unset writes no log'
-    $env:CLAUDE_STATUSLINE_DEBUG = '1'
+    Sync-DiagFlag '1'
     $diagLoudRun = Invoke-StatusLine $diagPayload $null 0
     Confirm-Equal ($diagLoudRun.Lines -join "`n") ($diagQuietRun.Lines -join "`n") 'diag render: the log changes nothing on the line'
     Confirm-Equal $diagLoudRun.Err.Count 0 'diag render: nothing on stderr'
@@ -3932,7 +4224,7 @@ $m.Dispose()
     Confirm-Equal (@(Get-DiagLine | Where-Object { $_.Split(' ')[1] -eq "$PID" }).Count) 0 'diag render: the child logged under its own process id, not the one running the test'
 } finally {
     if ($null -ne $oldTemp) { $env:TEMP = $oldTemp } else { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }
-    if ($null -ne $oldDebug) { $env:CLAUDE_STATUSLINE_DEBUG = $oldDebug } else { Remove-Item Env:CLAUDE_STATUSLINE_DEBUG -ErrorAction SilentlyContinue }
+    Sync-DiagFlag $oldDebug
 }
 . (Import-ScriptFunction $script @('Get-GitBranch'))
 

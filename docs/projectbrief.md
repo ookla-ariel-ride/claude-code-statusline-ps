@@ -111,7 +111,13 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   the length (a call of its own — over SMB it is a round trip to the server), that probe, each read and
   the close. Each runs on the thread pool through a delegate closed over the path or the stream (a
   script block cannot: converted to a delegate it needs a runspace, and a pool thread has none) and is
-  waited on for what is left of 250 ms. The close is queued and never waited on, and with the budget
+  waited on for what is left of 250 ms. Each wait is `Task.WaitAny` rather than `Task.Wait`, because
+  `Wait` rethrows a task that failed and a project with no config of its own takes that path on every
+  render - the ordinary case was raising and catching an exception, which cost more than the pooled
+  call it was waiting on. `WaitAny` returns instead, and the task is then asked whether it succeeded,
+  so the deadline and the failure are told apart rather than both arriving as one caught exception,
+  which is also what lets each refusal name itself in the diagnostics log. The close is queued and
+  never waited on, and with the budget
   gone the stream is abandoned unclosed, whichever step spent it. The bound is on this read alone: a
   thread can stay blocked until the process exits, and the user's own file, read the ordinary way for
   its encoding detection, has no deadline at all. `Read-CodePoint` admits a
@@ -213,13 +219,26 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   the real one, so an interrupted write costs nothing. The file holds numbers and one id, nothing from
   the prompt or the file system. Cleanup is a stamped sweep, so the common render is one read and one
   write.
-- **The silence is switchable.** Every failure in the git probe, the probe cache and the state file is
-  swallowed on purpose, which leaves a bug report with nothing in it. `Write-StatusDiag` appends one
-  line - UTC time, process id, reason - per swallowed catch, per cache branch and per state read and
+- **The silence is switchable.** Every failure in the git probe, the probe cache, the project config
+  read and the state file is swallowed on purpose, which leaves a bug report with nothing in it.
+  `Write-StatusDiag` appends one line - UTC time, process id, reason - per swallowed catch, per cache
+  branch, per refused config and per state read and
   write to `claude-statusline-diag.log` in the temp folder, and only while `CLAUDE_STATUSLINE_DEBUG`
-  is set to something other than `0`, `false`, `no` or `off`. Unset, the helper reads one
-  environment variable and returns, so the render pays nothing for it. The log is written the way the
-  catch behaves: it never reaches the pipeline, a failure to write it is swallowed in turn, and the
+  is set to something other than `0`, `false`, `no` or `off`. A refused config names which refusal it
+  was - it could not be opened, the handle is not an ordinary file, a link or a reparse point, over the
+  byte cap, the deadline spent and at which step, empty, or it would not parse - because "why is my
+  project config being ignored?" is close to the exact question this log exists to answer, and a
+  reason of "something failed" does not answer it.
+  Unset, no call site does anything at all: `Test-StatusDiagFlag` reads the variable once into
+  `$script:diagOn` and every call site tests that before it builds a reason or calls the helper. The
+  gate inside `Write-StatusDiag` is cheap but reached too late to be free - PowerShell builds the
+  argument first, so the reason was interpolated on every render whatever the flag said, and the call
+  itself cost more than the interpolation did. `Write-StatusDiag` keeps its own gate as well, so the
+  environment variable stays the one thing that decides and a call site that forgets the guard is a
+  missed optimisation rather than a log that writes when it should not. `test.ps1` checks the guard is
+  at every call site by walking the script's syntax tree, not just the ones a test happens to reach.
+  The log is written the way the catch behaves: it never reaches the pipeline, a failure to write it
+  is swallowed in turn, and the
   rendered line is identical with the variable set and unset. The log rolls over into a `.log.1`
   sibling once an append would take it past 4 MB, from inside that same `try`, so a variable left set
   in a profile cannot fill the temp volume and a rollover that fails costs the line and nothing more.
@@ -241,7 +260,14 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 
 ## Success criteria
 
-- `.\test.ps1` passes: the unit checks, every payload in `samples/` across seven configs and four widths (120, 60, 20 and unset) with content checks at the unset width, the git cases with the probe cache, the state file cases, the diagnostics log cases, the install cases, and the subagent cases.
+- `.\test.ps1` passes: the unit checks, every payload in `samples/` across seven configs and four widths (120, 60, 20 and unset) with content checks at the unset width, the git cases with the probe cache, the state file cases, the diagnostics log cases, the render cost cases, the install cases, and the subagent cases.
+- Render cost is checked by counting filesystem operations, not by timing a render. A wall-clock
+  ceiling is the obvious way and the wrong one here: the timing assertions in `test.ps1` bound hangs
+  rather than cost, and a ceiling on a render fails under parallel load for reasons that have nothing
+  to do with the code. A compiled double stands in for the two calls the bounded read dispatches and
+  counts every open, attribute probe, length, read and close, so what a payload shape costs is pinned
+  as a number that cannot flake. The close is bounded rather than pinned, because it is queued on the
+  pool and never waited on.
 - `.\install.ps1` on a fresh machine produces a working status line in Claude Code after one session restart.
 - `.\install.ps1 -Uninstall` returns `settings.json` to its prior state minus the `statusLine` key, and minus `subagentStatusLine` when that key is this project's. A settings write is never observed truncated, and never silently overwrites a change made since the file was read.
 - `.\install.ps1` leaves an existing `~/.claude/statusline.json` untouched.

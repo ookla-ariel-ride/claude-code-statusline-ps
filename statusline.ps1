@@ -27,9 +27,9 @@ function C([string] $code, [string] $text) { "$e[${code}m$text$e[0m" }
 # stale. The cost is that "git still runs on every render" and "the state file never appears" cannot be
 # looked into without editing the installed script. CLAUDE_STATUSLINE_DEBUG buys that back without
 # giving the silence up: set to anything other than 0, false, no or off, each swallowed catch, each
-# cache branch and each state read and write appends one line - UTC time, process id, reason - to
-# claude-statusline-diag.log in the temp folder. Unset, which is the normal case, this reads one
-# environment variable and returns.
+# cache branch, each config refusal and each state read and write appends one line - UTC time, process
+# id, reason - to claude-statusline-diag.log in the temp folder. Unset, which is the normal case, no
+# call site does anything at all: see $script:diagOn below.
 # Writing the log is itself silent, for the same reason the caller's catch is: a temp folder that is
 # not there or cannot be written, or another render holding the file, costs the line and nothing else.
 # The reason is folded onto one line, because an exception message can carry newlines and one call has
@@ -85,6 +85,28 @@ function Write-StatusDiag([string] $Reason) {
         [System.IO.File]::AppendAllText($path, $line, $utf8)
     } catch { $null = $_ }
 }
+
+# Whether the log is on, decided once for the process, and the thing every call site asks before it
+# builds a reason or calls anything.
+#
+# The gate inside Write-StatusDiag is cheap, but it is reached too late to be free: PowerShell builds
+# the argument first, so "git cache: hit ($($info.Branch))" is interpolated on every render whatever
+# the flag says, and the call itself costs about seventy microseconds before the helper gets to decide
+# it has nothing to do. Measured on this machine, an unset flag cost about ninety-six microseconds a
+# call site that way. Deferring only the string - a script block argument - saved about twenty of that,
+# because the call, not the interpolation, is most of it. Testing a variable first costs nothing
+# measurable at all, and there are around thirty call sites, several of them on the path of every
+# render. So the call sites read `if ($script:diagOn) { Write-StatusDiag ... }` and an unset variable
+# means no interpolation, no call and no work of any kind.
+#
+# Write-StatusDiag keeps its own gate rather than trusting the callers': the environment variable stays
+# the one thing that decides, so the helper is still correct called on its own, and a call site that
+# forgets the guard is a missed optimisation rather than a log that writes when it should not.
+function Test-StatusDiagFlag {
+    $flag = $env:CLAUDE_STATUSLINE_DEBUG
+    return [bool] ($flag -and $flag.Trim() -notin @('0', 'false', 'no', 'off'))
+}
+$script:diagOn = Test-StatusDiagFlag
 
 # The built-in code point of every glyph the segments use, keyed by the name the icons key of
 # statusline.json takes: the $icon* constant minus its prefix, lower-cased. The constants themselves
@@ -400,13 +422,20 @@ function Get-ProjectConfigLimit { return @{ MaxBytes = 65536; TimeoutMs = 250 } 
 # The two calls the bounded read makes, each closed over the path so it can go straight to the thread
 # pool. Nothing here can be a script block: converted to a delegate one needs a runspace, and a thread
 # pool thread has none. Delegate.CreateDelegate over a one-argument static method is plain .NET, needs no
-# runspace, and the pair costs about a sixth of a millisecond - which is what makes it possible to put a
+# runspace, and the pair costs a fraction of a millisecond - which is what makes it possible to put a
 # blocking open behind a deadline without starting a process, and a process per render would cost more
 # than everything else the line does. Both APIs are .NET Standard, so they hold on the 7.0 floor.
+# Most of that fraction was the two reflection lookups rather than the delegates, and the two methods
+# are the same two every render, so they are looked up once and kept. Nothing here can go stale: a
+# MethodInfo for a method of the base class library is the same object for the life of the process.
 function Get-BoundedFileDelegate([string] $Path) {
+    if ($null -eq $script:openMethod) {
+        $script:openMethod = [System.IO.File].GetMethod('OpenRead', [type[]] @([string]))
+        $script:attributesMethod = [System.IO.File].GetMethod('GetAttributes', [type[]] @([string]))
+    }
     return @{
-        Open       = [System.Delegate]::CreateDelegate([Func[System.IO.FileStream]], $Path, [System.IO.File].GetMethod('OpenRead', [type[]] @([string])))
-        Attributes = [System.Delegate]::CreateDelegate([Func[System.IO.FileAttributes]], $Path, [System.IO.File].GetMethod('GetAttributes', [type[]] @([string])))
+        Open       = [System.Delegate]::CreateDelegate([Func[System.IO.FileStream]], $Path, $script:openMethod)
+        Attributes = [System.Delegate]::CreateDelegate([Func[System.IO.FileAttributes]], $Path, $script:attributesMethod)
     }
 }
 
@@ -436,12 +465,31 @@ function Get-BoundedStreamDelegate($Stream) {
 # on whatever is already stuck. That is the price of not waiting, and this process renders one line and
 # exits. What the clock does not cover is what the caller does with the text afterwards, or a filesystem
 # degraded enough to hang calls this function never makes.
+#
+# Every refusal also names itself. A project config that is silently ignored is correct behaviour and an
+# unanswerable support question at the same time, so each way out sets $why and the one call at the end
+# writes it to the diagnostics log. The reasons are the cases this function already separates - it could
+# not be opened, the handle is not an ordinary file, over the cap, a link or a reparse point, past the
+# deadline, and which stage spent it - so the log says which of them a file hit rather than that it was
+# ignored. Nothing is built when the log is off: the reasons are constants except on the paths that are
+# already rare, and the message from a failed call is read only under the guard.
+#
+# The waits are WaitAny rather than Wait for one reason: Wait rethrows a task that failed, and the file
+# not being there is the ordinary case for every project that keeps no config of its own, so that shape
+# raised and caught an exception on every render - about 300 microseconds measured here, more than the
+# pooled call itself costs. WaitAny returns -1 for the deadline and an index otherwise, and the task is
+# then asked whether it succeeded, so the deadline and the failure are told apart instead of both
+# arriving as one caught exception. File.OpenRead still throws on the pool thread - a file that is not
+# there is the only answer that API has - but the fault is now read off the task rather than rethrown
+# into a PowerShell catch, and the catch was where the cost was.
 function Read-BoundedFileText([string] $Path) {
     $limit = Get-ProjectConfigLimit
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $stream = $null
+    $why = $null
+    $err = $null
     try {
-        if (-not $Path) { return $null }
+        if (-not $Path) { $why = 'no path was given'; return $null }
         $call = Get-BoundedFileDelegate $Path
         # The open goes first and what it hands back is what gets judged, so there is no gap between a
         # question asked about a name and a read of whatever that name means by then. A name swapped in
@@ -449,53 +497,73 @@ function Read-BoundedFileText([string] $Path) {
         # written into the config anyway; what it cannot do is make the line block on a device or read
         # past the cap, because both of those are settled from the handle just below.
         $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
-        if ($left -le 0) { return $null }
+        if ($left -le 0) { $why = 'the deadline was spent before the open'; return $null }
         $open = [System.Threading.Tasks.Task]::Run($call.Open)
-        if (-not $open.Wait([int] $left)) { return $null }
+        if ([System.Threading.Tasks.Task]::WaitAny(@($open), [int] $left) -lt 0) { $why = "the open did not answer inside $($limit.TimeoutMs) ms"; return $null }
+        if (-not $open.IsCompletedSuccessfully) { $why = 'it could not be opened'; $err = $open.Exception; return $null }
         $fs = $open.Result
         $stream = Get-BoundedStreamDelegate $fs
         # From the handle: a stream that cannot seek is not an ordinary file - a FIFO, a pipe, a
         # character device. CanSeek is settled when the handle is made and costs nothing to read back;
         # the length is a call of its own, so it goes to the pool under the budget like everything else.
         # It is the length the handle reports, not one read off the path before the open.
-        if (-not $fs.CanSeek) { return $null }
+        if (-not $fs.CanSeek) { $why = 'the handle cannot seek, so it is not an ordinary file'; return $null }
         $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
-        if ($left -le 0) { return $null }
+        if ($left -le 0) { $why = 'the deadline was spent before its length'; return $null }
         $length = [System.Threading.Tasks.Task]::Run($stream.Length)
-        if (-not $length.Wait([int] $left)) { return $null }
-        if ($length.Result -gt $limit.MaxBytes) { return $null }
+        if ([System.Threading.Tasks.Task]::WaitAny(@($length), [int] $left) -lt 0) { $why = "its length did not answer inside $($limit.TimeoutMs) ms"; return $null }
+        if (-not $length.IsCompletedSuccessfully) { $why = 'its length could not be read'; $err = $length.Exception; return $null }
+        if ($length.Result -gt $limit.MaxBytes) { $why = "it is $($length.Result) bytes, over the $($limit.MaxBytes) byte cap"; return $null }
         # Belt and braces, and all this runtime offers against a link: a FileStream follows one, and the
         # APIs that name a handle's own target arrived in .NET 6, past the floor. So the name is asked
         # once more, and a reparse point or a directory is refused even though the handle looked ordinary.
+        # The two are asked separately only so that the log can say which one it was; refusing both is
+        # the one rule, and an ordinary file answers no to both tests either way.
         $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
-        if ($left -le 0) { return $null }
+        if ($left -le 0) { $why = 'the deadline was spent before the attribute probe'; return $null }
         $attr = [System.Threading.Tasks.Task]::Run($call.Attributes)
-        if (-not $attr.Wait([int] $left)) { return $null }
-        if (($attr.Result -band ([System.IO.FileAttributes]::ReparsePoint -bor [System.IO.FileAttributes]::Directory)) -ne 0) { return $null }
+        if ([System.Threading.Tasks.Task]::WaitAny(@($attr), [int] $left) -lt 0) { $why = "the attribute probe did not answer inside $($limit.TimeoutMs) ms"; return $null }
+        if (-not $attr.IsCompletedSuccessfully) { $why = 'its attributes could not be read'; $err = $attr.Exception; return $null }
+        if (($attr.Result -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { $why = 'it is a link or a reparse point'; return $null }
+        if (($attr.Result -band [System.IO.FileAttributes]::Directory) -ne 0) { $why = 'it is a directory'; return $null }
         $buf = [byte[]]::new($limit.MaxBytes + 1)
         $read = 0
         while ($read -lt $buf.Length) {
             $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
-            if ($left -le 0) { return $null }
+            if ($left -le 0) { $why = 'the deadline was spent reading it'; return $null }
             $task = $fs.ReadAsync($buf, $read, $buf.Length - $read)
-            if (-not $task.Wait([int] $left)) { return $null }
+            if ([System.Threading.Tasks.Task]::WaitAny(@($task), [int] $left) -lt 0) { $why = "a read did not answer inside $($limit.TimeoutMs) ms"; return $null }
+            if (-not $task.IsCompletedSuccessfully) { $why = 'it could not be read'; $err = $task.Exception; return $null }
             $n = $task.Result
             if ($n -le 0) { break }
             $read += $n
         }
         # The cap once more, in case the file grew past the length the handle reported.
-        if ($read -gt $limit.MaxBytes) { return $null }
+        if ($read -gt $limit.MaxBytes) { $why = "it grew past the $($limit.MaxBytes) byte cap while it was being read"; return $null }
         $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
         # UTF8.GetString keeps a byte order mark as U+FEFF, which ConvertFrom-Json will not parse past.
         if ($text.Length -gt 0 -and $text[0] -eq [char] 0xFEFF) { $text = $text.Substring(1) }
         return $text
-    } catch { return $null } finally {
+    } catch {
+        $why = 'the read failed'
+        $err = $_.Exception
+        return $null
+    } finally {
+        # One record for the whole attempt, on the way out, so every return above is covered by the one
+        # call and none of them can be the path that forgot to say why. Write-StatusDiag puts nothing on
+        # the pipeline, which is what lets it sit in a finally without changing what was returned.
+        if ($script:diagOn -and $why) {
+            $detail = if ($err) { " ($($err.GetBaseException().Message))" } else { '' }
+            Write-StatusDiag "config read: $Path was not read: $why$detail"
+        }
         # Cleanup obeys the same clock. With budget left the close is queued on the pool and not waited
         # on, so it cannot become the thing that overruns; with the budget gone the stream is abandoned
         # outright, whichever stage spent it, because a close would only wait on what is already stuck.
         # An abandoned handle is closed by the process exit that follows the line.
         if ($null -ne $stream -and ($limit.TimeoutMs - $sw.ElapsedMilliseconds) -gt 0) {
-            try { $null = [System.Threading.Tasks.Task]::Run($stream.Dispose) } catch { $null = $_ }
+            try { $null = [System.Threading.Tasks.Task]::Run($stream.Dispose) } catch { if ($script:diagOn) { Write-StatusDiag "config read: the close of $Path could not be queued: $($_.Exception.Message)" } }
+        } elseif ($null -ne $stream) {
+            if ($script:diagOn) { Write-StatusDiag "config read: the handle on $Path was left open, the deadline was spent" }
         }
     }
 }
@@ -506,6 +574,10 @@ function Read-BoundedFileText([string] $Path) {
 # file falls back to is the user file's value rather than the built-in default. -Bounded reads the file
 # as untrusted input, which is what the project file is; the user's own file, written by the installer
 # or by the user, is read as it always was, so an encoding Get-Content works out still loads.
+# A file that does not apply says so in the diagnostics log, for the same reason the bounded read does:
+# falling back quietly is right, and being unable to find out why is not. The read itself already named
+# the files it refused, so what is added here is what it cannot see - a file that is there and empty,
+# and one whose contents are not JSON this can merge.
 function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Bounded) {
     try {
         if (-not $Path) { return $Cfg }
@@ -513,9 +585,17 @@ function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Boun
             if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $Cfg }
             Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
         }
-        if (-not $text) { return $Cfg }
+        # $null is a refusal the read has already logged; an empty string is a file that is there and
+        # says nothing, which nothing else would ever report.
+        if (-not $text) {
+            if ($script:diagOn -and $null -ne $text) { Write-StatusDiag "config merge: $Path was not applied: the file is empty" }
+            return $Cfg
+        }
         $j = $text | ConvertFrom-Json -ErrorAction Stop
-        if ($j -isnot [System.Management.Automation.PSCustomObject]) { return $Cfg }
+        if ($j -isnot [System.Management.Automation.PSCustomObject]) {
+            if ($script:diagOn) { Write-StatusDiag "config merge: $Path was not applied: its JSON is not an object" }
+            return $Cfg
+        }
         # preset: a name standing for a layout, a style and every segment toggle, expanded first so that
         # every other key in this same file is written over it whatever order the file spells them in.
         # A preset therefore sits at the precedence of the file naming it: defaults, then the user file's
@@ -617,7 +697,10 @@ function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Boun
             $Cfg.Git.CacheSeconds = Get-ConfigInteger $g.cacheSeconds $Cfg.Git.CacheSeconds 0 300
             if ($g.cache -is [bool]) { $Cfg.Git.Cache = $g.cache }
         }
-    } catch { return $Cfg }
+    } catch {
+        if ($script:diagOn) { Write-StatusDiag "config merge: $Path was not applied: $($_.Exception.Message)" }
+        return $Cfg
+    }
     return $Cfg
 }
 
@@ -637,7 +720,10 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
     # repository chose, outside the one budget below, which is the whole thing that budget is for; a
     # directory that is not there is refused by the bounded read like anything else it cannot open.
     # Join-Path only joins strings, so the first call to touch a disk is inside Read-BoundedFileText.
-    try { return Merge-StatusConfigFile $cfg (Join-Path $ProjectDir '.claude' 'statusline.json') -Bounded } catch { return $cfg }
+    try { return Merge-StatusConfigFile $cfg (Join-Path $ProjectDir '.claude' 'statusline.json') -Bounded } catch {
+        if ($script:diagOn) { Write-StatusDiag "project config: nothing was read under $ProjectDir - $($_.Exception.Message)" }
+        return $cfg
+    }
 }
 
 # Colour table. Plain style uses the SGR codes the script has always used; powerline uses 256-colour
@@ -807,7 +893,7 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
     if (-not $Dir) { return $null }
     if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return $null }
     $git = (Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-    if (-not $git) { Write-StatusDiag 'git probe: git is not on PATH'; return $null }
+    if (-not $git) { if ($script:diagOn) { Write-StatusDiag 'git probe: git is not on PATH' }; return $null }
     $p = $null
     $outTask = $null
     $errTask = $null
@@ -827,19 +913,19 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
         $exited = $p.WaitForExit($TimeoutMs)
         if (-not $exited) {
             # Kill the whole tree, then give it a moment to actually go away before we dispose the handles.
-            try { $p.Kill($true) } catch { Write-StatusDiag "git probe: kill failed: $($_.Exception.Message)" }
+            try { $p.Kill($true) } catch { if ($script:diagOn) { Write-StatusDiag "git probe: kill failed: $($_.Exception.Message)" } }
             [void] $p.WaitForExit(100)
         }
         # Bounded waits on both drains: the full timeout after a clean exit, so a slow reader cannot cost
         # us the branch, and a short grace after a kill, where the result is discarded anyway. A faulted
         # task is observed here rather than left to the finalizer.
         $drainMs = if ($exited) { $TimeoutMs } else { 100 }
-        try { [void] [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask), $drainMs) } catch { Write-StatusDiag "git probe: drain failed: $($_.Exception.Message)" }
-        if (-not $exited) { Write-StatusDiag "git probe: no answer within $TimeoutMs ms"; return $null }
-        if (-not $outTask.IsCompletedSuccessfully) { Write-StatusDiag 'git probe: stdout did not drain'; return $null }
-        if ($p.ExitCode -ne 0) { Write-StatusDiag "git probe: git exited $($p.ExitCode)"; return $null }
+        try { [void] [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask), $drainMs) } catch { if ($script:diagOn) { Write-StatusDiag "git probe: drain failed: $($_.Exception.Message)" } }
+        if (-not $exited) { if ($script:diagOn) { Write-StatusDiag "git probe: no answer within $TimeoutMs ms" }; return $null }
+        if (-not $outTask.IsCompletedSuccessfully) { if ($script:diagOn) { Write-StatusDiag 'git probe: stdout did not drain' }; return $null }
+        if ($p.ExitCode -ne 0) { if ($script:diagOn) { Write-StatusDiag "git probe: git exited $($p.ExitCode)" }; return $null }
         return Read-PorcelainStatus $outTask.Result
-    } catch { Write-StatusDiag "git probe failed: $($_.Exception.Message)"; return $null }
+    } catch { if ($script:diagOn) { Write-StatusDiag "git probe failed: $($_.Exception.Message)" }; return $null }
     finally {
         # Disposing closes the redirected streams, so it is only safe once both drains have finished. The
         # bounded wait after a kill can return with a ReadToEndAsync still pending; disposing then would
@@ -908,7 +994,7 @@ function Get-GitRepoRoot([string] $Dir) {
             $path = [System.IO.Path]::GetDirectoryName($path)
         }
         return $null
-    } catch { Write-StatusDiag "git cache: repository walk failed: $($_.Exception.Message)"; return $null }
+    } catch { if ($script:diagOn) { Write-StatusDiag "git cache: repository walk failed: $($_.Exception.Message)" }; return $null }
 }
 
 # The stamp string for a git directory: the UTC ticks, joined with commas, of the directory itself, of
@@ -1001,14 +1087,18 @@ function Get-GitCacheDir {
 function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir, [int] $Ttl) {
     $repo = if ($CacheDir -and $Ttl -gt 0) { Get-GitRepoRoot $Dir } else { $null }
     if (-not $repo) {
-        if ($CacheDir -and $Ttl -gt 0) { Write-StatusDiag "git cache: skipped (no repository above $Dir)" } else { Write-StatusDiag 'git cache: skipped (off in the config)' }
+        if ($script:diagOn) {
+            if ($CacheDir -and $Ttl -gt 0) { Write-StatusDiag "git cache: skipped (no repository above $Dir)" } else { Write-StatusDiag 'git cache: skipped (off in the config)' }
+        }
         return Get-GitBranch $Dir $TimeoutMs
     }
     $root = $repo.WorkTree
     $stamps = $null
-    try { $stamps = Get-GitStamp $repo.GitDir } catch { Write-StatusDiag "git cache: stamp failed: $($_.Exception.Message)" }
+    try { $stamps = Get-GitStamp $repo.GitDir } catch { if ($script:diagOn) { Write-StatusDiag "git cache: stamp failed: $($_.Exception.Message)" } }
     if (-not $stamps -or $stamps.StartsWith('over-cap:')) {
-        if ($stamps) { Write-StatusDiag 'git cache: skipped (the repository is over the ref cap)' } else { Write-StatusDiag 'git cache: skipped (no stamp)' }
+        if ($script:diagOn) {
+            if ($stamps) { Write-StatusDiag 'git cache: skipped (the repository is over the ref cap)' } else { Write-StatusDiag 'git cache: skipped (no stamp)' }
+        }
         return Get-GitBranch $Dir $TimeoutMs
     }
     $path = [System.IO.Path]::Combine($CacheDir, (Get-ShortHash $root.ToLowerInvariant()) + '.json')
@@ -1020,22 +1110,22 @@ function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir
                 $j.root -is [string] -and $j.root -eq $root -and
                 $j.stamps -is [string] -and $j.stamps -ceq $stamps -and
                 [math]::Abs($now - [long] $j.writtenAt) -lt $Ttl -and $null -ne $j.PSObject.Properties['result']) {
-                if ($null -eq $j.result) { Write-StatusDiag 'git cache: hit (the entry holds no branch)'; return $null }
+                if ($null -eq $j.result) { if ($script:diagOn) { Write-StatusDiag 'git cache: hit (the entry holds no branch)' }; return $null }
                 $info = Read-CachedRecord $j.result
-                if ($info) { Write-StatusDiag "git cache: hit ($($info.Branch))"; return $info }
-                Write-StatusDiag 'git cache: miss (the record did not pass the guards)'
+                if ($info) { if ($script:diagOn) { Write-StatusDiag "git cache: hit ($($info.Branch))" }; return $info }
+                if ($script:diagOn) { Write-StatusDiag 'git cache: miss (the record did not pass the guards)' }
             } else {
-                Write-StatusDiag 'git cache: miss (the entry is stale or does not match)'
+                if ($script:diagOn) { Write-StatusDiag 'git cache: miss (the entry is stale or does not match)' }
             }
         } else {
-            Write-StatusDiag 'git cache: miss (no entry yet)'
+            if ($script:diagOn) { Write-StatusDiag 'git cache: miss (no entry yet)' }
         }
-    } catch { Write-StatusDiag "git cache: read failed: $($_.Exception.Message)" }
+    } catch { if ($script:diagOn) { Write-StatusDiag "git cache: read failed: $($_.Exception.Message)" } }
     $info = Get-GitBranch $Dir $TimeoutMs
     try {
         [void] [System.IO.Directory]::CreateDirectory($CacheDir)
         if (Write-AtomicJson $path ([ordered]@{ v = 1; root = $root; stamps = $stamps; writtenAt = $now; result = $info }) 3) { Invoke-SessionStateSweep $CacheDir }
-    } catch { Write-StatusDiag "git cache: write failed: $($_.Exception.Message)" }
+    } catch { if ($script:diagOn) { Write-StatusDiag "git cache: write failed: $($_.Exception.Message)" } }
     return $info
 }
 
@@ -1069,7 +1159,7 @@ function Get-SessionStateDir([bool] $Create) {
             [void] [System.IO.Directory]::CreateDirectory($dir)
         }
         return $dir
-    } catch { Write-StatusDiag "state dir failed: $($_.Exception.Message)"; return $null }
+    } catch { if ($script:diagOn) { Write-StatusDiag "state dir failed: $($_.Exception.Message)" }; return $null }
 }
 
 # The file for a session, <name>.json. When the id is already lower-case, at most 64 characters and has
@@ -1135,9 +1225,9 @@ function Get-CountedNumber($v, [switch] $Whole) {
 function Read-SessionState([string] $SessionId) {
     try {
         $path = Get-SessionStatePath $SessionId $false
-        if (-not $path -or -not [System.IO.File]::Exists($path)) { Write-StatusDiag 'state: no file yet'; return $null }
+        if (-not $path -or -not [System.IO.File]::Exists($path)) { if ($script:diagOn) { Write-StatusDiag 'state: no file yet' }; return $null }
         $j = [System.IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop
-        if ($j -isnot [System.Management.Automation.PSCustomObject] -or (Get-StateNumber $j.v) -ne 1) { Write-StatusDiag 'state: the file is not a version 1 record'; return $null }
+        if ($j -isnot [System.Management.Automation.PSCustomObject] -or (Get-StateNumber $j.v) -ne 1) { if ($script:diagOn) { Write-StatusDiag 'state: the file is not a version 1 record' }; return $null }
         $history = [System.Collections.Generic.List[hashtable]]::new()
         foreach ($h in @($j.history)) {
             $t = Get-StateNumber $h.t -Whole
@@ -1150,9 +1240,9 @@ function Read-SessionState([string] $SessionId) {
         foreach ($key in @('input_tokens', 'output_tokens')) { $state[$key] = Get-CountedNumber $j.$key -Whole }
         $state['cost_usd'] = Get-CountedNumber $j.cost_usd
         foreach ($key in @('used_percentage', 'five_hour_percentage')) { $state[$key] = Get-StateNumber $j.$key }
-        Write-StatusDiag "state: read ($path)"
+        if ($script:diagOn) { Write-StatusDiag "state: read ($path)" }
         return $state
-    } catch { Write-StatusDiag "state read failed: $($_.Exception.Message)"; return $null }
+    } catch { if ($script:diagOn) { Write-StatusDiag "state read failed: $($_.Exception.Message)" }; return $null }
 }
 
 # The next state for a session: the payload's figures now, the counters the payload did not carry kept
@@ -1219,12 +1309,12 @@ function Invoke-SessionStateSweep([string] $Dir) {
             foreach ($f in [System.IO.Directory]::EnumerateFiles($Dir, $pattern)) {
                 if ($deleted -ge 200) { $capped = $true; break }
                 if ([math]::Abs(($now - [System.IO.File]::GetLastWriteTimeUtc($f)).TotalDays) -lt 1) { continue }
-                try { [System.IO.File]::Delete($f); $deleted++ } catch { Write-StatusDiag "sweep: delete failed: $($_.Exception.Message)" }
+                try { [System.IO.File]::Delete($f); $deleted++ } catch { if ($script:diagOn) { Write-StatusDiag "sweep: delete failed: $($_.Exception.Message)" } }
             }
             if ($capped) { break }
         }
         if (-not $capped) { [System.IO.File]::WriteAllText($stamp, '') }
-    } catch { Write-StatusDiag "sweep failed: $($_.Exception.Message)" }
+    } catch { if ($script:diagOn) { Write-StatusDiag "sweep failed: $($_.Exception.Message)" } }
 }
 
 # Writes a session's state through Write-AtomicJson, then runs the sweep. Nothing is written for an
@@ -1235,16 +1325,16 @@ function Invoke-SessionStateSweep([string] $Dir) {
 # is one missing delta.
 function Write-SessionState([string] $SessionId, $State) {
     try {
-        if (-not $State) { Write-StatusDiag 'state: not written (nothing to write)'; return }
+        if (-not $State) { if ($script:diagOn) { Write-StatusDiag 'state: not written (nothing to write)' }; return }
         $path = Get-SessionStatePath $SessionId $true
-        if (-not $path) { Write-StatusDiag 'state: not written (the session id leaves no file name)'; return }
+        if (-not $path) { if ($script:diagOn) { Write-StatusDiag 'state: not written (the session id leaves no file name)' }; return }
         if (Write-AtomicJson $path $State 4) {
-            Write-StatusDiag "state: written ($path)"
+            if ($script:diagOn) { Write-StatusDiag "state: written ($path)" }
             Invoke-SessionStateSweep (Split-Path $path -Parent)
         } else {
-            Write-StatusDiag 'state: not written (the record serialised to nothing)'
+            if ($script:diagOn) { Write-StatusDiag 'state: not written (the record serialised to nothing)' }
         }
-    } catch { Write-StatusDiag "state write failed: $($_.Exception.Message)" }
+    } catch { if ($script:diagOn) { Write-StatusDiag "state write failed: $($_.Exception.Message)" } }
 }
 
 $raw = [Console]::In.ReadToEnd()
