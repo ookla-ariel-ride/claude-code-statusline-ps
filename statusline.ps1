@@ -530,8 +530,10 @@ function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Boun
         # git keys are, because they are not a pair that has to agree: a file naming only context leaves
         # limits where it was, and a value that is not a whole number keeps the value beneath it. 0 turns
         # that alarm off outright, and a negative clamps to it. The top of the range is Int32's own end
-        # rather than 100, so a value above 100 is kept as written and can then never fire, which is the
-        # other way of saying "off"; clamping it to 100 would turn it into an alarm at every full window.
+        # rather than 100, so a value above 100 is kept as written and fires only if the payload reports
+        # a figure that high: a context window never does, because the meter clamps to 100, but a rate
+        # limit can, because a limit really at 105% is left unclamped to say so. Clamping the level to
+        # 100 instead would turn it into an alarm at every full window.
         $al = $j.alarm
         if ($al -is [System.Management.Automation.PSCustomObject]) {
             $Cfg.Alarm.Context = Get-ConfigInteger $al.context $Cfg.Alarm.Context 0 ([int]::MaxValue)
@@ -1298,12 +1300,15 @@ function Get-ModelSegment($d, $cfg) {
     return @{ Name = 'model'; Text = $text; Short = $null; Role = $role; Bold = $true }
 }
 
-# THE RULE THIS FEATURE RESTS ON: quiet never hides a segment that is carrying a warning or an error.
-# It is a setting for hiding boring numbers, and one that also hid the alarm would be worse than not
-# having it at all, so every caller checks its own warning state before it asks this question - the
-# context and limits builders keep a segment whose role is warn or bad, and limits keeps one whose pace
-# arrow projects an overrun, whatever the threshold says. The cost segment has no warning state of its
-# own to preserve: its role is always dim and it has no thresholds, so the guard is the whole story there.
+# THE RULE THIS FEATURE RESTS ON: quiet never hides a segment that is carrying a warning, an error or
+# an alarm. It is a setting for hiding boring numbers, and one that also hid the alarm would be worse
+# than not having it at all, so every caller checks its own warning state before it asks this question -
+# the context and limits builders keep a segment whose role is warn or bad, limits keeps one whose pace
+# arrow projects an overrun, and both keep one whose figure is at or above its Test-AlarmLevel line,
+# whatever the threshold says. That last one is not implied by the first: alarm.context and alarm.limits
+# are allowed to sit below thresholds.warn, and there the role reads ok while the model segment is red.
+# The cost segment has no warning state of its own to preserve: its role is always dim, it has no
+# thresholds and no alarm is read against a dollar figure, so the guard is the whole story there.
 #
 # True when a segment has nothing worth saying yet: the value it would show is below the config's quiet
 # threshold for it, so the builder returns $null and the segment never reaches the line. The comparison
@@ -1373,15 +1378,23 @@ function Get-ContextSegment($d, $cfg) {
     $size = $d.context_window.context_window_size
     # ORDER MATTERS, and these three lines are why. $pct is normalised first - by Get-WholePercent,
     # which is the same rule the model segment's alarm compares against - the role is read from the
-    # normalised $pct, and only then is the quiet guard asked. Whoever changes how $pct is normalised
-    # must keep the role below it: a role read from the raw payload figure would band the wrong number,
-    # and the guard would then hide a meter the wrong colour says is calm. Both rules break at once,
-    # and a third with them: the alarm would then fire on a percentage this segment never printed.
+    # normalised $pct, and only then is the quiet guard asked, with the role and the alarm both settled
+    # in front of it. Whoever changes how $pct is normalised must keep the role below it: a role read
+    # from the raw payload figure would band the wrong number, and the guard would then hide a meter the
+    # wrong colour says is calm. Both rules break at once, and a third with them: the alarm would then
+    # fire on a percentage this segment never printed.
     $role = if (Test-WideWindow $size) { Get-ThresholdRole $pct 70 90 } else { Get-ThresholdRole $pct $cfg.Thresholds.Warn $cfg.Thresholds.Bad }
     # quiet.context compares the clamped percentage, which is what the segment would show. The role is
     # settled first so the rule above can hold: a meter already yellow or red is an alarm, and a
-    # threshold set above the warn band must not swallow it.
-    if ($role -eq 'ok' -and (Test-QuietValue $cfg 'context' $pct)) { return $null }
+    # threshold set above the warn band must not swallow it. The model segment's own alarm is the third
+    # thing weighed here, and the most serious of the three: alarm.context is allowed to sit below
+    # thresholds.warn, and there the role still reads 'ok' while the model turns red - a red bar with no
+    # meter under it saying which number it is about. What that test reads is the RAW payload figure and
+    # not the clamped $pct, so it asks exactly the question Test-AlarmState asks for the model segment
+    # and the two can never disagree, a payload above 100 against a level above 100 included.
+    # Test-AlarmLevel answers false for a level that is missing, so a config with no Alarm table hides
+    # what it always hid.
+    if ($role -eq 'ok' -and -not (Test-AlarmLevel $d.context_window.used_percentage $cfg.Alarm.Context) -and (Test-QuietValue $cfg 'context' $pct)) { return $null }
     $filled = [math]::Round($pct / 10)
     $bar = ((G 0x2588) * $filled) + ((G 0x2591) * (10 - $filled))
     $used = [double] ($d.context_window.total_input_tokens ?? 0) + [double] ($d.context_window.total_output_tokens ?? 0)
@@ -1505,19 +1518,24 @@ function Get-LimitsSegment($d, $cfg) {
     # ORDER MATTERS here the same way it does in Get-ContextSegment. Each figure is normalised to a whole
     # percent inside the loop above - by Get-WholePercent, the rule the alarm compares against too -
     # $worst and $windowWorst are accumulated from those normalised figures, the role is read from
-    # $worst, and only then is the quiet guard asked. Whoever changes how a figure is normalised must
-    # keep that chain: a role read from a raw payload figure would band the wrong number, and the guard
-    # would then hide a segment the wrong colour says is calm. The pace arrow below is the one
-    # deliberate exception, and says so: it needs the raw figure because it is projecting from it.
+    # $worst, and only then is the quiet guard asked, with the role, the pace arrow and the alarm all
+    # settled in front of it. Whoever changes how a figure is normalised must keep that chain: a role
+    # read from a raw payload figure would band the wrong number, and the guard would then hide a
+    # segment the wrong colour says is calm. The pace arrow below is the one deliberate exception, and
+    # says so: it needs the raw figure because it is projecting from it.
     $role = Get-ThresholdRole $worst $cfg.Thresholds.Warn $cfg.Thresholds.Bad
     # quiet.limits is tested on the larger of the two rate-limit windows, not on $worst, which also
-    # carries the spend limit and stays the colour-driving figure. Two guards stand in front of it, both
-    # the rule above: a segment already yellow or red is an alarm, and so is a five-hour figure whose
+    # carries the spend limit and stays the colour-driving figure. Three guards stand in front of it,
+    # all the rule above: a segment already yellow or red is an alarm, so is a five-hour figure whose
     # projection overruns the window - that is the case a threshold would otherwise swallow at its most
-    # dangerous, because a low current percentage early in a window is exactly what projects red.
-    # With neither window present there is nothing to compare, and Test-QuietValue answers false on the
+    # dangerous, because a low current percentage early in a window is exactly what projects red - and
+    # so is a window figure at or above alarm.limits, which is allowed to sit below thresholds.warn and
+    # would otherwise turn the model red with no tachometer under it saying which limit it is. That last
+    # test reads $windowWorst, the same pair of windows Test-AlarmState reads for the model segment; the
+    # spend limit raises no alarm there and is not compared here either. With neither window present
+    # there is nothing to compare, and both Test-AlarmLevel and Test-QuietValue answer false on the
     # $null, so a payload carrying only a spend limit is never hidden by this key.
-    if ($role -eq 'ok' -and -not ($paceAt -ge 0 -and $pace.Over) -and (Test-QuietValue $cfg 'limits' $windowWorst)) { return $null }
+    if ($role -eq 'ok' -and -not ($paceAt -ge 0 -and $pace.Over) -and -not (Test-AlarmLevel $windowWorst $cfg.Alarm.Limits) -and (Test-QuietValue $cfg 'limits' $windowWorst)) { return $null }
     if ($paceAt -ge 0) {
         $arrow = if ($pace.Red) { Format-Inline 'removed' $pace.Arrow $role $cfg.Style } else { $pace.Arrow }
         $bits[$paceAt] = "$paceHead $arrow$paceTail"

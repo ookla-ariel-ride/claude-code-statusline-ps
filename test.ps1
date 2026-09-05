@@ -1711,9 +1711,10 @@ Confirm-Equal (Get-ContextSegment (Get-ContextPayload -5) $quiet30) $null 'conte
 # $bandCfg carries no Quiet table at all, which is what an older config object looks like to the guard.
 Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload 0) $bandCfg)) 'context quiet: a config with no Quiet table hides nothing'
 
-# Quiet never hides a segment carrying a warning or an error. With the bands moved down under the quiet
-# threshold, a percentage the threshold would hide is already yellow or red, and the meter has to stay.
-# Without the role check every one of these would vanish, which is the setting hiding its own alarm.
+# Quiet never hides a segment carrying a warning, an error or an alarm. First the role: with the bands
+# moved down under the quiet threshold, a percentage the threshold would hide is already yellow or red,
+# and the meter has to stay. Without the role check every one of these would vanish, which is the
+# setting hiding its own warning. The alarm follows in the block after this one.
 $quietAlarm = @{ Thresholds = @{ Warn = 20; Bad = 40 }; Quiet = @{ cost = 0.0; context = 50.0; limits = 0.0 } }
 $seg = Get-ContextSegment (Get-ContextPayload 25) $quietAlarm
 Confirm-Equal $seg.Role 'warn' 'context quiet 50 at 20/40: 25% is warn'
@@ -1730,6 +1731,34 @@ $seg = Get-ContextSegment (Get-WideContextPayload 75) $quietWide
 Confirm-Equal $seg.Role 'warn' 'context quiet 80 on a 1M window: 75% is warn on the fixed bands'
 Confirm-True ($null -ne $seg) 'context quiet 80 on a 1M window: the warn meter is kept'
 Confirm-Equal (Get-ContextSegment (Get-WideContextPayload 65) $quietWide) $null 'context quiet 80 on a 1M window: 65% is ok there, so the threshold hides it'
+
+# The alarm is the third state the guard has to weigh, and the most serious of them. #23 allows an
+# alarm level below thresholds.warn, and at that setting a percentage the cutoff would hide is already
+# turning the model segment red: without this the user gets a red bar and no meter under it saying why.
+# The bands stay at 60/85 so every figure below is still 'ok' and the alarm is the only thing deciding.
+$quietAlarmLevel = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 0.0; context = 30.0; limits = 0.0 }; Alarm = @{ Context = 20; Limits = 90 } }
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 25) $quietAlarmLevel).Role 'ok' 'context quiet 30 alarm 20: 25% is still ok under 60/85, so only the alarm can keep it'
+Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload 25) $quietAlarmLevel)) 'context quiet 30 alarm 20: a meter above the alarm level is kept though the cutoff would hide it'
+Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload 20) $quietAlarmLevel)) 'context quiet 30 alarm 20: exactly 20% is at the alarm and kept'
+# The alarm compares the whole number the meter prints, so the guard moves at the same figure the model does.
+Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload 19.6) $quietAlarmLevel)) 'context quiet 30 alarm 20: 19.6 rounds to the 20% the meter prints and is kept'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 19) $quietAlarmLevel) $null 'context quiet 30 alarm 20: 19% is below the alarm and still ok, so the cutoff hides it'
+# 0 is that alarm off, and then the cutoff decides alone again.
+$quietAlarmOff = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 0.0; context = 30.0; limits = 0.0 }; Alarm = @{ Context = 0; Limits = 0 } }
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 25) $quietAlarmOff) $null 'context quiet 30 alarm off: 25% is hidden again'
+# alarm.limits is not this segment's alarm: a level low enough to fire on a rate limit must not keep a meter.
+$quietAlarmLimitsOnly = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 0.0; context = 30.0; limits = 0.0 }; Alarm = @{ Context = 90; Limits = 1 } }
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 25) $quietAlarmLimitsOnly) $null 'context quiet 30: alarm.limits is not the context alarm, so 25% is still hidden'
+# $quiet30 carries no Alarm table at all, which is what a config built before #23 looks like to the guard.
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 25) $quiet30) $null 'context quiet 30: a config with no Alarm table hides 25% as it always did'
+# The guard reads the RAW payload figure, not the 0..100 clamp the meter prints, so it asks the alarm
+# the same question Test-AlarmState asks for the model segment. A payload above 100 is the only place
+# the two figures differ; the config reader cannot produce bands above 100, so these bands are written
+# by hand to leave a clamped 100 'ok' and let the raw figure be the only thing deciding.
+$quietAlarmRaw = @{ Thresholds = @{ Warn = 101; Bad = 102 }; Quiet = @{ cost = 0.0; context = 150.0; limits = 0.0 }; Alarm = @{ Context = 105; Limits = 90 } }
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 110) $quietAlarmRaw).Role 'ok' 'context quiet raw: a clamped 100% is ok under 101/102, so only the alarm can keep it'
+Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload 110) $quietAlarmRaw)) 'context quiet raw: a payload of 110 fires an alarm of 105 and is kept, though the clamped 100 would not'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload 104) $quietAlarmRaw) $null 'context quiet raw: a payload of 104 is below the alarm of 105 and is hidden'
 
 # ---- The cached suffix ----
 # How much of this turn's input the prompt cache served, appended to the token counts. It is built
@@ -1883,6 +1912,10 @@ Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload 1) $quiet1)) 'cost qui
 Confirm-Equal (Get-CostSegment (Get-CostPayload 12.5) $quiet1).Text ("$iconCost `$" + ('{0:N2}' -f 12.5)) 'cost quiet 1: 12.50 stays, text unchanged'
 Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload 0) $quietOff)) 'cost quiet 0: a zero cost is still built'
 Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload 0.02) $bandCfg)) 'cost quiet: a config with no Quiet table hides nothing'
+# Cost has no alarm to preserve, unlike context and limits: nothing in the alarm table is read against a
+# dollar figure, so an alarm that is firing elsewhere on the line leaves this cutoff exactly as it was.
+$quiet1Alarm = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 1.0; context = 0.0; limits = 0.0 }; Alarm = @{ Context = 1; Limits = 1 } }
+Confirm-Equal (Get-CostSegment (Get-CostPayload 0.4312) $quiet1Alarm) $null 'cost quiet 1: an alarm firing elsewhere does not keep a 43-cent cost'
 # A cost that is not a number cannot be compared, so the guard stands aside and the builder does what
 # it always did with it, which is to format whatever converts.
 Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload '0.50') $quiet1)) 'cost quiet 1: a string cost is not a figure the guard can read, so it is not hidden'
@@ -2288,7 +2321,8 @@ Confirm-True ($null -ne (Get-LimitsSegment $limitsSpendOnlyHigh $quiet70)) 'limi
 $limits7dOnlyHigh = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"seven_day":{"used_percentage":75,"resets_at":1700000000}}'
 Confirm-True ($null -ne (Get-LimitsSegment $limits7dOnlyHigh $quiet70)) 'limits quiet 70: a 7d of 75 is a window above the cutoff and keeps the segment'
 
-# Quiet never hides a segment carrying a warning or an error. Two ways a limits segment can carry one.
+# Quiet never hides a segment carrying a warning, an error or an alarm. Three ways a limits segment can
+# carry one, the alarm last, in the block after the pace arrow.
 # First the role: with the bands under the cutoff, a figure the cutoff would hide is already coloured.
 $quietRoleAlarm = @{ Thresholds = @{ Warn = 20; Bad = 40 }; Quiet = @{ cost = 0.0; context = 0.0; limits = 70.0 } }
 $limits5h25 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":25,"resets_at":1700000000}}'
@@ -2342,6 +2376,31 @@ Confirm-Equal (Get-LimitsSegment $limits69 $quiet70) $null 'limits quiet 70: 69 
 $limits696 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":69.6,"resets_at":1700000000}}'
 Confirm-True ($null -ne (Get-LimitsSegment $limits696 $quiet70)) 'limits quiet 70: 69.6 rounds to 70 and stays'
 Confirm-True ($null -ne (Get-LimitsSegment $limitsWorst61 $bandCfg)) 'limits quiet: a config with no Quiet table hides nothing'
+
+# And the third state the guard weighs: the alarm. #23 allows alarm.limits below thresholds.warn, and
+# there a window figure the cutoff would hide is already turning the model red - a red bar with no
+# tachometer under it to say which limit it is. The bands stay at 95/99 so the role is 'ok' throughout
+# and the alarm is the only thing that can keep the segment.
+$quietAlarmLimits = @{ Thresholds = @{ Warn = 95; Bad = 99 }; Quiet = @{ cost = 0.0; context = 0.0; limits = 70.0 }; Alarm = @{ Context = 90; Limits = 50 } }
+Confirm-Equal (Get-LimitsSegment $limitsWorst61 $bands95).Role 'ok' 'limits quiet 70 alarm 50: a worst of 61 is ok under 95/99, so only the alarm can keep it'
+Confirm-True ($null -ne (Get-LimitsSegment $limitsWorst61 $quietAlarmLimits)) 'limits quiet 70 alarm 50: a 5h of 61 is above the alarm and kept though the cutoff would hide it'
+$limits5h50 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":50,"resets_at":1700000000}}'
+Confirm-True ($null -ne (Get-LimitsSegment $limits5h50 $quietAlarmLimits)) 'limits quiet 70 alarm 50: exactly 50 is at the alarm and kept'
+$limits5h49 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":49,"resets_at":1700000000}}'
+Confirm-Equal (Get-LimitsSegment $limits5h49 $quietAlarmLimits) $null 'limits quiet 70 alarm 50: 49 is below the alarm and still ok, so the cutoff hides it'
+# The 7-day window raises the alarm too, which is what Test-AlarmState does for the model segment.
+$limits7d55 = Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":10,"resets_at":1700000000},"seven_day":{"used_percentage":55,"resets_at":1700000000}}'
+Confirm-True ($null -ne (Get-LimitsSegment $limits7d55 $quietAlarmLimits)) 'limits quiet 70 alarm 50: a 7d of 55 is above the alarm and keeps the segment'
+# The spend limit is not an alarm, and it is not what the guard compares: it drives $worst but not
+# $windowWorst, so a 90% spend beside a calm 5-hour figure is still hidden by the cutoff.
+Confirm-Equal (Get-LimitsSegment $limitsSpend90 $quietAlarmLimits) $null 'limits quiet 70 alarm 50: a 90% spend raises no alarm, so a 5h of 10 is still hidden'
+# alarm.context is not this segment's alarm.
+$quietAlarmContextOnly = @{ Thresholds = @{ Warn = 95; Bad = 99 }; Quiet = @{ cost = 0.0; context = 0.0; limits = 70.0 }; Alarm = @{ Context = 1; Limits = 90 } }
+Confirm-Equal (Get-LimitsSegment $limitsWorst61 $quietAlarmContextOnly) $null 'limits quiet 70: alarm.context is not the limits alarm, so a 5h of 61 is still hidden'
+# 0 is that alarm off, and a config with no Alarm table is what one built before #23 looks like.
+$quietAlarmLimitsOff = @{ Thresholds = @{ Warn = 95; Bad = 99 }; Quiet = @{ cost = 0.0; context = 0.0; limits = 70.0 }; Alarm = @{ Context = 0; Limits = 0 } }
+Confirm-Equal (Get-LimitsSegment $limitsWorst61 $quietAlarmLimitsOff) $null 'limits quiet 70 alarm off: a 5h of 61 is hidden again'
+Confirm-Equal (Get-LimitsSegment $limitsWorst61 $quiet70) $null 'limits quiet 70: a config with no Alarm table hides a 5h of 61 as it always did'
 
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":61,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000},"spend_limit":{"used_percentage":null,"resets_at":null}}') $bandCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit null percentage: unchanged text'
@@ -4947,6 +5006,23 @@ $onText = ConvertTo-PlainText ((Invoke-StatusLine $payload12 (Write-TempConfig '
 $offText = ConvertTo-PlainText ((Invoke-StatusLine $payload12 (Write-TempConfig 'render-alarm-text-off.json' '{ "alarm": { "context": 0 } }') 0).Lines -join "`n")
 Confirm-Equal $onText $offText 'render alarm: the alarm changes no character of the line'
 Confirm-True ($onText.Contains("$iconModel Sonnet 5")) 'render alarm: the model name is still there'
+# A level above 100 is not "off". It can never fire on a context window, which is clamped to 100 before
+# it is printed, but a rate limit is deliberately left unclamped - a limit really at 105% should say so -
+# so alarm.limits above 100 fires there. The matrix case above only shows 150 not firing at 92%, which
+# proves the half of it that is about the context window; this is the half that is about a rate limit.
+$overPayload = '{ "model": { "display_name": "Sonnet 5" }, "rate_limits": { "five_hour": { "used_percentage": 107, "resets_at": 1700000000 } } }'
+foreach ($case in @(
+        @{ Name = 'alarm-limits-105'; Level = 105; Red = $true; Label = 'a level of 105 fires on a 5-hour figure of 107' }
+        @{ Name = 'alarm-limits-108'; Level = 108; Red = $false; Label = 'a level of 108 is above that figure and does not fire' })) {
+    $r = Invoke-StatusLine $overPayload (Write-TempConfig "render-$($case.Name).json" ('{ "alarm": { "context": 0, "limits": ' + $case.Level + ' } }')) 0
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) "render $($case.Name): exit code 0, stderr empty"
+    $alarmRaw = $r.Lines -join "`n"
+    $want = if ($case.Red) { "$esc[31m$iconModel" } else { "$esc[1;36m$iconModel" }
+    $other = if ($case.Red) { "$esc[1;36m$iconModel" } else { "$esc[31m$iconModel" }
+    Confirm-True ($alarmRaw.Contains($want)) "render $($case.Name): $($case.Label)"
+    Confirm-True (-not $alarmRaw.Contains($other)) "render $($case.Name): and the model segment is in no other colour"
+    Confirm-True ((ConvertTo-PlainText $alarmRaw).Contains("$iconLimit 5h 107%")) "render $($case.Name): the rate limit still prints 107%, unclamped"
+}
 # Powerline, where the alarm is a block background rather than an SGR code, and the arrow after the
 # model block picks the alarm colour up because Format-Line reads both from the same role.
 $r = Invoke-StatusLine $payload12 (Write-TempConfig 'render-alarm-powerline.json' '{ "style": "powerline" }') 0
@@ -5039,6 +5115,33 @@ $text = ConvertTo-PlainText ($r.Lines -join "`n")
 Confirm-True ($text.Contains("$iconLimit 5h 61%")) 'render quiet alarm: a warn limits segment under the cutoff is kept, with its figure'
 Confirm-True (-not $text.Contains($iconCost)) 'render quiet alarm: cost has no warning state, so its threshold still hides it'
 Confirm-True (-not $text.Contains($iconCtx)) 'render quiet alarm: the 5% meter is ok, so its threshold still hides it'
+# The same rule against the alarm, which is the more serious state and the one a threshold could
+# otherwise swallow whole. #23 allows an alarm level below thresholds.warn, and at that setting the two
+# lines below used to render a red model segment with no number under it explaining the colour.
+# 05 is a 25% context with no rate limits; the alarm at 20 fires and the cutoff at 30 would have hidden
+# the meter. Each case is rendered twice, once with the alarm off, so the alarm is seen to be the only
+# thing keeping the segment rather than something else on the line.
+foreach ($case in @(
+        @{ Name = 'context'; Payload = '05'; Glyph = $iconCtx; Figure = "$iconCtx 25%"
+            On = '{ "alarm": { "context": 20, "limits": 0 }, "quiet": { "context": 30 } }'
+            Off = '{ "alarm": { "context": 0, "limits": 0 }, "quiet": { "context": 30 } }'
+            Label = 'a 25% meter at an alarm of 20 under a cutoff of 30' }
+        @{ Name = 'limits'; Payload = '07'; Glyph = $iconLimit; Figure = "$iconLimit 5h 61%"
+            On = '{ "alarm": { "context": 0, "limits": 50 }, "quiet": { "limits": 70 }, "thresholds": { "warn": 70, "bad": 85 } }'
+            Off = '{ "alarm": { "context": 0, "limits": 0 }, "quiet": { "limits": 70 }, "thresholds": { "warn": 70, "bad": 85 } }'
+            Label = 'a 5h figure of 61 at an alarm of 50 under a cutoff of 70' })) {
+    $qaPayload = if ($case.Payload -eq '05') { $payload05 } else { $payload07 }
+    $r = Invoke-StatusLine $qaPayload (Write-TempConfig "render-quiet-alarm-$($case.Name)-on.json" $case.On) 0
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) "render quiet alarm $($case.Name): exit code 0, stderr empty"
+    $qaRaw = $r.Lines -join "`n"
+    Confirm-True ($qaRaw.Contains("$esc[31m$iconModel")) "render quiet alarm $($case.Name): the model segment is red, so the line is carrying an alarm"
+    Confirm-True ((ConvertTo-PlainText $qaRaw).Contains($case.Figure)) "render quiet alarm $($case.Name): $($case.Label) is kept, with its figure"
+    $r = Invoke-StatusLine $qaPayload (Write-TempConfig "render-quiet-alarm-$($case.Name)-off.json" $case.Off) 0
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) "render quiet alarm $($case.Name) off: exit code 0, stderr empty"
+    $qaRaw = $r.Lines -join "`n"
+    Confirm-True (-not $qaRaw.Contains("$esc[31m$iconModel")) "render quiet alarm $($case.Name) off: with the alarm off the model segment is not red"
+    Confirm-True (-not (ConvertTo-PlainText $qaRaw).Contains($case.Glyph)) "render quiet alarm $($case.Name) off: and the cutoff hides the segment again, so the alarm was what kept it"
+}
 # A quiet block the script cannot read leaves every segment visible and says nothing on stderr.
 foreach ($case in @(
         @{ Name = 'render-quiet-scalar'; Json = '{ "quiet": 5 }'; Label = 'a quiet that is not an object' }
