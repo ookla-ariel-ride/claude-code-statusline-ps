@@ -19,6 +19,7 @@ $icons = [ordered]@{
     bolt        = 0xF0E7
     brain       = 0xF09D0
     speedometer = 0xF04C5
+    'timer-outline' = 0xF051B
     vim         = 0xE62B
     user        = 0xF007
     tag         = 0xF02B
