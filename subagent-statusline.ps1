@@ -41,11 +41,16 @@ function C([string] $code, [string] $text) { "$e[${code}m$text$e[0m" }
 # characters 0, CJK and emoji 2, else 1. Format is the whole category rather than the U+200B to U+200D
 # range it used to be: a zero-width joiner, a bidi override, a directional isolate and a byte order
 # mark all draw nothing, and counting one as a cell measures a line wider than it renders.
-# A small wcwidth approximation; Nerd Font glyphs count as 1. The OSC 8 hyperlink wrappers go first,
-# with either terminator (ESC \ or BEL), so a URL is never counted as text; then the SGR colour codes.
+# A small wcwidth approximation; Nerd Font glyphs count as 1. The OSC strings go first, with either
+# terminator (ESC \ or BEL), so a URL is never counted as text; then the SGR colour codes.
+# One rule for every OSC command rather than one rule per command: an 8 hyperlink wrapper and the 9;4
+# taskbar progress sequence are both "ESC ] anything terminator", which is exactly what a terminal that
+# does not know the command swallows, so measuring them the same way is measuring what is drawn. The
+# class excludes ESC as well as BEL, so the string stops at the ESC of an ESC \ terminator rather than
+# running through it into the next escape.
 function Get-VisibleWidth([string] $Text) {
     if (-not $Text) { return 0 }
-    $plain = [regex]::Replace($Text, "`e\]8;[^`a`e]*(?:`a|`e\\)", '')
+    $plain = [regex]::Replace($Text, "`e\][^`a`e]*(?:`a|`e\\)", '')
     $plain = [regex]::Replace($plain, "`e\[[0-9;]*m", '')
     $width = 0
     $en = [System.Globalization.StringInfo]::GetTextElementEnumerator($plain)

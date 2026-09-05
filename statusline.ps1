@@ -196,11 +196,16 @@ function Get-ConfigInteger($v, [int] $Default, [int] $Min, [int] $Max) {
 # characters 0, CJK and emoji 2, else 1. Format is the whole category rather than the U+200B to U+200D
 # range it used to be: a zero-width joiner, a bidi override, a directional isolate and a byte order
 # mark all draw nothing, and counting one as a cell measures a line wider than it renders.
-# A small wcwidth approximation; Nerd Font glyphs count as 1. The OSC 8 hyperlink wrappers go first,
-# with either terminator (ESC \ or BEL), so a URL is never counted as text; then the SGR colour codes.
+# A small wcwidth approximation; Nerd Font glyphs count as 1. The OSC strings go first, with either
+# terminator (ESC \ or BEL), so a URL is never counted as text; then the SGR colour codes.
+# One rule for every OSC command rather than one rule per command: an 8 hyperlink wrapper and the 9;4
+# taskbar progress sequence are both "ESC ] anything terminator", which is exactly what a terminal that
+# does not know the command swallows, so measuring them the same way is measuring what is drawn. The
+# class excludes ESC as well as BEL, so the string stops at the ESC of an ESC \ terminator rather than
+# running through it into the next escape.
 function Get-VisibleWidth([string] $Text) {
     if (-not $Text) { return 0 }
-    $plain = [regex]::Replace($Text, "`e\]8;[^`a`e]*(?:`a|`e\\)", '')
+    $plain = [regex]::Replace($Text, "`e\][^`a`e]*(?:`a|`e\\)", '')
     $plain = [regex]::Replace($plain, "`e\[[0-9;]*m", '')
     $width = 0
     $en = [System.Globalization.StringInfo]::GetTextElementEnumerator($plain)
@@ -322,7 +327,7 @@ function Read-SegmentNameList($Value, [hashtable] $Known, [hashtable] $Seen) {
 # The built-in defaults: the table every config file is merged over. A fresh table each call, the nested
 # tables included, so a merge that changes one caller's copy cannot reach the next caller's.
 function Get-DefaultStatusConfig {
-    $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Segments = @{}; Git = Get-DefaultGitConfig }
+    $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Taskbar = $false; Segments = @{}; Git = Get-DefaultGitConfig }
     foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
     $cfg.Order = @((Get-SegmentRegistry).Name)
     $cfg.Rows = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
@@ -345,6 +350,7 @@ function Get-StatusConfigKey {
         @{ Json = 'style';  Key = 'Style';  Kind = 'Enum'; Allowed = @('plain', 'powerline') }
         @{ Json = 'folder'; Key = 'Folder'; Kind = 'Enum'; Allowed = @('repo', 'leaf') }
         @{ Json = 'state';  Key = 'State';  Kind = 'Bool'; Allowed = $null }
+        @{ Json = 'taskbar'; Key = 'Taskbar'; Kind = 'Bool'; Allowed = $null }
     )
 }
 
@@ -1299,19 +1305,6 @@ foreach ($names in $lineSets) { foreach ($n in $names) { $listed[$n] = $true } }
 # lines cannot drift apart or answer the same config differently.
 $modelWanted = [bool] ($cfg.Segments['model'] -and $listed['model'])
 
-# A payload that is not JSON gets the fallback line. It is printed here rather than where the payload was
-# read so that it carries the config's glyph overrides and the toggle above, neither of which is settled
-# any earlier. It honours the config like every other line: only the PROJECT overlay is missing on this
-# path, because a payload that will not parse names no project directory, and the user file - or the file
-# -Config named - was read and merged over the defaults well before this point. A config file that could
-# not be parsed at all leaves those defaults, which have model on and listed, so the case this line
-# exists for, saying something when nothing else can be said, is carried by the defaults rather than by
-# printing over a user who asked for no model segment.
-if (-not $payloadOk) {
-    if ($modelWanted) { Write-Host (C '36' "$iconModel claude") }
-    exit 0
-}
-
 # ---- Segment builders. Each returns $null (segment omitted) or @{ Name; Text; Short; Role; Bold }. ----
 
 # Colour bands for a percentage. Every caller passes both bands: the config's thresholds, 60 and 85 unless
@@ -1373,6 +1366,44 @@ function Test-AlarmState($d, $cfg) {
     $rl = $d.rate_limits
     if (Test-AlarmLevel $rl.five_hour.used_percentage $alarm.Limits) { return $true }
     return (Test-AlarmLevel $rl.seven_day.used_percentage $alarm.Limits)
+}
+
+# The taskbar progress sequence for this render, or '' when the key is off: ESC ] 9 ; 4 ; state ;
+# percent BEL. Windows Terminal draws it on the window's taskbar button, so how full the context window
+# is stays readable with the window minimised. Not a segment builder despite the neighbourhood - it
+# reads the payload and the config the way Test-AlarmState above does, and returns a string that never
+# reaches a line, is never measured and is never fitted.
+#
+# States: 1 normal, 2 error, 0 clear. 3, indeterminate, is never used - a status line always knows its
+# number. Which of 1 and 2 is Test-AlarmState's answer and nothing narrower, so the bar turns red at
+# exactly the moment the model segment does and the two can never contradict each other. That includes
+# a rate limit at its level over a quiet context window: the colour says "something is at its alarm",
+# and the number beside it is, and only ever is, the context window's.
+#
+# WHY A MISSING PERCENTAGE WRITES A CLEAR RATHER THAN NOTHING. This sequence is terminal state that
+# outlives the process: whatever the last render set stays on the taskbar until something sets it
+# again. A render that knows no percentage - no context_window yet, a used_percentage still null before
+# the first API response, a payload that would not parse at all - and wrote nothing would leave a bar
+# frozen at a figure from a session that has since moved on. The clear form costs one sequence and is
+# always honest. A real 0% is a different thing and gets state 1: a known zero and an unknown figure
+# must not look the same on the taskbar.
+#
+# The percentage is Get-WholePercent's, the one rounding rule behind the meter's text, the colour bands
+# and the alarms, so the bar shows the number the line shows. It is then clamped to 0..100, the range
+# the taskbar takes and the same clamp the context meter applies: a rate limit is allowed to read past
+# 100 but this bar is the context window's alone.
+#
+# The key is tested for a real boolean and not just for truth, the way every other value that came from
+# a config file is: a bare -not would read the string "false" as on, because PowerShell calls every
+# non-empty string true. Read-StatusConfig only ever puts a boolean there, so this is the guard for a
+# caller that hands over a table of its own.
+function Get-TaskbarSequence($d, $cfg) {
+    if ($cfg.Taskbar -isnot [bool] -or -not $cfg.Taskbar) { return '' }
+    $pct = Get-FiniteNumber $d.context_window.used_percentage
+    if ($null -eq $pct) { return "`e]9;4;0;0`a" }
+    $whole = [math]::Max(0, [math]::Min(100, (Get-WholePercent $pct)))
+    $state = if (Test-AlarmState $d $cfg) { 2 } else { 1 }
+    return "`e]9;4;$state;$whole`a"
 }
 
 # Thousands of tokens: 1.5k, 64k, 1.0M
@@ -1905,6 +1936,47 @@ function Get-BranchSegment($d, $cfg) {
 }
 
 # ---- Build, lay out, fit, print ----
+
+# THE FIRST THING THIS SCRIPT EVER WRITES, and the only write that is not a line. One site, above every
+# path that prints and above the one that prints nothing, so the taskbar is told the truth on every
+# render there is: the fallback below, the zero-segment stand-in, the ordinary lines, and the render
+# that ends with no line at all.
+#
+# -NoNewline rather than a Write-Host of its own is the whole trick. The bytes are identical to gluing
+# the sequence onto the front of the first line - "SEQ" then "line" then one newline - so a layout-one
+# render is still one line and the matrix's "layout allows 1" still holds, and a render with no line
+# writes the sequence and no newline at all, which leaves the cursor where it was and shows nothing.
+# Prefixing the first line instead would have needed the same string threaded through three print sites,
+# one of which does not exist on the empty render; this is one variable and one write.
+#
+# THE EMPTY RENDER GETS THE SEQUENCE TOO, deliberately. The argument for skipping it is that a taskbar
+# bar with no status line under it is a bar with nothing explaining it. The argument against skipping is
+# stronger: the sequence is terminal state that outlives the process, so a render that stays silent
+# leaves the LAST render's bar lit, and that is a figure from a payload that is no longer on screen.
+# An honest bar over an empty line beats a stale one, and a config that prints nothing has usually
+# asked for the taskbar to be the whole display.
+#
+# It goes out before the payload check below, so a payload that will not parse still clears the bar
+# rather than freezing it. Nothing above this line prints, so nothing can get in front of it.
+$taskbar = Get-TaskbarSequence $d $cfg
+if ($taskbar) { Write-Host $taskbar -NoNewline }
+
+# A payload that is not JSON gets the fallback line. It is printed here rather than where the payload was
+# read so that it carries the config's glyph overrides and the $modelWanted toggle, neither of which is
+# settled any earlier. It honours the config like every other line: only the PROJECT overlay is missing
+# on this path, because a payload that will not parse names no project directory, and the user file - or
+# the file -Config named - was read and merged over the defaults well before this point. A config file
+# that could not be parsed at all leaves those defaults, which have model on and listed, so the case this
+# line exists for, saying something when nothing else can be said, is carried by the defaults rather than
+# by printing over a user who asked for no model segment.
+# It sits here, at the head of the print section and beside the zero-segment stand-in it is the twin of,
+# rather than up beside $modelWanted: everything between the two is function definitions, so the move
+# costs nothing, and the two lines that have to answer the same config the same way can now be read
+# together.
+if (-not $payloadOk) {
+    if ($modelWanted) { Write-Host (C '36' "$iconModel claude") }
+    exit 0
+}
 
 # The state this session's last render left behind, read before the segments are built because the cost
 # segment's per-turn delta is the difference from the total it holds. It is the only read of the file in
