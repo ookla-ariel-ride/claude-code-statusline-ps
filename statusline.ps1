@@ -93,6 +93,7 @@ function Get-IconDefault {
     return @{
         model    = 0xF06A9   # nf-md-robot
         context  = 0xF035B   # nf-md-memory
+        cache    = 0xF0238   # nf-md-fire  (prompt cache warmth)
         cost     = 0xF0155   # nf-md-cash
         folder   = 0xF07C    # nf-fa-folder_open
         chevron  = 0x203A    # single right-pointing angle quotation mark (between owner/name and the leaf)
@@ -275,14 +276,15 @@ function Get-SegmentRegistry {
     if (-not $script:segmentRegistry) {
         $script:segmentRegistry = @(
             @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 3;     DropRank = 8;     Row = 2; RowRank = 1 }
-            @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 3;     Row = 2; RowRank = 3 }
-            @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
-            @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 4;     Row = 2; RowRank = 2 }
-            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 6;     DropRank = 2;     Row = 1; RowRank = 5 }
-            @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 4 }
-            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 5;     DropRank = 6;     Row = 1; RowRank = 2 }
-            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 4;     DropRank = 7;     Row = 1; RowRank = 3 }
+            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 4;     DropRank = 9;     Row = 2; RowRank = 1 }
+            @{ Name = 'cache';   Build = 'Get-CacheSegment';   Default = $true; ShrinkRank = 3;     DropRank = 2;     Row = 2; RowRank = 2 }
+            @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 4 }
+            @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 5 }
+            @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 5;     Row = 2; RowRank = 3 }
+            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 7;     DropRank = 3;     Row = 1; RowRank = 5 }
+            @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 6;     Row = 1; RowRank = 4 }
+            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 6;     DropRank = 7;     Row = 1; RowRank = 2 }
+            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 5;     DropRank = 8;     Row = 1; RowRank = 3 }
         )
     }
     return $script:segmentRegistry
@@ -367,21 +369,21 @@ function Get-ConfigPreset($Name) {
     switch ($Name.ToLowerInvariant()) {
         'minimal' {
             return @{ Layout = 'one'; Style = 'plain'; Segments = @{
-                    model = $true; context = $true; cost = $false; lines = $false; limits = $false
+                    model = $true; context = $true; cache = $false; cost = $false; lines = $false; limits = $false
                     badges = $false; pr = $false; folder = $true; branch = $true
                 }
             }
         }
         'cost' {
             return @{ Layout = 'one'; Style = 'plain'; Segments = @{
-                    model = $true; context = $true; cost = $true; lines = $true; limits = $true
+                    model = $true; context = $true; cache = $true; cost = $true; lines = $true; limits = $true
                     badges = $false; pr = $false; folder = $false; branch = $false
                 }
             }
         }
         'full' {
             return @{ Layout = 'two'; Style = 'powerline'; Segments = @{
-                    model = $true; context = $true; cost = $true; lines = $true; limits = $true
+                    model = $true; context = $true; cache = $true; cost = $true; lines = $true; limits = $true
                     badges = $true; pr = $true; folder = $true; branch = $true
                 }
             }
@@ -1266,6 +1268,7 @@ $cfg = Read-StatusConfig $configPath $projectDir
 $icons = Get-IconSet $cfg
 $iconModel = $icons.model
 $iconCtx = $icons.context
+$iconCache = $icons.cache
 $iconCost = $icons.cost
 $iconFolder = $icons.folder
 $iconChevron = $icons.chevron
@@ -1503,6 +1506,113 @@ function Get-ContextSegment($d, $cfg) {
     $tail = $counts + $(if ($null -ne $share) { ' ' + (Format-Inline 'cached' "$share% cached" $role $cfg.Style) } else { '' })
     $short = "$iconCtx $pct% $bar"
     return @{ Name = 'context'; Text = "$short$tail"; Short = $(if ($tail) { $short } else { $null }); Role = $role; Bold = $false }
+}
+
+# ---- Prompt cache warmth ----
+# THE ONE THING TO GET STRAIGHT BEFORE READING THESE THREE: they do not answer the question
+# Get-CacheShare answers, and the two must not be folded together. Get-CacheShare reads
+# context_window.current_usage and gives the share of THIS TURN'S input the cache served - a hit ratio,
+# printed as the context segment's dim "92% cached". These read the prompt_cache block and give whether
+# the cache is alive at all and for how long. Different block, different question, no shared arithmetic.
+# A turn can honestly be 92% cached off a cache with four minutes left to live, and that pair - a good
+# ratio beside a lapsing window - is exactly the moment the segment exists to show, so both belong on
+# the line at once. Neither figure is derivable from the other.
+
+# Seconds until the prompt cache expires, or $null when the payload's expires_at could not be one.
+# The field is epoch seconds, like rate_limits.five_hour.resets_at, but it is not documented with a
+# unit, so a client sending milliseconds is a real possibility: a value past 1e12 - year 33658 read as
+# seconds, which no cache expiry is - is divided by 1000 first.
+# WHAT IS REFUSED, AND WHY REFUSED RATHER THAN CLAMPED. A value that is not a finite number is not a
+# time. A value at or below 0 is 1970 or earlier, and calling that "expired" would let a plainly
+# malformed field print a confident red "cache cold" - a definite claim built out of nothing. And a
+# value more than a day out is refused for the same reason: the longest prompt cache lifetime Anthropic
+# documents is an hour, so a day is generous head-room and still refuses the far-future epochs payloads
+# really carry - sample 06's 4102444800 is 1 January 2100, which the rate-limit countdown beside this
+# one renders as a nonsense "(26781d)". Clamping any of these to a boundary would put a number on the
+# line that reads as fact; refusing leaves the caller to say "warm, and I cannot tell you how long",
+# which is the honest answer and the one an absent field already gets.
+# $Now is the current epoch and defaults to the clock, so no caller passes one. It exists for the tests,
+# the way Get-PaceArrow's does: an epoch derived from an earlier reading of the clock is one second out
+# whenever the second ticks in between, which is enough to move a case off the boundary it was written
+# for. Both guards run before the [int] cast, which is what keeps the cast in range: the ceiling caps
+# the top at 86400 and refusing an expiry of 0 or less caps the bottom at -$Now.
+function Get-CacheSecondsLeft($Value, [long] $Now = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) {
+    $at = Get-FiniteNumber $Value
+    if ($null -eq $at) { return $null }
+    if ($at -gt 1e12) { $at = $at / 1000 }
+    if ($at -le 0) { return $null }
+    $left = $at - $Now
+    if ($left -gt 86400) { return $null }
+    return [int] [math]::Floor($left)
+}
+
+# A count of whole seconds as the text the segment prints: "<1m" under a minute, "42m" under an hour,
+# "2h05m" above it - the same h{mm}m shape TimeLeft uses for the rate-limit reset, so the two countdowns
+# that can share a line are read the same way. Minutes are floored rather than rounded, because a
+# countdown that says 5m with four and a half minutes left is telling you there is more time than there
+# is. Callers pass a positive count and the ceiling above caps it at a day, so the widest this returns
+# is "24h00m".
+function Format-MinutesLeft([int] $Seconds) {
+    if ($Seconds -lt 60) { return '<1m' }
+    $minutes = [int] [math]::Floor($Seconds / 60)
+    if ($minutes -lt 60) { return "${minutes}m" }
+    return '{0}h{1:00}m' -f [int] [math]::Floor($minutes / 60), ($minutes % 60)
+}
+
+# Whether the prompt cache is still warm and how long it has left: "cache 42m" in green, "cache 4m" in
+# yellow inside the last five minutes, "cache cold" in red once it has lapsed, and "cache off" in red
+# when the client has been asking for caching and has never seen it work. A cache miss costs real money
+# and real latency, so a window about to close is the difference between sending a cheap keep-alive turn
+# and taking a break; a cache that is not working at all is worth interrupting for.
+# The block arrived in Claude Code 2.1.251 and is absent both on older versions and early in a session,
+# so the segment has to disappear cleanly rather than render an empty shape - which is the last rule
+# below and the one the omission cases are written around.
+# The order of the four states is the whole logic and it is not arbitrary:
+#   1. Nothing usable. Neither a boolean `warm` nor an expires_at this script will believe means there
+#      is no question to answer, so there is no segment. This is also where a payload from an older
+#      Claude Code lands.
+#   2. Cold. `warm` is the boolean false, or the expiry has already passed. An expiry in the past beats
+#      a `warm` beside it that says true: the timestamp is the specific claim and the flag is the
+#      summary, and a summary that contradicts its own timestamp is the one to distrust.
+#   3. Off. `caching_observed` is the boolean false with at least three requests behind it. The field is
+#      false until the client has actually seen a hit, so it says nothing at all on the first turn or
+#      two; three requests is where it starts to mean "asked for, never delivered". This is checked
+#      BEFORE the countdown, because it is the more specific claim: a cache the client says is not
+#      working has an expires_at like any other, and printing that countdown over it would be the most
+#      reassuring thing on the line at the moment it is least true. It is allowed to fire with `warm`
+#      absent as well as true, for the same reason - gating the warning on a field that may simply not
+#      be there would restore exactly the countdown it exists to suppress. A `requests` that is not a
+#      whole positive count cannot reach three, so a malformed one refuses to make the claim rather than
+#      being repaired into it.
+#   4. Warm. With a believable expiry, the countdown, yellow inside five minutes. Without one - refused
+#      as nonsense, or simply absent - the word "warm" and no number, because `warm` on its own is a
+#      real answer to "is the cache alive" and the honest thing is to leave the part we cannot tell off
+#      the line rather than invent it.
+# ON QUIET: this segment deliberately has no `quiet` key, and adding one would break the rule that quiet
+# never hides a segment carrying a warning, an error or an alarm. Three of its four states - cold, off
+# and the last five minutes - ARE that warning, and the fourth is a countdown whose whole value is being
+# there before it turns yellow. There is no boring number here to hide, so there is nothing for a
+# threshold to be a threshold on, and Test-QuietValue is never asked about 'cache'.
+# Short drops the word and keeps the glyph and the value, so a narrow line reads as a fire and "42m".
+function Get-CacheSegment($d) {
+    $pc = $d.prompt_cache
+    if ($pc -isnot [System.Management.Automation.PSCustomObject]) { return $null }
+    $warm = if ($pc.warm -is [bool]) { [bool] $pc.warm } else { $null }
+    $left = Get-CacheSecondsLeft $pc.expires_at
+    if ($null -eq $warm -and $null -eq $left) { return $null }
+    if ($warm -eq $false -or ($null -ne $left -and $left -le 0)) {
+        return @{ Name = 'cache'; Text = "$iconCache cache cold"; Short = "$iconCache cold"; Role = 'bad'; Bold = $false }
+    }
+    $requests = Get-PayloadNumber $pc.requests
+    if ($pc.caching_observed -is [bool] -and -not $pc.caching_observed -and $null -ne $requests -and $requests -ge 3) {
+        return @{ Name = 'cache'; Text = "$iconCache cache off"; Short = "$iconCache off"; Role = 'bad'; Bold = $false }
+    }
+    if ($null -eq $left) {
+        return @{ Name = 'cache'; Text = "$iconCache cache warm"; Short = "$iconCache warm"; Role = 'ok'; Bold = $false }
+    }
+    $value = Format-MinutesLeft $left
+    $role = if ($left -le 300) { 'warn' } else { 'ok' }
+    return @{ Name = 'cache'; Text = "$iconCache cache $value"; Short = "$iconCache $value"; Role = $role; Bold = $false }
 }
 
 # Session cost in dollars, two decimals, and the change since the previous render in parentheses behind

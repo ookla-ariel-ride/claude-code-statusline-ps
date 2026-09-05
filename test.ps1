@@ -174,7 +174,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Get-PrSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheSegment'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -186,6 +186,7 @@ $iconLimit = [char]::ConvertFromUtf32(0xF0E4)
 $iconModel = [char]::ConvertFromUtf32(0xF06A9)
 $iconFolder = [char]::ConvertFromUtf32(0xF07C)
 $iconChevron = [char]::ConvertFromUtf32(0x203A)
+$iconCache = [char]::ConvertFromUtf32(0xF0238)
 $iconHome = [char]::ConvertFromUtf32(0xF015)
 $iconBranch = [char]::ConvertFromUtf32(0xE0A0)
 $iconDirty = [char]::ConvertFromUtf32(0xF040)
@@ -274,17 +275,18 @@ Write-Host '== unit: registry' -ForegroundColor Cyan
 # out by hand, so a change there is a deliberate one. Array order is layout one.
 $registryTable = @(
     @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 3;     DropRank = 8;     Row = 2; RowRank = 1 }
-    @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 3;     Row = 2; RowRank = 3 }
-    @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 4 }
-    @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 4;     Row = 2; RowRank = 2 }
-    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 6;     DropRank = 2;     Row = 1; RowRank = 5 }
-    @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 5;     Row = 1; RowRank = 4 }
-    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 5;     DropRank = 6;     Row = 1; RowRank = 2 }
-    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 4;     DropRank = 7;     Row = 1; RowRank = 3 }
+    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 4;     DropRank = 9;     Row = 2; RowRank = 1 }
+    @{ Name = 'cache';   Build = 'Get-CacheSegment';   Default = $true; ShrinkRank = 3;     DropRank = 2;     Row = 2; RowRank = 2 }
+    @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 4 }
+    @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 5 }
+    @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 5;     Row = 2; RowRank = 3 }
+    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 7;     DropRank = 3;     Row = 1; RowRank = 5 }
+    @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 6;     Row = 1; RowRank = 4 }
+    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 6;     DropRank = 7;     Row = 1; RowRank = 2 }
+    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 5;     DropRank = 8;     Row = 1; RowRank = 3 }
 )
 $registry = @(Get-SegmentRegistry)
-Confirm-Equal $registry.Count $registryTable.Count 'registry: nine records'
+Confirm-Equal $registry.Count $registryTable.Count 'registry: ten records'
 for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
     $want = $registryTable[$i]
     $got = $registry[$i]
@@ -294,14 +296,17 @@ for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
         Confirm-Equal $got[$key] $want[$key] "registry: $($want.Name) $key"
     }
 }
-# Cost is first in the shrink order and third in the drop order: its per-turn delta is the first detail
+# Cost is first in the shrink order and fourth in the drop order: its per-turn delta is the first detail
 # on the line to go, and the segment itself still goes after lines and badges, which is where it was.
-# Badges is last of the six: its Short form sheds the agent and session names, which is the least
+# Badges is last of the seven: its Short form sheds the agent and session names, which is the least
 # missed detail on the line, so it is the last thing tried before whole segments start going.
-Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'cost,limits,context,branch,folder,badges' 'registry: shrink order'
-Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,badges,cost,limits,pr,folder,branch,context' 'registry: drop order'
+# Cache shrinks after limits, where its Short form costs one word, and drops second of all, straight
+# after lines: it is a hint about the next turn, so the cost, the limits, the branch and the meter that
+# describe this one all outrank it once whole segments start going.
+Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'cost,limits,cache,context,branch,folder,badges' 'registry: shrink order'
+Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,cache,badges,cost,limits,pr,folder,branch,context' 'registry: drop order'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 1) -join ',') 'model,folder,branch,pr,badges' 'registry: layout two row 1'
-Confirm-Equal ((Get-SegmentOrder 'RowRank' 2) -join ',') 'context,limits,cost,lines' 'registry: layout two row 2'
+Confirm-Equal ((Get-SegmentOrder 'RowRank' 2) -join ',') 'context,cache,limits,cost,lines' 'registry: layout two row 2'
 # The four assertions above pin what the order function returned; these pin the property that makes it
 # right. Get-SegmentOrder drops each record into a hashtable slot keyed by its rank number and then
 # reads slots 1..Count back, so a rank used twice silently OVERWRITES the earlier record - the loser
@@ -631,7 +636,7 @@ Confirm-Equal (Get-ThresholdText $c) '60/85' 'config icons: the invalid threshol
 function Get-SegmentText($c) { return (@($allSegments | Where-Object { $c.Segments[$_] }) -join ',') }
 $presetShape = @(
     @{ Name = 'minimal'; Layout = 'one'; Style = 'plain'; On = 'model,context,folder,branch' }
-    @{ Name = 'cost'; Layout = 'one'; Style = 'plain'; On = 'model,context,cost,lines,limits' }
+    @{ Name = 'cost'; Layout = 'one'; Style = 'plain'; On = 'model,context,cache,cost,lines,limits' }
     @{ Name = 'full'; Layout = 'two'; Style = 'powerline'; On = ($allSegments -join ',') }
 )
 foreach ($want in $presetShape) {
@@ -703,9 +708,9 @@ foreach ($case in @(
     Confirm-Equal (Get-SegmentText $c) 'model,context,folder,branch' "preset: a style $($case.Where) leaves the minimal segments"
 }
 $c = Read-StatusConfig (Write-TempConfig 'preset-segment-on.json' '{ "preset": "cost", "segments": { "branch": true } }')
-Confirm-Equal (Get-SegmentText $c) 'model,context,cost,lines,limits,branch' 'preset: a segment turned back on beside it'
+Confirm-Equal (Get-SegmentText $c) 'model,context,cache,cost,lines,limits,branch' 'preset: a segment turned back on beside it'
 $c = Read-StatusConfig (Write-TempConfig 'preset-segment-off.json' '{ "preset": "cost", "segments": { "cost": false } }')
-Confirm-Equal (Get-SegmentText $c) 'model,context,lines,limits' 'preset: a segment turned off beside it'
+Confirm-Equal (Get-SegmentText $c) 'model,context,cache,lines,limits' 'preset: a segment turned off beside it'
 $c = Read-StatusConfig (Write-TempConfig 'preset-layout.json' '{ "preset": "full", "layout": "one" }')
 Confirm-Equal $c.Layout 'one' 'preset: the layout beside it wins'
 Confirm-Equal $c.Style 'powerline' 'preset: the style it sets is kept'
@@ -772,7 +777,7 @@ $c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-layout' '{ "layout"
 Confirm-Equal $c.Layout 'two' 'project config: the project layout is applied'
 Confirm-Equal $c.Style 'powerline' 'project config: the user style is kept'
 Confirm-Equal $c.Segments.cost $false 'project config: the user segment toggle is kept'
-Confirm-True (@($allSegments | Where-Object { $_ -ne 'cost' -and -not $c.Segments[$_] }).Count -eq 0) 'project config: the other eight segments stay on'
+Confirm-True (@($allSegments | Where-Object { $_ -ne 'cost' -and -not $c.Segments[$_] }).Count -eq 0) 'project config: the other nine segments stay on'
 # The project file with no user file at all: it applies over the built-in defaults.
 $c = Read-StatusConfig $missingConfig (Write-TempProjectDir 'proj-alone' '{ "layout": "two", "state": false }')
 Confirm-Equal $c.Layout 'two' 'project config alone: the layout is applied'
@@ -820,11 +825,11 @@ $c = Read-StatusConfig (Write-TempConfig 'preset-project-user.json' '{ "preset":
 Confirm-Equal (Get-SegmentText $c) 'model,context,cost,folder,branch' 'project config: a project toggle lands on the user preset'
 Confirm-Equal $c.Layout 'one' 'project config: the user preset layout is kept'
 $c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-preset' '{ "preset": "cost" }')
-Confirm-Equal (Get-SegmentText $c) 'model,context,cost,lines,limits' 'project config: a project preset outranks the user segment toggles'
+Confirm-Equal (Get-SegmentText $c) 'model,context,cache,cost,lines,limits' 'project config: a project preset outranks the user segment toggles'
 Confirm-Equal $c.Style 'plain' 'project config: a project preset outranks the user style'
 $c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-preset-and-key' '{ "preset": "cost", "style": "powerline" }')
 Confirm-Equal $c.Style 'powerline' 'project config: a key beside the project preset wins'
-Confirm-Equal (Get-SegmentText $c) 'model,context,cost,lines,limits' 'project config: the project preset segments are kept'
+Confirm-Equal (Get-SegmentText $c) 'model,context,cache,cost,lines,limits' 'project config: the project preset segments are kept'
 $c = Read-StatusConfig (Write-TempConfig 'preset-project-user-full.json' '{ "preset": "full" }') (Write-TempProjectDir 'proj-preset-over' '{ "preset": "minimal" }')
 Confirm-Equal (Get-SegmentText $c) 'model,context,folder,branch' 'project config: the project preset wins the one the user file names'
 Confirm-Equal $c.Layout 'one' 'project config: the project preset layout wins'
@@ -1024,10 +1029,10 @@ Confirm-Equal $c.Style 'plain' 'shipped config: style plain'
 Confirm-Equal $c.Folder 'repo' 'shipped config: folder repo'
 Confirm-Equal $shippedJson.folder 'repo' 'shipped config: the file itself says folder repo'
 $shippedSegments = @($c.Segments.Keys)
-Confirm-Equal $shippedSegments.Count 9 'shipped config: nine segments'
+Confirm-Equal $shippedSegments.Count 10 'shipped config: ten segments'
 Confirm-True (@($shippedSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'shipped config: every segment on'
 $shippedFileSegments = @($shippedJson.segments.PSObject.Properties)
-Confirm-Equal $shippedFileSegments.Count 9 'shipped config: the file itself lists nine segments'
+Confirm-Equal $shippedFileSegments.Count 10 'shipped config: the file itself lists ten segments'
 # -ne coerces its right side to the left side's type, so 'true' -ne $true is False; test the type too.
 Confirm-True (@($shippedFileSegments | Where-Object { $_.Value -isnot [bool] -or $_.Value -ne $true }).Count -eq 0) 'shipped config: the file itself sets them all to the boolean true'
 Confirm-Equal $c.State $true 'shipped config: state on'
@@ -1062,19 +1067,25 @@ Write-Host '== unit: icons' -ForegroundColor Cyan
 # Get-IconSet turns the built-in table and the config's overrides into one glyph per name, and the
 # script assigns its $icon* constants from that set.
 $defaultIcons = Get-IconDefault
-Confirm-Equal $defaultIcons.Count 21 'icons: twenty-one built-in glyphs'
+Confirm-Equal $defaultIcons.Count 22 'icons: twenty-two built-in glyphs'
 Confirm-Equal $defaultIcons.pr 0xF407 'icons: pr is the pull-request glyph'
 Confirm-Equal $defaultIcons.model 0xF06A9 'icons: model is the robot'
 Confirm-Equal $defaultIcons.worktree 0xF04C1 'icons: worktree is the source fork'
 Confirm-Equal $defaultIcons.agent 0xF007 'icons: agent is nf-fa-user'
 Confirm-Equal $defaultIcons.session 0xF02B 'icons: session is nf-fa-tag'
+# The cache glyph is nf-md-fire, U+F0238, checked against the Nerd Fonts glyphnames.json the cheat
+# sheet is generated from ("md-fire":{"code":"f0238"}, and f0238 is that entry's alone) and rendered
+# out of JetBrainsMono NF before the builder was written, because a code point that draws SOMETHING is
+# not the same as one that draws what the table claims - two shipped icons were mislabelled that way.
+Confirm-Equal $defaultIcons.cache 0xF0238 'icons: cache is nf-md-fire'
+Confirm-Equal (Get-VisibleWidth $iconCache) 1 'icons: the fire glyph is one cell wide'
 # Every built-in code point has to survive the guards a config value goes through. The glyph a config
 # may put in its place is held to that bar, so the one it replaces cannot sit below it.
 foreach ($e in $defaultIcons.GetEnumerator()) {
     Confirm-Equal (Read-CodePoint ('{0:X}' -f $e.Value)) $e.Value "icons: the built-in $($e.Key) code point passes the guards"
 }
 $set = Get-IconSet @{ Icons = @{} }
-Confirm-Equal $set.Count 21 'icons: one glyph per name'
+Confirm-Equal $set.Count 22 'icons: one glyph per name'
 Confirm-Equal $set.pr $iconPr 'icons: no override gives the built-in pr glyph'
 Confirm-Equal $set.model $iconModel 'icons: no override gives the built-in model glyph'
 Confirm-Equal $set.dirty $iconDirty 'icons: no override gives the built-in pencil'
@@ -2096,6 +2107,175 @@ $quietBands = @{ Style = 'plain'; Thresholds = @{ Warn = 20; Bad = 40 }; Quiet =
 $seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500) $quietBands
 Confirm-Equal $seg.Role 'warn' 'context cached: the role is still read from the normalised percentage'
 Confirm-True $seg.Text.EndsWith("92% cached$esc[33m") 'context cached: a warn meter hands its own colour back after the suffix'
+
+Write-Host '== unit: cache' -ForegroundColor Cyan
+# The prompt cache warmth segment, and the two helpers under it. This is NOT Get-CacheShare, which the
+# context section above covers: that one reads context_window.current_usage and gives the share of this
+# turn's input the cache served, printed as the meter's dim "92% cached". These read the prompt_cache
+# block and give whether the cache is alive and for how long. The two are checked apart because they
+# answer different questions off different fields, and the case that proves it is the one where a turn
+# is 92% cached off a cache with minutes left to live.
+#
+# Get-CacheSecondsLeft takes the current epoch as a second parameter defaulting to the clock, the way
+# Get-PaceArrow does, so every boundary below is pinned to the second rather than sitting one tick away
+# from the case it was written for.
+$cacheClock = 1700000000
+$secondsLeftTable = @(
+    @{ Label = 'ten minutes out'; At = $cacheClock + 600; Left = 600 }
+    @{ Label = 'a day out, the last second inside the ceiling'; At = $cacheClock + 86400; Left = 86400 }
+    @{ Label = 'a second past the ceiling'; At = $cacheClock + 86401; Left = $null }
+    @{ Label = 'expiring exactly now'; At = $cacheClock; Left = 0 }
+    @{ Label = 'a second past'; At = $cacheClock - 1; Left = -1 }
+    @{ Label = 'an hour past'; At = $cacheClock - 3600; Left = -3600 }
+    @{ Label = 'a fraction of a second is floored'; At = $cacheClock + 600.9; Left = 600 }
+    @{ Label = 'milliseconds, ten minutes out'; At = ($cacheClock + 600) * 1000; Left = 600 }
+    @{ Label = 'exactly 1e12, read as seconds and far past the ceiling'; At = 1e12; Left = $null }
+    @{ Label = "sample 06's 2100 epoch, seventy-five years out"; At = 4102444800; Left = $null }
+    @{ Label = 'an absurd double that would overflow a scaled multiply'; At = 1e300; Left = $null }
+    @{ Label = 'the epoch itself'; At = 0; Left = $null }
+    @{ Label = 'a negative epoch'; At = -1; Left = $null }
+    @{ Label = 'a large negative epoch'; At = -4102444800; Left = $null }
+    @{ Label = 'absent'; At = $null; Left = $null }
+    @{ Label = 'a number as text'; At = "$($cacheClock + 600)"; Left = $null }
+    @{ Label = 'a boolean'; At = $true; Left = $null }
+    @{ Label = 'an array'; At = @($cacheClock + 600); Left = $null }
+    @{ Label = 'NaN'; At = [double]::NaN; Left = $null }
+    @{ Label = 'infinity'; At = [double]::PositiveInfinity; Left = $null }
+)
+foreach ($row in $secondsLeftTable) {
+    $got = Get-CacheSecondsLeft $row.At $cacheClock
+    if ($null -eq $row.Left) {
+        Confirm-True ($null -eq $got) "cache seconds: $($row.Label) is refused"
+        continue
+    }
+    Confirm-Equal $got $row.Left "cache seconds: $($row.Label)"
+}
+# THE REFUSALS ARE THE POINT, so they are stated as the rule and not only as rows. A clamp would put a
+# number on the line that reads as fact: an expires_at of 0 clamped to "expired" prints a confident red
+# "cache cold" out of a field that carries nothing, and the 2100 epoch clamped to the ceiling prints a
+# calm green "cache 24h00m" over a payload nobody can vouch for. Both come back $null instead, and the
+# builder then says the part it can stand behind and leaves the rest off the line.
+Confirm-True ($null -eq (Get-CacheSecondsLeft 0 $cacheClock)) 'cache seconds: an epoch of 0 is refused rather than called expired'
+# Parenthesised on purpose: a bare negative literal in argument position binds as a string, which would
+# quietly test the string case instead of the negative one.
+Confirm-True ($null -eq (Get-CacheSecondsLeft (-600) $cacheClock)) 'cache seconds: a negative epoch is refused rather than called expired'
+Confirm-True ($null -eq (Get-CacheSecondsLeft 4102444800 $cacheClock)) 'cache seconds: a far-future epoch is refused rather than clamped to the ceiling'
+# The default clock, which is the only path the script itself takes, so the pinned parameter above
+# cannot become the only thing under test. Real time moves forward between the epoch being built here
+# and the function reading its own clock, which only lowers the answer, so each case sits clear of its
+# boundary on the side that drift carries it towards.
+$cacheReal = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+Confirm-True ((Get-CacheSecondsLeft ($cacheReal + 600)) -in 590..600) 'cache seconds on the default clock: ten minutes out'
+Confirm-True ((Get-CacheSecondsLeft ($cacheReal - 100)) -le -100) 'cache seconds on the default clock: a hundred seconds past'
+Confirm-True ($null -eq (Get-CacheSecondsLeft 4102444800)) 'cache seconds on the default clock: the 2100 epoch is refused'
+
+# Minutes are floored, not rounded: a countdown that says 5m with four and a half minutes left claims
+# more time than there is. The h{mm}m shape is TimeLeft's, so the two countdowns that can share a line
+# read the same way.
+$minutesTable = @(
+    @{ Seconds = 0; Text = '<1m' }
+    @{ Seconds = 1; Text = '<1m' }
+    @{ Seconds = 59; Text = '<1m' }
+    @{ Seconds = 60; Text = '1m' }
+    @{ Seconds = 119; Text = '1m' }
+    @{ Seconds = 300; Text = '5m' }
+    @{ Seconds = 2520; Text = '42m' }
+    @{ Seconds = 3540; Text = '59m' }
+    @{ Seconds = 3599; Text = '59m' }
+    @{ Seconds = 3600; Text = '1h00m' }
+    @{ Seconds = 3660; Text = '1h01m' }
+    @{ Seconds = 7500; Text = '2h05m' }
+    @{ Seconds = 86400; Text = '24h00m' }
+)
+foreach ($row in $minutesTable) {
+    Confirm-Equal (Format-MinutesLeft $row.Seconds) $row.Text "cache minutes: $($row.Seconds)s is $($row.Text)"
+}
+
+# A prompt_cache payload built through ConvertFrom-Json, so `warm` is a real JSON boolean and `requests`
+# arrives as an Int64 the way a payload sends it. <AT> is replaced with an epoch $In seconds from the
+# clock read at the moment of the call, so the gap between building the payload and the builder reading
+# its own clock is a fraction of a second however long this section has been running.
+function Get-PromptCachePayload([string] $Json, [int] $In = 0) {
+    $at = [string] ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + $In)
+    return Get-JsonPayload 'prompt_cache' ($Json -replace '<AT>', $at)
+}
+# Every case sits clear of its boundary on the side real time carries it towards: the clock only moves
+# forward between the payload and the render, which only lowers the seconds left. So `now + 300` is the
+# five-minute line itself and stays warn however long the tick takes, `now + 360` is clear on the ok
+# side, and `now + 59` cannot climb back over a minute.
+$cacheTable = @(
+    @{ Label = 'forty-two minutes left'; Json = '{"warm":true,"expires_at":<AT>}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
+    @{ Label = 'two hours five minutes left'; Json = '{"warm":true,"expires_at":<AT>}'; In = 7530; Text = 'cache 2h05m'; Short = '2h05m'; Role = 'ok' }
+    @{ Label = 'six minutes left, clear of the warning'; Json = '{"warm":true,"expires_at":<AT>}'; In = 360; Text = 'cache 6m'; Short = '6m'; Role = 'ok' }
+    @{ Label = 'exactly five minutes left is already the warning'; Json = '{"warm":true,"expires_at":<AT>}'; In = 300; Text = 'cache 5m'; Short = '5m'; Role = 'warn' }
+    @{ Label = 'two minutes left'; Json = '{"warm":true,"expires_at":<AT>}'; In = 120; Text = 'cache 2m'; Short = '2m'; Role = 'warn' }
+    @{ Label = 'under a minute left'; Json = '{"warm":true,"expires_at":<AT>}'; In = 59; Text = 'cache <1m'; Short = '<1m'; Role = 'warn' }
+    @{ Label = 'expiring exactly now'; Json = '{"warm":true,"expires_at":<AT>}'; In = 0; Text = 'cache cold'; Short = 'cold'; Role = 'bad' }
+    @{ Label = 'an expiry already past beats a warm flag beside it'; Json = '{"warm":true,"expires_at":<AT>}'; In = -100; Text = 'cache cold'; Short = 'cold'; Role = 'bad' }
+    @{ Label = 'warm false'; Json = '{"warm":false}'; In = 0; Text = 'cache cold'; Short = 'cold'; Role = 'bad' }
+    @{ Label = 'warm false with a live expiry'; Json = '{"warm":false,"expires_at":<AT>}'; In = 2550; Text = 'cache cold'; Short = 'cold'; Role = 'bad' }
+    @{ Label = 'caching asked for and never seen, five requests in'; Json = '{"warm":true,"caching_observed":false,"requests":5,"expires_at":<AT>}'; In = 2550; Text = 'cache off'; Short = 'off'; Role = 'bad' }
+    @{ Label = 'caching never seen, exactly three requests in'; Json = '{"warm":true,"caching_observed":false,"requests":3}'; In = 0; Text = 'cache off'; Short = 'off'; Role = 'bad' }
+    @{ Label = 'caching never seen with no warm flag beside it'; Json = '{"caching_observed":false,"requests":5,"expires_at":<AT>}'; In = 2550; Text = 'cache off'; Short = 'off'; Role = 'bad' }
+    @{ Label = 'two requests in, too early for caching_observed to mean anything'; Json = '{"warm":true,"caching_observed":false,"requests":2,"expires_at":<AT>}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
+    @{ Label = 'no request count to read caching_observed against'; Json = '{"warm":true,"caching_observed":false,"expires_at":<AT>}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
+    @{ Label = 'a negative request count cannot reach three'; Json = '{"warm":true,"caching_observed":false,"requests":-5,"expires_at":<AT>}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
+    @{ Label = 'caching_observed as text is not the boolean false'; Json = '{"warm":true,"caching_observed":"false","requests":5,"expires_at":<AT>}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
+    @{ Label = 'caching observed, five requests in'; Json = '{"warm":true,"caching_observed":true,"requests":5,"expires_at":<AT>}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
+    @{ Label = 'warm with no expiry at all'; Json = '{"warm":true}'; In = 0; Text = 'cache warm'; Short = 'warm'; Role = 'ok' }
+    @{ Label = 'warm with a refused far-future expiry'; Json = '{"warm":true,"expires_at":4102444800}'; In = 0; Text = 'cache warm'; Short = 'warm'; Role = 'ok' }
+    @{ Label = 'warm with a refused negative expiry'; Json = '{"warm":true,"expires_at":-1}'; In = 0; Text = 'cache warm'; Short = 'warm'; Role = 'ok' }
+    @{ Label = 'warm with an expiry that is not a number'; Json = '{"warm":true,"expires_at":"soon"}'; In = 0; Text = 'cache warm'; Short = 'warm'; Role = 'ok' }
+    @{ Label = 'a live expiry with no warm flag beside it'; Json = '{"expires_at":<AT>,"ttl":300}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
+    @{ Label = 'milliseconds in expires_at'; Json = '{"warm":true,"expires_at":<AT>000}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
+)
+foreach ($row in $cacheTable) {
+    $seg = Get-CacheSegment (Get-PromptCachePayload $row.Json $row.In)
+    Confirm-Equal $seg.Name 'cache' "cache: $($row.Label) - name"
+    Confirm-Equal $seg.Text "$iconCache $($row.Text)" "cache: $($row.Label) - text"
+    Confirm-Equal $seg.Short "$iconCache $($row.Short)" "cache: $($row.Label) - short form drops the word"
+    Confirm-Equal $seg.Role $row.Role "cache: $($row.Label) - role"
+    Confirm-Equal $seg.Bold $false "cache: $($row.Label) - not bold"
+}
+# Nothing usable in the block, and nothing at all: both are no segment rather than an empty shape. The
+# first is what an older Claude Code sends (no prompt_cache before 2.1.251) and the second is what the
+# first turns of a session send, so this is the ordinary case and not an edge one.
+$noCacheTable = @(
+    @{ Label = 'no prompt_cache key at all'; Json = 'null' }
+    @{ Label = 'an empty prompt_cache object'; Json = '{}' }
+    @{ Label = 'a block with only ttl and requests'; Json = '{"ttl":300,"requests":12}' }
+    @{ Label = 'warm as the string true'; Json = '{"warm":"true"}' }
+    @{ Label = 'warm as the number 1'; Json = '{"warm":1}' }
+    @{ Label = 'warm as an array'; Json = '{"warm":[true]}' }
+    @{ Label = 'a refused expiry and no warm flag'; Json = '{"expires_at":4102444800}' }
+    @{ Label = 'an expiry of zero and no warm flag'; Json = '{"expires_at":0}' }
+    @{ Label = 'caching_observed alone, with nothing to hang it on'; Json = '{"caching_observed":false,"requests":9}' }
+    @{ Label = 'prompt_cache as a string'; Json = '"warm"' }
+    @{ Label = 'prompt_cache as a number'; Json = '5' }
+    @{ Label = 'prompt_cache as an array'; Json = '[{"warm":true}]' }
+)
+foreach ($row in $noCacheTable) {
+    Confirm-True ($null -eq (Get-CacheSegment (Get-PromptCachePayload $row.Json))) "cache: $($row.Label) gives no segment"
+}
+Confirm-True ($null -eq (Get-CacheSegment ('{}' | ConvertFrom-Json))) 'cache: a payload with no prompt_cache property gives no segment'
+# The quiet decision, pinned by name rather than left as an absence nobody would notice being filled
+# in. Quiet never hides a segment carrying a warning, and three of this segment's four states ARE the
+# warning - cold, off, and the last five minutes - while the fourth is a countdown whose whole value is
+# being on the line before it turns yellow. There is no boring number here for a threshold to hide, so
+# a quiet.cache key would only ever be a way to hide "cache cold". The builder takes no config at all,
+# which is what makes that structural rather than a matter of remembering.
+Confirm-True (-not (Get-DefaultStatusConfig).Quiet.ContainsKey('cache')) 'cache: no quiet threshold, because three of its four states are the warning'
+Confirm-Equal (@((Get-Command Get-CacheSegment).Parameters.Keys) -join ',') 'd' 'cache: the builder reads the payload and nothing else'
+# The ranks through the real fitting, so cache's place in both orders is exercised end to end rather
+# than only asserted in the registry table. The model segment is 11 cells and the full cache segment is
+# another 11, with a 3-cell separator between them: 25 cells whole, 19 with cache shortened, 11 with it
+# dropped. Cache shrinks before it is dropped, and the model survives both.
+$fitModel = @{ Name = 'model'; Text = "$iconModel Fable 5.1"; Short = $null; Role = 'model'; Bold = $true }
+$fitCache = Get-CacheSegment (Get-PromptCachePayload '{"warm":true,"expires_at":<AT>}' 2550)
+Confirm-Equal (Measure-VisibleWidth (Format-Line @($fitModel, $fitCache) 'plain')) 25 'cache fitting: the two segments are 25 cells whole'
+Confirm-Equal (ConvertTo-PlainText (Get-FittedLine @($fitModel, $fitCache) 'plain' 25)) "$iconModel Fable 5.1 $chevron $iconCache cache 42m" 'cache fitting: 25 columns keeps the full form'
+Confirm-Equal (ConvertTo-PlainText (Get-FittedLine @($fitModel, $fitCache) 'plain' 20)) "$iconModel Fable 5.1 $chevron $iconCache 42m" 'cache fitting: 20 columns sheds the word'
+Confirm-Equal (ConvertTo-PlainText (Get-FittedLine @($fitModel, $fitCache) 'plain' 15)) "$iconModel Fable 5.1" 'cache fitting: 15 columns drops the segment and keeps the model'
 
 Write-Host '== unit: cost' -ForegroundColor Cyan
 $iconCost = [char]::ConvertFromUtf32(0xF0155)
@@ -4846,6 +5026,22 @@ $absentGlyphs = @{
         @{ Icon = $iconLimit; Name = 'limits' }
         @{ Icon = $iconConflict; Name = 'warn' }
     )
+    '14-prompt-cache-warm.json'             = @(
+        @{ Icon = $iconBranch; Name = 'branch' }
+        @{ Icon = $iconDirty; Name = 'pencil' }
+        @{ Icon = $iconLines; Name = 'lines' }
+        @{ Icon = $iconLimit; Name = 'limits' }
+        @{ Icon = $iconConflict; Name = 'warn' }
+    )
+}
+# 14 is the only sample carrying a prompt_cache block, so the fire glyph has to stay off every other
+# line. A loop for the same reason the worktree and identity ones below are loops: a builder that
+# started drawing warmth from a payload with no prompt_cache in it would show up on all thirteen at
+# once, and a sample added later is covered without an edit.
+foreach ($sample in $sampleFiles) {
+    if ($sample.Name -eq '14-prompt-cache-warm.json') { continue }
+    $rows = @(if ($absentGlyphs.ContainsKey($sample.Name)) { $absentGlyphs[$sample.Name] })
+    $absentGlyphs[$sample.Name] = $rows + @{ Icon = $iconCache; Name = 'cache' }
 }
 # 11 is the only sample whose session is in a worktree, so every other one has to keep the fork glyph
 # off its line. One row per sample rather than ten written out by hand, and a sample added later is
@@ -4886,6 +5082,7 @@ $sampleSegments = @{
     '11-worktree.json'                      = @('model', 'context', 'cost', 'folder', 'branch')
     '12-context-alarm.json'                 = @('model', 'context', 'cost', 'folder')
     '13-agent-session.json'                 = @('model', 'context', 'cost', 'badges', 'folder', 'branch')
+    '14-prompt-cache-warm.json'             = @('model', 'context', 'cache', 'cost', 'folder', 'branch')
 }
 # One marker per segment per sample: the segment's glyph plus the value this payload gives it, spelled
 # the way it reaches the line once the escapes are stripped. Every visible segment has to put its marker
@@ -4914,6 +5111,11 @@ $sampleShortForms = @{
     }
     '11-worktree.json'                      = @{
         branch = @{ Icon = $iconBranch; Full = "$iconBranch review/x $iconWorktree wt-review ~2 $iconDirty"; Short = "$iconBranch review/x $iconDirty" }
+    }
+    # The cache segment's Short form drops the word and keeps the glyph and the value, so this is the
+    # two-form rule applied to a segment whose value is a word rather than a figure.
+    '14-prompt-cache-warm.json'             = @{
+        cache = @{ Icon = $iconCache; Full = "$iconCache cache warm"; Short = "$iconCache warm" }
     }
 }
 
@@ -4976,6 +5178,18 @@ $sampleMarkers = @{
         badges = "$iconAgent reviewer $iconSession nightly audit"
         folder = "$iconFolder my-project"; branch = "$iconHome main"
     }
+    # 14's cache marker is the whole segment text and nothing in it moves, which is the point of the
+    # sample. Its expires_at is 4102444800, the 1 January 2100 epoch sample 06 uses for its rate-limit
+    # resets, and where 06's limits segment renders that as a drifting countdown this one refuses it:
+    # a prompt cache does not expire in seventy-five years, so Get-CacheSecondsLeft hands back nothing
+    # and the builder prints the part it can stand behind, "warm", with no number after it. That is the
+    # far-future case pinned in the corpus rather than only in the unit table, and it is what lets this
+    # marker be the full text instead of stopping short of a figure that changes every minute.
+    '14-prompt-cache-warm.json'             = @{
+        model = "$iconModel Fable 5.1"; context = "$iconCtx 18%"; cache = "$iconCache cache warm"
+        cost  = "$iconCost `$$('{0:N2}' -f 1.24)"
+        folder = "$iconFolder my-project"; branch = "$iconHome main"
+    }
 }
 # The samples whose model segment the alarm turns red with the built-in alarm of 90: 12 sits at 92% of a
 # standard window and 02 at 90% of a 1M one, which is the boundary the alarm fires on. The alarm reads
@@ -4989,6 +5203,7 @@ $alarmSamples = @('02-feature-dirty-high.json', '12-context-alarm.json')
 $segmentGlyphs = @{
     model   = @($iconModel, $iconConflict)
     context = @($iconCtx)
+    cache   = @($iconCache)
     cost    = @($iconCost)
     lines   = @($iconLines)
     limits  = @($iconLimit)
@@ -5000,7 +5215,7 @@ $segmentGlyphs = @{
 # The segment behind each row of the absence table, so a row can be skipped when its segment is off
 # (the per-segment absence assertions cover that case instead, for every glyph the segment owns).
 $glyphSegment = @{
-    context = 'context'; cost = 'cost'; folder = 'folder'; lines = 'lines'; limits = 'limits'; warn = 'model'
+    context = 'context'; cache = 'cache'; cost = 'cost'; folder = 'folder'; lines = 'lines'; limits = 'limits'; warn = 'model'
     home = 'branch'; pencil = 'branch'; branch = 'branch'; worktree = 'branch'
     fast = 'badges'; think = 'badges'; effort = 'badges'; vim = 'badges'
     agent = 'badges'; session = 'badges'
@@ -5060,9 +5275,9 @@ if ($Config) {
     foreach ($row in $swappedRows) { [array]::Reverse($row) }
     $path = Write-TempConfig 'rows-swapped.json' ('{ "layout": "two", "style": "powerline", "rows": ' + (ConvertTo-Json -InputObject $swappedRows -Compress) + ' }')
     $configSet.Add((Get-ConfigRecord 'rows-swapped' $path (Read-StatusConfig $path) $keyWidths))
-    Confirm-Equal ($configSet[$configSet.Count - 1].Rows[0] -join ',') 'lines,cost,limits,context' 'rows-swapped config: first row is the registry second row reversed'
+    Confirm-Equal ($configSet[$configSet.Count - 1].Rows[0] -join ',') 'lines,cost,limits,cache,context' 'rows-swapped config: first row is the registry second row reversed'
     Confirm-Equal ($configSet[$configSet.Count - 1].Rows[1] -join ',') 'badges,pr,branch,folder,model' 'rows-swapped config: second row is the registry first row reversed'
-    Confirm-Equal ($configSet[$configSet.Count - 2].Rows[0] -join ',') 'branch,folder,pr,badges,limits,lines,context,model' 'order-reversed config: one row, reversed, without cost'
+    Confirm-Equal ($configSet[$configSet.Count - 2].Rows[0] -join ',') 'branch,folder,pr,badges,limits,lines,cache,context,model' 'order-reversed config: one row, reversed, without cost'
 }
 
 # No sample carries a session_id, so no render in the matrix may write state. The child renders get a
