@@ -213,9 +213,12 @@ function Get-ChildPwshStartInfo([string[]] $Arguments, [string] $PathPrefix) {
 # Starts statusline.ps1 in a child pwsh and returns before it finishes, so the caller can look at the
 # machine while the render is still running. The payload goes in on stdin and both output streams are
 # drained on .NET threads, so the child never blocks on a full pipe. COLUMNS is cleared for the child the
-# way Invoke-StatusLine clears it for a width of 0.
-function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
-    $p = [System.Diagnostics.Process]::Start((Get-ChildPwshStartInfo @('-File', $script) $PathPrefix))
+# way Invoke-StatusLine clears it for a width of 0. $ConfigPath is how the one caller widens the window
+# it has to look in: a render it means to watch mid-probe is no use if the probe is over before a pwsh
+# has finished starting.
+function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix, [string] $ConfigPath) {
+    $childArgs = if ($ConfigPath) { @('-File', $script, '-Config', $ConfigPath) } else { @('-File', $script) }
+    $p = [System.Diagnostics.Process]::Start((Get-ChildPwshStartInfo $childArgs $PathPrefix))
     $out = $p.StandardOutput.ReadToEndAsync()
     $err = $p.StandardError.ReadToEndAsync()
     $p.StandardInput.Write($Payload)
@@ -293,8 +296,14 @@ function Get-SubagentReply([string[]] $Lines) {
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
 # test has to supply them; the badges section reads the script's own copies back. The git timeout is not
 # one of them any more - the segment reads it from the config - so this is only the test's own
-# shorthand for the direct Get-GitBranch calls below, pinned to the script's default.
-$gitTimeoutMs = (Get-DefaultGitConfig).TimeoutMs
+# shorthand for the direct Get-GitBranch calls below.
+# It is deliberately far longer than the shipped default. Every call that uses it is asking what git
+# said, never how long git took, and a probe that runs out of budget answers nothing at all: on a
+# machine running four test suites at once, where starting any process took seconds, the shipped 1500 ms
+# would lose those answers and the checks would fail for a reason that is not in the script. The default
+# itself is what the hang cases in the git group exercise, and Get-DefaultGitConfig's own value is
+# pinned in the config group.
+$gitTimeoutMs = 30000
 $iconLimit = [char]::ConvertFromUtf32(0xF0E4)
 $iconModel = [char]::ConvertFromUtf32(0xF06A9)
 $iconFolder = [char]::ConvertFromUtf32(0xF07C)
@@ -5242,12 +5251,33 @@ $env:TEMP = $diagTemp
 # The test's own spelling of the log's name and of a line's shape, so the script's cannot agree with itself.
 $diagLog = Join-Path $diagTemp 'claude-statusline-diag.log'
 $diagStamp = '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \d+ '
+# A record whose close ran out of budget leaves the writer's handle open - the helper says so, and the
+# pool thread closing it gets there a beat later. On a machine running four test suites at once that
+# beat is long enough for the next read, write or delete here to meet a sharing violation, which under
+# this file's Stop preference takes the whole run down for a reason that has nothing to do with what is
+# being asserted; a loaded run of this group died on the very first record that way. So every call these
+# helpers make to the log is retried briefly before it is allowed to throw. The retry is bounded and
+# only ever catches a sharing violation, so a log that is genuinely locked still fails the run.
+function Invoke-DiagFile([scriptblock] $Call, [int] $TimeoutMs = 5000) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
+        try { return & $Call } catch {
+            $ex = $_.Exception
+            while ($null -ne $ex -and $ex -isnot [System.IO.IOException]) { $ex = $ex.InnerException }
+            if ($null -eq $ex -or $sw.ElapsedMilliseconds -ge $TimeoutMs) { throw }
+            Start-Sleep -Milliseconds 50
+        }
+    }
+}
 function Get-DiagLine {
     # The comma keeps a one-line log an array rather than one string the caller would index by character.
     if (-not (Test-Path -LiteralPath $diagLog)) { return , @() }
-    return , @([System.IO.File]::ReadAllText($diagLog) -split "`n" | Where-Object { $_ -ne '' })
+    $diagText = Invoke-DiagFile { [System.IO.File]::ReadAllText($diagLog) }
+    return , @($diagText -split "`n" | Where-Object { $_ -ne '' })
 }
-function Clear-DiagLog { if (Test-Path -LiteralPath $diagLog) { Remove-Item -LiteralPath $diagLog -Force } }
+function Clear-DiagLog { if (Test-Path -LiteralPath $diagLog) { Invoke-DiagFile { Remove-Item -LiteralPath $diagLog -Force } } }
+# The log filled to a size the next record cannot fit in, which is how every rollover check starts.
+function Write-DiagLogText([string] $Text) { Invoke-DiagFile { [System.IO.File]::WriteAllText($diagLog, $Text) } }
 function Measure-DiagMatch([string] $Pattern) { return @(Get-DiagLine | Where-Object { $_ -match $Pattern }).Count }
 # statusline.ps1 reads CLAUDE_STATUSLINE_DEBUG once at load into $script:diagOn, and every call site
 # tests that variable before it builds a reason or calls anything - which is what makes an unset
@@ -5278,7 +5308,8 @@ try {
     $diagLines = Get-DiagLine
     Confirm-Equal $diagLines.Count 2 'diag on: the second call appends rather than replaces'
     Confirm-True ($diagLines[1] -match 'again$') 'diag on: the second line holds the second reason'
-    $diagBytes = [System.IO.File]::ReadAllBytes($diagLog)
+    # Cast back, because a helper that returns an array hands it to the pipeline element by element.
+    $diagBytes = [byte[]] (Invoke-DiagFile { [System.IO.File]::ReadAllBytes($diagLog) })
     Confirm-True (-not ($diagBytes[0] -eq 0xEF -and $diagBytes[1] -eq 0xBB -and $diagBytes[2] -eq 0xBF)) 'diag file: UTF-8 without a BOM'
     Confirm-Equal $diagBytes[$diagBytes.Count - 1] 10 'diag file: every line ends with a newline'
 
@@ -5661,17 +5692,17 @@ namespace StatuslineTest {
     # cannot agree with each other about a wrong number.
     $diagCap = 4194304
     $diagRolled = $diagLog + '.1'
-    function Clear-DiagRollover { if (Test-Path -LiteralPath $diagRolled) { Remove-Item -LiteralPath $diagRolled -Recurse -Force } }
+    function Clear-DiagRollover { if (Test-Path -LiteralPath $diagRolled) { Invoke-DiagFile { Remove-Item -LiteralPath $diagRolled -Recurse -Force } } }
     function Get-DiagLogSize { return (Get-Item -LiteralPath $diagLog).Length }
     Clear-DiagLog
     Clear-DiagRollover
     # Room for the line: it lands in the same file and nothing is moved aside.
-    [System.IO.File]::WriteAllText($diagLog, ('x' * ($diagCap - 200)))
+    Write-DiagLogText ('x' * ($diagCap - 200))
     Write-StatusDiag 'still room'
     Confirm-True ((Get-DiagLogSize) -gt ($diagCap - 200) -and (Get-DiagLogSize) -le $diagCap) "diag rollover: under the cap the line is appended, size $(Get-DiagLogSize)"
     Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover: under the cap nothing is moved aside'
     # No room: the full log becomes .log.1 and the line starts a fresh one.
-    [System.IO.File]::WriteAllText($diagLog, ('y' * $diagCap))
+    Write-DiagLogText ('y' * $diagCap)
     Write-StatusDiag 'over the cap'
     $diagLines = Get-DiagLine
     Confirm-Equal $diagLines.Count 1 'diag rollover: the new log holds only the line that crossed the cap'
@@ -5679,7 +5710,7 @@ namespace StatuslineTest {
     Confirm-True (Test-Path -LiteralPath $diagRolled) 'diag rollover: the full log is kept as .log.1'
     Confirm-Equal (Get-Item -LiteralPath $diagRolled).Length $diagCap 'diag rollover: the kept file is the one that was full'
     # A second rollover replaces the first .log.1 rather than piling up a third file.
-    [System.IO.File]::WriteAllText($diagLog, ('z' * $diagCap))
+    Write-DiagLogText ('z' * $diagCap)
     Write-StatusDiag 'over the cap again'
     $diagStream = [System.IO.File]::OpenRead($diagRolled)
     try { $diagFirstByte = $diagStream.ReadByte() } finally { $diagStream.Dispose() }
@@ -5690,7 +5721,7 @@ namespace StatuslineTest {
     # state reads and writes rolls it over instead of pushing past it.
     Clear-DiagLog
     Clear-DiagRollover
-    [System.IO.File]::WriteAllText($diagLog, ('x' * ($diagCap - 120)))
+    Write-DiagLogText ('x' * ($diagCap - 120))
     $diagBoundDir = Join-Path $diagTemp 'cache-bound'
     $diagOverCap = 0
     for ($i = 0; $i -lt 12; $i++) {
@@ -5708,7 +5739,7 @@ namespace StatuslineTest {
     Clear-DiagLog
     Clear-DiagRollover
     New-Item -ItemType Directory -Force $diagRolled | Out-Null
-    [System.IO.File]::WriteAllText($diagLog, ('w' * $diagCap))
+    Write-DiagLogText ('w' * $diagCap)
     $diagRollThrew = $false
     $diagRollOut = @('not run')
     try { $diagRollOut = @(Write-StatusDiag 'the rollover cannot happen') } catch { $diagRollThrew = $true }
@@ -5727,18 +5758,30 @@ namespace StatuslineTest {
     Confirm-Equal $diagLines.Count 1 'diag record cap: an enormous reason is still one line'
     Confirm-Equal $diagLines[0].Split(' ', 3)[2] (('q' * 1000) + ' [cut]') 'diag record cap: the reason is cut at 1000 characters and marked'
     Confirm-True ((Get-DiagLogSize) -lt 1200) "diag record cap: the record is bounded, size $(Get-DiagLogSize)"
-    [System.IO.File]::WriteAllText($diagLog, ('y' * $diagCap))
+    Write-DiagLogText ('y' * $diagCap)
     Write-StatusDiag ('r' * 5000)
     Confirm-True ((Get-DiagLogSize) -le $diagCap) 'diag record cap: an enormous reason on a full log still leaves the log at or under the cap'
 
     # The rollover is taken under a named mutex with no wait at all, so a render that finds another one
-    # already rotating appends rather than waiting on it. A mutex belongs to a thread and is reentrant,
-    # so only another process can hold it against this one: a child pwsh takes it, says so by writing a
-    # file, and keeps it until this one says to let go. The name is spelled out here rather than read
-    # from the script, so the two cannot agree with each other about the wrong one.
+    # already rotating appends rather than waiting on it. A mutex is owned by a thread and is reentrant,
+    # so the thread taking this one cannot contend with itself: another process holds it here, which is
+    # also how it is contended for in life. A child pwsh takes it, says so by writing a file, and keeps
+    # it until this one says to let go. The name is spelled out here rather than read from the script,
+    # so the two cannot agree with each other about the wrong one.
+    #
+    # What is asserted first is the decision on its own, through Invoke-StatusDiagRollover directly,
+    # because a whole record brings two clocks with it that this check is not about: a record has a
+    # quarter-second budget for all its filesystem calls, and on a machine running four test suites at
+    # once that budget is spent before the line is appended - the log then sits at exactly the cap and
+    # the append check fails for a reason that has nothing to do with the mutex, which is #63. The
+    # direct call takes its timeout as an argument, so the size read inside it is given a generous one
+    # and cannot be the reason the file was left alone either: with the mutex the only thing left that
+    # can stop the move, a file that did not move says the mutex stopped it. The record's own budget is
+    # then pinned for the checks that do go through Write-StatusDiag, the same way the reserve is
+    # replaced further up, so that what they report is the mutex decision and not the filesystem's mood.
     Clear-DiagLog
     Clear-DiagRollover
-    [System.IO.File]::WriteAllText($diagLog, ('y' * $diagCap))
+    Write-DiagLogText ('y' * $diagCap)
     $diagReady = Join-Path $tmp 'diag-lock-ready'
     $diagGo = Join-Path $tmp 'diag-lock-go'
     foreach ($diagSignal in @($diagReady, $diagGo)) { if (Test-Path -LiteralPath $diagSignal) { Remove-Item -LiteralPath $diagSignal -Force } }
@@ -5758,24 +5801,51 @@ $m.Dispose()
     $diagPsi.UseShellExecute = $false
     $diagPsi.CreateNoWindow = $true
     $diagHolder = [System.Diagnostics.Process]::Start($diagPsi)
+    $diagRealLimit = Get-StatusDiagLimit
+    $diagPinnedLimit = "function Get-StatusDiagLimit { return @{ TimeoutMs = 30000; RolloverMs = $($diagRealLimit.RolloverMs) } }"
+    $diagOwnLimit = "function Get-StatusDiagLimit { return @{ TimeoutMs = $($diagRealLimit.TimeoutMs); RolloverMs = $($diagRealLimit.RolloverMs) } }"
     try {
         $diagDeadline = [DateTime]::UtcNow.AddSeconds(30)
         while (-not [System.IO.File]::Exists($diagReady) -and [DateTime]::UtcNow -lt $diagDeadline) { Start-Sleep -Milliseconds 20 }
         Confirm-True ([System.IO.File]::Exists($diagReady)) 'diag rollover lock: another process holds the mutex the rollover takes'
+        # The decision, with nothing else left that could account for it: the log is over the cap, the
+        # size read has thirty seconds, and the move does not happen.
+        $diagRollThrewHeld = $false
+        $diagRollOutHeld = @('not run')
+        try { $diagRollOutHeld = @(Invoke-StatusDiagRollover $diagLog 120 $diagCap 30000) } catch { $diagRollThrewHeld = $true }
+        Confirm-True (-not $diagRollThrewHeld) 'diag rollover lock: a rollover it cannot take does not throw'
+        Confirm-Equal $diagRollOutHeld.Count 0 'diag rollover lock: and nothing reaches the pipeline'
+        Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover lock: the file the other render is rotating is left alone'
+        Confirm-Equal (Get-DiagLogSize) $diagCap 'diag rollover lock: and the full log is left exactly as it was'
+        # The same skip through a whole record, which is where the approximate cap comes from.
+        . ([scriptblock]::Create($diagPinnedLimit))
         $diagLockThrew = $false
         $diagLockOut = @('not run')
         try { $diagLockOut = @(Write-StatusDiag 'another render is rotating') } catch { $diagLockThrew = $true }
-        Confirm-True (-not $diagLockThrew) 'diag rollover lock: a rollover it cannot take does not throw'
-        Confirm-Equal $diagLockOut.Count 0 'diag rollover lock: and nothing reaches the pipeline'
-        Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover lock: the file the other render is rotating is left alone'
+        Confirm-True (-not $diagLockThrew) 'diag rollover lock: a record whose rollover is taken does not throw either'
+        Confirm-Equal $diagLockOut.Count 0 'diag rollover lock: and that record reaches the pipeline with nothing'
+        Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover lock: the record did not roll the log either'
         Confirm-True ((Get-DiagLogSize) -gt $diagCap) 'diag rollover lock: the line is appended anyway rather than waited for, which is what makes the cap approximate'
     } finally {
+        . ([scriptblock]::Create($diagOwnLimit))
         [System.IO.File]::WriteAllText($diagGo, 'go')
         [void] $diagHolder.WaitForExit(30000)
         $diagHolder.Dispose()
     }
-    # With the mutex free again the next record rotates as it always did.
+    # With the mutex free again the next record rotates as it always did. The wait for it to come free
+    # is a wait and not an assumption because the name is machine-wide: another copy of this suite,
+    # running beside this one, holds the same mutex for the length of its own check above.
+    $diagFreeMutex = [System.Threading.Mutex]::new($false, 'claude-code-statusline-diag-rollover')
+    $diagFree = $false
+    try {
+        try { $diagFree = $diagFreeMutex.WaitOne(30000) } catch [System.Threading.AbandonedMutexException] { $diagFree = $true }
+        if ($diagFree) { $diagFreeMutex.ReleaseMutex() }
+    } finally { $diagFreeMutex.Dispose() }
+    Confirm-True $diagFree 'diag rollover lock: the other render lets the mutex go'
+    . ([scriptblock]::Create($diagPinnedLimit))
     Write-StatusDiag 'the other render has finished'
+    . ([scriptblock]::Create($diagOwnLimit))
+    Confirm-Equal (Get-StatusDiagLimit).TimeoutMs $diagRealLimit.TimeoutMs 'diag rollover lock: the real record budget is back'
     Confirm-True (Test-Path -LiteralPath $diagRolled) 'diag rollover lock: once the mutex is free the rollover happens'
     Confirm-Equal (Get-DiagLine).Count 1 'diag rollover lock: and the fresh log holds only the new record'
     Clear-DiagLog
@@ -5922,15 +5992,23 @@ if ($haveGit) {
     Confirm-Equal $blocked $null 'Get-GitBranch: a ceiling on the parent repo hides it'
     Confirm-Equal (Get-GitBranch $trapChild $gitTimeoutMs).Branch 'main' 'Get-GitBranch: the same directory finds the repo once the ceiling moves back'
 
-    $gitCases.Add(@{ Name = 'clean';           Dir = $clean;          Has = "$iconHome main";              Not = $iconDirty })
-    $gitCases.Add(@{ Name = 'dirty tracked';   Dir = $dirtyTracked;   Has = "$iconHome main ~1 $iconDirty";  Raw = "$esc[33m" })
-    $gitCases.Add(@{ Name = 'dirty untracked'; Dir = $dirtyUntracked; Has = "$iconHome main ?1 $iconDirty" })
-    $gitCases.Add(@{ Name = 'mixed';           Dir = $mixed;          Has = "$iconHome main +1 ~1 ?1 $iconDirty"; Not = $iconConflict; Raw = "$esc[90m+1$esc[33m $esc[90m~1$esc[33m $esc[90m?1$esc[33m" })
-    $gitCases.Add(@{ Name = 'feature';         Dir = $feature;        Has = "$iconBranch feature/x" })
-    $gitCases.Add(@{ Name = 'unborn';          Dir = $unborn;         Has = "$iconHome main";              Not = $iconDirty })
-    $gitCases.Add(@{ Name = 'detached';        Dir = $detached;       Has = "$iconBranch detached" })
-    $gitCases.Add(@{ Name = 'ahead';           Dir = $ahead;          Has = "$iconBranch topic ${iconAhead}1"; Not = $iconBehind; Raw = "$esc[90m${iconAhead}1$esc[35m" })
-    $gitCases.Add(@{ Name = 'behind';          Dir = $behind;         Has = "$iconHome main ${iconBehind}1";   Not = $iconAhead })
+    # Each of these renders is about what the branch segment says, never about how long it took, and a
+    # probe that runs out of budget says nothing at all: the segment is simply absent and every check
+    # below fails on content. The shipped 1500 ms is ample for a one-file repository on a quiet machine
+    # and thin on one running four test suites, where starting a process at all took seconds, so these
+    # renders are given a timeout no realistic contention can eat. It is the fixture that moves, not
+    # the assertion - each still pins the exact text - and the shipped default is exercised by the hang
+    # case below, which is the case that is actually about the timeout.
+    $gitPatient = Write-TempConfig 'git-patient.json' '{ "git": { "timeoutMs": 30000 } }'
+    $gitCases.Add(@{ Name = 'clean';           Dir = $clean;          Has = "$iconHome main";              Not = $iconDirty; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'dirty tracked';   Dir = $dirtyTracked;   Has = "$iconHome main ~1 $iconDirty";  Raw = "$esc[33m"; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'dirty untracked'; Dir = $dirtyUntracked; Has = "$iconHome main ?1 $iconDirty"; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'mixed';           Dir = $mixed;          Has = "$iconHome main +1 ~1 ?1 $iconDirty"; Not = $iconConflict; Raw = "$esc[90m+1$esc[33m $esc[90m~1$esc[33m $esc[90m?1$esc[33m"; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'feature';         Dir = $feature;        Has = "$iconBranch feature/x"; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'unborn';          Dir = $unborn;         Has = "$iconHome main";              Not = $iconDirty; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'detached';        Dir = $detached;       Has = "$iconBranch detached"; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'ahead';           Dir = $ahead;          Has = "$iconBranch topic ${iconAhead}1"; Not = $iconBehind; Raw = "$esc[90m${iconAhead}1$esc[35m"; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'behind';          Dir = $behind;         Has = "$iconHome main ${iconBehind}1";   Not = $iconAhead; Config = $gitPatient })
 }
 $notRepo = Join-Path $tmp 'not-a-repo'; New-Item -ItemType Directory -Force $notRepo | Out-Null
 $gitCases.Add(@{ Name = 'not a repo'; Dir = $notRepo; NoBranch = $true })
@@ -5944,25 +6022,102 @@ $fakeFail = Write-FakeGit 'fake-fail' "echo ran > `"%~dp0fake.ran`"`r`necho fata
 $fakeHang = Write-FakeGit 'fake-hang' "echo ran > `"%~dp0fake.ran`"`r`nping -n 11 -w $pingTag 127.0.0.1 > nul`r`nexit 0"
 $gitCases.Add(@{ Name = 'git fails'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; Marker = (Join-Path $fakeFail 'fake.ran')
                  PathPrefix = $fakeFail })
-$gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 1500; MaxMs = 4000; Marker = (Join-Path $fakeHang 'fake.ran'); NoPing = $true
+$gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 1500; Marker = (Join-Path $fakeHang 'fake.ran'); NoPing = $true
                  PathPrefix = $fakeHang })
-# git.timeoutMs moves the wait. The hang fake pings for ten seconds, so 3000 still kills it, and with
-# 100 the render is back well inside the 3000 case's floor; its budget is loose because a whole pwsh
-# start sits around the 100 ms wait, and its marker is not asserted for the same reason. Each gets its
-# own copy of the fake. Neither directory is a repository, so the cache is never consulted and every
-# render really waits.
+# git.timeoutMs moves the wait, and the floor is what says so: a render that waited at least the
+# configured number of milliseconds can only have read that number. Each gets its own copy of the fake.
+# Neither directory is a repository, so the cache is never consulted and every render really waits.
+#
+# MinMs is the only clock these cases still read, and it is a floor rather than a ceiling on purpose: a
+# loaded machine can only make a render slower, so a floor says the same thing on a quiet box and a busy
+# one, while the ceilings these cases used to carry - a whole child render inside four seconds, of which
+# 1.5 was the intended wait - failed under load for a reason that had nothing to do with the probe. That
+# is #63. What the ceilings proved is proved above instead, without a clock, by handing the timeout
+# decision to the test. The 100 ms case keeps no clock at all: a floor of 100 is met by any render that
+# starts a pwsh whatever the timeout is, so it never said anything.
 $fakeHang3000 = Write-FakeGit 'fake-hang-3000' "echo ran > `"%~dp0fake.ran`"`r`nping -n 11 -w $pingTag 127.0.0.1 > nul`r`nexit 0"
 $fakeHang100 = Write-FakeGit 'fake-hang-100' "echo ran > `"%~dp0fake.ran`"`r`nping -n 11 -w $pingTag 127.0.0.1 > nul`r`nexit 0"
 $gitTimeout3000 = Write-TempConfig 'git-timeout-3000.json' '{ "git": { "timeoutMs": 3000 } }'
 $gitTimeout100 = Write-TempConfig 'git-timeout-100.json' '{ "git": { "timeoutMs": 100 } }'
-$gitCases.Add(@{ Name = 'git hangs, timeoutMs 3000'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 3000; MaxMs = 6000; Marker = (Join-Path $fakeHang3000 'fake.ran'); NoPing = $true
+$gitCases.Add(@{ Name = 'git hangs, timeoutMs 3000'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 3000; Marker = (Join-Path $fakeHang3000 'fake.ran'); NoPing = $true
                  PathPrefix = $fakeHang3000; Config = $gitTimeout3000 })
-$gitCases.Add(@{ Name = 'git hangs, timeoutMs 100'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 100; MaxMs = 4000; NoPing = $true
+$gitCases.Add(@{ Name = 'git hangs, timeoutMs 100'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; NoPing = $true
                  PathPrefix = $fakeHang100; Config = $gitTimeout100 })
 
 function Get-FakePingCount([string] $Tag) {
     return @(Get-CimInstance Win32_Process -Filter "Name='PING.EXE'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match "-n 11 -w $Tag " }).Count
 }
+
+# The kill takes the tree down at once; the operating system reaps it a moment later, and on a machine
+# running four test suites that moment is longer than any fixed sleep worth writing. So wait for the
+# ping to go rather than sleeping a guessed interval and looking once. Waiting longer cannot make a
+# failing check pass: a ping nobody killed runs for ten seconds, which is longer than this window.
+function Wait-FakePingGone([string] $Tag, [int] $TimeoutMs = 6000) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ((Get-FakePingCount $Tag) -gt 0 -and $sw.ElapsedMilliseconds -lt $TimeoutMs) { Start-Sleep -Milliseconds 100 }
+    return ((Get-FakePingCount $Tag) -eq 0)
+}
+
+# ---- The timeout decision, taken deliberately rather than waited for ----
+# The hang cases below assert the wall clock of a whole child render, and a wall clock is the one thing
+# a machine running four test suites at once does not honour: the same render takes 3.3 seconds on a
+# quiet box and 5.5 on a loaded one, against a ceiling of four. That is #63, and the ceilings failed
+# for a reason that had nothing to do with the probe. What they were there to prove is a decision - git
+# did not answer inside the budget, so kill the tree and report nothing - and $WaitForExit hands that
+# decision to the test the way Get-PaceArrow's $Now hands it the clock. The fake here exits at once and
+# prints a branch, so a null answer can only be the decision's, never the fake's.
+$fakeQuick = Write-FakeGit 'fake-quick' "echo ## main`r`nexit 0"
+$waitSpy = @{ Calls = 0; TimeoutMs = 0; Pings = 0; Running = $false }
+$waitExited = { param($p, $ms) $waitSpy.Calls++; $waitSpy.TimeoutMs = $ms; return $p.WaitForExit($ms) }
+$waitTimedOut = { param($p, $ms) $null = $p; $waitSpy.Calls++; $waitSpy.TimeoutMs = $ms; return $false }
+# The same verdict, but not until the fake has really got its ping child running, so that the check
+# that the tree is gone afterwards cannot pass because there was never a tree. The wait is bounded and
+# the count it saw is asserted, so a fake that never started one fails rather than being waited out.
+$waitTimedOutOnce = {
+    param($p, $ms)
+    $waitSpy.Calls++
+    $waitSpy.TimeoutMs = $ms
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($waitSpy.Pings -lt 1 -and $sw.ElapsedMilliseconds -lt 30000) {
+        $waitSpy.Pings = Get-FakePingCount $pingTag
+        if ($waitSpy.Pings -lt 1) { Start-Sleep -Milliseconds 100 }
+    }
+    # The batch file cannot outlive its own ping, so a ping seen means git is still running here, which
+    # is what makes the kill below a kill of something.
+    $waitSpy.Running = -not $p.HasExited
+    return $false
+}
+$oldPath = $env:PATH
+try {
+    $env:PATH = $fakeQuick + [System.IO.Path]::PathSeparator + $env:PATH
+    # Nothing injected: the default wait, which is the one every caller in the script takes.
+    Confirm-Equal (Get-GitBranch $notRepo $gitTimeoutMs).Branch 'main' 'git timeout decision: with no wait supplied the probe still answers from git'
+    # The real wait behind the injection point: the same answer, taken once, with the timeout the
+    # caller passed. That last one is the plumbing the elapsed-time cases proved with a stopwatch -
+    # whatever number reaches the probe is the number the wait is given - without the stopwatch.
+    $waitSpy.Calls = 0
+    Confirm-Equal (Get-GitBranch $notRepo 1234 $waitExited).Branch 'main' 'git timeout decision: an injected wait that says git exited answers from git'
+    Confirm-Equal $waitSpy.Calls 1 'git timeout decision: the wait is taken once'
+    Confirm-Equal $waitSpy.TimeoutMs 1234 'git timeout decision: the wait is given the timeout the caller passed'
+    # The decision itself: same fake, same branch on stdout, same exit code 0, and the probe reports
+    # nothing because the wait said the budget ran out.
+    $waitSpy.Calls = 0
+    Confirm-Equal (Get-GitBranch $notRepo 1234 $waitTimedOut) $null 'git timeout decision: a wait that says the timeout ran out answers nothing, though git exited 0 with a branch'
+    Confirm-Equal $waitSpy.Calls 1 'git timeout decision: the timed-out wait is taken once too'
+} finally { $env:PATH = $oldPath }
+# And the kill that goes with the decision, on the fake that really hangs: the ping child is watched
+# into existence from inside the wait, the verdict is then given, and the tree has to be gone - all
+# without waiting a timeout out.
+$oldPath = $env:PATH
+try {
+    $env:PATH = $fakeHang + [System.IO.Path]::PathSeparator + $env:PATH
+    $waitSpy.Calls = 0
+    $waitSpy.Pings = 0
+    Confirm-Equal (Get-GitBranch $notRepo 1234 $waitTimedOutOnce) $null 'git timeout decision, hanging git: the probe answers nothing'
+    Confirm-True ($waitSpy.Pings -ge 1) "git timeout decision, hanging git: the fake had a ping child to kill (count $($waitSpy.Pings))"
+    Confirm-True $waitSpy.Running 'git timeout decision, hanging git: and git itself was still running when the verdict was given'
+    Confirm-True (Wait-FakePingGone $pingTag) 'git timeout decision, hanging git: the ping child is killed with the tree'
+} finally { $env:PATH = $oldPath }
 
 foreach ($case in $gitCases) {
     $r = Invoke-StatusLine (Get-GitPayload $case.Dir) $case.Config 0 $case.PathPrefix
@@ -5977,8 +6132,7 @@ foreach ($case in $gitCases) {
     if ($case.NoStderr) { Confirm-True ($r.Err.Count -eq 0) "${label}: nothing on stderr, got '$($r.Err -join ' | ')'" }
     if ($case.Marker) { Confirm-True (Test-Path $case.Marker) "${label}: fake git was actually launched" }
     if ($case.MinMs) { Confirm-True ($r.Ms -ge $case.MinMs) "${label}: waited the full timeout ($($r.Ms) ms, expected at least $($case.MinMs))" }
-    if ($case.MaxMs) { Confirm-True ($r.Ms -lt $case.MaxMs) "${label}: finished in $($r.Ms) ms (limit $($case.MaxMs))" }
-    if ($case.NoPing) { Start-Sleep -Milliseconds 300; Confirm-True ((Get-FakePingCount $pingTag) -eq 0) "${label}: ping child killed with the tree" }
+    if ($case.NoPing) { Confirm-True (Wait-FakePingGone $pingTag) "${label}: ping child killed with the tree" }
     Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f $case.Name, $r.Ms, $text)
 }
 
@@ -5998,8 +6152,10 @@ if ($haveGit) {
     # second runs with a git on PATH that only writes a marker and fails, and still prints the branch.
     $fakeFailCached = Write-FakeGit 'fake-fail-cached' "echo ran > `"%~dp0fake.ran`"`r`necho fatal: not a git repository 1>&2`r`nexit 128"
     $cachedMarker = Join-Path $fakeFailCached 'fake.ran'
-    # A long lifetime, so two whole child renders cannot straddle the shipped five seconds on a slow day.
-    $gitCache300 = Write-TempConfig 'git-cache-300.json' '{ "git": { "cacheSeconds": 300 } }'
+    # A long lifetime, so two whole child renders cannot straddle the shipped five seconds on a slow day,
+    # and the same patient timeout the content cases above use, for the same reason: the first render has
+    # to reach real git and get an answer, or every check here fails on a branch that was never printed.
+    $gitCache300 = Write-TempConfig 'git-cache-300.json' '{ "git": { "cacheSeconds": 300, "timeoutMs": 30000 } }'
     $r1 = Invoke-StatusLine (Get-GitPayload $clean) $gitCache300 0
     $r2 = Invoke-StatusLine (Get-GitPayload $clean) $gitCache300 0 $fakeFailCached
     $text1 = ConvertTo-PlainText ($r1.Lines -join "`n")
@@ -6171,15 +6327,20 @@ foreach ($case in @(
 # fake had never started a ping. Run the same fake once more without waiting for the render, and watch
 # the ping from outside - it has to be running while the render is still blocked, and gone once the
 # render has exited.
-$hang = Invoke-StatusLineAsync (Get-GitPayload $notRepo) $fakeHang
+# The window this looks in is the render's own timeout, so the render is given a long one: with the
+# shipped 1500 ms a pwsh that takes four seconds to start on a loaded machine can be past the probe
+# before the first look, and the check then fails for want of a window rather than for want of a ping.
+# Eight seconds is still short enough that the probe's own kill is what ends the ping - the fake pings
+# for ten - which is the thing being controlled for.
+$gitTimeout8000 = Write-TempConfig 'git-timeout-8000.json' '{ "git": { "timeoutMs": 8000 } }'
+$hang = Invoke-StatusLineAsync (Get-GitPayload $notRepo) $fakeHang $gitTimeout8000
 $midPings = 0
 $midMs = 0
 $hangSw = [System.Diagnostics.Stopwatch]::StartNew()
 try {
-    Start-Sleep -Milliseconds 500
     $midPings = Get-FakePingCount $pingTag
     # pwsh's own start-up is not instant, so allow a little longer for the child to reach the ping.
-    while ($midPings -lt 1 -and $hangSw.ElapsedMilliseconds -lt 5000 -and -not $hang.Process.HasExited) {
+    while ($midPings -lt 1 -and $hangSw.ElapsedMilliseconds -lt 30000 -and -not $hang.Process.HasExited) {
         Start-Sleep -Milliseconds 100
         $midPings = Get-FakePingCount $pingTag
     }
@@ -6192,8 +6353,7 @@ try {
     $hang.Process.Dispose()
 }
 $hangSw.Stop()
-Start-Sleep -Milliseconds 300
-Confirm-True ((Get-FakePingCount $pingTag) -eq 0) 'git hangs control: ping child gone once the render exited'
+Confirm-True (Wait-FakePingGone $pingTag) 'git hangs control: ping child gone once the render exited'
 Write-Host ("{0,-40} {1,5:N0} ms  {2} ping(s) at {3} ms, 0 after" -f 'git hangs control', $hangSw.ElapsedMilliseconds, $midPings, $midMs)
 } finally {
     if ($null -ne $oldGitConfigGlobal) { $env:GIT_CONFIG_GLOBAL = $oldGitConfigGlobal } else { Remove-Item Env:GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue }

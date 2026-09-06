@@ -1385,7 +1385,14 @@ function Read-PorcelainStatus([string] $Text) {
 
 # Runs git status in $Dir with a hard timeout. Any failure, or no git on PATH, returns $null.
 # Stdout and stderr are drained on .NET threads so a long listing cannot fill the pipe and stall git.
-function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
+# $WaitForExit answers "did git finish inside the budget" and defaults to the wait itself, so no caller
+# passes one and every render takes the line below. It exists for the tests, the way Get-PaceArrow's
+# $Now does: what happens when git does not answer - the tree is killed and the probe reports nothing -
+# could otherwise only be reached by really waiting a timeout out behind a fake that really hangs, and
+# a check written that way is a check on a wall clock, which a loaded machine does not honour. Given a
+# script block, it is called with the process and the timeout and its answer stands in for the wait's,
+# so the decision can be taken deliberately in a test and the clock left out of it.
+function Get-GitBranch([string] $Dir, [int] $TimeoutMs, [scriptblock] $WaitForExit) {
     if (-not $Dir) { return $null }
     if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return $null }
     $git = (Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
@@ -1406,7 +1413,7 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
         $p = [System.Diagnostics.Process]::Start($psi)
         $outTask = $p.StandardOutput.ReadToEndAsync()
         $errTask = $p.StandardError.ReadToEndAsync()
-        $exited = $p.WaitForExit($TimeoutMs)
+        $exited = if ($WaitForExit) { [bool] (& $WaitForExit $p $TimeoutMs) } else { $p.WaitForExit($TimeoutMs) }
         if (-not $exited) {
             # Kill the whole tree, then give it a moment to actually go away before we dispose the handles.
             try { $p.Kill($true) } catch { if ($script:diagOn) { Write-StatusDiag "git probe: kill failed: $($_.Exception.Message)" } }
