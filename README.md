@@ -46,6 +46,7 @@ how close you are to a rate limit, and which modes are on.
 - Fits the terminal width. A line that is too long first loses detail from the cost, limits, cache, context, branch, folder, badges and clock segments, then the right group, then whole segments from the right, so lines stop wrapping in normal use.
 - If a field is missing from the payload, the script drops that segment. If the payload will not parse, it still prints the model glyph.
 - Icons come from Unicode code points rather than pasted characters, so the file's own encoding cannot corrupt them.
+- The payload is decoded as UTF-8 whatever the console's code page is, so a branch, folder, model, agent or session name that is not English renders as it was sent rather than as mojibake.
 - No modules to install. PowerShell 7 and a Nerd Font are the whole dependency list.
 
 ## Requirements
@@ -832,6 +833,17 @@ Icons show as boxes or question marks: the terminal font is not a Nerd Font. Set
 `JetBrainsMono NF` or any other Nerd Font. Where the font is not yours to change — the VS Code
 terminal, a session over SSH — put `"style": "ascii"` in `statusline.json` instead and the same line
 is drawn out of plain ASCII, colours and all. See [ASCII style](#ascii-style).
+
+A branch or folder name that is not English comes out as `µ⌐ƒΦâ╜/x` or `funci├│n`: that was a defect
+in the status line itself and is fixed. Claude Code sends the payload as UTF-8, and both scripts now
+decode stdin as UTF-8 explicitly, whatever the console's input code page happens to be — 437 on an
+ordinary Windows console, or the machine's OEM code page in a console the host makes fresh for the
+render. Nothing needs setting: no `chcp`, no `[Console]::InputEncoding`, no beta UTF-8 option in
+Windows. If you still see it, you are running an older copy — reinstall with `.\install.ps1`, and with
+`.\install.ps1 -Subagents` as well if you use the agent panel, since the panel's script is only
+installed under that switch and carries the same read path. A name whose characters your terminal font
+has no glyph for is the other symptom and a different problem; see the boxes-and-question-marks entry
+above.
 
 The status line is blank: run `.\test.ps1` to confirm the script works, then check that `pwsh` is on
 your `PATH` and that the `command` path in `settings.json` exists.

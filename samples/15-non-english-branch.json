@@ -1,0 +1,12 @@
+{
+  "model": { "display_name": "Fable 5.1" },
+  "context_window": {
+    "total_input_tokens": 22000,
+    "total_output_tokens": 1500,
+    "context_window_size": 200000,
+    "used_percentage": 12
+  },
+  "cost": { "total_cost_usd": 0.66 },
+  "workspace": { "current_dir": "C:\\Users\\jim\\src\\proyecto-función" },
+  "git": { "branch": "機能/x", "status": "clean" }
+}
