@@ -91,16 +91,6 @@ function Read-StdinText() {
 # nothing to bound: the wait is already zero, and taking and releasing it are kernel calls rather than
 # filesystem ones. The rename is the one call here that is not bounded; the caller decides whether the
 # budget can afford it before calling at all, and the note at that call site says what that leaves.
-# Verified empirically (issue #49) that this mutex is cross-process on Linux, not just cross-thread:
-# two independent OS processes contending for the same name are mutually exclusive under both
-# PowerShell 7.0.0 / .NET Core 3.1 (this repo's floor) and PowerShell 7.4.2 / .NET 8 (current), run via
-# `docker run mcr.microsoft.com/powershell:7.0.0-ubuntu-18.04` and `:latest`. A holder that exits
-# without releasing (a killed render) does not block the next waiter - the kernel drops the underlying
-# lock on process exit, so WaitOne(0) simply succeeds again; on Unix that happened without .NET raising
-# AbandonedMutexException, unlike Windows, which is why the catch below cannot be assumed to fire here
-# and $held is set from either path. The name is also scoped per Unix user, not machine-global as on
-# Windows: two different uids acquired "the same" name at once with no cross-user serialisation, so a
-# `Global\` prefix is neither needed nor meaningful here. macOS was not tested.
 function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [int] $TimeoutMs) {
     $mutex = [System.Threading.Mutex]::new($false, 'claude-code-statusline-diag-rollover')
     try {
