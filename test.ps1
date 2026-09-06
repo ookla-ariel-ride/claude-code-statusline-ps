@@ -3986,6 +3986,25 @@ Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit null perc
 Confirm-True ($null -eq (Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":null},"seven_day":{"used_percentage":null},"spend_limit":{"used_percentage":null}}') $bandCfg)) 'limits all null: segment omitted'
 Confirm-True ($null -eq (Get-LimitsSegment ([pscustomobject]@{}) $bandCfg)) 'limits: missing rate_limits'
 
+# #45: used_percentage used to go through only a null check and then a cast a string throws on and a
+# boolean sails through (`$true` coerces to 1 and prints "5h 1%"). Get-FiniteNumber is the same gate
+# every other payload number in the script uses, and the decision made in #45 is that an unusable
+# figure omits THAT figure alone, not the whole segment - the same per-row `continue` a missing
+# used_percentage already took, now reached by more than just $null.
+foreach ($bad in @('"50"', 'true', 'false', 'null', '[]', '{}')) {
+    $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":' + $bad + '},"seven_day":{"used_percentage":41,"resets_at":1700000000}}')) $bandCfg
+    Confirm-Equal $seg.Text "$iconLimit 7d 41%" "limits: a 5h used_percentage of $bad is omitted, 7d still renders"
+    Confirm-Equal $seg.Role 'ok' "limits: a 5h used_percentage of $bad does not drive the colour"
+}
+# The same shapes, but as the only figure in the payload: nothing to fall back on, so the whole segment
+# is omitted rather than an empty parenthesis or a bare icon.
+foreach ($bad in @('"50"', 'true', 'false', 'null', '[]', '{}')) {
+    Confirm-True ($null -eq (Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":' + $bad + '}}')) $bandCfg)) "limits: a used_percentage of $bad with nothing else present omits the whole segment"
+}
+# A boolean used_percentage used to coerce to 1 and print "5h 1%"; confirmed directly by the absence of
+# any 5h figure at all, since "1%" alone as a substring would also be found inside an unrelated "41%".
+Confirm-True (-not (Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":true},"seven_day":{"used_percentage":41,"resets_at":1700000000}}') $bandCfg).Text.Contains('5h')) 'limits: a boolean used_percentage does not coerce to 1% and print a 5h figure'
+
 # The config's thresholds colour the rate limits too, whatever the window size, and the Short form
 # follows the colour they give: 24 is the worst figure and above a warn of 20, so it stays.
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":24,"resets_at":1700000000},"seven_day":{"used_percentage":12,"resets_at":1700000000}}') $lowCfg

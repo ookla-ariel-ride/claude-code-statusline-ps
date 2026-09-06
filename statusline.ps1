@@ -2428,7 +2428,12 @@ function Get-LimitsSegment($d, $cfg) {
     # Label, source object, whether the pace arrow and the countdown follow, and whether the figure is a
     # rate-limit window rather than the spend limit, in render order.
     foreach ($row in @(@('5h', $rl.five_hour, $true, $true), @('7d', $rl.seven_day, $false, $true), @('$', $rl.spend_limit, $false, $false))) {
-        $pct = $row[1].used_percentage
+        # Get-FiniteNumber is the same gate every other payload number in the script goes through: a
+        # string, a boolean ($true would otherwise coerce to 1 and print "5h 1%"), an array or a null
+        # all come back $null here and this figure alone is left off the line, the way a missing
+        # used_percentage always has been - the loop's own worst-of and countdown logic never sees it,
+        # so one bad figure never takes the other two, or the segment, down with it.
+        $pct = Get-FiniteNumber $row[1].used_percentage
         if ($null -eq $pct) { continue }
         $pct = Get-WholePercent $pct
         $bit = "$($row[0]) $pct%"
