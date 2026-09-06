@@ -5923,7 +5923,6 @@ $s.Dispose()
     }
     Clear-DiagLog
     Clear-DiagRollover
-    if ($env:CLAUDE_TEST_STOP_AFTER_DIAG) { Write-Host "STOP_AFTER_DIAG reached, failed=$script:failed"; exit 77 }
 
     # The whole script, run twice on one payload: the log changes nothing a terminal would show, and
     # the run with it on leaves a log behind.
