@@ -1,0 +1,19 @@
+{
+  "model": { "display_name": "Fable 5.1" },
+  "context_window": {
+    "total_input_tokens": 34000,
+    "total_output_tokens": 2000,
+    "context_window_size": 200000,
+    "used_percentage": 18
+  },
+  "cost": { "total_cost_usd": 1.24 },
+  "prompt_cache": {
+    "warm": true,
+    "caching_observed": true,
+    "expires_at": 4102444800,
+    "ttl": 300,
+    "requests": 12
+  },
+  "workspace": { "current_dir": "C:\\Users\\jim\\src\\my-project" },
+  "git": { "branch": "main", "status": "clean" }
+}

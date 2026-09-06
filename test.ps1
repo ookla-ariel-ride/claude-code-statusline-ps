@@ -30,6 +30,9 @@ $esc = [char]27
 # either terminator (ESC \ or BEL), or an SGR colour code. The one pattern behind ConvertTo-PlainText
 # and Measure-VisibleWidth, so the two cannot drift apart.
 $ansiPattern = "$esc\]8;[^\a$esc]*(?:\a|$esc\\)|$esc\[[0-9;]*m"
+# The closing half of an OSC 8 hyperlink, the same bytes whatever the url was. Up here rather than in
+# the pr section because the folder and branch segments are wrapped in one too.
+$linkClose = "$esc]8;;$esc\"
 $script:passed = 0
 $script:failed = 0
 
@@ -174,7 +177,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -186,6 +189,7 @@ $iconLimit = [char]::ConvertFromUtf32(0xF0E4)
 $iconModel = [char]::ConvertFromUtf32(0xF06A9)
 $iconFolder = [char]::ConvertFromUtf32(0xF07C)
 $iconChevron = [char]::ConvertFromUtf32(0x203A)
+$iconCache = [char]::ConvertFromUtf32(0xF0238)
 $iconHome = [char]::ConvertFromUtf32(0xF015)
 $iconBranch = [char]::ConvertFromUtf32(0xE0A0)
 $iconDirty = [char]::ConvertFromUtf32(0xF040)
@@ -285,18 +289,18 @@ Write-Host '== unit: registry' -ForegroundColor Cyan
 # out by hand, so a change there is a deliberate one. Array order is layout one.
 $registryTable = @(
     @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 3;     DropRank = 9;     Row = 2; RowRank = 1 }
-    @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 3 }
-    @{ Name = 'clock';   Build = 'Get-ClockSegment';   Default = $true; ShrinkRank = 7;     DropRank = 2;     Row = 2; RowRank = 4 }
-    @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 5 }
-    @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 5;     Row = 2; RowRank = 2 }
-    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 6;     DropRank = 3;     Row = 1; RowRank = 5 }
-    @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 6;     Row = 1; RowRank = 4 }
-    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 5;     DropRank = 7;     Row = 1; RowRank = 2 }
-    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 4;     DropRank = 8;     Row = 1; RowRank = 3 }
-)
+    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 4;     DropRank = 10;    Row = 2; RowRank = 1 }
+    @{ Name = 'cache';   Build = 'Get-CacheSegment';   Default = $true; ShrinkRank = 3;     DropRank = 3;     Row = 2; RowRank = 2 }
+    @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 5;     Row = 2; RowRank = 4 }
+    @{ Name = 'clock';   Build = 'Get-ClockSegment';   Default = $true; ShrinkRank = 8;     DropRank = 2;     Row = 2; RowRank = 5 }
+    @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 6 }
+    @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 6;     Row = 2; RowRank = 3 }
+    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 7;     DropRank = 4;     Row = 1; RowRank = 5 }
+    @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 7;     Row = 1; RowRank = 4 }
+    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 6;     DropRank = 8;     Row = 1; RowRank = 2 }
+    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 5;     DropRank = 9;     Row = 1; RowRank = 3 })
 $registry = @(Get-SegmentRegistry)
-Confirm-Equal $registry.Count $registryTable.Count 'registry: ten records'
+Confirm-Equal $registry.Count $registryTable.Count 'registry: eleven records'
 for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
     $want = $registryTable[$i]
     $got = $registry[$i]
@@ -306,21 +310,30 @@ for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
         Confirm-Equal $got[$key] $want[$key] "registry: $($want.Name) $key"
     }
 }
-# Cost is first in the shrink order and third in the drop order: its per-turn delta is the first detail
+# Cost is first in the shrink order and fourth in the drop order: its per-turn delta is the first detail
 # on the line to go, and the segment itself still goes after lines and badges, which is where it was.
 # Badges was last of the six: its Short form sheds the agent and session names, which is the least
-# missed detail on the line, so it was the last thing tried before whole segments start going.
-# Clock is behind it now, seventh and last of the seven, and that is not a contradiction with its place
-# second in the drop order: stage one runs to the end before stage two starts, so a segment that is
-# dropped early is still offered the chance to shed its api share first. What the two ranks say together
-# is that the api share is the last detail worth keeping and the segment is the first number worth
-# losing, which is the order a session clock earns - it is the only figure on the line that says nothing
-# about what the session is doing right now.
-Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'cost,limits,context,branch,folder,badges,clock' 'registry: shrink order'
-Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,clock,badges,cost,limits,pr,folder,branch,context' 'registry: drop order'
+# missed detail on the line, so it was the last thing tried before whole segments start going. Clock is
+# behind it now, last of the eight, and that is not a contradiction with its place second in the drop
+# order: stage one runs to the end before stage two starts, so a segment that is dropped early is still
+# offered the chance to shed its api share first. What the two ranks say together is that the api share
+# is the last detail worth keeping and the segment is the first number worth losing, which is the order
+# a session clock earns - it is the only figure on the line that says nothing about what the session is
+# doing right now.
+# Cache shrinks third, straight after limits, where its Short form costs one word and loses nothing.
+# It drops third, and the two segments that go before it are the two that make the argument: lines,
+# which carries no state at all, and the clock, which is history. THE TIE BETWEEN CLOCK AND CACHE IS
+# BROKEN BY COLOUR, not by subject. Both are arguably the least urgent number on the line - the clock
+# because it describes what has already happened, the cache because it describes the next turn rather
+# than this one - and stacking those two arguments would leave them both claiming slot two. What
+# separates them is that Get-ClockSegment's role is a hard-coded 'dim' with no threshold and no alarm
+# behind it, while the cache segment has a warn band and two bad states. The drop order is the last
+# line of defence for a warning, because a dropped segment takes its colour with it, so a segment that
+# can turn red has to outlive one that cannot by construction. Clock second, cache third.
+Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'cost,limits,cache,context,branch,folder,badges,clock' 'registry: shrink order'
+Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,clock,cache,badges,cost,limits,pr,folder,branch,context' 'registry: drop order'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 1) -join ',') 'model,folder,branch,pr,badges' 'registry: layout two row 1'
-Confirm-Equal ((Get-SegmentOrder 'RowRank' 2) -join ',') 'context,limits,cost,clock,lines' 'registry: layout two row 2'
-# The four assertions above pin what the order function returned; these pin the property that makes it
+Confirm-Equal ((Get-SegmentOrder 'RowRank' 2) -join ',') 'context,cache,limits,cost,clock,lines' 'registry: layout two row 2'# The four assertions above pin what the order function returned; these pin the property that makes it
 # right. Get-SegmentOrder drops each record into a hashtable slot keyed by its rank number and then
 # reads slots 1..Count back, so a rank used twice silently OVERWRITES the earlier record - the loser
 # disappears from the order and stops shrinking or stops being dropped - and a gap in the numbering
@@ -403,6 +416,23 @@ Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-false.json' '{ "state"
 Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-absent.json' '{ "layout": "two" }')).State $true 'config state absent: on'
 Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-string.json' '{ "state": "false" }')).State $true 'config state string: on'
 Confirm-Equal (Read-StatusConfig (Write-TempConfig 'state-number.json' '{ "state": 0 }')).State $true 'config state number: on'
+
+# The links key: one switch in front of every OSC 8 hyperlink on the line, read the same way state is.
+# It defaults to on, because the terminals this script is written for render the sequence and the ones
+# that do not normally swallow it; the key is there for the third kind, which prints it as text.
+Confirm-Equal (Get-DefaultStatusConfig).Links $true 'config defaults: links on'
+Confirm-Equal (Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')).Links $true 'config missing: links on'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'links-true.json' '{ "links": true }')).Links $true 'config links true'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'links-false.json' '{ "links": false }')).Links $false 'config links false'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'links-absent.json' '{ "layout": "two" }')).Links $true 'config links absent: on'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'links-string.json' '{ "links": "false" }')).Links $true 'config links string: on'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'links-number.json' '{ "links": 0 }')).Links $true 'config links number: on'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'links-null.json' '{ "links": null }')).Links $true 'config links null: on'
+# One row in the key table and nothing else, which is what a one-value key costs.
+$linksRows = @(Get-StatusConfigKey | Where-Object { $_.Json -eq 'links' })
+Confirm-Equal $linksRows.Count 1 'config links: exactly one row in the key table'
+Confirm-Equal $linksRows[0].Key 'Links' 'config links: the row lands in the Links key'
+Confirm-Equal $linksRows[0].Kind 'Bool' 'config links: the row is read as a boolean'
 
 # The git object: timeoutMs and cacheSeconds are whole numbers clamped to their ranges, cache is a
 # boolean. A key of the wrong type falls back on its own; a git value that is not an object falls
@@ -649,7 +679,7 @@ Confirm-Equal (Get-ThresholdText $c) '60/85' 'config icons: the invalid threshol
 function Get-SegmentText($c) { return (@($allSegments | Where-Object { $c.Segments[$_] }) -join ',') }
 $presetShape = @(
     @{ Name = 'minimal'; Layout = 'one'; Style = 'plain'; On = 'model,context,folder,branch' }
-    @{ Name = 'cost'; Layout = 'one'; Style = 'plain'; On = 'model,context,cost,clock,lines,limits' }
+    @{ Name = 'cost'; Layout = 'one'; Style = 'plain'; On = 'model,context,cache,cost,clock,lines,limits' }
     @{ Name = 'full'; Layout = 'two'; Style = 'powerline'; On = ($allSegments -join ',') }
 )
 foreach ($want in $presetShape) {
@@ -721,9 +751,9 @@ foreach ($case in @(
     Confirm-Equal (Get-SegmentText $c) 'model,context,folder,branch' "preset: a style $($case.Where) leaves the minimal segments"
 }
 $c = Read-StatusConfig (Write-TempConfig 'preset-segment-on.json' '{ "preset": "cost", "segments": { "branch": true } }')
-Confirm-Equal (Get-SegmentText $c) 'model,context,cost,clock,lines,limits,branch' 'preset: a segment turned back on beside it'
+Confirm-Equal (Get-SegmentText $c) 'model,context,cache,cost,clock,lines,limits,branch' 'preset: a segment turned back on beside it'
 $c = Read-StatusConfig (Write-TempConfig 'preset-segment-off.json' '{ "preset": "cost", "segments": { "cost": false } }')
-Confirm-Equal (Get-SegmentText $c) 'model,context,clock,lines,limits' 'preset: a segment turned off beside it'
+Confirm-Equal (Get-SegmentText $c) 'model,context,cache,clock,lines,limits' 'preset: a segment turned off beside it'
 $c = Read-StatusConfig (Write-TempConfig 'preset-layout.json' '{ "preset": "full", "layout": "one" }')
 Confirm-Equal $c.Layout 'one' 'preset: the layout beside it wins'
 Confirm-Equal $c.Style 'powerline' 'preset: the style it sets is kept'
@@ -790,7 +820,7 @@ $c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-layout' '{ "layout"
 Confirm-Equal $c.Layout 'two' 'project config: the project layout is applied'
 Confirm-Equal $c.Style 'powerline' 'project config: the user style is kept'
 Confirm-Equal $c.Segments.cost $false 'project config: the user segment toggle is kept'
-Confirm-True (@($allSegments | Where-Object { $_ -ne 'cost' -and -not $c.Segments[$_] }).Count -eq 0) 'project config: the other nine segments stay on'
+Confirm-True (@($allSegments | Where-Object { $_ -ne 'cost' -and -not $c.Segments[$_] }).Count -eq 0) 'project config: the other ten segments stay on'
 # The project file with no user file at all: it applies over the built-in defaults.
 $c = Read-StatusConfig $missingConfig (Write-TempProjectDir 'proj-alone' '{ "layout": "two", "state": false }')
 Confirm-Equal $c.Layout 'two' 'project config alone: the layout is applied'
@@ -838,11 +868,11 @@ $c = Read-StatusConfig (Write-TempConfig 'preset-project-user.json' '{ "preset":
 Confirm-Equal (Get-SegmentText $c) 'model,context,cost,folder,branch' 'project config: a project toggle lands on the user preset'
 Confirm-Equal $c.Layout 'one' 'project config: the user preset layout is kept'
 $c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-preset' '{ "preset": "cost" }')
-Confirm-Equal (Get-SegmentText $c) 'model,context,cost,clock,lines,limits' 'project config: a project preset outranks the user segment toggles'
+Confirm-Equal (Get-SegmentText $c) 'model,context,cache,cost,clock,lines,limits' 'project config: a project preset outranks the user segment toggles'
 Confirm-Equal $c.Style 'plain' 'project config: a project preset outranks the user style'
 $c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-preset-and-key' '{ "preset": "cost", "style": "powerline" }')
 Confirm-Equal $c.Style 'powerline' 'project config: a key beside the project preset wins'
-Confirm-Equal (Get-SegmentText $c) 'model,context,cost,clock,lines,limits' 'project config: the project preset segments are kept'
+Confirm-Equal (Get-SegmentText $c) 'model,context,cache,cost,clock,lines,limits' 'project config: the project preset segments are kept'
 $c = Read-StatusConfig (Write-TempConfig 'preset-project-user-full.json' '{ "preset": "full" }') (Write-TempProjectDir 'proj-preset-over' '{ "preset": "minimal" }')
 Confirm-Equal (Get-SegmentText $c) 'model,context,folder,branch' 'project config: the project preset wins the one the user file names'
 Confirm-Equal $c.Layout 'one' 'project config: the project preset layout wins'
@@ -1256,14 +1286,16 @@ Confirm-Equal $c.Style 'plain' 'shipped config: style plain'
 Confirm-Equal $c.Folder 'repo' 'shipped config: folder repo'
 Confirm-Equal $shippedJson.folder 'repo' 'shipped config: the file itself says folder repo'
 $shippedSegments = @($c.Segments.Keys)
-Confirm-Equal $shippedSegments.Count 10 'shipped config: ten segments'
+Confirm-Equal $shippedSegments.Count 11 'shipped config: eleven segments'
 Confirm-True (@($shippedSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'shipped config: every segment on'
 $shippedFileSegments = @($shippedJson.segments.PSObject.Properties)
-Confirm-Equal $shippedFileSegments.Count 10 'shipped config: the file itself lists ten segments'
+Confirm-Equal $shippedFileSegments.Count 11 'shipped config: the file itself lists eleven segments'
 # -ne coerces its right side to the left side's type, so 'true' -ne $true is False; test the type too.
 Confirm-True (@($shippedFileSegments | Where-Object { $_.Value -isnot [bool] -or $_.Value -ne $true }).Count -eq 0) 'shipped config: the file itself sets them all to the boolean true'
 Confirm-Equal $c.State $true 'shipped config: state on'
 Confirm-True ($shippedJson.state -is [bool] -and $shippedJson.state) 'shipped config: the file itself sets state to the boolean true'
+Confirm-Equal $c.Links $true 'shipped config: links on'
+Confirm-True ($shippedJson.links -is [bool] -and $shippedJson.links) 'shipped config: the file itself sets links to the boolean true'
 Confirm-Equal $c.Git.TimeoutMs 1500 'shipped config: git timeout 1500'
 Confirm-Equal $c.Git.CacheSeconds 5 'shipped config: git cache 5 seconds'
 Confirm-Equal $c.Git.Cache $true 'shipped config: git cache on'
@@ -1294,12 +1326,18 @@ Write-Host '== unit: icons' -ForegroundColor Cyan
 # Get-IconSet turns the built-in table and the config's overrides into one glyph per name, and the
 # script assigns its $icon* constants from that set.
 $defaultIcons = Get-IconDefault
-Confirm-Equal $defaultIcons.Count 22 'icons: twenty-two built-in glyphs'
+Confirm-Equal $defaultIcons.Count 23 'icons: twenty-three built-in glyphs'
 Confirm-Equal $defaultIcons.pr 0xF407 'icons: pr is the pull-request glyph'
 Confirm-Equal $defaultIcons.model 0xF06A9 'icons: model is the robot'
 Confirm-Equal $defaultIcons.worktree 0xF04C1 'icons: worktree is the source fork'
 Confirm-Equal $defaultIcons.agent 0xF007 'icons: agent is nf-fa-user'
 Confirm-Equal $defaultIcons.session 0xF02B 'icons: session is nf-fa-tag'
+# The cache glyph is nf-md-fire, U+F0238, checked against the Nerd Fonts glyphnames.json the cheat
+# sheet is generated from ("md-fire":{"code":"f0238"}, and f0238 is that entry's alone) and rendered
+# out of JetBrainsMono NF before the builder was written, because a code point that draws SOMETHING is
+# not the same as one that draws what the table claims - two shipped icons were mislabelled that way.
+Confirm-Equal $defaultIcons.cache 0xF0238 'icons: cache is nf-md-fire'
+Confirm-Equal (Get-VisibleWidth $iconCache) 1 'icons: the fire glyph is one cell wide'
 # The stopwatch, and the code point the Nerd Fonts glyph list gives that name. Issue #8 asked for
 # nf-md-timer-outline and then wrote F13AB beside it, which is nf-md-timer, the filled one; the name is
 # what says what the glyph should look like, so the outline it is. Pinned by number here because the
@@ -1312,7 +1350,7 @@ foreach ($e in $defaultIcons.GetEnumerator()) {
     Confirm-Equal (Read-CodePoint ('{0:X}' -f $e.Value)) $e.Value "icons: the built-in $($e.Key) code point passes the guards"
 }
 $set = Get-IconSet @{ Icons = @{} }
-Confirm-Equal $set.Count 22 'icons: one glyph per name'
+Confirm-Equal $set.Count 23 'icons: one glyph per name'
 Confirm-Equal $set.pr $iconPr 'icons: no override gives the built-in pr glyph'
 Confirm-Equal $set.model $iconModel 'icons: no override gives the built-in model glyph'
 Confirm-Equal $set.dirty $iconDirty 'icons: no override gives the built-in pencil'
@@ -1774,8 +1812,10 @@ function Get-FolderPayload([string] $Dir, [string] $Root, $Owner, $Name) {
     if ($Owner -or $Name) { $ws.repo = [pscustomobject]@{ owner = $Owner; name = $Name } }
     return [pscustomobject]@{ workspace = [pscustomobject]$ws }
 }
-$cfgRepo = @{ Folder = 'repo'; Style = 'plain' }
-$cfgLeaf = @{ Folder = 'leaf'; Style = 'plain' }
+# Links off in both, so every check below is on the text the segment composes and nothing else. The
+# link is a wrapper around that finished text and has its own block at the end of this section.
+$cfgRepo = @{ Folder = 'repo'; Style = 'plain'; Links = $false }
+$cfgLeaf = @{ Folder = 'leaf'; Style = 'plain'; Links = $false }
 $seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo' 'C:\src\demo' 'octo' 'demo') $cfgRepo
 Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder at root: owner/name'
 Confirm-Equal $seg.Short "$iconFolder demo" 'folder at root: short is the name alone'
@@ -1844,6 +1884,46 @@ $seg = Get-FolderSegment (Get-FolderPayload "C:\src\de${fRlo}mo\to${fRlo}ols" "C
 Confirm-Equal $seg.Text "$iconFolder tools" 'folder override: the directory leaf is stripped as well'
 $seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' $fRlo 'demo') $cfgRepo
 Confirm-Equal $seg.Text "$iconFolder tools" 'folder override: an owner that is nothing but an override is not text, so the leaf stands in'
+
+# The link: the finished text, glyph included, wrapped whole in a file: url built from current_dir, so
+# ctrl-click opens the directory the session is in and the line draws exactly as it did before.
+$cfgLink = @{ Folder = 'repo'; Style = 'plain'; Links = $true }
+$cfgLinkLeaf = @{ Folder = 'leaf'; Style = 'plain'; Links = $true }
+$folderLinkOpen = "$esc]8;;file:///C:/src/my%20project$esc\"
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\my project' 'C:\src\my project' 'octo' 'demo') $cfgLink
+Confirm-Equal $seg.Text "$folderLinkOpen$iconFolder octo/demo${linkClose}" 'folder link: the whole text is wrapped in a file url'
+Confirm-Equal $seg.Short "$folderLinkOpen$iconFolder demo${linkClose}" 'folder link: the short form is linked too'
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconFolder octo/demo" 'folder link: the visible text is unchanged'
+Confirm-Equal (Get-VisibleWidth $seg.Text) (Get-VisibleWidth "$iconFolder octo/demo") 'folder link: the url adds no width'
+Confirm-Equal (Get-VisibleWidth $seg.Short) (Get-VisibleWidth "$iconFolder demo") 'folder link: the short form is no wider either'
+Confirm-Equal (Measure-VisibleWidth $seg.Text) (Get-VisibleWidth $seg.Text) 'folder link: the script and the test count the same width'
+Confirm-Equal $seg.Role 'folder' 'folder link: the role is untouched'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' 'octo' 'demo') $cfgLink
+Confirm-Equal $seg.Text "$esc]8;;file:///C:/src/demo/tools$esc\$iconFolder octo/demo $iconChevron tools${linkClose}" 'folder link: below the root the link is the current directory, not the project root'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' 'octo' 'demo') $cfgLinkLeaf
+Confirm-Equal $seg.Text "$esc]8;;file:///C:/src/demo/tools$esc\$iconFolder tools${linkClose}" 'folder link: leaf mode is linked as well'
+Confirm-Equal $seg.Short $null 'folder link: leaf mode still has no short form'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo') $cfgLink
+Confirm-Equal $seg.Text "$esc]8;;file:///C:/src/demo/tools$esc\$iconFolder tools${linkClose}" 'folder link: a payload with no repo is linked on the leaf'
+$seg = Get-FolderSegment (Get-FolderPayload 'demo' 'demo' 'octo' 'demo') $cfgLink
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder link: a relative current_dir leaves the text unlinked'
+Confirm-Equal $seg.Short "$iconFolder demo" 'folder link: and its short form unlinked'
+$seg = Get-FolderSegment (Get-FolderPayload '\\server\share\x' '\\server\share\x' 'octo' 'demo') $cfgLink
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder link: a UNC current_dir leaves the text unlinked'
+$seg = Get-FolderSegment (Get-FolderPayload 'C:\src\my project' 'C:\src\my project' 'octo' 'demo') $cfgRepo
+Confirm-Equal $seg.Text "$iconFolder octo/demo" 'folder link: links false leaves the text exactly as it was'
+Confirm-Equal $seg.Short "$iconFolder demo" 'folder link: links false leaves the short form as it was'
+Confirm-Equal (Get-FolderSegment (Get-FolderPayload 'C:\src\my project' 'C:\src\my project' 'octo' 'demo') @{ Folder = 'repo'; Style = 'plain' }).Text "$folderLinkOpen$iconFolder octo/demo${linkClose}" 'folder link: a config that does not mention the key gets the default, which is on'
+# The link changes nothing about what fits. Shrunk and dropped at the three widths from the issue, the
+# linked segment and the unlinked one give the same visible text and the same width.
+$linkedFolder = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' 'octo' 'demo') $cfgLink
+$plainFolder = Get-FolderSegment (Get-FolderPayload 'C:\src\demo\tools' 'C:\src\demo' 'octo' 'demo') $cfgRepo
+foreach ($w in @(120, 60, 20, 8)) {
+    $linkedLine = Get-FittedLine @($linkedFolder) 'powerline' $w
+    $plainLine = Get-FittedLine @($plainFolder) 'powerline' $w
+    Confirm-Equal (ConvertTo-PlainText $linkedLine) (ConvertTo-PlainText $plainLine) "folder link at ${w}: the same visible text as the unlinked segment"
+    Confirm-Equal (Get-VisibleWidth $linkedLine) (Get-VisibleWidth $plainLine) "folder link at ${w}: the same width as the unlinked segment"
+}
 
 Write-Host '== unit: renderer' -ForegroundColor Cyan
 $arrow = [char]::ConvertFromUtf32(0xE0B0)
@@ -1998,7 +2078,6 @@ Write-Host '== unit: pr' -ForegroundColor Cyan
 # an http or https URL leaves the text alone, so a bad payload can never put a stray escape on the line.
 $prUrl = 'https://github.com/octo/demo/pull/12'
 $linkOpen = "$esc]8;;$prUrl$esc\"
-$linkClose = "$esc]8;;$esc\"
 Confirm-Equal (Format-Link $prUrl 'abc') "${linkOpen}abc${linkClose}" 'link: exact bytes'
 Confirm-Equal (Format-Link '' 'abc') 'abc' 'link: empty url leaves the text alone'
 Confirm-Equal (Format-Link $null 'abc') 'abc' 'link: null url leaves the text alone'
@@ -2029,6 +2108,15 @@ $url2083 = 'https://example.com/' + ('x' * 2063)
 Confirm-Equal $url2083.Length 2083 'link: cap fixture is 2083 characters'
 Confirm-Equal (Format-Link $url2083 'abc') "$esc]8;;$url2083$esc\abc${linkClose}" 'link: 2083 characters is linked'
 Confirm-Equal (Format-Link ($url2083 + 'x') 'abc') 'abc' 'link: 2084 characters leaves the text alone'
+# file: is the third scheme, for the folder segment, and the only one with a rule of its own: the
+# authority has to be empty. file:///C:/x is a path on this machine; file://host/share is a UNC path,
+# and a click on one reaches out over SMB to a server the payload named.
+Confirm-Equal (Format-Link 'file:///C:/src/demo' 'abc') "$esc]8;;file:///C:/src/demo$esc\abc${linkClose}" 'link: a file url with an empty authority is linked'
+Confirm-Equal (Format-Link 'file:///C:/src/my%20project' 'abc') "$esc]8;;file:///C:/src/my%20project$esc\abc${linkClose}" 'link: an escaped space in a file url is linked'
+Confirm-Equal (Format-Link 'FILE:///C:/src/demo' 'abc') "$esc]8;;FILE:///C:/src/demo$esc\abc${linkClose}" 'link: the file scheme is matched case-insensitively'
+Confirm-Equal (Format-Link 'file://evil.example/share/x' 'abc') 'abc' 'link: a UNC file url leaves the text alone'
+Confirm-Equal (Format-Link 'file://localhost/C:/x' 'abc') 'abc' 'link: a file url naming a host leaves the text alone even when the host is localhost'
+Confirm-Equal (Get-VisibleWidth (Format-Link 'file:///C:/src/demo' 'abc')) 3 'link: a file url has no width either'
 
 # The segment: glyph, space, #number, the whole text wrapped in the link, coloured by the review state.
 $seg = Get-PrSegment (Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"approved","kind":"pull_request"}'))
@@ -2099,6 +2187,93 @@ $line = Get-FittedLine $fitLong 'plain' 25
 Confirm-Equal (ConvertTo-PlainText $line) "M $chevron CCC $chevron FF $chevron BB $chevron $iconPr #12" 'pr drop order: at 25 pr is still on the line'
 $line = Get-FittedLine $fitLong 'plain' 24
 Confirm-Equal (ConvertTo-PlainText $line) "M $chevron CCC $chevron FF $chevron BB" 'pr drop order: at 24 pr goes before folder and branch'
+
+Write-Host '== unit: links' -ForegroundColor Cyan
+# The one switch. Only the boolean false turns the links off; a config that does not mention the key,
+# and a builder called with no config at all, get the built-in default, which is on.
+Confirm-Equal (Test-LinkWanted @{ Links = $true }) $true 'links switch: on when the config says true'
+Confirm-Equal (Test-LinkWanted @{ Links = $false }) $false 'links switch: off when the config says false'
+Confirm-Equal (Test-LinkWanted @{ Style = 'plain' }) $true 'links switch: on when the config does not mention it'
+Confirm-Equal (Test-LinkWanted $null) $true 'links switch: on with no config at all'
+Confirm-Equal (Test-LinkWanted (Get-DefaultStatusConfig)) $true 'links switch: on in the built-in defaults'
+Confirm-Equal (Test-LinkWanted (Read-StatusConfig (Write-TempConfig 'links-switch-off.json' '{ "links": false }'))) $false 'links switch: off through a config file'
+
+# The folder url: current_dir as a file: url, with the escaping done by AbsoluteUri. Anything that is
+# not an absolute path on this machine has no url, and the segment renders unlinked rather than
+# guessing: a relative path, a payload that put a web address in current_dir, or a UNC path.
+Confirm-Equal (Get-FolderUrl 'C:\src\demo') 'file:///C:/src/demo' 'folder url: a plain Windows path'
+Confirm-Equal (Get-FolderUrl 'C:\src\my project') 'file:///C:/src/my%20project' 'folder url: a space becomes %20'
+Confirm-Equal (Get-FolderUrl 'C:/src/demo') 'file:///C:/src/demo' 'folder url: forward slashes give the same url'
+Confirm-Equal (Get-FolderUrl 'C:\src\de#mo') 'file:///C:/src/de%23mo' 'folder url: a # is escaped rather than starting a fragment'
+Confirm-Equal (Get-FolderUrl "C:\src\na$([char]0xEF)ve") 'file:///C:/src/na%C3%AFve' 'folder url: a non-ASCII name is percent-encoded as UTF-8'
+Confirm-Equal (Get-FolderUrl 'demo') $null 'folder url: a relative path has none'
+Confirm-Equal (Get-FolderUrl '') $null 'folder url: an empty path has none'
+Confirm-Equal (Get-FolderUrl $null) $null 'folder url: null has none'
+Confirm-Equal (Get-FolderUrl 7) $null 'folder url: a number has none'
+Confirm-Equal (Get-FolderUrl @('C:\src\demo', 'x')) $null 'folder url: an array has none'
+Confirm-Equal (Get-FolderUrl 'https://evil.example/x') $null 'folder url: a current_dir that parses as a web address is not a folder'
+Confirm-Equal (Get-FolderUrl '\\server\share\x') $null 'folder url: a UNC path has none, so a click never reaches a named server'
+# An escape or an override in a directory name is percent-encoded by AbsoluteUri rather than carried
+# through, so the url Format-Link is handed has no control character left in it to end the sequence.
+Confirm-Equal (Get-FolderUrl "C:\src\de$([char]0x1B)mo") 'file:///C:/src/de%1Bmo' 'folder url: an escape in the path is percent-encoded'
+Confirm-Equal (Get-FolderUrl "C:\src\de$([char]0x202E)mo") 'file:///C:/src/de%E2%80%AEmo' 'folder url: an override in the path is percent-encoded'
+foreach ($case in @("C:\src\de$([char]0x1B)mo", "C:\src\a b", "C:\src\de#mo")) {
+    $built = Get-FolderUrl $case
+    Confirm-True ($built -is [string] -and $built -notmatch '[\s\p{Cc}]' -and $built.StartsWith('file:///C:/src/')) "folder url: '$($case -replace $esc, '<ESC>')' builds a whitespace-free file url"
+}
+
+# The branch url. github.com gets the branch page; every other host gets the repository home, because
+# GitLab, Bitbucket, Gitea and Azure DevOps each spell a branch path differently and a wrong guess is
+# a 404. Every field is payload text: the host has to look like a host and nothing else, and the owner,
+# the name and the branch are escaped before they are pasted into the url.
+function Get-RepoPayload($RepoHost, $Owner, $RepoName) {
+    $repo = [ordered]@{}
+    if ($null -ne $RepoHost) { $repo.host = $RepoHost }
+    if ($null -ne $Owner) { $repo.owner = $Owner }
+    if ($null -ne $RepoName) { $repo.name = $RepoName }
+    return [pscustomobject]@{ workspace = [pscustomobject]@{ repo = [pscustomobject]$repo } }
+}
+$ghPayload = Get-RepoPayload 'github.com' 'octo' 'demo'
+Confirm-Equal (Get-BranchUrl $ghPayload 'feature/x') 'https://github.com/octo/demo/tree/feature/x' 'branch url: github.com gets the branch page, slash and all'
+Confirm-Equal (Get-BranchUrl $ghPayload 'main') 'https://github.com/octo/demo/tree/main' 'branch url: github.com on main'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'GitHub.COM' 'octo' 'demo') 'main') 'https://GitHub.COM/octo/demo/tree/main' 'branch url: the host is matched case-insensitively and kept as it was written'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'gitlab.com' 'octo' 'demo') 'feature/x') 'https://gitlab.com/octo/demo' 'branch url: gitlab gets the repository home'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'bitbucket.org' 'octo' 'demo') 'feature/x') 'https://bitbucket.org/octo/demo' 'branch url: bitbucket gets the repository home'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'github.example.com' 'octo' 'demo') 'main') 'https://github.example.com/octo/demo' 'branch url: a host that is not github.com itself gets the home'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'github.com:8443' 'octo' 'demo') 'main') 'https://github.com:8443/octo/demo' 'branch url: a port is kept and the host is no longer github.com itself'
+Confirm-Equal (Get-BranchUrl $ghPayload 'my branch') 'https://github.com/octo/demo/tree/my%20branch' 'branch url: a space in the branch becomes %20'
+Confirm-Equal (Get-BranchUrl $ghPayload 'fix/#3') 'https://github.com/octo/demo/tree/fix/%233' 'branch url: a # in the branch is escaped rather than starting a fragment'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'github.com' 'oc/to' 'de/mo') 'main') 'https://github.com/oc%2Fto/de%2Fmo/tree/main' 'branch url: a slash in the owner or the name is escaped, so neither can climb the path'
+Confirm-Equal (Get-BranchUrl $ghPayload 'detached') $null 'branch url: detached is a state word, not a ref'
+Confirm-Equal (Get-BranchUrl $ghPayload '') $null 'branch url: no branch, no url'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload $null 'octo' 'demo') 'main') $null 'branch url: no host, no url'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'github.com' $null 'demo') 'main') $null 'branch url: no owner, no url'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'github.com' 'octo' $null) 'main') $null 'branch url: no name, no url'
+Confirm-Equal (Get-BranchUrl ([pscustomobject]@{ model = @{ display_name = 'M' } }) 'main') $null 'branch url: no workspace at all, no url'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 7 'octo' 'demo') 'main') $null 'branch url: a numeric host, no url'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload @('github.com') 'octo' 'demo') 'main') $null 'branch url: an array host, no url'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload '   ' 'octo' 'demo') 'main') $null 'branch url: a blank host, no url'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'evil.example/octo/demo?' 'octo' 'demo') 'main') $null 'branch url: a host carrying a path is refused rather than pasted into a url'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'evil.example@real.example' 'octo' 'demo') 'main') $null 'branch url: a host carrying userinfo is refused'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'evil.example:8443@real.example' 'octo' 'demo') 'main') $null 'branch url: a host with a port before an @ is refused too'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload "git$([char]0x1B)hub.com" 'octo' 'demo') 'main') $null 'branch url: an escape in the host is refused by the payload-text guard'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload "git$([char]0x202E)hub.com" 'octo' 'demo') 'main') 'https://github.com/octo/demo/tree/main' 'branch url: an override in the host is stripped, like every other rendered field'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'github.com' "oc$([char]0x202E)to" 'demo') 'main') 'https://github.com/octo/demo/tree/main' 'branch url: an override in the owner is stripped'
+Confirm-Equal (Get-BranchUrl (Get-RepoPayload 'github.com' "$([char]0x202E)" 'demo') 'main') $null 'branch url: an owner that is nothing but an override is not text'
+# Nothing this builder returns can ever end the escape sequence early or leave the http(s) family,
+# which is what Format-Link is asked to guarantee for the value it is handed.
+foreach ($case in @('feature/x', 'my branch', 'fix/#3', "a$([char]0x202E)b")) {
+    $built = Get-BranchUrl $ghPayload $case
+    Confirm-True ($built -is [string] -and $built -notmatch '[\s\p{Cc}]' -and $built.StartsWith('https://github.com/octo/demo')) "branch url: '$case' builds a whitespace-free url under the repository"
+}
+
+# The pull-request segment answers to the same key, so one switch covers every link on the line.
+$prLinkPayload = Get-JsonPayload 'pr' ('{"number":12,"url":"' + $prUrl + '","review_state":"approved"}')
+Confirm-Equal (Get-PrSegment $prLinkPayload @{ Links = $true }).Text "${linkOpen}$iconPr #12${linkClose}" 'pr links on: linked'
+Confirm-Equal (Get-PrSegment $prLinkPayload @{ Links = $false }).Text "$iconPr #12" 'pr links off: the one switch takes the pr link too'
+Confirm-Equal (Get-PrSegment $prLinkPayload @{ Links = $false }).Role 'ok' 'pr links off: still coloured by the review state'
+Confirm-Equal (Get-PrSegment $prLinkPayload (Read-StatusConfig (Write-TempConfig 'links-off-pr.json' '{ "links": false }'))).Text "$iconPr #12" 'pr links off through a config file: unlinked'
+Confirm-Equal (Get-PrSegment $prLinkPayload (Get-DefaultStatusConfig)).Text "${linkOpen}$iconPr #12${linkClose}" 'pr with the default config: linked'
 
 Write-Host '== unit: context' -ForegroundColor Cyan
 $iconCtx = [char]::ConvertFromUtf32(0xF035B)
@@ -2354,6 +2529,210 @@ $quietBands = @{ Style = 'plain'; Thresholds = @{ Warn = 20; Bad = 40 }; Quiet =
 $seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500) $quietBands
 Confirm-Equal $seg.Role 'warn' 'context cached: the role is still read from the normalised percentage'
 Confirm-True $seg.Text.EndsWith("92% cached$esc[33m") 'context cached: a warn meter hands its own colour back after the suffix'
+
+Write-Host '== unit: cache' -ForegroundColor Cyan
+# The prompt cache warmth segment, and the two helpers under it. This is NOT Get-CacheShare, which the
+# context section above covers: that one reads context_window.current_usage and gives the share of this
+# turn's input the cache served, printed as the meter's dim "92% cached". These read the prompt_cache
+# block and give whether the cache is alive and for how long. The two are checked apart because they
+# answer different questions off different fields, and the case that proves it is the one where a turn
+# is 92% cached off a cache with minutes left to live.
+#
+# Get-CacheSecondsLeft takes the current epoch as a second parameter defaulting to the clock, the way
+# Get-PaceArrow does, so every boundary below is pinned to the second rather than sitting one tick away
+# from the case it was written for.
+$cacheClock = 1700000000
+$secondsLeftTable = @(
+    @{ Label = 'ten minutes out'; At = $cacheClock + 600; Left = 600 }
+    @{ Label = 'a day out, the last second inside the ceiling'; At = $cacheClock + 86400; Left = 86400 }
+    @{ Label = 'a second past the ceiling'; At = $cacheClock + 86401; Left = $null }
+    @{ Label = 'expiring exactly now'; At = $cacheClock; Left = 0 }
+    @{ Label = 'a second past'; At = $cacheClock - 1; Left = -1 }
+    @{ Label = 'an hour past'; At = $cacheClock - 3600; Left = -3600 }
+    @{ Label = 'a fraction of a second is floored'; At = $cacheClock + 600.9; Left = 600 }
+    @{ Label = 'milliseconds, ten minutes out'; At = ($cacheClock + 600) * 1000; Left = 600 }
+    @{ Label = 'exactly 1e12, read as seconds and far past the ceiling'; At = 1e12; Left = $null }
+    @{ Label = "sample 06's 2100 epoch, seventy-five years out"; At = 4102444800; Left = $null }
+    @{ Label = 'an absurd double that would overflow a scaled multiply'; At = 1e300; Left = $null }
+    @{ Label = 'the epoch itself'; At = 0; Left = $null }
+    @{ Label = 'a negative epoch'; At = -1; Left = $null }
+    @{ Label = 'a large negative epoch'; At = -4102444800; Left = $null }
+    @{ Label = 'absent'; At = $null; Left = $null }
+    @{ Label = 'a number as text'; At = "$($cacheClock + 600)"; Left = $null }
+    @{ Label = 'a boolean'; At = $true; Left = $null }
+    @{ Label = 'an array'; At = @($cacheClock + 600); Left = $null }
+    @{ Label = 'NaN'; At = [double]::NaN; Left = $null }
+    @{ Label = 'infinity'; At = [double]::PositiveInfinity; Left = $null }
+)
+foreach ($row in $secondsLeftTable) {
+    $got = Get-CacheSecondsLeft $row.At $cacheClock
+    if ($null -eq $row.Left) {
+        Confirm-True ($null -eq $got) "cache seconds: $($row.Label) is refused"
+        continue
+    }
+    Confirm-Equal $got $row.Left "cache seconds: $($row.Label)"
+}
+# THE REFUSALS ARE THE POINT, so they are stated as the rule and not only as rows. A clamp would put a
+# number on the line that reads as fact: an expires_at of 0 clamped to "expired" prints a confident red
+# "cache cold" out of a field that carries nothing, and the 2100 epoch clamped to the ceiling prints a
+# calm green "cache 24h00m" over a payload nobody can vouch for. Both come back $null instead, and the
+# builder then says the part it can stand behind and leaves the rest off the line.
+Confirm-True ($null -eq (Get-CacheSecondsLeft 0 $cacheClock)) 'cache seconds: an epoch of 0 is refused rather than called expired'
+# Parenthesised on purpose: a bare negative literal in argument position binds as a string, which would
+# quietly test the string case instead of the negative one.
+Confirm-True ($null -eq (Get-CacheSecondsLeft (-600) $cacheClock)) 'cache seconds: a negative epoch is refused rather than called expired'
+Confirm-True ($null -eq (Get-CacheSecondsLeft 4102444800 $cacheClock)) 'cache seconds: a far-future epoch is refused rather than clamped to the ceiling'
+# The default clock, which is the only path the script itself takes, so the pinned parameter above
+# cannot become the only thing under test. Real time moves forward between the epoch being built here
+# and the function reading its own clock, which only lowers the answer, so each case sits clear of its
+# boundary on the side that drift carries it towards.
+$cacheReal = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+Confirm-True ((Get-CacheSecondsLeft ($cacheReal + 600)) -in 590..600) 'cache seconds on the default clock: ten minutes out'
+Confirm-True ((Get-CacheSecondsLeft ($cacheReal - 100)) -le -100) 'cache seconds on the default clock: a hundred seconds past'
+Confirm-True ($null -eq (Get-CacheSecondsLeft 4102444800)) 'cache seconds on the default clock: the 2100 epoch is refused'
+
+# Minutes are floored, not rounded: a countdown that says 5m with four and a half minutes left claims
+# more time than there is. The h{mm}m shape is TimeLeft's, so the two countdowns that can share a line
+# read the same way.
+$minutesTable = @(
+    @{ Seconds = 0; Text = '<1m' }
+    @{ Seconds = 1; Text = '<1m' }
+    @{ Seconds = 59; Text = '<1m' }
+    @{ Seconds = 60; Text = '1m' }
+    @{ Seconds = 119; Text = '1m' }
+    @{ Seconds = 300; Text = '5m' }
+    @{ Seconds = 2520; Text = '42m' }
+    @{ Seconds = 3540; Text = '59m' }
+    @{ Seconds = 3599; Text = '59m' }
+    @{ Seconds = 3600; Text = '1h00m' }
+    @{ Seconds = 3660; Text = '1h01m' }
+    @{ Seconds = 7500; Text = '2h05m' }
+    @{ Seconds = 86400; Text = '24h00m' }
+)
+foreach ($row in $minutesTable) {
+    Confirm-Equal (Format-MinutesLeft $row.Seconds) $row.Text "cache minutes: $($row.Seconds)s is $($row.Text)"
+}
+
+# The five-minute line, pinned to the second with no clock anywhere near it. This is the assertion that
+# makes `-le 300` load-bearing: through a payload the boundary cannot be reached exactly, because the
+# clock moves between building the expiry and reading it, and at 299 a `-lt 300` mutant answers 'warn'
+# like the original and survives. Here 300 and 301 are the two sides of one comparison and nothing can
+# drift between them.
+$roleTable = @(
+    @{ Seconds = 0; Role = 'warn' }
+    @{ Seconds = 1; Role = 'warn' }
+    @{ Seconds = 299; Role = 'warn' }
+    @{ Seconds = 300; Role = 'warn' }
+    @{ Seconds = 301; Role = 'ok' }
+    @{ Seconds = 302; Role = 'ok' }
+    @{ Seconds = 2550; Role = 'ok' }
+    @{ Seconds = 86400; Role = 'ok' }
+)
+foreach ($row in $roleTable) {
+    Confirm-Equal (Get-CacheRole $row.Seconds) $row.Role "cache role: $($row.Seconds)s is $($row.Role)"
+}
+Confirm-Equal (Get-CacheRole 300) 'warn' 'cache role: exactly five minutes left is already the warning'
+Confirm-Equal (Get-CacheRole 301) 'ok' 'cache role: a second past five minutes is calm'
+
+# A prompt_cache payload built through ConvertFrom-Json, so `warm` is a real JSON boolean and `requests`
+# arrives as an Int64 the way a payload sends it. <AT> is replaced with an epoch $In seconds from the
+# clock read at the moment of the call, so the gap between building the payload and the builder reading
+# its own clock is a fraction of a second however long this section has been running.
+function Get-PromptCachePayload([string] $Json, [int] $In = 0) {
+    $at = [string] ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + $In)
+    return Get-JsonPayload 'prompt_cache' ($Json -replace '<AT>', $at)
+}
+# EVERY OFFSET HERE IS MID-MINUTE, AND THAT IS THE POINT. These cases go through Get-CacheSegment,
+# which calls Get-CacheSecondsLeft on the default clock, so the payload's expiry is built against one
+# reading and measured against another. An offset sitting exactly on a minute - 300, 360, 120 - renders
+# `5m`, `6m`, `2m` when no second ticks in between and `4m`, `5m`, `1m` when one does, which is a test
+# that FAILS CORRECT CODE roughly whenever the run is unlucky. The fix is not a tolerance: it is to put
+# every case half a minute away from the edge, where a second of drift cannot change the floor, and to
+# pin the two real boundaries - the five-minute line and the under-a-minute line - where no clock is
+# involved at all: Get-CacheRole and Format-MinutesLeft above, both pure functions of whole seconds.
+# What is left here is the wiring, tested the way production runs it, on the real clock.
+$cacheTable = @(
+    @{ Label = 'forty-two minutes left'; Json = '{"warm":true,"expires_at":<AT>}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
+    @{ Label = 'two hours five minutes left'; Json = '{"warm":true,"expires_at":<AT>}'; In = 7530; Text = 'cache 2h05m'; Short = '2h05m'; Role = 'ok' }
+    @{ Label = 'six and a half minutes left, clear of the warning'; Json = '{"warm":true,"expires_at":<AT>}'; In = 390; Text = 'cache 6m'; Short = '6m'; Role = 'ok' }
+    @{ Label = 'four and a half minutes left'; Json = '{"warm":true,"expires_at":<AT>}'; In = 270; Text = 'cache 4m'; Short = '4m'; Role = 'warn' }
+    @{ Label = 'two and a half minutes left'; Json = '{"warm":true,"expires_at":<AT>}'; In = 150; Text = 'cache 2m'; Short = '2m'; Role = 'warn' }
+    @{ Label = 'under a minute left'; Json = '{"warm":true,"expires_at":<AT>}'; In = 59; Text = 'cache <1m'; Short = '<1m'; Role = 'warn' }
+    @{ Label = 'expiring exactly now'; Json = '{"warm":true,"expires_at":<AT>}'; In = 0; Text = 'cache cold'; Short = 'cold'; Role = 'bad' }
+    @{ Label = 'an expiry already past beats a warm flag beside it'; Json = '{"warm":true,"expires_at":<AT>}'; In = -100; Text = 'cache cold'; Short = 'cold'; Role = 'bad' }
+    @{ Label = 'warm false'; Json = '{"warm":false}'; In = 0; Text = 'cache cold'; Short = 'cold'; Role = 'bad' }
+    @{ Label = 'warm false with a live expiry'; Json = '{"warm":false,"expires_at":<AT>}'; In = 2550; Text = 'cache cold'; Short = 'cold'; Role = 'bad' }
+    @{ Label = 'caching asked for and never seen, five requests in'; Json = '{"warm":true,"caching_observed":false,"requests":5,"expires_at":<AT>}'; In = 2550; Text = 'cache off'; Short = 'off'; Role = 'bad' }
+    @{ Label = 'caching never seen, exactly three requests in'; Json = '{"warm":true,"caching_observed":false,"requests":3}'; In = 0; Text = 'cache off'; Short = 'off'; Role = 'bad' }
+    @{ Label = 'caching never seen with no warm flag beside it'; Json = '{"caching_observed":false,"requests":5,"expires_at":<AT>}'; In = 2550; Text = 'cache off'; Short = 'off'; Role = 'bad' }
+    @{ Label = 'two requests in, too early for caching_observed to mean anything'; Json = '{"warm":true,"caching_observed":false,"requests":2,"expires_at":<AT>}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
+    @{ Label = 'no request count to read caching_observed against'; Json = '{"warm":true,"caching_observed":false,"expires_at":<AT>}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
+    @{ Label = 'a negative request count cannot reach three'; Json = '{"warm":true,"caching_observed":false,"requests":-5,"expires_at":<AT>}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
+    @{ Label = 'caching_observed as text is not the boolean false'; Json = '{"warm":true,"caching_observed":"false","requests":5,"expires_at":<AT>}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
+    @{ Label = 'caching observed, five requests in'; Json = '{"warm":true,"caching_observed":true,"requests":5,"expires_at":<AT>}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
+    @{ Label = 'warm with no expiry at all'; Json = '{"warm":true}'; In = 0; Text = 'cache warm'; Short = 'warm'; Role = 'ok' }
+    @{ Label = 'warm with a refused far-future expiry'; Json = '{"warm":true,"expires_at":4102444800}'; In = 0; Text = 'cache warm'; Short = 'warm'; Role = 'ok' }
+    @{ Label = 'warm with a refused negative expiry'; Json = '{"warm":true,"expires_at":-1}'; In = 0; Text = 'cache warm'; Short = 'warm'; Role = 'ok' }
+    @{ Label = 'warm with an expiry that is not a number'; Json = '{"warm":true,"expires_at":"soon"}'; In = 0; Text = 'cache warm'; Short = 'warm'; Role = 'ok' }
+    @{ Label = 'a live expiry with no warm flag beside it'; Json = '{"expires_at":<AT>,"ttl":300}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
+    @{ Label = 'milliseconds in expires_at'; Json = '{"warm":true,"expires_at":<AT>000}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
+)
+foreach ($row in $cacheTable) {
+    $seg = Get-CacheSegment (Get-PromptCachePayload $row.Json $row.In)
+    Confirm-Equal $seg.Name 'cache' "cache: $($row.Label) - name"
+    Confirm-Equal $seg.Text "$iconCache $($row.Text)" "cache: $($row.Label) - text"
+    Confirm-Equal $seg.Short "$iconCache $($row.Short)" "cache: $($row.Label) - short form drops the word"
+    Confirm-Equal $seg.Role $row.Role "cache: $($row.Label) - role"
+    Confirm-Equal $seg.Bold $false "cache: $($row.Label) - not bold"
+}
+# Nothing usable in the block, and nothing at all: both are no segment rather than an empty shape. The
+# first is what an older Claude Code sends (no prompt_cache before 2.1.251) and the second is what the
+# first turns of a session send, so this is the ordinary case and not an edge one.
+$noCacheTable = @(
+    @{ Label = 'no prompt_cache key at all'; Json = 'null' }
+    @{ Label = 'an empty prompt_cache object'; Json = '{}' }
+    @{ Label = 'a block with only ttl and requests'; Json = '{"ttl":300,"requests":12}' }
+    @{ Label = 'warm as the string true'; Json = '{"warm":"true"}' }
+    @{ Label = 'warm as the number 1'; Json = '{"warm":1}' }
+    @{ Label = 'warm as an array'; Json = '{"warm":[true]}' }
+    @{ Label = 'a refused expiry and no warm flag'; Json = '{"expires_at":4102444800}' }
+    @{ Label = 'an expiry of zero and no warm flag'; Json = '{"expires_at":0}' }
+    @{ Label = 'caching_observed alone, with nothing to hang it on'; Json = '{"caching_observed":false,"requests":9}' }
+    @{ Label = 'prompt_cache as a string'; Json = '"warm"' }
+    @{ Label = 'prompt_cache as a number'; Json = '5' }
+    @{ Label = 'prompt_cache as an array'; Json = '[{"warm":true}]' }
+)
+foreach ($row in $noCacheTable) {
+    Confirm-True ($null -eq (Get-CacheSegment (Get-PromptCachePayload $row.Json))) "cache: $($row.Label) gives no segment"
+}
+Confirm-True ($null -eq (Get-CacheSegment ('{}' | ConvertFrom-Json))) 'cache: a payload with no prompt_cache property gives no segment'
+# The five-minute line reached the way production reaches it - through a payload, on the real clock -
+# rather than only through the pure function above. An injectable or extracted boundary that becomes
+# the ONLY tested path is its own blind spot: it would still pass if the builder stopped calling
+# Get-CacheRole at all. These two assert the ROLE only, never the text, and each offset is chosen so
+# that its whole drift window sits on one side of the line: real time only moves forward between the
+# payload and the render, so `now + 300` can only be measured at 300 or less (always warn) and
+# `now + 360` at 355 or more (always ok). Neither can flip however slow the run is.
+Confirm-Equal (Get-CacheSegment (Get-PromptCachePayload '{"warm":true,"expires_at":<AT>}' 300)).Role 'warn' 'cache: on the real clock, five minutes out is a warning through the builder'
+Confirm-Equal (Get-CacheSegment (Get-PromptCachePayload '{"warm":true,"expires_at":<AT>}' 360)).Role 'ok' 'cache: on the real clock, six minutes out is calm through the builder'
+# The quiet decision, pinned by name rather than left as an absence nobody would notice being filled
+# in. Quiet never hides a segment carrying a warning, and three of this segment's four states ARE the
+# warning - cold, off, and the last five minutes - while the fourth is a countdown whose whole value is
+# being on the line before it turns yellow. There is no boring number here for a threshold to hide, so
+# a quiet.cache key would only ever be a way to hide "cache cold". The builder takes no config at all,
+# which is what makes that structural rather than a matter of remembering.
+Confirm-True (-not (Get-DefaultStatusConfig).Quiet.ContainsKey('cache')) 'cache: no quiet threshold, because three of its four states are the warning'
+Confirm-Equal (@((Get-Command Get-CacheSegment).Parameters.Keys) -join ',') 'd' 'cache: the builder reads the payload and nothing else'
+# The ranks through the real fitting, so cache's place in both orders is exercised end to end rather
+# than only asserted in the registry table. The model segment is 11 cells and the full cache segment is
+# another 11, with a 3-cell separator between them: 25 cells whole, 19 with cache shortened, 11 with it
+# dropped. Cache shrinks before it is dropped, and the model survives both.
+$fitModel = @{ Name = 'model'; Text = "$iconModel Fable 5.1"; Short = $null; Role = 'model'; Bold = $true }
+$fitCache = Get-CacheSegment (Get-PromptCachePayload '{"warm":true,"expires_at":<AT>}' 2550)
+Confirm-Equal (Measure-VisibleWidth (Format-Line @($fitModel, $fitCache) 'plain')) 25 'cache fitting: the two segments are 25 cells whole'
+Confirm-Equal (ConvertTo-PlainText (Get-FittedLine @($fitModel, $fitCache) 'plain' 25)) "$iconModel Fable 5.1 $chevron $iconCache cache 42m" 'cache fitting: 25 columns keeps the full form'
+Confirm-Equal (ConvertTo-PlainText (Get-FittedLine @($fitModel, $fitCache) 'plain' 20)) "$iconModel Fable 5.1 $chevron $iconCache 42m" 'cache fitting: 20 columns sheds the word'
+Confirm-Equal (ConvertTo-PlainText (Get-FittedLine @($fitModel, $fitCache) 'plain' 15)) "$iconModel Fable 5.1" 'cache fitting: 15 columns drops the segment and keeps the model'
 
 Write-Host '== unit: cost' -ForegroundColor Cyan
 $iconCost = [char]::ConvertFromUtf32(0xF0155)
@@ -3522,6 +3901,50 @@ $seg = Get-BranchSegment (('{"git":{"branch":"main","status":"clean"},"worktree"
 Confirm-Equal $seg.Text "$iconHome main $iconWorktree $wideName" 'branch worktree wide name: the name reaches the line'
 Confirm-Equal (Get-VisibleWidth $seg.Text) 13 'branch worktree wide name: two cells for each wide character'
 Confirm-Equal (Measure-VisibleWidth $seg.Text) (Get-VisibleWidth $seg.Text) 'branch worktree wide name: the script and the test count the same width'
+
+# The link. The finished text is wrapped whole - name, worktree badge, counts and pencil in one link,
+# and the short form in another - so nothing is reordered and the counts keep their inline colours
+# inside it. The url comes from workspace.repo, which the payload carries only for a checkout with a
+# recognised remote; without it the segment renders exactly as it always did.
+$branchLinkCfg = @{ Style = 'plain'; Links = $true; Git = (Get-DefaultGitConfig) }
+$branchLinkOffCfg = @{ Style = 'plain'; Links = $false; Git = (Get-DefaultGitConfig) }
+$ghRepoJson = '"workspace":{"repo":{"host":"github.com","owner":"octo","name":"demo"}}'
+$branchLinkOpen = "$esc]8;;https://github.com/octo/demo/tree/feature/x$esc\"
+$seg = Get-BranchSegment (('{"git":{"branch":"feature/x","status":"clean"},' + $ghRepoJson + '}') | ConvertFrom-Json) $branchLinkCfg
+Confirm-Equal $seg.Text "$branchLinkOpen$iconBranch feature/x${linkClose}" 'branch link: the whole text is wrapped'
+Confirm-Equal $seg.Short "$branchLinkOpen$iconBranch feature/x${linkClose}" 'branch link: the short form is wrapped too'
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x" 'branch link: the visible text is unchanged'
+Confirm-Equal (Get-VisibleWidth $seg.Text) (Get-VisibleWidth "$iconBranch feature/x") 'branch link: the url adds no width'
+Confirm-Equal (Measure-VisibleWidth $seg.Text) (Get-VisibleWidth $seg.Text) 'branch link: the script and the test count the same width'
+Confirm-Equal $seg.Role 'branch' 'branch link: the role is untouched'
+$seg = Get-BranchSegment ('{"git":{"branch":"feature/x","status":{"modified":2}},"worktree":{"name":"wt-review"},"workspace":{"git_worktree":true,"repo":{"host":"github.com","owner":"octo","name":"demo"}}}' | ConvertFrom-Json) $branchLinkCfg
+Confirm-Equal $seg.Text "$branchLinkOpen$iconBranch feature/x $iconWorktree wt-review $esc[90m~2$esc[33m $iconDirty${linkClose}" 'branch link: the badge, the counts and the pencil are all inside the one link'
+Confirm-Equal $seg.Short "$branchLinkOpen$iconBranch feature/x $iconDirty${linkClose}" 'branch link: the short form is the name and the pencil, linked'
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x $iconWorktree wt-review ~2 $iconDirty" 'branch link: the visible text is what it was without the link'
+$unlinkedBadge = Get-BranchSegment ('{"git":{"branch":"feature/x","status":{"modified":2}},"worktree":{"name":"wt-review"},"workspace":{"git_worktree":true}}' | ConvertFrom-Json) $branchLinkOffCfg
+Confirm-Equal (Get-VisibleWidth $seg.Text) (Get-VisibleWidth $unlinkedBadge.Text) 'branch link: a badge and counts inside the link measure the same as without it'
+$seg = Get-BranchSegment ('{"git":{"branch":"feature/x","status":"clean"},"workspace":{"repo":{"host":"gitlab.com","owner":"octo","name":"demo"}}}' | ConvertFrom-Json) $branchLinkCfg
+Confirm-Equal $seg.Text "$esc]8;;https://gitlab.com/octo/demo$esc\$iconBranch feature/x${linkClose}" 'branch link: a gitlab repo links to the repository home'
+$seg = Get-BranchSegment (('{"git":{"branch":"detached","status":"clean"},' + $ghRepoJson + '}') | ConvertFrom-Json) $branchLinkCfg
+Confirm-Equal $seg.Text "$iconBranch detached" 'branch link: a detached HEAD has no page to link to'
+$seg = Get-BranchSegment ('{"git":{"branch":"feature/x","status":"clean"}}' | ConvertFrom-Json) $branchLinkCfg
+Confirm-Equal $seg.Text "$iconBranch feature/x" 'branch link: a payload with no repo renders unlinked'
+$seg = Get-BranchSegment ('{"git":{"branch":"feature/x","status":"clean"},"workspace":{"repo":{"owner":"octo","name":"demo"}}}' | ConvertFrom-Json) $branchLinkCfg
+Confirm-Equal $seg.Text "$iconBranch feature/x" 'branch link: a repo with no host renders unlinked'
+$seg = Get-BranchSegment (('{"git":{"branch":"feature/x","status":"clean"},' + $ghRepoJson + '}') | ConvertFrom-Json) $branchLinkOffCfg
+Confirm-Equal $seg.Text "$iconBranch feature/x" 'branch link: links false leaves the text exactly as it was'
+Confirm-Equal $seg.Short "$iconBranch feature/x" 'branch link: links false leaves the short form as it was'
+$seg = Get-BranchSegment (('{"git":{"branch":"feature/x","status":"clean"},' + $ghRepoJson + '}') | ConvertFrom-Json) @{ Style = 'plain'; Git = (Get-DefaultGitConfig) }
+Confirm-Equal $seg.Text "$branchLinkOpen$iconBranch feature/x${linkClose}" 'branch link: a config that does not mention the key gets the default, which is on'
+# Linked and unlinked shrink and drop the same way, at the three widths from the issue and one narrower.
+$linkedBranch = Get-BranchSegment (('{"git":{"branch":"feature/x","status":{"modified":2}},' + $ghRepoJson + '}') | ConvertFrom-Json) $branchLinkCfg
+$plainBranch = Get-BranchSegment (('{"git":{"branch":"feature/x","status":{"modified":2}},' + $ghRepoJson + '}') | ConvertFrom-Json) $branchLinkOffCfg
+foreach ($w in @(120, 60, 20, 8)) {
+    $linkedLine = Get-FittedLine @($linkedBranch) 'plain' $w
+    $plainLine = Get-FittedLine @($plainBranch) 'plain' $w
+    Confirm-Equal (ConvertTo-PlainText $linkedLine) (ConvertTo-PlainText $plainLine) "branch link at ${w}: the same visible text as the unlinked segment"
+    Confirm-Equal (Get-VisibleWidth $linkedLine) (Get-VisibleWidth $plainLine) "branch link at ${w}: the same width as the unlinked segment"
+}
 
 # Ahead and behind counts only ever come from the git probe, so stand in for Get-GitBranch here and put
 # the real one back afterwards. The "not a repo" checks below then double as proof the restore worked.
@@ -5501,6 +5924,22 @@ $absentGlyphs = @{
         @{ Icon = $iconLimit; Name = 'limits' }
         @{ Icon = $iconConflict; Name = 'warn' }
     )
+    '14-prompt-cache-warm.json'             = @(
+        @{ Icon = $iconBranch; Name = 'branch' }
+        @{ Icon = $iconDirty; Name = 'pencil' }
+        @{ Icon = $iconLines; Name = 'lines' }
+        @{ Icon = $iconLimit; Name = 'limits' }
+        @{ Icon = $iconConflict; Name = 'warn' }
+    )
+}
+# 14 is the only sample carrying a prompt_cache block, so the fire glyph has to stay off every other
+# line. A loop for the same reason the worktree and identity ones below are loops: a builder that
+# started drawing warmth from a payload with no prompt_cache in it would show up on all thirteen at
+# once, and a sample added later is covered without an edit.
+foreach ($sample in $sampleFiles) {
+    if ($sample.Name -eq '14-prompt-cache-warm.json') { continue }
+    $rows = @(if ($absentGlyphs.ContainsKey($sample.Name)) { $absentGlyphs[$sample.Name] })
+    $absentGlyphs[$sample.Name] = $rows + @{ Icon = $iconCache; Name = 'cache' }
 }
 # 11 is the only sample whose session is in a worktree, so every other one has to keep the fork glyph
 # off its line. One row per sample rather than ten written out by hand, and a sample added later is
@@ -5558,6 +5997,7 @@ $sampleSegments = @{
     '11-worktree.json'                      = @('model', 'context', 'cost', 'folder', 'branch')
     '12-context-alarm.json'                 = @('model', 'context', 'cost', 'folder')
     '13-agent-session.json'                 = @('model', 'context', 'cost', 'badges', 'folder', 'branch')
+    '14-prompt-cache-warm.json'             = @('model', 'context', 'cache', 'cost', 'folder', 'branch')
 }
 # One marker per segment per sample: the segment's glyph plus the value this payload gives it, spelled
 # the way it reaches the line once the escapes are stripped. Every visible segment has to put its marker
@@ -5586,6 +6026,11 @@ $sampleShortForms = @{
     }
     '11-worktree.json'                      = @{
         branch = @{ Icon = $iconBranch; Full = "$iconBranch review/x $iconWorktree wt-review ~2 $iconDirty"; Short = "$iconBranch review/x $iconDirty" }
+    }
+    # The cache segment's Short form drops the word and keeps the glyph and the value, so this is the
+    # two-form rule applied to a segment whose value is a word rather than a figure.
+    '14-prompt-cache-warm.json'             = @{
+        cache = @{ Icon = $iconCache; Full = "$iconCache cache warm"; Short = "$iconCache warm" }
     }
 }
 
@@ -5651,6 +6096,18 @@ $sampleMarkers = @{
         badges = "$iconAgent reviewer $iconSession nightly audit"
         folder = "$iconFolder my-project"; branch = "$iconHome main"
     }
+    # 14's cache marker is the whole segment text and nothing in it moves, which is the point of the
+    # sample. Its expires_at is 4102444800, the 1 January 2100 epoch sample 06 uses for its rate-limit
+    # resets, and where 06's limits segment renders that as a drifting countdown this one refuses it:
+    # a prompt cache does not expire in seventy-five years, so Get-CacheSecondsLeft hands back nothing
+    # and the builder prints the part it can stand behind, "warm", with no number after it. That is the
+    # far-future case pinned in the corpus rather than only in the unit table, and it is what lets this
+    # marker be the full text instead of stopping short of a figure that changes every minute.
+    '14-prompt-cache-warm.json'             = @{
+        model = "$iconModel Fable 5.1"; context = "$iconCtx 18%"; cache = "$iconCache cache warm"
+        cost  = "$iconCost `$$('{0:N2}' -f 1.24)"
+        folder = "$iconFolder my-project"; branch = "$iconHome main"
+    }
 }
 # The samples whose model segment the alarm turns red with the built-in alarm of 90: 12 sits at 92% of a
 # standard window and 02 at 90% of a 1M one, which is the boundary the alarm fires on. The alarm reads
@@ -5664,6 +6121,7 @@ $alarmSamples = @('02-feature-dirty-high.json', '12-context-alarm.json')
 $segmentGlyphs = @{
     model   = @($iconModel, $iconConflict)
     context = @($iconCtx)
+    cache   = @($iconCache)
     cost    = @($iconCost)
     clock   = @($iconClock)
     lines   = @($iconLines)
@@ -5676,7 +6134,7 @@ $segmentGlyphs = @{
 # The segment behind each row of the absence table, so a row can be skipped when its segment is off
 # (the per-segment absence assertions cover that case instead, for every glyph the segment owns).
 $glyphSegment = @{
-    context = 'context'; cost = 'cost'; clock = 'clock'; folder = 'folder'; lines = 'lines'; limits = 'limits'; warn = 'model'
+    context = 'context'; cache = 'cache'; cost = 'cost'; clock = 'clock'; folder = 'folder'; lines = 'lines'; limits = 'limits'; warn = 'model'
     home = 'branch'; pencil = 'branch'; branch = 'branch'; worktree = 'branch'
     fast = 'badges'; think = 'badges'; effort = 'badges'; vim = 'badges'
     agent = 'badges'; session = 'badges'
@@ -5736,9 +6194,9 @@ if ($Config) {
     foreach ($row in $swappedRows) { [array]::Reverse($row) }
     $path = Write-TempConfig 'rows-swapped.json' ('{ "layout": "two", "style": "powerline", "rows": ' + (ConvertTo-Json -InputObject $swappedRows -Compress) + ' }')
     $configSet.Add((Get-ConfigRecord 'rows-swapped' $path (Read-StatusConfig $path) $keyWidths))
-    Confirm-Equal ($configSet[$configSet.Count - 1].Rows[0] -join ',') 'lines,clock,cost,limits,context' 'rows-swapped config: first row is the registry second row reversed'
+    Confirm-Equal ($configSet[$configSet.Count - 1].Rows[0] -join ',') 'lines,clock,cost,limits,cache,context' 'rows-swapped config: first row is the registry second row reversed'
     Confirm-Equal ($configSet[$configSet.Count - 1].Rows[1] -join ',') 'badges,pr,branch,folder,model' 'rows-swapped config: second row is the registry first row reversed'
-    Confirm-Equal ($configSet[$configSet.Count - 2].Rows[0] -join ',') 'branch,folder,pr,badges,limits,lines,clock,context,model' 'order-reversed config: one row, reversed, without cost'
+    Confirm-Equal ($configSet[$configSet.Count - 2].Rows[0] -join ',') 'branch,folder,pr,badges,limits,lines,clock,cache,context,model' 'order-reversed config: one row, reversed, without cost'
 }
 
 # No sample carries a session_id, so no render in the matrix may write state. The child renders get a
@@ -6354,6 +6812,36 @@ Confirm-Equal ((Get-PresetRender 'unknown' '{ "preset": "nope" }').Lines -join "
 Confirm-Equal ((Get-PresetRender 'number' '{ "preset": 5 }').Lines -join "`n") $plainRender 'render preset: a non-string name renders the empty config byte for byte'
 $r = Invoke-StatusLine $payload06 (Join-Path $PSScriptRoot 'statusline.json') 0
 Confirm-Equal ($r.Lines -join "`n") $plainRender 'render preset: the shipped statusline.json still renders the default line'
+
+Write-Host ''
+Write-Host '== render: links' -ForegroundColor Cyan
+# The links key through the whole script, on the two segments it was added for. This payload names a
+# directory with a space in it, a branch and a repository with a host, so both urls are built; nothing
+# here runs git, because the payload carries the git object itself.
+$linkRenderPayload = '{"model":{"display_name":"Fable 5.1"},"context_window":{"context_window_size":200000,"used_percentage":8},' +
+    '"git":{"branch":"feature/x","status":"clean"},' +
+    '"workspace":{"current_dir":"C:\\src\\my project","project_dir":"C:\\src\\my project","repo":{"host":"github.com","owner":"octo","name":"demo"}}}'
+$r = Invoke-StatusLine $linkRenderPayload (Write-TempConfig 'render-links-on.json' '{ "links": true }') 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render links on: exit code 0, stderr empty'
+$linkedRender = $r.Lines -join "`n"
+Confirm-True ($linkedRender.Contains("$esc]8;;file:///C:/src/my%20project$esc\")) 'render links on: the folder segment carries the file url'
+Confirm-True ($linkedRender.Contains("$esc]8;;https://github.com/octo/demo/tree/feature/x$esc\")) 'render links on: the branch segment carries the branch url'
+$r = Invoke-StatusLine $linkRenderPayload (Write-TempConfig 'render-links-off.json' '{ "links": false }') 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render links off: exit code 0, stderr empty'
+$unlinkedRender = $r.Lines -join "`n"
+Confirm-True (-not $unlinkedRender.Contains("$esc]8;")) 'render links off: no OSC 8 introducer anywhere on the line'
+Confirm-Equal (ConvertTo-PlainText $linkedRender) (ConvertTo-PlainText $unlinkedRender) 'render links: the visible text is the same either way'
+Confirm-Equal (Measure-VisibleWidth $linkedRender) (Measure-VisibleWidth $unlinkedRender) 'render links: the width is the same either way'
+# Every width in the fitting path, so a link cannot change where a segment is shortened or dropped.
+foreach ($w in @(120, 60, 20)) {
+    $on = Invoke-StatusLine $linkRenderPayload (Join-Path $tmp 'render-links-on.json') $w
+    $off = Invoke-StatusLine $linkRenderPayload (Join-Path $tmp 'render-links-off.json') $w
+    Confirm-Equal (ConvertTo-PlainText ($on.Lines -join "`n")) (ConvertTo-PlainText ($off.Lines -join "`n")) "render links at ${w}: the same visible line either way"
+    Confirm-True ((Measure-VisibleWidth ($on.Lines -join "`n")) -le $w - 1) "render links at ${w}: the linked line still fits"
+}
+# The shipped config has the key on, so the default render is the linked one byte for byte.
+$r = Invoke-StatusLine $linkRenderPayload (Join-Path $PSScriptRoot 'statusline.json') 0
+Confirm-Equal ($r.Lines -join "`n") $linkedRender 'render links: the shipped statusline.json renders the linked line'
 
 # The project config through the whole script, at the unset width. 06 carries a cost figure, and the
 # payload names a project directory holding a .claude\statusline.json that turns the cost segment off.
