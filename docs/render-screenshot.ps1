@@ -12,6 +12,12 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 $PSStyle.OutputRendering = 'Ansi'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8   # decode the child's UTF-8 output correctly
+# The other half of the same contract, and the half that is easy to forget: $OutputEncoding is what a
+# payload piped to a native command is encoded WITH. statusline.ps1 now decodes its stdin as UTF-8
+# whatever the console says, so saying it here too is what makes a demo payload with a name that is
+# not English survive the trip; the default is already UTF-8, and this script runs with the user's
+# profile loaded, which is free to have changed it.
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 $payload = [ordered]@{

@@ -23,8 +23,17 @@ param(
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+# The encoding a payload piped to a native command is written WITH. Pinned rather than left to the
+# default, which is what a profile is free to change: every render below sends its payload through
+# `$Payload | pwsh`, and sample 15's is not ASCII, so a host on 437 would emit `??/x` and the matrix
+# would fail for a reason on this side of the pipe while the transport block, which writes its own
+# bytes, went on passing. That is the sending half of the very defect #80 was about.
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $PSStyle.OutputRendering = 'Ansi'
 $script = Join-Path $PSScriptRoot 'statusline.ps1'
+$subScript = Join-Path $PSScriptRoot 'subagent-statusline.ps1'
+# One lookup for every child this file starts, rather than one per launcher.
+$pwshExe = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
 $esc = [char]27
 # The escapes a rendered line can carry and a terminal does not show: an OSC string with either
 # terminator (ESC \ or BEL), or an SGR colour code. One OSC rule and not one per command - the 8
@@ -178,27 +187,103 @@ function Invoke-StatusLine([string] $Payload, [string] $ConfigPath, [int] $Colum
     }
 }
 
-# Starts statusline.ps1 in a child pwsh and returns before it finishes, so the caller can look at the
-# machine while the render is still running. The payload goes in on stdin and both output streams are
-# drained on .NET threads, so the child never blocks on a full pipe. COLUMNS is cleared for the child the
-# way Invoke-StatusLine clears it for a width of 0.
-function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
-    $pwshPath = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
-    $psi = [System.Diagnostics.ProcessStartInfo]::new($pwshPath)
-    foreach ($a in @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', $script)) { $psi.ArgumentList.Add($a) }
+# The ProcessStartInfo every child this file starts directly is built from: the same switches, COLUMNS
+# cleared, an optional PATH prefix, and all three streams redirected. The three encodings are named
+# rather than left to default, and that is not tidiness. .NET gives an unset StandardInputEncoding the
+# console's INPUT code page and an unset output encoding the host's console encoding, so a child
+# launched from here was being sent its payload at whatever the console happened to be on - which is
+# exactly the defect #80 fixed on the other side of the same pipe. Naming all three means the bytes a
+# test sends and the bytes it reads back are the test's own choice.
+function Get-ChildPwshStartInfo([string[]] $Arguments, [string] $PathPrefix) {
+    $psi = [System.Diagnostics.ProcessStartInfo]::new($pwshExe)
+    foreach ($a in @('-NoProfile', '-NoLogo', '-NonInteractive') + @($Arguments)) { $psi.ArgumentList.Add($a) }
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
+    $psi.StandardInputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
     [void] $psi.Environment.Remove('COLUMNS')
     if ($PathPrefix) { $psi.Environment['PATH'] = $PathPrefix + [System.IO.Path]::PathSeparator + $env:PATH }
-    $p = [System.Diagnostics.Process]::Start($psi)
+    return $psi
+}
+
+# Starts statusline.ps1 in a child pwsh and returns before it finishes, so the caller can look at the
+# machine while the render is still running. The payload goes in on stdin and both output streams are
+# drained on .NET threads, so the child never blocks on a full pipe. COLUMNS is cleared for the child the
+# way Invoke-StatusLine clears it for a width of 0.
+function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
+    $p = [System.Diagnostics.Process]::Start((Get-ChildPwshStartInfo @('-File', $script) $PathPrefix))
     $out = $p.StandardOutput.ReadToEndAsync()
     $err = $p.StandardError.ReadToEndAsync()
     $p.StandardInput.Write($Payload)
     $p.StandardInput.Close()
     return @{ Process = $p; Out = $out; Err = $err }
+}
+
+# A child pwsh with the payload written to its stdin as raw bytes. Invoke-ChildPwsh sends through the
+# pipeline, where $OutputEncoding chooses the bytes; here the bytes are the caller's, so a failure can
+# only be the child's reading of them. $InputCodePage above 0 runs the script under the small forcing
+# wrapper the transport block writes, which sets the child's own [Console]::InputEncoding - the value
+# [Console]::In decodes with, and the value a console's input code page supplies - before handing over.
+# The write is guarded: a child that has already exited (a parse error in the script under test) makes
+# Write throw, and under this file's $ErrorActionPreference of Stop that would take the whole run down
+# instead of leaving the exit code and stderr for the checks below to report.
+function Invoke-ChildPwshUtf8([string] $File, [string[]] $Arguments, [byte[]] $Bytes, [int] $InputCodePage) {
+    $childArgs = if ($InputCodePage -gt 0) { @('-File', $forceCodePageScript, "$InputCodePage", $File) + @($Arguments) } else { @('-File', $File) + @($Arguments) }
+    $p = [System.Diagnostics.Process]::Start((Get-ChildPwshStartInfo $childArgs ''))
+    try {
+        $out = $p.StandardOutput.ReadToEndAsync()
+        $err = $p.StandardError.ReadToEndAsync()
+        try {
+            $p.StandardInput.BaseStream.Write($Bytes, 0, $Bytes.Length)
+            $p.StandardInput.BaseStream.Flush()
+            $p.StandardInput.Close()
+        } catch { $null = $_ }
+        $p.WaitForExit()
+        return @{ Out = $out.Result; Err = $err.Result; ExitCode = $p.ExitCode }
+    } finally { $p.Dispose() }
+}
+
+# The wrapper Invoke-ChildPwshUtf8 runs a script under when it is asked for an input code page. It sets
+# the CHILD's own [Console]::InputEncoding, which is the value [Console]::In decodes with and the value
+# a console's input code page supplies, so a check can be about a code page without a code page being
+# forced on the suite's own console and needing to be put back. With stdin redirected - which it always
+# is here - .NET does not touch any console at all for that assignment, so nothing outlives the child.
+# Written into whichever temp tree the caller is using, because this file has two and the first is gone
+# by the time the second needs it.
+function Write-ForceCodePageScript([string] $Dir) {
+    $path = Join-Path $Dir 'force-input-codepage.ps1'
+    [System.IO.File]::WriteAllText($path, @'
+param([int] $CodePage, [string] $Target, [Parameter(ValueFromRemainingArguments = $true)] [string[]] $Rest)
+[Console]::InputEncoding = [System.Text.Encoding]::GetEncoding($CodePage)
+# The remaining arguments arrive as one flat list, and splatting a LIST passes it positionally, which
+# is not what -Config means. Every caller passes -Name value pairs and nothing else, so pair them back
+# up into a hashtable and splat that, which is the named form.
+$splat = @{}
+for ($i = 0; $i + 1 -lt $Rest.Count; $i += 2) { $splat[$Rest[$i].TrimStart('-')] = $Rest[$i + 1] }
+& $Target @splat
+'@, [System.Text.UTF8Encoding]::new($false))
+    return $path
+}
+
+# The subagent panel's replies, read the way the panel reads them: stdout line by line, keeping the
+# lines that are an object with a string id and a string content. Ordinal, because two live tasks can
+# have ids that differ only in case and the panel keeps them apart; a plain [ordered] hashtable would
+# fold them together and hide that. Bad counts the lines the panel would have thrown away.
+function Get-SubagentReply([string[]] $Lines) {
+    $rows = [System.Collections.Specialized.OrderedDictionary]::new([System.StringComparer]::Ordinal)
+    $bad = 0
+    foreach ($line in $Lines) {
+        if (-not "$line".Trim()) { continue }
+        $obj = try { "$line" | ConvertFrom-Json } catch { $null }
+        if ($obj -isnot [System.Management.Automation.PSCustomObject] -or
+            $obj.id -isnot [string] -or $obj.content -isnot [string]) { $bad++; continue }
+        $rows[$obj.id] = $obj.content
+    }
+    return @{ Rows = $rows; Bad = $bad }
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
@@ -239,6 +324,15 @@ $iconTime = [char]::ConvertFromUtf32(0xF0150)
 $middot = [char]::ConvertFromUtf32(0xB7)
 $ellipsis = [char]::ConvertFromUtf32(0x2026)
 $defaultEffort = 'high'
+# The characters that are not English, spelled from code points once so this file stays ASCII and the
+# three places that need them cannot drift into disagreeing about what was sent: the ascii style's
+# in-process checks, the transport block's child renders, and sample 15's rows in the marker tables.
+# One from each of the three shapes that break differently - a pair of CJK ideographs (three UTF-8
+# bytes each), a Latin letter with an accent (two), and a code point outside the BMP (four bytes and
+# two UTF-16 units, the case a decode that works a unit at a time gets wrong its own way).
+$cjkBranch = [char]::ConvertFromUtf32(0x6A5F) + [char]::ConvertFromUtf32(0x80FD) + '/x'
+$acuteO = [char]::ConvertFromUtf32(0xF3)
+$astralRocket = [char]::ConvertFromUtf32(0x1F680)
 $badgeNameCells = 20
 
 # A payload with one top-level key whose value is the given JSON. It goes through ConvertFrom-Json so
@@ -5659,7 +5753,7 @@ while (-not [System.IO.File]::Exists($Go) -and [DateTime]::UtcNow -lt $deadline)
 $m.ReleaseMutex()
 $m.Dispose()
 '@)
-    $diagPsi = [System.Diagnostics.ProcessStartInfo]::new((Get-Command pwsh -CommandType Application | Select-Object -First 1).Source)
+    $diagPsi = [System.Diagnostics.ProcessStartInfo]::new($pwshExe)
     foreach ($diagArg in @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', $diagHoldFile, $diagReady, $diagGo)) { $diagPsi.ArgumentList.Add($diagArg) }
     $diagPsi.UseShellExecute = $false
     $diagPsi.CreateNoWindow = $true
@@ -6791,13 +6885,12 @@ try {
 
     # ---- THE PROMISE'S EDGE: names that are not English ----
     # The builders are called directly here rather than through a child render, and the reason is worth
-    # writing down. statusline.ps1 reads its payload with [Console]::In, which decodes with the console's
-    # INPUT code page - 437 on an ordinary Windows console - while the payload arrives as UTF-8 bytes, so
-    # a Japanese branch name piped to a child is already mojibake before any style has been chosen. That
-    # is a defect of the read path, in every style, and not of this one; every other payload this suite
-    # pipes is ASCII, which is why nothing here has ever met it. Calling the builders puts the payload
-    # this test wrote in front of them with no encoding boundary in between, which is what makes the
-    # checks below about the style rather than about the transport.
+    # writing down. It is no longer that a child render could not carry the names: the read path decodes
+    # stdin as UTF-8 now (#80), the transport block below pins that, and sample 15 renders a branch and a
+    # folder that are not English through the whole matrix. It is that a check about the STYLE should not
+    # be able to fail for a reason that belongs to the transport. Calling the builders puts the payload
+    # this test wrote in front of them with no encoding boundary in between, so what fails here is the
+    # style and only the style.
     #
     # WHAT THEY ASSERT: for each segment that draws payload text, the characters outside ASCII in what it
     # built are EXACTLY the ones the name carried. A meter block, a middle dot, a minus sign, a pace
@@ -6805,9 +6898,10 @@ try {
     # it fails here by name. This is the check that says the style replaced the glyphs the SCRIPT picked
     # and nothing of the user's - and equally that it did not transliterate a name into `????`, which
     # would be lossy, silent, and worse than the boxes it was trying to avoid.
-    # The names are built from code points, so this file stays ASCII the way the rest of it does.
+    # The names are built from code points, so this file stays ASCII the way the rest of it does. The
+    # branch is the file's one CJK pair, shared with the transport block and sample 15.
     $nameModel = [char]::ConvertFromUtf32(0xD3) + 'pus 5'                                                # O with acute
-    $nameBranch = [char]::ConvertFromUtf32(0x6A5F) + [char]::ConvertFromUtf32(0x80FD) + '/x'             # two CJK ideographs
+    $nameBranch = $cjkBranch
     $nameLeaf = -join (0x30D7, 0x30ED, 0x30B8, 0x30A7 | ForEach-Object { [char]::ConvertFromUtf32($_) }) # katakana
     $nameOwner = 'o' + [char]::ConvertFromUtf32(0xF1) + 'ate'                                            # n with tilde
     $nameRepo = 'd' + [char]::ConvertFromUtf32(0xE9) + 'mo'                                              # e with acute
@@ -6856,6 +6950,106 @@ Confirm-Equal (Get-PaceArrow $paceSoon 80 ([DateTimeOffset]::UtcNow.ToUnixTimeSe
 Confirm-Equal (Get-PaceArrow $paceSoon 80 ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) 'ascii').Over $true 'ascii: the overrun state is unchanged'
 Confirm-Equal (Get-PaceArrow $paceSoon 10 ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())).Arrow ([char]::ConvertFromUtf32(0x2192)) 'ascii: no style given keeps the right arrow'
 
+# ---- Transport: the payload is decoded as UTF-8, whatever code page the console is on ----
+# Claude Code pipes the payload as UTF-8 bytes. What the script decodes those bytes WITH is a separate
+# question, and the answer used to be the console's INPUT code page, because the read went through
+# [Console]::In: 437 on an ordinary Windows console, and the machine's OEM code page in a console the
+# host makes fresh for the render, whatever the terminal itself is set to. Two bytes of Japanese went
+# in and six characters of Latin-1 and box drawing came out, in every style, on every render.
+#
+# Nothing in this file could see it. Every other payload here is ASCII, and the checks that do use
+# names which are not English - the ascii block above - call the builders in process, where the string
+# is already a .NET string and never crosses a process boundary at all. So these checks cross one on
+# purpose. The payload is encoded to UTF-8 here and written to the child's stdin AS BYTES rather than
+# through the pipeline, so the sending side is this file's choice and the only thing left under test
+# is the read.
+#
+# Two shapes, because stdin is decoded differently in each. The first is the child as the suite starts
+# every other one, in a console of its own at the machine's OEM code page - which is what a host that
+# spawns the render hidden gives it, and on an ordinary Windows machine that is 437 and the bug is
+# there to be caught. The second forces the question rather than waiting for the machine to ask it:
+# the child sets its OWN [Console]::InputEncoding to 437 before the script runs, which is the value
+# [Console]::In decodes with and the value a console's input code page supplies. That makes the check
+# deterministic even where the OEM code page is already UTF-8, and it touches nothing outside the
+# child: .NET only writes a console's code page when stdin is NOT redirected, and here it always is,
+# so there is no console left on 437 anywhere and nothing to put back. A forced code page in the
+# PARENT would have needed a restore, and the suite is routinely run in the background and stopped.
+Write-Host ''
+Write-Host '== transport' -ForegroundColor Cyan
+$forceCodePageScript = Write-ForceCodePageScript $tmp
+
+$utfBranch = $cjkBranch
+$utfLeaf = 'funci' + $acuteO + 'n'
+$utfModel = 'Fable ' + $astralRocket
+$transportCfg = Write-TempConfig 'transport-utf8.json' '{ "layout": "one", "style": "plain", "links": false }'
+# A git object, so the render answers from the payload and probes nothing; links off, so what is
+# compared is the text and not a percent-encoded copy of it beside the text.
+$transportJson = '{ "model": { "display_name": "' + $utfModel + '" },' +
+    ' "context_window": { "used_percentage": 12, "context_window_size": 200000 },' +
+    ' "workspace": { "current_dir": "C:\\src\\' + $utfLeaf + '" },' +
+    ' "git": { "branch": "' + $utfBranch + '", "status": "clean" } }'
+$transportSubJson = '{ "columns": 120, "tasks": [ { "id": "t1", "name": "' + $utfBranch + ' ' + $utfLeaf + ' ' + $utfModel + '" } ] }'
+$transportBytes = [System.Text.Encoding]::UTF8.GetBytes($transportJson)
+$transportSubBytes = [System.Text.Encoding]::UTF8.GetBytes($transportSubJson)
+$transportBom = [byte[]] (@(0xEF, 0xBB, 0xBF) + $transportBytes)
+$transportSubBom = [byte[]] (@(0xEF, 0xBB, 0xBF) + $transportSubBytes)
+$replacementChar = [char]0xFFFD
+# The render the byte-order-mark case below is compared against, kept from the loop rather than run
+# again: it is the same payload, the same config and the same shape.
+$transportPlain = $null
+foreach ($entry in @(@{ Name = 'own console'; Cp = 0 }, @{ Name = 'input code page 437'; Cp = 437 })) {
+    $label = "transport $($entry.Name)"
+    $r = Invoke-ChildPwshUtf8 $script @('-Config', $transportCfg) $transportBytes $entry.Cp
+    $rSub = Invoke-ChildPwshUtf8 $subScript @() $transportSubBytes $entry.Cp
+    if ($entry.Cp -eq 0) { $transportPlain = $r }
+    Confirm-True ($r.ExitCode -eq 0) "${label}: exit code $($r.ExitCode)"
+    Confirm-True (-not $r.Err.Trim()) "${label}: stderr empty, got '$($r.Err.Trim())'"
+    $text = ConvertTo-PlainText ($r.Out.TrimEnd("`r", "`n"))
+    # Ordinal, three times: these are rendered lines, and a culture comparison gives Unicode Format
+    # characters no weight, which is exactly the difference this check exists to see. Each one pins the
+    # payload's own characters against the glyph the script chose to put in front of them, so mojibake
+    # fails it from one side and a transliteration to question marks fails it from the other.
+    Confirm-True ($text.IndexOf("$iconBranch $utfBranch", [System.StringComparison]::Ordinal) -ge 0) "${label}: the branch name is the two ideographs that were sent, not a decode of their bytes"
+    Confirm-True ($text.IndexOf("$iconFolder $utfLeaf", [System.StringComparison]::Ordinal) -ge 0) "${label}: the folder leaf keeps its accented letter"
+    Confirm-True ($text.IndexOf("$iconModel $utfModel", [System.StringComparison]::Ordinal) -ge 0) "${label}: the model name keeps the code point outside the BMP whole"
+    Confirm-True ($text.IndexOf($replacementChar) -lt 0) "${label}: no replacement character on the line"
+    Confirm-True ($rSub.ExitCode -eq 0) "${label}: the subagent panel exits 0, got $($rSub.ExitCode)"
+    Confirm-True (-not $rSub.Err.Trim()) "${label}: the subagent panel writes nothing to stderr, got '$($rSub.Err.Trim())'"
+    $row = [string] (Get-SubagentReply ($rSub.Out -split "`r?`n")).Rows['t1']
+    Confirm-True ([bool] $row) "${label}: the subagent panel answers the task"
+    if ($row) {
+        $rowText = ConvertTo-PlainText $row
+        Confirm-True ($rowText.IndexOf("$utfBranch $utfLeaf $utfModel", [System.StringComparison]::Ordinal) -ge 0) "${label}: the subagent row carries all three names as they were sent"
+        Confirm-True ($rowText.IndexOf($replacementChar) -lt 0) "${label}: no replacement character in the subagent row"
+    }
+    Write-Host ("  {0,-24} {1}" -f $entry.Name, $text)
+}
+
+# A byte order mark on the front is consumed, not carried into the payload: left in the string it would
+# be the first character of what ConvertFrom-Json is handed, and the whole render would fall back. The
+# comparison is against the same payload without one, so this says the mark changed nothing rather than
+# only that the render survived it. UTF8Encoding($false) has an empty preamble, so the reader's
+# detectEncodingFromByteOrderMarks is the only thing that can be stripping it.
+$rBom = Invoke-ChildPwshUtf8 $script @('-Config', $transportCfg) $transportBom 0
+Confirm-True ($rBom.ExitCode -eq 0 -and -not $rBom.Err.Trim()) 'transport BOM: exit code 0, stderr empty'
+Confirm-Equal $rBom.Out $transportPlain.Out 'transport BOM: a payload with a byte order mark renders the same bytes as one without'
+$rSubBom = Invoke-ChildPwshUtf8 $subScript @() $transportSubBom 0
+Confirm-True ($rSubBom.ExitCode -eq 0 -and -not $rSubBom.Err.Trim()) 'transport BOM: the subagent panel exits 0, stderr empty'
+Confirm-True ([bool] (Get-SubagentReply ($rSubBom.Out -split "`r?`n")).Rows['t1']) 'transport BOM: the subagent panel still answers the task'
+
+# Nothing at all on stdin: not a payload, not an empty line, zero bytes. The main script prints the
+# fallback it prints for any payload it cannot read, and the panel prints nothing, which is what they
+# both did before the read path changed and has to keep being true - a reader that threw on an empty
+# stream would take the line with it.
+$rEmpty = Invoke-ChildPwshUtf8 $script @('-Config', $transportCfg) ([byte[]] @()) 0
+Confirm-True ($rEmpty.ExitCode -eq 0) "transport empty stdin: exit code $($rEmpty.ExitCode)"
+Confirm-True (-not $rEmpty.Err.Trim()) "transport empty stdin: stderr empty, got '$($rEmpty.Err.Trim())'"
+Confirm-Equal (ConvertTo-PlainText $rEmpty.Out.TrimEnd("`r", "`n")) "$iconModel claude" 'transport empty stdin: the fallback line, the same one an unreadable payload gives'
+$rSubEmpty = Invoke-ChildPwshUtf8 $subScript @() ([byte[]] @()) 0
+Confirm-True ($rSubEmpty.ExitCode -eq 0) "transport empty stdin: the subagent panel exits 0, got $($rSubEmpty.ExitCode)"
+Confirm-True (-not $rSubEmpty.Err.Trim()) "transport empty stdin: the subagent panel writes nothing to stderr, got '$($rSubEmpty.Err.Trim())'"
+Confirm-Equal ($rSubEmpty.Out.Trim()) '' 'transport empty stdin: the subagent panel prints no row'
+
 # ---- Render matrix: samples x configs x widths ----
 $sampleFiles = Get-ChildItem (Join-Path $PSScriptRoot 'samples') -Filter *.json | Sort-Object Name
 $sample06 = $sampleFiles | Where-Object { $_.Name -eq '06-limits-badges-lines.json' }
@@ -6899,6 +7093,16 @@ $iconFast = [char]::ConvertFromUtf32(0xF0E7)
 $iconEffort = [char]::ConvertFromUtf32(0xF04C5)
 $iconVim = [char]::ConvertFromUtf32(0xE62B)
 $minus = [char]::ConvertFromUtf32(0x2212)
+# Sample 15's two names, from the file's one set of non-English characters at the top.
+# It is the corpus's answer to #80: a branch and a folder that are not English, rendered through every
+# config and every width in the matrix, so the read path is held to UTF-8 by the whole render pass and
+# not only by the transport block above. The names are read back off the file rather than trusted, so a
+# sample edited later fails here by name instead of quietly making the markers below unreachable.
+$sample15Branch = $cjkBranch
+$sample15Leaf = 'proyecto-funci' + $acuteO + 'n'
+$sample15 = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'samples\15-non-english-branch.json') -Raw) | ConvertFrom-Json
+Confirm-Equal $sample15.git.branch $sample15Branch 'sample 15: the branch name in the file is the one the markers expect'
+Confirm-Equal (Split-Path ([string] $sample15.workspace.current_dir) -Leaf) $sample15Leaf 'sample 15: the folder leaf in the file is the one the markers expect'
 # Glyphs a sample must NOT show when every segment is enabled. This is the variant coverage the markers
 # below cannot give, because a marker can only say that something rendered: a clean tree carries no
 # pencil, a feature branch no home icon, a payload without rate limits no tachometer, and 07's badges
@@ -7000,10 +7204,19 @@ $absentGlyphs = @{
         @{ Icon = $iconLimit; Name = 'limits' }
         @{ Icon = $iconConflict; Name = 'warn' }
     )
+    # 15's branch is not main, so the home glyph is the one that has to stay off its line; the tree is
+    # clean and the payload carries no counts, no lines and no rate limits.
+    '15-non-english-branch.json'            = @(
+        @{ Icon = $iconHome; Name = 'home' }
+        @{ Icon = $iconDirty; Name = 'pencil' }
+        @{ Icon = $iconLines; Name = 'lines' }
+        @{ Icon = $iconLimit; Name = 'limits' }
+        @{ Icon = $iconConflict; Name = 'warn' }
+    )
 }
 # 14 is the only sample carrying a prompt_cache block, so the fire glyph has to stay off every other
 # line. A loop for the same reason the worktree and identity ones below are loops: a builder that
-# started drawing warmth from a payload with no prompt_cache in it would show up on all thirteen at
+# started drawing warmth from a payload with no prompt_cache in it would show up on all fourteen at
 # once, and a sample added later is covered without an edit.
 foreach ($sample in $sampleFiles) {
     if ($sample.Name -eq '14-prompt-cache-warm.json') { continue }
@@ -7021,7 +7234,7 @@ foreach ($sample in $sampleFiles) {
 }
 # The same rule for the two identity badges, and for the same reason: 13 is the only sample carrying an
 # agent.name or a session_name, so the user glyph and the tag have to stay off every other line. Written
-# as a loop rather than twelve rows by hand, so a builder that started drawing either badge from a
+# as a loop rather than fourteen rows by hand, so a builder that started drawing either badge from a
 # payload that names neither shows up on every sample at once - including 06, whose four mode badges
 # would otherwise give the segment cover.
 foreach ($sample in $sampleFiles) {
@@ -7067,6 +7280,7 @@ $sampleSegments = @{
     '12-context-alarm.json'                 = @('model', 'context', 'cost', 'folder')
     '13-agent-session.json'                 = @('model', 'context', 'cost', 'badges', 'folder', 'branch')
     '14-prompt-cache-warm.json'             = @('model', 'context', 'cache', 'cost', 'folder', 'branch')
+    '15-non-english-branch.json'            = @('model', 'context', 'cost', 'folder', 'branch')
 }
 # One marker per segment per sample: the segment's glyph plus the value this payload gives it, spelled
 # the way it reaches the line once the escapes are stripped. Every visible segment has to put its marker
@@ -7176,6 +7390,14 @@ $sampleMarkers = @{
         model = "$iconModel Fable 5.1"; context = "$iconCtx 18%"; cache = "$iconCache cache warm"
         cost  = "$iconCost `$$('{0:N2}' -f 1.24)"
         folder = "$iconFolder my-project"; branch = "$iconHome main"
+    }
+    # The two markers that are the point of this sample are the branch and the folder: each is the
+    # payload's own characters behind the glyph the script chose, compared through a child render at
+    # every width and in every style. A read path that decoded the payload at the console's code page
+    # fails both of them here, on top of the transport block, for every config in the matrix.
+    '15-non-english-branch.json'            = @{
+        model  = "$iconModel Fable 5.1"; context = "$iconCtx 12%"; cost = "$iconCost `$$('{0:N2}' -f 0.66)"
+        folder = "$iconFolder $sample15Leaf"; branch = "$iconBranch $sample15Branch"
     }
 }
 # The samples whose model segment the alarm turns red with the built-in alarm of 90: 12 sits at 92% of a
@@ -7531,8 +7753,8 @@ Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) "$bolt claude" 'render
 # One pass rather than a fourth column in the matrix above. Adding ascii to the generated layout-by-style
 # set would grow it from four configs to six and force every row of $sampleMarkers to become style-aware
 # for the sake of renders that differ from the plain ones only in the character table; a pass of its own
-# is fourteen renders and one table, and it can assert the thing the matrix cannot say - that nothing on
-# the line is outside printable ASCII.
+# is one render per sample and one table, and it can assert the thing the matrix cannot say - that
+# nothing on the line is outside printable ASCII that the payload did not put there.
 Write-Host ''
 Write-Host '== render: ascii style' -ForegroundColor Cyan
 $asciiPath = Write-TempConfig 'ascii.json' '{ "style": "ascii" }'
@@ -7607,6 +7829,15 @@ $asciiMarkers = @{
         cost  = "`$$('{0:N2}' -f 1.24)"
         folder = 'dir my-project'; branch = '~ main'
     }
+    # The sample that makes the subset rule above do some work: its payload has a non-empty non-ASCII
+    # side, so "every non-ASCII character on the line came from the payload" is a real claim here rather
+    # than the "nothing but ASCII" it reads as on the other fourteen. The ascii style replaces the
+    # glyphs the SCRIPT chose and leaves the two names exactly as they arrived, which is what these two
+    # markers pin.
+    '15-non-english-branch.json'            = @{
+        model = 'Fable 5.1'; context = 'ctx 12%'; cost = "`$$('{0:N2}' -f 0.66)"
+        folder = "dir $sample15Leaf"; branch = "b $sample15Branch"
+    }
 }
 foreach ($sample in $sampleFiles) {
     $label = "ascii $($sample.Name)"
@@ -7619,11 +7850,11 @@ foreach ($sample in $sampleFiles) {
     # THE PROMISE, and it is about what the script chose rather than about the whole line: every
     # non-ASCII character on the line has to have come from the payload. The plain text is what a
     # terminal draws, so the hyperlink wrappers and the colour codes are gone by here and what is left
-    # is the characters a font has to have. Every sample in this corpus carries English text, so the
-    # payload's side of it is empty and this reads as "nothing but ASCII" for all fourteen - but it is
-    # the subset rule that is asserted, so a sample given a Japanese branch name later still says the
-    # right thing instead of failing for being honest. The render after this loop is where a payload
-    # with a non-empty side is pinned exactly.
+    # is the characters a font has to have. Fourteen of the fifteen samples carry English text, so the
+    # payload's side of it is empty and this reads as "nothing but ASCII" for them - but it is the
+    # SUBSET rule that is asserted, which is what lets sample 15 pass it honestly rather than fail for
+    # carrying a Japanese branch name. That sample's own two markers, in $asciiMarkers below, are where
+    # the non-empty side is pinned exactly.
     $fromPayload = @(Get-NonAsciiName $payload)
     $strayed = @((Get-NonAsciiName $text) | Where-Object { $_ -notin $fromPayload })
     Confirm-Equal ($strayed -join ' ') '' "${label}: every non-ASCII character on the line came from the payload"
@@ -8453,31 +8684,20 @@ Confirm-True (@(Get-ChildItem -LiteralPath $matrixTemp -Recurse -Force -File).Co
 # the tables above and gets its own temp tree here rather than sharing $tmp, which is already gone.
 Write-Host ''
 Write-Host '== subagent' -ForegroundColor Cyan
-$subScript = Join-Path $PSScriptRoot 'subagent-statusline.ps1'
 $subSampleDir = Join-Path $PSScriptRoot 'samples\subagent'
 $subTmp = Join-Path ([System.IO.Path]::GetTempPath()) "statusline-subagent-test-$PID"
 New-Item -ItemType Directory -Force $subTmp | Out-Null
 $iconRobot = [char]::ConvertFromUtf32(0xF06A9)
 $ellipsis = [char]::ConvertFromUtf32(0x2026)
 
-# Runs the subagent script in a child pwsh and reads stdout the way Claude Code does: line by line,
-# each line an object with a string id and a string content, anything else dropped. Rows holds the
-# replies in the order they arrived; Bad counts the lines Claude Code would have thrown away.
+# Runs the subagent script in a child pwsh and reads stdout the way Claude Code does, through the one
+# reply parser this file has: line by line, each line an object with a string id and a string content,
+# anything else dropped.
 function Invoke-SubagentLine([string] $Payload) {
     $r = Invoke-ChildPwsh $subScript @() $Payload
-    # Ordinal, because two live tasks can have ids that differ only in case and the panel keeps them
-    # apart. A plain [ordered] hashtable would fold them together here and hide the very bug below.
-    $rows = [System.Collections.Specialized.OrderedDictionary]::new([System.StringComparer]::Ordinal)
-    $bad = 0
-    foreach ($line in $r.Lines) {
-        if (-not "$line".Trim()) { continue }
-        $obj = try { "$line" | ConvertFrom-Json } catch { $null }
-        if ($obj -isnot [System.Management.Automation.PSCustomObject] -or
-            $obj.id -isnot [string] -or $obj.content -isnot [string]) { $bad++; continue }
-        $rows[$obj.id] = $obj.content
-    }
-    $r.Rows = $rows
-    $r.Bad = $bad
+    $reply = Get-SubagentReply $r.Lines
+    $r.Rows = $reply.Rows
+    $r.Bad = $reply.Bad
     return $r
 }
 
@@ -8649,7 +8869,7 @@ foreach ($bad in @('"columns": "80"', '"columns": 20.5', '"columns": true', '"co
 # The helpers the subagent script copies out of statusline.ps1. Both copies are pulled from the source
 # by the parser and compared as text, so a fix made to one and not the other fails here instead of
 # turning into two scripts that measure a line or colour a percentage differently.
-$sharedHelpers = @('G', 'C', 'Get-VisibleWidth', 'Get-ClippedText', 'Get-Palette', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText')
+$sharedHelpers = @('G', 'C', 'Read-StdinText', 'Get-VisibleWidth', 'Get-ClippedText', 'Get-Palette', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText')
 foreach ($name in $sharedHelpers) {
     $a = try { "$(Import-ScriptFunction $script @($name))" } catch { "not found in statusline.ps1" }
     $b = try { "$(Import-ScriptFunction $subScript @($name))" } catch { "not found in subagent-statusline.ps1" }
@@ -8679,6 +8899,41 @@ $capTotal = $capMain + (Get-Item -LiteralPath "$capFile.1").Length
 Confirm-True ($capTotal -le 2 * ($capMax + $capRecordBytes)) "capture: the whole capture is bounded, $capTotal bytes"
 # Twelve records of over 400 bytes each would be more than 4800 bytes unbounded.
 Confirm-True ($capTotal -lt 12 * $capRecordBytes) 'capture: twelve records did not all survive, so the bound is doing something'
+
+# The stub's own read path, which is the third copy of the UTF-8 reader and the one outside the drift
+# gate. A capture is reached for precisely when a session's text is NOT English, and the file is written
+# as UTF-8, so a read at the console's code page would make the one artifact kept in order to find out
+# what a payload contained a record of something else. Written and read back as bytes at both ends, so
+# nothing but the stub's decode is being asked about.
+$forceCodePageScript = Write-ForceCodePageScript $subTmp
+$capUtfFile = Join-Path $subTmp 'cap-utf8.jsonl'
+$capUtfRecord = '{"branch":"' + $cjkBranch + '","dir":"funci' + $acuteO + 'n","note":"' + $astralRocket + '"}'
+$c = Invoke-ChildPwshUtf8 $capScript @('-Path', $capUtfFile, '-MaxBytes', '65536') ([System.Text.Encoding]::UTF8.GetBytes($capUtfRecord)) 437
+Confirm-True ($c.ExitCode -eq 0 -and -not $c.Err.Trim()) "capture UTF-8: exit code 0, stderr empty, got '$($c.Err.Trim())'"
+$capUtfBack = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($capUtfFile)).TrimEnd("`r", "`n")
+Confirm-Equal $capUtfBack $capUtfRecord 'capture UTF-8: the record on disk is the bytes that were piped in, at a console input code page of 437'
+
+# The cut that lands between the two halves of a surrogate pair. The record below is built so the byte
+# budget falls exactly on the high half: a lone surrogate encodes to three bytes and the whole pair to
+# four, so the byte loop above the cut cannot tell them apart, and the UTF-8 write would put a U+FFFD
+# into the file that nothing sent. Get-BoundedRecord is called directly - the truncation arithmetic is
+# what is being pinned, not the file - with the same cap the stub's own tests use.
+. (Import-ScriptFunction $capScript @('Get-BoundedRecord'))
+$capSplitCap = 1024
+# 1004 leading characters puts the pair's first half on the last character the budget allows.
+$capSplit = ('a' * 1004) + $astralRocket + ('b' * 200)
+$capCut = Get-BoundedRecord $capSplit $capSplitCap
+$capSuffix = ' ...[truncated]'
+Confirm-True ([System.Text.Encoding]::UTF8.GetByteCount($capCut) -le $capSplitCap - 2) "capture surrogate: the cut record still fits the cap, $([System.Text.Encoding]::UTF8.GetByteCount($capCut)) bytes"
+Confirm-True ($capCut.EndsWith($capSuffix, [System.StringComparison]::Ordinal)) 'capture surrogate: the record was cut, so there is a boundary to check'
+$capBody = $capCut.Substring(0, $capCut.Length - $capSuffix.Length)
+Confirm-True ($capBody.Length -gt 0 -and -not [char]::IsHighSurrogate($capBody[$capBody.Length - 1])) 'capture surrogate: the cut does not end on half of a surrogate pair'
+$capRoundTrip = [System.Text.Encoding]::UTF8.GetString([System.Text.Encoding]::UTF8.GetBytes($capCut))
+Confirm-True ($capRoundTrip.IndexOf([char]0xFFFD) -lt 0) 'capture surrogate: writing the cut record as UTF-8 puts no replacement character in the file'
+Confirm-Equal $capRoundTrip $capCut 'capture surrogate: the record survives the encoding it is written with unchanged'
+# Both halves or neither: a record cut one character earlier is the honest answer, and a record cut one
+# character later would have to carry the whole pair. Nothing in between is written.
+Confirm-True ($capCut.IndexOf($astralRocket, [System.StringComparison]::Ordinal) -lt 0) 'capture surrogate: the pair the cut fell inside is dropped whole rather than halved'
 
 # A path that cannot be written (a directory of that name) stops the capture once and says why: a line
 # on stderr, never on stdout, a sidecar file, and exit 0 so the panel is not taken down with it.

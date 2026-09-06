@@ -23,6 +23,40 @@ function G([int] $cp) { [char]::ConvertFromUtf32($cp) }
 $e = [char]27
 function C([string] $code, [string] $text) { "$e[${code}m$text$e[0m" }
 
+# The payload, read as UTF-8 whatever the console is set to. Claude Code sends UTF-8; [Console]::In
+# decodes with [Console]::InputEncoding, which comes from the console's INPUT code page - 437 on an
+# ordinary Windows console, and the machine's OEM code page in a console the host makes fresh for the
+# render, whatever the terminal itself is set to. So a branch, a folder or a name that was not English
+# arrived here as mojibake before any segment had seen it - two characters of Japanese in, six of
+# Latin-1 and box drawing out - in every style, on every render.
+#
+# A reader rather than an assignment to [Console]::InputEncoding, which would have fixed the decode
+# just as well, and the reason is the byte order mark and not the code page. .NET builds [Console]::In
+# with detectEncodingFromByteOrderMarks OFF, so a mark on the front of the payload survives into the
+# string as U+FEFF and ConvertFrom-Json then refuses the whole thing. The reader below has that flag
+# on, and the flag is the ONLY thing stripping the mark here: UTF8Encoding($false) has an empty
+# preamble, so StreamReader's other check - the one that matches the encoding's own preamble - never
+# fires. It also means a payload some other producer wrote as UTF-16 is read rather than arriving as a
+# line of NULs. The smaller, second reason, stated accurately: assigning [Console]::InputEncoding
+# writes the console's input code page when stdin is NOT redirected, and leaves it written after this
+# process is gone; a reader of our own asks the console for nothing.
+#
+# Not redirected is the one case the reader gets WRONG, which is why it is not taken. A console hands
+# its bytes over at its own input code page, so decoding them as UTF-8 would turn a pasted accent into
+# a replacement character where [Console]::In got it right. Claude Code always redirects, and so does
+# every invocation in the README and in test.ps1; typing at the script by hand is the case below.
+# Everything else is swallowed and answered with the empty string, which is what an empty stdin already
+# gives and what every caller downstream already handles: a status line that throws where the line
+# should be is worse than one that prints its fallback.
+function Read-StdinText() {
+    if (-not [Console]::IsInputRedirected) { return [Console]::In.ReadToEnd() }
+    $reader = $null
+    try {
+        $reader = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false), $true)
+        return $reader.ReadToEnd()
+    } catch { return '' } finally { if ($null -ne $reader) { $reader.Dispose() } }
+}
+
 # ---- Diagnostics log ----
 # The git probe, the probe cache and the state file swallow every failure on purpose: a status line
 # that throws, or that prints an error where the branch should be, is worse than one that is a little
@@ -1799,7 +1833,7 @@ function Write-SessionState([string] $SessionId, $State) {
     } catch { if ($script:diagOn) { Write-StatusDiag "state write failed: $($_.Exception.Message)" } }
 }
 
-$raw = [Console]::In.ReadToEnd()
+$raw = Read-StdinText
 $payloadOk = $true
 $d = $null
 try { $d = $raw | ConvertFrom-Json } catch { $payloadOk = $false }

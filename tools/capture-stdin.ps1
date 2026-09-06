@@ -75,15 +75,24 @@ function Write-CaptureStop([string] $Reason) {
 # Reads at most $MaxChars characters from stdin and stops, so a payload of any size costs a bounded
 # amount of memory. What is left unread goes nowhere; this is a capture stub and the record is cut to
 # the cap below in any case.
+# UTF-8 explicitly, and for the same reason statusline.ps1 reads its payload that way: [Console]::In
+# decodes with the console's INPUT code page, so a capture taken through it wrote a file of mojibake
+# whenever the session's text was not English - which is exactly the session someone reaches for this
+# stub to look at. The file is written as UTF-8 further down, so decoding it as anything else here is
+# the one thing that could not be recovered afterwards. A byte order mark on the front is consumed
+# rather than captured.
 function Read-BoundedInput([int] $MaxChars) {
     $sb = [System.Text.StringBuilder]::new()
     $buf = [char[]]::new(8192)
-    while ($sb.Length -lt $MaxChars) {
-        $want = [Math]::Min($buf.Length, $MaxChars - $sb.Length)
-        $n = [Console]::In.Read($buf, 0, $want)
-        if ($n -le 0) { break }
-        [void] $sb.Append($buf, 0, $n)
-    }
+    $reader = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false), $true)
+    try {
+        while ($sb.Length -lt $MaxChars) {
+            $want = [Math]::Min($buf.Length, $MaxChars - $sb.Length)
+            $n = $reader.Read($buf, 0, $want)
+            if ($n -le 0) { break }
+            [void] $sb.Append($buf, 0, $n)
+        }
+    } finally { $reader.Dispose() }
     return $sb.ToString()
 }
 
@@ -100,6 +109,13 @@ function Get-BoundedRecord([string] $Record, [long] $Cap) {
     if ($room -lt 1) { $suffix = ''; $room = $budget }
     $take = [Math]::Min($Record.Length, [int] $room)
     while ($take -gt 0 -and $enc.GetByteCount($Record.Substring(0, $take)) -gt $room) { $take-- }
+    # The cut is by UTF-16 units and a code point outside the BMP is two of them, so it can land between
+    # the halves of a surrogate pair. UTF-8 encodes the lone half left behind as U+FFFD, which would put
+    # a character into the capture that the payload never sent - the one thing a file kept in order to
+    # find out what a payload actually contains must not do. The loop above cannot catch it: a lone high
+    # surrogate encodes to three bytes and the whole pair to four, so both prefixes fit the same budget.
+    # One character of an already truncated record is the whole cost.
+    if ($take -gt 0 -and [char]::IsHighSurrogate($Record[$take - 1])) { $take-- }
     return $Record.Substring(0, $take) + $suffix
 }
 
