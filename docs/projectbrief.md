@@ -170,6 +170,38 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   each key falls back on its own: a valid `order` beside a broken `thresholds` keeps the order. The
   files are merged in precedence order, defaults then user then project, so what a key falls back to
   is the value beneath it: a project file with a bad `layout` keeps the user's, not the default.
+- **Both config files are read under one budget, and trust is a separate axis from it.** `Read-BoundedFileText`
+  reads the user's own `statusline.json` and the project's, each under 64 KiB and 250 ms — per file, so
+  two unreachable files cost two budgets, which is what the README states and what a test pins. The
+  budget is about a filesystem that does not answer, which is no respecter of whose file it is: a home
+  directory on a dead share hangs a render the way a project directory on one does, which is what #48
+  closed. A miss draws the built-in defaults for that render; nothing caches the last config that
+  worked, so the visible cost is one flickered line rather than a stalled one. Trust decides one thing
+  on top of the budget, the reparse-point probe, and `-Trusted` skips that for the user's file so a
+  config symlinked out of a dotfiles repository still loads, as it did when `Get-Content` read it.
+  Reading bytes rather than `Get-Content` means the encoding has to be decided here, and it is decided
+  by the same class `Get-Content` decides it with — a `StreamReader` over a `MemoryStream` on the buffer
+  already read, with `detectEncodingFromByteOrderMarks`, which makes no call and copies nothing. A rule
+  restated by hand would be a rule that can drift; using the reference implementation cannot. This is
+  why the user's file could not simply be pointed at the reader in #19, and why the encoding work came
+  first in #48. Either file falling back is the fall-back it always had: the values beneath it stand.
+- **Two things about the user's file that `Get-Content` did for free, and now have to be done here.**
+  `File.OpenRead` shares with readers only, so a config another program holds open for WRITING is
+  refused with a sharing violation where `Get-Content`, which shares with writers, read it fine;
+  `Open-SharedConfigFile` re-opens on this thread with `FileShare.ReadWrite` when — and only when — that
+  is the failure, on the user's own file. It is not a pooled delegate because there is no cheap way to
+  make one: `Delegate.CreateDelegate` binds one argument and the four-argument `File.Open` cannot be
+  closed to the parameterless delegate a dispatch needs, and building one at run time with an expression
+  tree was measured at 61 ms per process. What makes the unbounded re-open acceptable is which failure
+  reaches it: a sharing violation is a completed round trip inside the budget, the same "test of the
+  filesystem about to be called" the diagnostics rollover makes before its rename. And a relative path
+  resolves against the SESSION's location under `Get-Content` but against the PROCESS's working
+  directory under every call here, and `Set-Location` moves only the first — so `Resolve-ConfigPath`
+  maps `-Config` once, at the edge, with `GetUnresolvedProviderPathFromPSPath`, which resolves without
+  probing. It is unconditional rather than gated on `IsPathRooted`, because `C:statusline.json` is
+  drive-relative and that test calls it rooted; a name that will not resolve is refused rather than
+  handed to the open, which on Windows would have read an alternate data stream in the working
+  directory.
 - **The project file is untrusted input.** It comes with the repository, so `Read-BoundedFileText` opens
   it first and judges the handle: not seekable means a device or a pipe rather than a file, and the
   64 KiB cap is measured against the length the handle reports and again against the bytes read, so a
@@ -185,14 +217,38 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   call it was waiting on. `WaitAny` returns instead, and the task is then asked whether it succeeded,
   so the deadline and the failure are told apart rather than both arriving as one caught exception,
   which is also what lets each refusal name itself in the diagnostics log. The close is queued and
-  never waited on, and with the budget
-  gone the stream is abandoned unclosed, whichever step spent it. The bound is on this read alone: a
-  thread can stay blocked until the process exits, and the user's own file, read the ordinary way for
-  its encoding detection, has no deadline at all. `Read-CodePoint` admits a
-  code point only when it draws as one glyph
+  never waited on, and with the budget gone the stream is abandoned unclosed, whichever step spent it.
+  **Abandonment is literal**, and anything adopting this pattern adopts that: nothing here can cancel a
+  blocking filesystem call, so a pool thread can stay stuck in the kernel until the process exits, a
+  handle opened after the deadline is never closed, and a stream still open is left open. That is the
+  right trade in a process that draws one line and exits, and it would not be in something long-lived.
+  `Read-CodePoint` admits a code point only when it draws as one glyph
   standing alone: no control, format, separator, mark, surrogate, noncharacter or unassigned value, and
   one or two cells wide by the script's own width rule, so a repository cannot reorder, hide or
-  mis-measure the line through the `icons` table. The user's own file keeps its ordinary read.
+  mis-measure the line through the `icons` table.
+- **Every other filesystem call a render can make is audited, in a comment beside `Read-BoundedFileText`.**
+  #48 asked for a decision per call rather than a list, and the block records one. The diagnostics log
+  bounds itself on its own 250 ms clock and is off unless `CLAUDE_STATUSLINE_DEBUG` is set.
+  `git status` is a child process under `git.timeoutMs`, and that timeout covers the child and nothing
+  the script does before starting it — which is where the audit corrected itself under review. The git
+  cache entry and the session state file are read through `Read-BoundedFileText -Trusted`, because the
+  reason for leaving them alone did not survive being checked against them: each was one `File.Exists`
+  and one `ReadAllText` on the render's own thread, which is the config read's shape exactly, so each
+  cost one bounded read rather than any new machinery. Left deliberately unbounded, and said by where
+  they really are: `Get-GitBranch`'s `Test-Path` on the payload's directory; the cache's repository
+  work, all of it before git runs and none of it under `TEMP` (`Get-GitRepoRoot` walking up from the
+  payload's directory, `Get-GitStamp` stat-ing the git directory, enumerating `refs` and reading
+  `.git/commondir`, a file the repository writes); and every write, which happens after the line is
+  printed. Those directories are also not chosen the same way, which is worth writing down:
+  `Write-StatusDiag` and `Get-GitCacheDir` go `TEMP` → `TMPDIR` → `GetTempPath()`, while
+  `Get-SessionStateDir` goes `TEMP` → `$HOME/.claude/statusline-state`, so on Unix, where `TEMP` is
+  normally unset, the log and the cache land in `/tmp` and the state file lands under the home
+  directory — the one of the three that can be a network mount. Recorded, not moved: moving it would
+  strand every state file already written, and the read of it is bounded now. So a project directory on
+  a filesystem that hangs can still hold a render up in the walk, before the git timeout applies to
+  anything. What keeps THAT from a budget is cost — the walk and the stamps are many calls of several
+  shapes — not a claim that they cannot hang.
+  `subagent-statusline.ps1` opens no file at all.
 - **One segment table, and the config moves what it can.** `Get-SegmentRegistry` is the single list of
   segments: its array order is the default `order`, its row keys the default `rows`, its ranks the
   shrink and drop order, and the build loop dispatches through it. The `order` and `rows` keys pick
