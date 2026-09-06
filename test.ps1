@@ -35,12 +35,21 @@ $ansiPattern = "$esc\][^\a$esc]*(?:\a|$esc\\)|$esc\[[0-9;]*m"
 $script:passed = 0
 $script:failed = 0
 
-# A note about string comparison, because this file learned it twice.
+# A note about string comparison, because this file learned it three times.
 #
 # PowerShell's string operators compare by CULTURE, and a culture comparison gives the Unicode Format
 # characters no collation weight at all. "oc<U+202E>to" -ceq "octo" is $true; so is a comparison against
 # a string carrying a zero-width joiner or a byte order mark. -ceq and -cne are case-sensitive, which is
 # not the same thing as ordinal, and the c is easy to read as "exact".
+#
+# .NET's own methods are the third way in, and they do not agree with each other: String.Contains(string)
+# and String.IndexOf(char) are ORDINAL, while String.StartsWith(string), String.EndsWith(string) and
+# String.IndexOf(string) are CURRENT CULTURE unless a StringComparison is passed. So a check written as
+# $line.StartsWith($expected) has exactly the hole -ceq has, on the same rendered text, while the
+# .Contains($expected) beside it does not - which is why the taskbar render checks pass
+# [System.StringComparison]::Ordinal explicitly at every StartsWith and the Contains calls are left
+# bare. Prefer Confirm-Equal, which is ordinal for every caller; where the shape of the check really is
+# a prefix, name the comparison.
 #
 # So every comparison in this file falls into one of two categories, and a new one has to be put in the
 # right one deliberately:
