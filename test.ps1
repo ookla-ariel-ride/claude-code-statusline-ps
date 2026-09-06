@@ -6019,11 +6019,18 @@ $gitCases.Add(@{ Name = 'not a repo'; Dir = $notRepo; NoBranch = $true })
 # concatenation: "1000$PID" would overflow ping's 32-bit -w once the PID reached seven digits.
 $pingTag = 1000 + $PID
 $fakeFail = Write-FakeGit 'fake-fail' "echo ran > `"%~dp0fake.ran`"`r`necho fatal: not a git repository 1>&2`r`nexit 128"
-$fakeHang = Write-FakeGit 'fake-hang' "echo ran > `"%~dp0fake.ran`"`r`nping -n 11 -w $pingTag 127.0.0.1 > nul`r`nexit 0"
+# The hang fake writes a second marker on its way out, after the ping and just before it exits, and no
+# hang case may find that one. It is what says the probe stopped waiting on its own rather than being
+# handed an answer by a fake that had finished: a probe that ignored its budget and waited the ten
+# seconds out would let the fake reach that line, and every other check here would still pass, because
+# the fake exits 0 with nothing on stdout - no branch, no stderr, no ping left, and a render long past
+# any floor. The removed ceilings used to be what caught that; this catches it without a clock.
+$hangBody = "echo ran > `"%~dp0fake.ran`"`r`nping -n 11 -w $pingTag 127.0.0.1 > nul`r`necho done > `"%~dp0fake.done`"`r`nexit 0"
+$fakeHang = Write-FakeGit 'fake-hang' $hangBody
 $gitCases.Add(@{ Name = 'git fails'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; Marker = (Join-Path $fakeFail 'fake.ran')
                  PathPrefix = $fakeFail })
 $gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 1500; Marker = (Join-Path $fakeHang 'fake.ran'); NoPing = $true
-                 PathPrefix = $fakeHang })
+                 NoFinish = (Join-Path $fakeHang 'fake.done'); PathPrefix = $fakeHang })
 # git.timeoutMs moves the wait, and the floor is what says so: a render that waited at least the
 # configured number of milliseconds can only have read that number. Each gets its own copy of the fake.
 # Neither directory is a repository, so the cache is never consulted and every render really waits.
@@ -6032,17 +6039,19 @@ $gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; NoStderr 
 # loaded machine can only make a render slower, so a floor says the same thing on a quiet box and a busy
 # one, while the ceilings these cases used to carry - a whole child render inside four seconds, of which
 # 1.5 was the intended wait - failed under load for a reason that had nothing to do with the probe. That
-# is #63. What the ceilings proved is proved above instead, without a clock, by handing the timeout
-# decision to the test. The 100 ms case keeps no clock at all: a floor of 100 is met by any render that
-# starts a pwsh whatever the timeout is, so it never said anything.
-$fakeHang3000 = Write-FakeGit 'fake-hang-3000' "echo ran > `"%~dp0fake.ran`"`r`nping -n 11 -w $pingTag 127.0.0.1 > nul`r`nexit 0"
-$fakeHang100 = Write-FakeGit 'fake-hang-100' "echo ran > `"%~dp0fake.ran`"`r`nping -n 11 -w $pingTag 127.0.0.1 > nul`r`nexit 0"
+# is #63. The two things the ceilings really said are said without a clock now: that the probe reports
+# nothing and kills the tree when the budget runs out, above, by handing the decision to the test; and
+# that the probe stops waiting at all, by NoFinish below, which is the marker the fake writes on its way
+# out and no hang case may find. The 100 ms case keeps no clock: a floor of 100 is met by any render
+# that starts a pwsh whatever the timeout is, so it never said anything.
+$fakeHang3000 = Write-FakeGit 'fake-hang-3000' $hangBody
+$fakeHang100 = Write-FakeGit 'fake-hang-100' $hangBody
 $gitTimeout3000 = Write-TempConfig 'git-timeout-3000.json' '{ "git": { "timeoutMs": 3000 } }'
 $gitTimeout100 = Write-TempConfig 'git-timeout-100.json' '{ "git": { "timeoutMs": 100 } }'
 $gitCases.Add(@{ Name = 'git hangs, timeoutMs 3000'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 3000; Marker = (Join-Path $fakeHang3000 'fake.ran'); NoPing = $true
-                 PathPrefix = $fakeHang3000; Config = $gitTimeout3000 })
+                 NoFinish = (Join-Path $fakeHang3000 'fake.done'); PathPrefix = $fakeHang3000; Config = $gitTimeout3000 })
 $gitCases.Add(@{ Name = 'git hangs, timeoutMs 100'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; NoPing = $true
-                 PathPrefix = $fakeHang100; Config = $gitTimeout100 })
+                 NoFinish = (Join-Path $fakeHang100 'fake.done'); PathPrefix = $fakeHang100; Config = $gitTimeout100 })
 
 function Get-FakePingCount([string] $Tag) {
     return @(Get-CimInstance Win32_Process -Filter "Name='PING.EXE'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match "-n 11 -w $Tag " }).Count
@@ -6148,6 +6157,10 @@ foreach ($case in $gitCases) {
     if ($case.Marker) { Confirm-True (Test-Path $case.Marker) "${label}: fake git was actually launched" }
     if ($case.MinMs) { Confirm-True ($r.Ms -ge $case.MinMs) "${label}: waited the full timeout ($($r.Ms) ms, expected at least $($case.MinMs))" }
     if ($case.NoPing) { Confirm-True (Wait-FakePingGone $pingTag) "${label}: ping child killed with the tree" }
+    # The fake writes this on its last line, so it exists only if the fake was allowed to finish. The
+    # render has already returned, and a probe that waited for the fake could only have returned after
+    # that line ran, so there is no race here to lose: the file is there or the probe stopped first.
+    if ($case.NoFinish) { Confirm-True (-not (Test-Path -LiteralPath $case.NoFinish)) "${label}: the probe stopped waiting on its own rather than letting git finish" }
     Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f $case.Name, $r.Ms, $text)
 }
 
