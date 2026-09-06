@@ -372,8 +372,8 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   filesystem calls - the size the rollover decision needs, the append open, and the close that actually
   writes - go to the thread pool and are waited on for what is left of one 250 ms clock, the same shape
   the project config read uses. A record that cannot be written inside it is dropped, which is the
-  trade #43 already made when it took a zero wait on the rollover mutex and an approximate cap over
-  guaranteed ones. That includes the rollover: it reads the size again with the mutex held, because
+  trade #43 already made when it took a zero wait on the rollover lock and an approximate cap over
+  guaranteed ones. That includes the rollover: it reads the size again with the lock held, because
   another render may have rolled the file already, and that second read goes to the pool under the same
   clock as the first. Reading it straight from a `FileInfo` there, as it once did, put an unbounded
   filesystem call back on the render's thread and made every other bound in the function moot.
@@ -406,11 +406,16 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   sibling once an append would take it past 4 MB, from inside that same `try`, so a variable left set
   in a profile cannot fill the temp volume and a rollover that fails costs the line and nothing more.
   One record is cut at 1000 characters, so no single reason can outgrow the cap by itself. The move is
-  taken under a named mutex with a zero wait, and the size is read again while it is held, so two
-  renders cannot rotate over each other's archive; one that cannot take the mutex at once skips the
-  rollover and appends. Nothing waits, and the append itself is unlocked, which makes the cap
-  approximate rather than exact: overlapping renders can leave the file a little over it or lose a
-  line. That is the right trade for a log that must never delay a render and is off by default.
+  taken under an exclusive lock on a sibling `.lock` file with a zero wait, and the size is read again
+  while it is held, so two renders cannot rotate over each other's archive; one that cannot take the
+  lock at once skips the rollover and appends. Nothing waits, and the append itself is unlocked, which
+  makes the cap approximate rather than exact: overlapping renders can leave the file a little over it
+  or lose a line. That is the right trade for a log that must never delay a render and is off by
+  default. Also unlike the mutex this replaced (#49): the lock is scoped by the path rather than a
+  machine- or session-wide name, a killed render's handle is released by the kernel on process exit
+  with no stale lock left behind, and a lock file some other user cannot open at all - not merely held,
+  but permanently unopenable - is read as a structural failure that drops the record rather than as
+  contention that would let the log grow past its cap forever.
 
 ## Constraints
 

@@ -5611,23 +5611,42 @@ namespace StatuslineTest {
         public BlockingWriter() : base(new MemoryStream()) { }
         protected override void Dispose(bool disposing) { Thread.Sleep(DiagSink.CloseDelayMs); DiagSink.Closed = true; base.Dispose(disposing); }
     }
+    // A stand-in for the FileStream a real lock open hands back, so a delayed or a held lock can be
+    // simulated without a real second process: Locked plays the part FileShare.None otherwise would,
+    // Dispose is the only member Invoke-StatusDiagRollover ever calls on what Lock returns, and both are
+    // enough to tell a leaked handle (issue #49 review finding 1) from a released one.
+    public class LockToken : IDisposable {
+        public void Dispose() { DiagSink.Locked = false; }
+    }
     public static class DiagSink {
-        public static int OpenDelayMs, LengthDelayMs, CloseDelayMs;
-        public static bool Closed;
+        public static int OpenDelayMs, LengthDelayMs, CloseDelayMs, LockDelayMs;
+        public static bool Closed, Locked;
         // The size the double reports, and which call it starts stalling on. Write-StatusDiag reads the
         // size once to decide whether a rollover is due and Invoke-StatusDiagRollover reads it again
-        // with the mutex held, so SlowFromCall 2 lets the first read answer at once - entering the
+        // with the lock held, so SlowFromCall 2 lets the first read answer at once - entering the
         // rollover - and the second one stall inside it. LengthCalls is how a test sees which of those
         // two reads happened, and so whether the rollover branch was entered at all.
         public static long LengthValue;
-        public static int SlowFromCall, LengthCalls;
+        public static int SlowFromCall, LengthCalls, LockCalls;
         public static void ResetLength() { LengthValue = 0L; SlowFromCall = 0; LengthCalls = 0; LengthDelayMs = 0; }
+        public static void ResetLock() { Locked = false; LockDelayMs = 0; LockCalls = 0; }
         public static long Length() {
             int n = Interlocked.Increment(ref LengthCalls);
             if (SlowFromCall > 0 && n >= SlowFromCall) { Thread.Sleep(LengthDelayMs); }
             return LengthValue;
         }
         public static StreamWriter Open() { Thread.Sleep(OpenDelayMs); return new BlockingWriter(); }
+        // Held elsewhere throws before the delay, the same order a real sharing violation happens in:
+        // instantly, against whatever is already there. A lock nothing else holds sleeps for LockDelayMs
+        // and then is held until its own Dispose runs - which is what lets a test tell whether something
+        // still holds it a moment after the call that took it has already returned.
+        public static IDisposable Lock() {
+            Interlocked.Increment(ref LockCalls);
+            if (Locked) { throw new IOException("locked"); }
+            Locked = true;
+            Thread.Sleep(LockDelayMs);
+            return new LockToken();
+        }
     }
 }
 '@
@@ -5645,6 +5664,7 @@ namespace StatuslineTest {
             return @{
                 Length = [System.Delegate]::CreateDelegate([Func[long]], [StatuslineTest.DiagSink].GetMethod('Length'))
                 Append = [System.Delegate]::CreateDelegate([Func[System.IO.StreamWriter]], [StatuslineTest.DiagSink].GetMethod('Open'))
+                Lock   = [System.Delegate]::CreateDelegate([Func[System.IDisposable]], [StatuslineTest.DiagSink].GetMethod('Lock'))
             }
         }
         # An open that never answers. The record is lost, which is the trade, and the call comes back.
@@ -5698,7 +5718,7 @@ namespace StatuslineTest {
         # one: the double could not reach the branch, so the branch had no test. The double now reports a
         # size past the cap, which makes the rollover due, and can stall on the second read rather than
         # the first - Write-StatusDiag reads the size to decide, and the rollover reads it again with the
-        # mutex held, so a delay from the second call lands inside the rollover and nowhere else.
+        # lock held, so a delay from the second call lands inside the rollover and nowhere else.
         $diagCapBytes = 4194304
         $diagRolloverMs = (Get-StatusDiagLimit).RolloverMs
         Confirm-True ($diagRolloverMs -gt 0 -and $diagRolloverMs -le (Get-StatusDiagLimit).TimeoutMs) 'diag rollover: the reserve is a real part of the record budget'
@@ -5746,6 +5766,38 @@ namespace StatuslineTest {
         . ([scriptblock]::Create("function Get-StatusDiagLimit { return @{ TimeoutMs = $($diagRealDiagLimit.TimeoutMs); RolloverMs = $($diagRealDiagLimit.RolloverMs) } }"))
         Confirm-Equal (Get-StatusDiagLimit).RolloverMs $diagRealDiagLimit.RolloverMs 'diag rollover: the real reserve is back'
         [StatuslineTest.DiagSink]::ResetLength()
+        # The lock open goes through the same delegate factory as the length and the append (issue #49
+        # review finding 3), so it is exactly as coverable as either: a lock slower than the record's
+        # budget must cost that budget, not the sink's, and must not reach the rollover's own size read
+        # at all, since nothing was ever held to make that read meaningful.
+        [StatuslineTest.DiagSink]::ResetLock()
+        [StatuslineTest.DiagSink]::ResetLength()
+        [StatuslineTest.DiagSink]::LengthValue = $diagCapBytes
+        [StatuslineTest.DiagSink]::LockDelayMs = 5000
+        Clear-DiagLog
+        $diagLockSinkSw = [System.Diagnostics.Stopwatch]::StartNew()
+        Write-StatusDiag 'a record whose lock will not answer in time'
+        $diagLockSinkMs = $diagLockSinkSw.ElapsedMilliseconds
+        Confirm-True ($diagLockSinkMs -lt 2000) "diag rollover lock: a lock open that stalls costs the record's budget, not the sink's, took $diagLockSinkMs ms"
+        Confirm-Equal ([StatuslineTest.DiagSink]::LengthCalls) 1 'diag rollover lock: a lock that has not answered yet never reaches the size read inside the rollover'
+        # The delayed open is still running underneath - the double's own Thread.Sleep(LockDelayMs) does
+        # not stop just because this call gave up waiting on it - so the fix (issue #49 review finding 1)
+        # is not something a background continuation does the moment that finishes: a PowerShell script
+        # block cannot run as one, verified empirically ("no Runspace available to run scripts in this
+        # thread" on every attempt), so nothing here watches the task asynchronously at all. What cleans
+        # it up is the next call to reach this function, which checks what earlier calls left running
+        # before it opens anything of its own - so Locked is still expected to be true here, once the
+        # delayed task has had time to actually finish making it so, and only comes back down once a
+        # later call has had the chance to notice.
+        Start-Sleep -Milliseconds 5500
+        Confirm-True ([StatuslineTest.DiagSink]::Locked) 'diag rollover lock: nothing watches the late-finishing task on its own - the delayed lock is still marked held once it has actually finished, before any later call has looked'
+        [StatuslineTest.DiagSink]::LockDelayMs = 0
+        Write-StatusDiag 'a second record after the slow lock finished underneath'
+        Confirm-True (-not [StatuslineTest.DiagSink]::Locked) 'diag rollover lock: the next call to reach the rollover disposes a finished, abandoned lock before opening its own (issue #49 review finding 1)'
+        Confirm-Equal ([StatuslineTest.DiagSink]::LengthCalls) 3 'diag rollover lock: with the old handle disposed first, this call still reaches its own size read rather than finding its own leaked handle in the way'
+        [StatuslineTest.DiagSink]::ResetLock()
+        [StatuslineTest.DiagSink]::ResetLength()
+
         # A sink that answers at once still writes the record, so the checks above are of a path that
         # would otherwise work rather than one that never wrote anything.
         Clear-DiagLog
@@ -5848,11 +5900,12 @@ namespace StatuslineTest {
     Confirm-True ((Get-DiagLogSize) -le $diagCap) 'diag record cap: an enormous reason on a full log still leaves the log at or under the cap'
 
     # The rollover is taken under an exclusive lock on the log's .lock file with no wait at all, so a
-    # render that finds it already open elsewhere appends rather than waiting on it. That lock is scoped
-    # by the path rather than by who opened it, which a mutex - even one process could not hold against
-    # itself - could not be, so a second process is what pins it here: a child pwsh opens the .lock file
-    # exclusively, says so by writing a file, and is then killed rather than asked to let go, which is
-    # the property that matters (issue #49) - a killed holder must not leave a stale lock behind.
+    # render that finds it already open elsewhere appends rather than waiting on it. A lock file can
+    # contend with itself inside one process just as well as across two - unlike a mutex, which is
+    # reentrant per thread, nothing here is - so a second process is not what proves contention; it is
+    # what proves the property a mutex could not: killing the holder, rather than asking it to let go,
+    # and finding the very next rollover proceeds anyway, because a lock file leaves no stale lock for a
+    # kernel to answer for the way a name in a table might.
     Clear-DiagLog
     Clear-DiagRollover
     [System.IO.File]::WriteAllText($diagLog, ('y' * $diagCap))
@@ -5861,20 +5914,23 @@ namespace StatuslineTest {
     $diagHoldFile = Join-Path $tmp 'diag-hold-lock.ps1'
     [System.IO.File]::WriteAllText($diagHoldFile, @'
 param([string] $LockPath, [string] $Ready)
+$ErrorActionPreference = 'Stop'
 $s = [System.IO.File]::Open($LockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
 [System.IO.File]::WriteAllText($Ready, 'held')
+# $s is never disposed here: the parent always kills this process before it would run this itself, and
+# is rooted only so the open handle it names is not what a GC pass mistakes for garbage in the meantime.
 Start-Sleep -Seconds 60
-$s.Dispose()
 '@)
-    $diagPsi = [System.Diagnostics.ProcessStartInfo]::new($pwshExe)
-    foreach ($diagArg in @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', $diagHoldFile, "$diagLog.lock", $diagReady)) { $diagPsi.ArgumentList.Add($diagArg) }
-    $diagPsi.UseShellExecute = $false
-    $diagPsi.CreateNoWindow = $true
+    $diagPsi = Get-ChildPwshStartInfo @('-File', $diagHoldFile, "$diagLog.lock", $diagReady)
     $diagHolder = [System.Diagnostics.Process]::Start($diagPsi)
+    # Both drained on their own tasks, started now rather than read later, so the child cannot block on
+    # a full pipe while this waits on $diagReady below; only stderr is worth a look if it never appears.
+    $diagHolderErr = $diagHolder.StandardError.ReadToEndAsync()
+    $null = $diagHolder.StandardOutput.ReadToEndAsync()
     try {
         $diagDeadline = [DateTime]::UtcNow.AddSeconds(30)
         while (-not [System.IO.File]::Exists($diagReady) -and [DateTime]::UtcNow -lt $diagDeadline) { Start-Sleep -Milliseconds 20 }
-        Confirm-True ([System.IO.File]::Exists($diagReady)) 'diag rollover lock: another process holds the lock the rollover takes'
+        Confirm-True ([System.IO.File]::Exists($diagReady)) "diag rollover lock: another process holds the lock the rollover takes$(if (-not [System.IO.File]::Exists($diagReady)) { " (stderr: $($diagHolderErr.Result))" })"
         $diagLockThrew = $false
         $diagLockOut = @('not run')
         try { $diagLockOut = @(Write-StatusDiag 'another render is rotating') } catch { $diagLockThrew = $true }
@@ -5897,19 +5953,22 @@ $s.Dispose()
     Clear-DiagLog
     Clear-DiagRollover
 
-    # A lock file with no write permission at all - the shape a different user's leftover lock takes,
+    # A lock file that can never be opened at all - the shape a different user's leftover lock takes,
     # unopenable by anyone forever rather than by this process for as long as a holder lives - is not
     # "held elsewhere" (issue #49 review): it throws UnauthorizedAccessException rather than the
     # IOException a sharing conflict gives, so it is let through rather than read as contention, and
     # drops the whole record the same way a directory occupying .log.1 already does, rather than
-    # appending past the cap on every subsequent record forever.
+    # appending past the cap on every subsequent record forever. A directory at the lock path, rather
+    # than a read-only file, is what proves this on every platform and under every account this runs
+    # as: a read-only file is a permission a file's own owner - including root - can simply ignore,
+    # where opening a directory as if it were a writable file is refused by the filesystem itself,
+    # UnauthorizedAccessException either way (issue #49 review finding 8).
     Clear-DiagLog
     Clear-DiagRollover
     [System.IO.File]::WriteAllText($diagLog, ('v' * $diagCap))
     $diagLockPath = "$diagLog.lock"
-    if (Test-Path -LiteralPath $diagLockPath) { Remove-Item -LiteralPath $diagLockPath -Force }
-    [System.IO.File]::WriteAllText($diagLockPath, '')
-    Set-ItemProperty -LiteralPath $diagLockPath -Name IsReadOnly -Value $true
+    if (Test-Path -LiteralPath $diagLockPath) { Remove-Item -LiteralPath $diagLockPath -Recurse -Force }
+    New-Item -ItemType Directory -Force $diagLockPath | Out-Null
     try {
         $diagPermThrew = $false
         $diagPermOut = @('not run')
@@ -5918,11 +5977,11 @@ $s.Dispose()
         Confirm-Equal $diagPermOut.Count 0 'diag rollover lock permission: nothing reaches the pipeline'
         Confirm-Equal (Get-DiagLogSize) $diagCap 'diag rollover lock permission: the log is left exactly as it was, not grown past the cap'
     } finally {
-        Set-ItemProperty -LiteralPath $diagLockPath -Name IsReadOnly -Value $false
-        Remove-Item -LiteralPath $diagLockPath -Force
+        Remove-Item -LiteralPath $diagLockPath -Recurse -Force
     }
     Clear-DiagLog
     Clear-DiagRollover
+    if ($env:CLAUDE_TEST_STOP_AFTER_DIAG) { Write-Host "STOP_AFTER_DIAG reached, failed=$script:failed"; exit 77 }
 
     # The whole script, run twice on one payload: the log changes nothing a terminal would show, and
     # the run with it on leaves a log behind.
