@@ -752,17 +752,18 @@ if ($Subagents) { Write-Host "Configured subagentStatusLine in $settingsPath (st
 # names it. A switch is written because it was asked for; the detected palette is written only when no
 # -Palette said otherwise. The values are the same ones the subagentStatusLine command above carries,
 # so the line and the panel are installed agreeing.
-foreach ($rec in @(@{ Name = 'style'; Want = $wantStyle; Value = $effectiveStyle }, @{ Name = 'palette'; Want = $wantPalette; Value = $effectivePalette })) {
+foreach ($rec in @(@{ Switch = 'Style'; Key = 'style'; Want = $wantStyle; Value = $effectiveStyle },
+                   @{ Switch = 'Palette'; Key = 'palette'; Want = $wantPalette; Value = $effectivePalette })) {
     if (-not $rec.Want) { continue }
     if (-not (Test-Path -LiteralPath $configTarget)) {
-        Write-Warning "-$($rec.Name) was given as `"$($rec.Value)`", but there is no $configTarget to write it into. The subagent panel still gets it."
+        Write-Warning "-$($rec.Switch) was given as `"$($rec.Value)`", but there is no $configTarget to write it into. The subagent command still carries it."
         continue
     }
     try {
-        Write-StatusConfigValue $configTarget $rec.Name $rec.Value
-        Write-Host "Wrote `"$($rec.Name)`": `"$($rec.Value)`" to $configTarget; every other key was kept."
+        Write-StatusConfigValue $configTarget $rec.Key $rec.Value
+        Write-Host "Wrote `"$($rec.Key)`": `"$($rec.Value)`" to $configTarget; every other key was kept."
     } catch {
-        Write-Warning "Could not write `"$($rec.Name)`" to $configTarget : $($_.Exception.Message)"
+        Write-Warning "Could not write `"$($rec.Key)`" to $configTarget : $($_.Exception.Message)"
     }
 }
 

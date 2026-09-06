@@ -9122,7 +9122,7 @@ foreach ($name in $sharedHelpers) {
 # The header comment names the same set. A helper added to one list and not the other leaves the file
 # describing itself wrongly, and that description is the only thing telling the next reader which
 # functions may not be edited on their own. The one-character names are skipped: they match anything.
-$subHeader = ((Get-Content -LiteralPath $subScript -TotalCount 40) -join "`n")
+$subHeader = ((Get-Content -LiteralPath $subScript -TotalCount 60) -join "`n")
 foreach ($name in @($sharedHelpers | Where-Object { $_.Length -gt 2 })) {
     Confirm-True ($subHeader.Contains($name)) "subagent header: the copied-helper list names $name"
 }

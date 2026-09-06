@@ -4,7 +4,8 @@
 # deletes ~/.claude/subagent-statusline.ps1, so a file of that name this project did not install is
 # left where it is. Do not remove or reword it.
 #
-# Claude Code subagent status line (PowerShell 7) with Nerd Font glyphs and ANSI colour.
+# Claude Code subagent status line (PowerShell 7) with Nerd Font glyphs and ANSI colour, or ASCII
+# stand-ins and the light colours when -Style and -Palette ask for them.
 # Wired up as the subagentStatusLine setting, which Claude Code runs for the agent panel. It is not
 # the same contract as the main status line: the command is run once for the whole panel and gets one
 # payload holding every live row, and it answers with one JSON object per line, {"id","content"},
