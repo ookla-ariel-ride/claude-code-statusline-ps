@@ -3665,6 +3665,17 @@ foreach ($odd in @(@{ Label = 'string true'; Value = 'true' }, @{ Label = 'numbe
     Confirm-Equal (Get-ModelSegment $p $plainCfg).Text "$iconModel Fable 5.1" "model exceeds as $($odd.Label): no glyph"
 }
 Confirm-Equal (Get-ModelSegment ([pscustomobject]@{ model = [pscustomobject]@{ display_name = '' } }) $plainCfg) $null 'model: empty name omits the segment'
+# display_name is payload text, found unguarded while auditing #61's badges fix: it went straight from
+# the payload to the rendered line with only an "-not $model" check, which a number or a boolean would
+# pass and a control character or a right-to-left override would sail through unstripped. Same pair as
+# every other payload name in the script now.
+foreach ($bad in @('""', '"   "', '12', 'true', 'null', '[]', '{}')) {
+    Confirm-Equal (Get-ModelSegment (('{"model":{"display_name":' + $bad + '}}') | ConvertFrom-Json) $plainCfg) $null "model: display_name $bad is not a name"
+}
+Confirm-Equal (Get-ModelSegment ('{"model":{"display_name":"\u001b[31mred"}}' | ConvertFrom-Json) $plainCfg) $null 'model: a name carrying an escape is refused outright'
+Confirm-Equal (Get-ModelSegment ('{"model":{"display_name":"\u202e"}}' | ConvertFrom-Json) $plainCfg) $null 'model: a name of nothing but a format character is not a name'
+$seg = Get-ModelSegment ('{"model":{"display_name":"Fa\u202eble 5.1"}}' | ConvertFrom-Json) $plainCfg
+Confirm-True ([string]::Equals($seg.Text, "$iconModel Fable 5.1", [System.StringComparison]::Ordinal)) 'model: a format character is stripped out of the name rather than refusing it'
 # The alarm changes the role and nothing else. Get-ModelPayload sits at 65%, so the alarm is decided by
 # the config here: 66 fires, 65 fires (at or above), 64 does not, and the text is the same either way.
 function Get-ModelAlarmConfig($At, [string] $Style = 'plain') { return @{ Style = $Style; Alarm = @{ Context = $At; Limits = 0 } } }
@@ -4142,12 +4153,20 @@ Confirm-Equal $b.Text.Length 12 'badges: the CJK session badge is the glyph, a s
 foreach ($bad in @('""', '"   "', '12', 'true', 'null', '[]', '{}')) {
     Confirm-Equal (Get-BadgesSegment (('{"session_name":' + $bad + '}') | ConvertFrom-Json)) $null "badges: session_name $bad is not a name"
     Confirm-Equal (Get-BadgesSegment (('{"agent":{"name":' + $bad + '}}') | ConvertFrom-Json)) $null "badges: agent.name $bad is not a name"
+    # #61: vim.mode and effort.level went straight to the rendered line with no guard at all. Same
+    # pair, same bad-value table as the two names above.
+    Confirm-Equal (Get-BadgesSegment (('{"vim":{"mode":' + $bad + '}}') | ConvertFrom-Json)) $null "badges: vim.mode $bad is not text"
+    Confirm-Equal (Get-BadgesSegment (('{"effort":{"level":' + $bad + '}}') | ConvertFrom-Json)) $null "badges: effort.level $bad is not text"
 }
 Confirm-Equal (Get-BadgesSegment ('{"agent":"reviewer"}' | ConvertFrom-Json)) $null 'badges: an agent that is a bare string has no name'
 Confirm-Equal (Get-BadgesSegment ('{"session_name":"\u001b[31mred"}' | ConvertFrom-Json)) $null 'badges: a session name carrying an escape is refused outright'
 Confirm-Equal (Get-BadgesSegment ('{"agent":{"name":"\u001b[31mred"}}' | ConvertFrom-Json)) $null 'badges: an agent name carrying an escape is refused outright'
+Confirm-Equal (Get-BadgesSegment ('{"vim":{"mode":"\u001b[31mNORMAL"}}' | ConvertFrom-Json)) $null 'badges: a vim mode carrying an escape is refused outright'
+Confirm-Equal (Get-BadgesSegment ('{"effort":{"level":"\u001b[31mhigh"}}' | ConvertFrom-Json)) $null 'badges: an effort level carrying an escape is refused outright'
 Confirm-Equal (Get-BadgesSegment ('{"session_name":"\u202e\u2066"}' | ConvertFrom-Json)) $null 'badges: a session name of nothing but format characters is not a name'
 Confirm-Equal (Get-BadgesSegment ('{"agent":{"name":"\u202e"}}' | ConvertFrom-Json)) $null 'badges: an agent name of nothing but an override is not a name'
+Confirm-Equal (Get-BadgesSegment ('{"vim":{"mode":"\u202e"}}' | ConvertFrom-Json)) $null 'badges: a vim mode of nothing but an override is not text'
+Confirm-Equal (Get-BadgesSegment ('{"effort":{"level":"\u202e"}}' | ConvertFrom-Json)) $null 'badges: an effort level of nothing but an override is not text'
 # Format characters are stripped rather than refused, so one stray override costs the character and not
 # the badge. Compared ordinally on purpose: PowerShell's own string operators compare by culture, which
 # gives a format character no collation weight at all, so "oc<U+202E>to" -eq "octo" is $true and an
@@ -4156,6 +4175,13 @@ $b = Get-BadgesSegment ('{"agent":{"name":"oc\u202eto"},"session_name":"qu\u2066
 Confirm-True ([string]::Equals($b.Text, "$iconAgent octo $iconSession quiet", [System.StringComparison]::Ordinal)) 'badges: the format characters are stripped out of both names'
 Confirm-True (-not $b.Text.Contains([string][char]0x202E)) 'badges: no right-to-left override survives into the agent badge'
 Confirm-True (-not $b.Text.Contains([string][char]0x2066)) 'badges: no directional isolate survives into the session badge'
+$b = Get-BadgesSegment ('{"vim":{"mode":"NOR\u2066MAL"},"effort":{"level":"xh\u202eigh"}}' | ConvertFrom-Json)
+Confirm-True ([string]::Equals($b.Text, "$iconEffort xhigh $iconVim NORMAL", [System.StringComparison]::Ordinal)) 'badges: the format characters are stripped out of the effort and vim badges'
+# $effort -ne $defaultEffort used to be PowerShell's own -ne, which compares by culture and is also
+# case-insensitive: "HIGH" -eq "high" is $true there, so an upper-case effort level would have been
+# read as the default and swallowed. The ordinal fix (#61) tells them apart.
+$b = Get-BadgesSegment ('{"effort":{"level":"HIGH"}}' | ConvertFrom-Json)
+Confirm-Equal $b.Text "$iconEffort HIGH" 'badges: an effort level differing only in case from the default is not the default, ordinally'
 # Stripping happens before measuring, so a name padded out with overrides is not cut on room it never
 # took on the line in the first place.
 $b = Get-BadgesSegment (('{"session_name":"' + ('\u202e' * 30) + 'quiet"}') | ConvertFrom-Json)

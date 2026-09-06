@@ -1972,9 +1972,14 @@ function K([double] $n) { if ($n -ge 1000000) { '{0:N1}M' -f ($n / 1000000) } el
 # the "1M" marker goes through Format-Inline, which hands the segment's own foreground back after the
 # muted run - a role changed after the text was built would leave that marker restoring cyan on a red
 # segment. The segment is never dropped and has no short form, which is what makes it the carrier.
+# model.display_name is payload text, so it goes through the same pair every other name in this script
+# does: Test-PayloadText decides whether there is anything there at all - found while auditing #61,
+# where vim.mode and effort.level had been left out of the same pair in the badges builder - and
+# Format-PayloadText strips the format characters out of what is left, so a right-to-left override or a
+# zero-width joiner in a model name cannot reorder or hide the rest of the line it leads.
 function Get-ModelSegment($d, $cfg) {
-    $model = $d.model.display_name
-    if (-not $model) { return $null }
+    if (-not (Test-PayloadText $d.model.display_name)) { return $null }
+    $model = Format-PayloadText ([string] $d.model.display_name)
     $role = if (Test-AlarmState $d $cfg) { 'bad' } else { 'model' }
     $text = Format-Icon $iconModel $model
     if (Test-WideWindow $d.context_window.context_window_size) { $text += ' ' + (Format-Inline 'muted' '1M' $role $cfg.Style $cfg.Palette) }
@@ -2487,6 +2492,14 @@ function Get-LimitsSegment($d, $cfg) {
 # Format-PayloadText strips the format characters out of what is left, so neither badge can reorder or
 # hide the rest of the line. Then Get-ClippedText cuts each one to $badgeNameCells cells, measured the
 # way the fitting code measures, so a name in wide characters cannot take twice the room it was given.
+# effort.level and vim.mode are payload text too, from Claude Code itself rather than from anything an
+# attacker authors, but the guards exist so that no payload field is trusted individually - the same
+# two-call shape, applied here so it is not the one left for someone to copy without it. The effort
+# comparison against $defaultEffort is ordinal rather than PowerShell's own -eq, which compares by
+# culture and is also case-insensitive: an -eq comparison would treat "HIGH" as the same word as the
+# lowercase default and swallow a badge that should show, the same family of trap as the -ceq one
+# documented at the top of test.ps1, where a culture comparison also gives Unicode Format characters no
+# weight at all.
 # Short is the modes alone, so a narrow line sheds the two identities before the whole segment goes;
 # it is $null when there is nothing to shed - no modes, or no identities - the way Get-LimitsSegment
 # leaves its Short $null rather than repeating the full text.
@@ -2494,10 +2507,13 @@ function Get-BadgesSegment($d) {
     $badges = [System.Collections.Generic.List[string]]::new()
     if ($d.fast_mode -eq $true) { $badges.Add($iconFast) }
     if ($d.thinking.enabled -eq $true) { $badges.Add($iconThink) }
-    $effort = $d.effort.level
-    if ($effort -and $effort -ne $defaultEffort) { $badges.Add((Format-Icon $iconEffort $effort)) }
-    $vim = $d.vim.mode
-    if ($vim) { $badges.Add((Format-Icon $iconVim $vim)) }
+    if (Test-PayloadText $d.effort.level) {
+        $effort = Format-PayloadText ([string] $d.effort.level)
+        if (-not [string]::Equals($effort, $defaultEffort, [System.StringComparison]::Ordinal)) { $badges.Add((Format-Icon $iconEffort $effort)) }
+    }
+    if (Test-PayloadText $d.vim.mode) {
+        $badges.Add((Format-Icon $iconVim (Format-PayloadText ([string] $d.vim.mode))))
+    }
     $modeCount = $badges.Count
     $modes = if ($modeCount -gt 0) { $badges -join ' ' } else { $null }
     if (Test-PayloadText $d.agent.name) {
