@@ -287,7 +287,7 @@ function Get-SubagentReply([string[]] $Lines) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ConfigReadLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Get-BoundedTextEncoding', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -1168,7 +1168,7 @@ Confirm-Equal $c.Style 'plain' 'project config: the broken user file falls back 
 # The project file comes with the repository, not from the user, so it is read through Read-BoundedFileText
 # rather than Get-Content: an ordinary file, no bigger than the cap, read under a deadline. Everything
 # else is refused silently, the same as a value of the wrong type.
-$limit = Get-ProjectConfigLimit
+$limit = Get-ConfigReadLimit
 Confirm-True ($limit.MaxBytes -ge 4096 -and $limit.MaxBytes -le 262144) 'bounded read: the cap is tens of kilobytes, far past a hand-written config'
 Confirm-True ($limit.TimeoutMs -gt 0 -and $limit.TimeoutMs -le 1000) 'bounded read: the deadline is shorter than a render'
 $smallProject = Write-TempConfig 'bounded-small.json' '{ "layout": "two" }'
@@ -1187,6 +1187,46 @@ Confirm-Equal (Read-BoundedFileText $overCap) $null 'bounded read: a file over t
 $bomPath = Join-Path $tmp 'bounded-bom.json'
 [System.IO.File]::WriteAllText($bomPath, '{ "layout": "two" }', [System.Text.UTF8Encoding]::new($true))
 Confirm-Equal (Read-BoundedFileText $bomPath) '{ "layout": "two" }' 'bounded read: a byte order mark is dropped'
+
+# ---- Encoding: the one thing about a config file this script does not choose ----
+# The read is bytes rather than Get-Content, so the mark at the front of the file is all there is to say
+# how to decode them, and the rule has to be the one Get-Content already followed or a config that was
+# working would stop working: an editor on Windows still offers to save as UTF-16, and those bytes read
+# as UTF-8 are a string of NULs that no JSON parser will take. Each file is written by .NET in the
+# encoding named, then pinned three ways - the mark is detected and measured, the text comes back as it
+# went in, and it matches what Get-Content makes of the very same bytes.
+$encJson = '{ "layout": "two" }'
+foreach ($encCase in @(
+        @{ Name = 'utf-8 with no mark'; File = 'enc-utf8.json'; Enc = [System.Text.UTF8Encoding]::new($false); Preamble = 0; Web = 'utf-8' }
+        @{ Name = 'utf-8 with a mark'; File = 'enc-utf8-bom.json'; Enc = [System.Text.UTF8Encoding]::new($true); Preamble = 3; Web = 'utf-8' }
+        @{ Name = 'utf-16 little-endian'; File = 'enc-utf16le.json'; Enc = [System.Text.UnicodeEncoding]::new($false, $true); Preamble = 2; Web = 'utf-16' }
+        @{ Name = 'utf-16 big-endian'; File = 'enc-utf16be.json'; Enc = [System.Text.UnicodeEncoding]::new($true, $true); Preamble = 2; Web = 'utf-16BE' }
+        @{ Name = 'utf-32 little-endian'; File = 'enc-utf32le.json'; Enc = [System.Text.UTF32Encoding]::new($false, $true); Preamble = 4; Web = 'utf-32' }
+        @{ Name = 'utf-32 big-endian'; File = 'enc-utf32be.json'; Enc = [System.Text.UTF32Encoding]::new($true, $true); Preamble = 4; Web = 'utf-32BE' })) {
+    $encPath = Join-Path $tmp $encCase.File
+    [System.IO.File]::WriteAllText($encPath, $encJson, $encCase.Enc)
+    $encBytes = [System.IO.File]::ReadAllBytes($encPath)
+    $encSeen = Get-BoundedTextEncoding $encBytes $encBytes.Length
+    Confirm-Equal $encSeen.Preamble $encCase.Preamble "config encoding: the mark of $($encCase.Name) is $($encCase.Preamble) bytes"
+    Confirm-Equal $encSeen.Encoding.WebName $encCase.Web "config encoding: $($encCase.Name) is detected as $($encCase.Web)"
+    Confirm-Equal (Read-BoundedFileText $encPath) $encJson "config encoding: $($encCase.Name) reads back as the text that went in"
+    Confirm-Equal (Read-BoundedFileText $encPath) (Get-Content -LiteralPath $encPath -Raw) "config encoding: $($encCase.Name) reads back what Get-Content makes of the same bytes"
+}
+# Nothing read is UTF-8 of nothing, not an index off the end of an empty buffer.
+$encNone = Get-BoundedTextEncoding ([byte[]]::new(8)) 0
+Confirm-Equal $encNone.Preamble 0 'config encoding: no bytes read leaves no mark to skip'
+Confirm-Equal $encNone.Encoding.WebName 'utf-8' 'config encoding: no bytes read is utf-8, the same default a file with no mark takes'
+# Only the bytes that were READ count. The buffer is always one byte longer than the cap, so whatever is
+# past the read is zeroes, and a mark completed out of them would decode a UTF-16 file as UTF-32.
+Confirm-Equal (Get-BoundedTextEncoding ([byte[]] @(0xFF, 0xFE, 0, 0)) 2).Preamble 2 'config encoding: a mark is not completed by buffer past the bytes that were read'
+Confirm-Equal (Get-BoundedTextEncoding ([byte[]] @(0xFF, 0xFE, 0, 0)) 4).Preamble 4 'config encoding: the same four bytes really read are the utf-32 mark'
+Confirm-Equal (Get-BoundedTextEncoding ([byte[]] @(0xFF, 0xFE, 0x7B, 0)) 4).Encoding.WebName 'utf-16' 'config encoding: utf-16 little-endian is not read as utf-32 because a character follows the mark'
+# A file whose text really starts with U+FEFF: in UTF-8 those are the same three bytes as the mark, and
+# StreamReader eats them, so this reader does too rather than inventing a difference.
+$encReal = Join-Path $tmp 'enc-real-feff.json'
+[System.IO.File]::WriteAllText($encReal, ([char] 0xFEFF + $encJson), [System.Text.UTF8Encoding]::new($false))
+Confirm-Equal (Read-BoundedFileText $encReal) (Get-Content -LiteralPath $encReal -Raw) 'config encoding: a leading U+FEFF in utf-8 text is read the way Get-Content reads it'
+
 # The same rules through Read-StatusConfig: an oversized project config, and one that is not an ordinary
 # file, both leave the user config standing. A file symbolic link needs Developer Mode or an elevated
 # shell on Windows; where one cannot be made a directory stands in its place, which is the same rule
@@ -1213,14 +1253,14 @@ Confirm-Equal $c.Style 'powerline' 'project config: the user file stands over th
 # where it starts: a file that read back whole a few lines ago is refused, because the budget is spent
 # before anything is looked up. The real limit is rebuilt from the values captured here rather than
 # retyped, so this cannot drift from the script's own numbers.
-$realLimit = Get-ProjectConfigLimit
-. ([scriptblock]::Create("function Get-ProjectConfigLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = 0 } }"))
+$realLimit = Get-ConfigReadLimit
+. ([scriptblock]::Create("function Get-ConfigReadLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = 0 } }"))
 $zeroSw = [System.Diagnostics.Stopwatch]::StartNew()
 Confirm-Equal (Read-BoundedFileText $smallProject) $null 'bounded read: a spent budget refuses a file that is otherwise fine'
 Confirm-True ($zeroSw.ElapsedMilliseconds -lt 1000) 'bounded read: a spent budget gives up at once'
-. ([scriptblock]::Create("function Get-ProjectConfigLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = $($realLimit.TimeoutMs) } }"))
-Confirm-Equal (Get-ProjectConfigLimit).TimeoutMs $realLimit.TimeoutMs 'bounded read: the real deadline is back'
-Confirm-Equal (Get-ProjectConfigLimit).MaxBytes $realLimit.MaxBytes 'bounded read: the real cap is back'
+. ([scriptblock]::Create("function Get-ConfigReadLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = $($realLimit.TimeoutMs) } }"))
+Confirm-Equal (Get-ConfigReadLimit).TimeoutMs $realLimit.TimeoutMs 'bounded read: the real deadline is back'
+Confirm-Equal (Get-ConfigReadLimit).MaxBytes $realLimit.MaxBytes 'bounded read: the real cap is back'
 Confirm-Equal (Read-BoundedFileText $smallProject) '{ "layout": "two" }' 'bounded read: the same file reads again with the deadline back'
 
 # What the handle says, not what the name said. The null device opens like a file on Windows and has the
@@ -1298,7 +1338,7 @@ if ($null -eq $blockingType) {
     # The length, asked for the way the bounded read asks for it.
     $blockSw = [System.Diagnostics.Stopwatch]::StartNew()
     $blockTask = [System.Threading.Tasks.Task]::Run($blockingCall.Length)
-    $blockDone = $blockTask.Wait((Get-ProjectConfigLimit).TimeoutMs)
+    $blockDone = $blockTask.Wait((Get-ConfigReadLimit).TimeoutMs)
     $blockMs = $blockSw.ElapsedMilliseconds
     Confirm-True (-not $blockDone) 'bounded read: a length that blocks does not answer inside the budget'
     Confirm-True ($blockMs -lt 2000) 'bounded read: a blocking length is abandoned at the budget, not waited out'
@@ -1315,6 +1355,63 @@ if ($null -eq $blockingType) {
     Confirm-True ($quickTask.Wait(5000)) 'bounded read: a close that answers finishes'
     Confirm-True ($quick.Disposed) 'bounded read: the queued close really closes the stream'
     Confirm-Equal ([System.Threading.Tasks.Task]::Run($quickCall.Length).Result) 0 'bounded read: the length delegate reads the stream it was closed over'
+}
+
+# ---- The user's own config, under the same clock ----
+# #19 bounded the project file and left this one on Get-Content, for a reason that was true then: this is
+# the file whose encoding the script does not choose, and the reader was UTF-8 only. The encoding cases
+# above close that, so this file is bounded now too - not because it is untrusted, it is not, but because
+# a home directory on a dead network share hangs a render exactly the way a project directory on one
+# does, and the clock is about a filesystem that does not answer rather than about whose file it is.
+# What being trusted buys it is one skipped check: the link probe, so a config symlinked out of a
+# dotfiles repository still loads. Everything else - the cap, the deadline, the fall-back - is shared.
+$userEnc = Join-Path $tmp 'user-utf16.json'
+[System.IO.File]::WriteAllText($userEnc, '{ "style": "powerline", "layout": "two" }', [System.Text.UnicodeEncoding]::new($false, $true))
+$c = Read-StatusConfig $userEnc
+Confirm-Equal $c.Style 'powerline' 'user config: a utf-16 user file still applies'
+Confirm-Equal $c.Layout 'two' 'user config: every key of the utf-16 user file applies, so it was decoded and not half read'
+# Over the cap falls back to the built-in defaults, which is where a user file that will not parse has
+# always landed. The project file then merges over those defaults rather than over the refused file,
+# which is the same precedence a broken user file already had.
+$userOver = Write-TempConfig 'user-over-cap.json' ('{ "style": "powerline", "pad": "' + ('x' * $limit.MaxBytes) + '" }')
+$c = Read-StatusConfig $userOver
+Confirm-Equal $c.Style 'plain' 'user config: a file over the byte cap falls back to the defaults'
+Confirm-Equal $c.Layout 'one' 'user config: nothing of the oversized user file is applied'
+$c = Read-StatusConfig $userOver (Write-TempProjectDir 'proj-over-user-huge' '{ "layout": "two" }')
+Confirm-Equal $c.Layout 'two' 'user config: the project file still applies over an oversized user file'
+Confirm-Equal $c.Style 'plain' 'user config: the oversized user file falls back exactly where a broken one does'
+# The deadline covers it too, shown without depending on a network: with the budget set to zero the file
+# that applied a few lines ago is refused, and the render is left with the defaults.
+. ([scriptblock]::Create("function Get-ConfigReadLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = 0 } }"))
+Confirm-Equal (Read-BoundedFileText $smallProject -Trusted) $null 'user config: a spent budget refuses a trusted file too'
+Confirm-Equal (Read-StatusConfig $userPath).Style 'plain' 'user config: a spent budget takes the user file down to the defaults'
+. ([scriptblock]::Create("function Get-ConfigReadLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = $($realLimit.TimeoutMs) } }"))
+Confirm-Equal (Read-StatusConfig $userPath).Style 'powerline' 'user config: the same user file applies again with the deadline back'
+# And on a real filesystem that does not answer, which is the case the issue was about.
+$userDeadSw = [System.Diagnostics.Stopwatch]::StartNew()
+$c = Read-StatusConfig '\\192.0.2.1\statusline-test\statusline.json'
+$userDeadMs = $userDeadSw.ElapsedMilliseconds
+Write-Host "  unreachable user config case: $userDeadMs ms ($(if ($userDeadMs -ge $realLimit.TimeoutMs) { 'the open blocked and the budget ended it' } else { 'the network stack refused before the budget mattered' }))" -ForegroundColor DarkGray
+Confirm-Equal $c.Style 'plain' 'user config: a user file on an unreachable filesystem falls back to the defaults'
+Confirm-True ($userDeadMs -lt 2000) 'user config: an unreachable user file costs the budget, not the network timeout'
+# Trusted is one skipped check and not a way past the others: the open still decides, and a handle that
+# is not an ordinary file is still refused.
+Confirm-Equal (Read-BoundedFileText $tmp -Trusted) $null 'user config: a directory is refused as a trusted read too, because the open refuses it'
+Confirm-Equal (Read-BoundedFileText 'NUL' -Trusted) $null 'user config: a handle that cannot seek is refused as a trusted read too'
+Confirm-Equal (Read-BoundedFileText $overCap -Trusted) $null 'user config: the cap is not skipped for a trusted read'
+Confirm-Equal (Read-BoundedFileText $smallProject -Trusted) '{ "layout": "two" }' 'user config: a trusted read of an ordinary file reads it back whole'
+# A link where the user config should be. The project file's link is refused because a repository chose
+# that path; this one is followed, because the user did and Get-Content followed it before #48. A file
+# symbolic link needs Developer Mode or an elevated shell on Windows, so say which case ran.
+$userLinkTarget = Write-TempConfig 'user-link-target.json' '{ "style": "powerline" }'
+$userLinkPath = Join-Path $tmp 'user-link.json'
+$madeUserLink = $true
+try { New-Item -ItemType SymbolicLink -Path $userLinkPath -Target $userLinkTarget -ErrorAction Stop | Out-Null } catch { $madeUserLink = $false }
+Write-Host "  user link case: $(if ($madeUserLink) { 'a symbolic link stands in for a dotfiles config' } else { 'symbolic links need Developer Mode here, so the link case is not checked' })" -ForegroundColor DarkGray
+if ($madeUserLink) {
+    Confirm-Equal (Read-StatusConfig $userLinkPath).Style 'powerline' 'user config: a linked user file is followed rather than refused'
+    Confirm-Equal (Read-BoundedFileText $userLinkPath -Trusted) '{ "style": "powerline" }' 'user config: -Trusted is what follows the link'
+    Confirm-Equal (Read-BoundedFileText $userLinkPath) $null 'user config: the same link without -Trusted is refused, which is the only difference between the two reads'
 }
 
 Write-Host '== unit: render cost' -ForegroundColor Cyan
@@ -1422,31 +1519,40 @@ if ($null -eq $costType) {
     # reopens the gap between asking about a name and opening it. So the dispatch stays and the caught
     # exception goes, and what is pinned here is the shape rather than a number of microseconds: one
     # open is attempted, and nothing else on the disk is touched at all.
+    # Every count here is now of two files rather than one: #48 put the user's own config under the same
+    # reader, so a render pays for that read whether or not a project directory was named. The baseline
+    # is therefore what a payload with no project_dir costs, and every claim below about the project file
+    # is the difference from it. The user file is read as trusted, which is why the attribute probe stays
+    # at zero here and is the one call the project file adds that this one does not.
     $costNone = Measure-ConfigRead $null
-    Confirm-Equal $costNone.Opens 0 "render cost: a payload with no project_dir opens nothing, got '$($costNone.Text)'"
-    Confirm-Equal $costNone.Attributes 0 'render cost: a payload with no project_dir probes no attributes'
+    Confirm-Equal $costNone.Opens 1 "render cost: a payload with no project_dir opens the user file and nothing else, got '$($costNone.Text)'"
+    Confirm-Equal $costNone.Attributes 0 'render cost: the user file is trusted, so nothing probes its attributes'
+    Confirm-Equal $costNone.Lengths 1 'render cost: the user file is measured once, from its handle'
+    Confirm-Equal $costNone.Reads 2 'render cost: the user file takes one read of bytes and one that ends it'
     Confirm-Equal $costNone.Cfg.Style 'powerline' 'render cost: a payload with no project_dir still reads the user file'
     $costPlain = Measure-ConfigRead $costNoClaude
-    Confirm-Equal $costPlain.Opens 1 "render cost: a project directory with no .claude attempts one open, got '$($costPlain.Text)'"
+    Confirm-Equal ($costPlain.Opens - $costNone.Opens) 1 "render cost: a project directory with no .claude attempts one open beyond the user file, got '$($costPlain.Text)'"
     Confirm-Equal $costPlain.Attributes 0 'render cost: a project directory with no .claude probes no attributes'
-    Confirm-Equal $costPlain.Lengths 0 'render cost: a project directory with no .claude asks for no length'
-    Confirm-Equal $costPlain.Reads 0 'render cost: a project directory with no .claude reads nothing'
-    Confirm-Equal $costPlain.Closes 0 'render cost: a project directory with no .claude closes nothing, because it opened nothing'
+    Confirm-Equal ($costPlain.Lengths - $costNone.Lengths) 0 'render cost: a project directory with no .claude asks for no length of its own'
+    Confirm-Equal ($costPlain.Reads - $costNone.Reads) 0 'render cost: a project directory with no .claude reads nothing of its own'
+    # The close is queued on the pool and never waited on, so what is pinned is a ceiling rather than a
+    # number: the user file opened one handle, and the project directory opened none to close.
+    Confirm-True ($costPlain.Closes -le 1) 'render cost: a project directory with no .claude closes nothing of its own, because it opened nothing'
     Confirm-Equal $costPlain.Cfg.Style 'powerline' 'render cost: a project directory with no .claude leaves the user file in force'
     # A .claude directory with no statusline.json in it costs exactly the same.
     $costEmpty = Measure-ConfigRead $costEmptyClaude
-    Confirm-Equal $costEmpty.Opens 1 "render cost: an empty .claude attempts one open, got '$($costEmpty.Text)'"
-    Confirm-Equal ($costEmpty.Attributes + $costEmpty.Lengths + $costEmpty.Reads + $costEmpty.Closes) 0 'render cost: an empty .claude touches nothing else'
+    Confirm-Equal ($costEmpty.Opens - $costNone.Opens) 1 "render cost: an empty .claude attempts one open beyond the user file, got '$($costEmpty.Text)'"
+    Confirm-Equal (($costEmpty.Attributes + $costEmpty.Lengths + $costEmpty.Reads) - ($costNone.Attributes + $costNone.Lengths + $costNone.Reads)) 0 'render cost: an empty .claude touches nothing else'
     # And the shape that does have a config pays for what it uses and no more: the open, the length, the
     # attribute probe, one read that returns the bytes and one that returns nothing. The close is queued
     # on the pool and never waited on, so how many have finished by this line is not deterministic and is
     # bounded rather than pinned; that it is queued at all is checked in the bounded read group above.
     $costReal = Measure-ConfigRead $costWithFile
-    Confirm-Equal $costReal.Opens 1 "render cost: a real project config opens the file once, got '$($costReal.Text)'"
-    Confirm-Equal $costReal.Attributes 1 'render cost: a real project config probes the attributes once'
-    Confirm-Equal $costReal.Lengths 1 'render cost: a real project config asks the handle its length once'
-    Confirm-Equal $costReal.Reads 2 'render cost: a real project config takes one read of bytes and one that ends it'
-    Confirm-True ($costReal.Closes -le 1) 'render cost: a real project config closes the handle at most once'
+    Confirm-Equal ($costReal.Opens - $costNone.Opens) 1 "render cost: a real project config opens the file once, got '$($costReal.Text)'"
+    Confirm-Equal $costReal.Attributes 1 'render cost: a real project config probes the attributes once, and it is the only file that is probed at all'
+    Confirm-Equal ($costReal.Lengths - $costNone.Lengths) 1 'render cost: a real project config asks the handle its length once'
+    Confirm-Equal ($costReal.Reads - $costNone.Reads) 2 'render cost: a real project config takes one read of bytes and one that ends it'
+    Confirm-True ($costReal.Closes -le 2) 'render cost: a real project config closes the handle at most once, beside the user file'
     Confirm-Equal $costReal.Cfg.Layout 'two' 'render cost: a real project config is still applied'
 
     # ---- #21: presets, "no measurable render cost" ----
@@ -5491,7 +5597,7 @@ try {
     # says which refusal it was rather than that something went wrong. The reasons are asked for by the
     # words a person would search the log for.
     Sync-DiagFlag '1'
-    $diagLimit = Get-ProjectConfigLimit
+    $diagLimit = Get-ConfigReadLimit
     function Test-DiagConfigCase([string] $Name, $ProjectDir, [string] $Pattern, [string] $Label) {
         Clear-DiagLog
         $cfg = Read-StatusConfig $userPath $ProjectDir
@@ -5519,15 +5625,15 @@ try {
     # The three cases below call the reader directly rather than through a config merge, so they also
     # play the caller's part: the read records why it refused and the caller writes the record, which is
     # what keeps every filesystem call the log makes off the reader's own clock.
-    $diagRealLimit = Get-ProjectConfigLimit
-    . ([scriptblock]::Create("function Get-ProjectConfigLimit { return @{ MaxBytes = $($diagRealLimit.MaxBytes); TimeoutMs = 0 } }"))
+    $diagRealLimit = Get-ConfigReadLimit
+    . ([scriptblock]::Create("function Get-ConfigReadLimit { return @{ MaxBytes = $($diagRealLimit.MaxBytes); TimeoutMs = 0 } }"))
     Clear-DiagLog
     Confirm-Equal (Read-BoundedFileText $smallProject) $null 'diag config: a spent budget still refuses a file that is otherwise fine'
     Confirm-Equal (Measure-DiagMatch 'was not read') 0 'diag config: the read itself writes nothing, so a refusal is silent until the caller asks'
     Write-BoundedReadDiag
     Confirm-Equal (Measure-DiagMatch 'config read: .* was not read: the deadline was spent before the open') 1 "diag config: a spent budget says the deadline was spent, got '$((Get-DiagLine) -join ' | ')'"
-    . ([scriptblock]::Create("function Get-ProjectConfigLimit { return @{ MaxBytes = $($diagRealLimit.MaxBytes); TimeoutMs = $($diagRealLimit.TimeoutMs) } }"))
-    Confirm-Equal (Get-ProjectConfigLimit).TimeoutMs $diagRealLimit.TimeoutMs 'diag config: the real deadline is back'
+    . ([scriptblock]::Create("function Get-ConfigReadLimit { return @{ MaxBytes = $($diagRealLimit.MaxBytes); TimeoutMs = $($diagRealLimit.TimeoutMs) } }"))
+    Confirm-Equal (Get-ConfigReadLimit).TimeoutMs $diagRealLimit.TimeoutMs 'diag config: the real deadline is back'
     # A handle that is not an ordinary file: the null device, the one this machine can produce without a
     # privilege. Where it will not open at all the refusal is still logged, under the other reason.
     Clear-DiagLog
@@ -8738,7 +8844,7 @@ Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains($iconCost)) '
 # refuses all leave the user file in force and say nothing on stderr. The oversized case is the one that
 # matters most: it is a whole render, so a config a repository grew to megabytes would show up here as a
 # slow or hanging child rather than as a quiet fallback.
-$overSized = '{ "segments": { "cost": false }, "pad": "' + ('x' * (Get-ProjectConfigLimit).MaxBytes) + '" }'
+$overSized = '{ "segments": { "cost": false }, "pad": "' + ('x' * (Get-ConfigReadLimit).MaxBytes) + '" }'
 foreach ($case in @(
         @{ Name = 'render-project-broken'; Json = '{ "segments": '; Label = 'a malformed project file' }
         @{ Name = 'render-project-none'; Json = $null; Label = 'an empty .claude directory' }

@@ -170,6 +170,18 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   each key falls back on its own: a valid `order` beside a broken `thresholds` keeps the order. The
   files are merged in precedence order, defaults then user then project, so what a key falls back to
   is the value beneath it: a project file with a bad `layout` keeps the user's, not the default.
+- **Both config files are read under one budget, and trust is a separate axis from it.** `Read-BoundedFileText`
+  reads the user's own `statusline.json` and the project's, each under 64 KiB and 250 ms. The budget is
+  about a filesystem that does not answer, which is no respecter of whose file it is: a home directory on
+  a dead share hangs a render the way a project directory on one does, which is what #48 closed. Trust
+  decides one thing on top of it, the reparse-point probe, and `-Trusted` skips that for the user's file
+  so a config symlinked out of a dotfiles repository still loads, as it did when `Get-Content` read it.
+  Reading it as bytes means the script now decides the encoding itself, so `Get-BoundedTextEncoding`
+  follows `StreamReader`'s own rule — UTF-8 with or without a mark, UTF-16 and UTF-32 in either byte
+  order, no mark means UTF-8 — because a config saved as UTF-16 read as UTF-8 is a string of NULs no
+  parser will take, and that is exactly the config that was working the day before. This is why the
+  user's file could not simply be pointed at the reader in #19, and why the encoding work came first
+  in #48. Either file falling back is the fall-back it always had: the values beneath it stand.
 - **The project file is untrusted input.** It comes with the repository, so `Read-BoundedFileText` opens
   it first and judges the handle: not seekable means a device or a pipe rather than a file, and the
   64 KiB cap is measured against the length the handle reports and again against the bytes read, so a
@@ -185,14 +197,23 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   call it was waiting on. `WaitAny` returns instead, and the task is then asked whether it succeeded,
   so the deadline and the failure are told apart rather than both arriving as one caught exception,
   which is also what lets each refusal name itself in the diagnostics log. The close is queued and
-  never waited on, and with the budget
-  gone the stream is abandoned unclosed, whichever step spent it. The bound is on this read alone: a
-  thread can stay blocked until the process exits, and the user's own file, read the ordinary way for
-  its encoding detection, has no deadline at all. `Read-CodePoint` admits a
-  code point only when it draws as one glyph
+  never waited on, and with the budget gone the stream is abandoned unclosed, whichever step spent it.
+  **Abandonment is literal**, and anything adopting this pattern adopts that: nothing here can cancel a
+  blocking filesystem call, so a pool thread can stay stuck in the kernel until the process exits, a
+  handle opened after the deadline is never closed, and a stream still open is left open. That is the
+  right trade in a process that draws one line and exits, and it would not be in something long-lived.
+  `Read-CodePoint` admits a code point only when it draws as one glyph
   standing alone: no control, format, separator, mark, surrogate, noncharacter or unassigned value, and
   one or two cells wide by the script's own width rule, so a repository cannot reorder, hide or
-  mis-measure the line through the `icons` table. The user's own file keeps its ordinary read.
+  mis-measure the line through the `icons` table.
+- **Every other filesystem call a render can make is audited, in a comment beside `Read-BoundedFileText`.**
+  #48 asked for a decision per call rather than a list, and the block records one: the diagnostics log
+  bounds itself on its own 250 ms clock and is off unless `CLAUDE_STATUSLINE_DEBUG` is set; the git probe
+  is a child process under `git.timeoutMs`, so the process is what waits on a sick filesystem; and the git
+  cache (the repository walk, the stamps, the entry, the atomic write, the sweep) and the session state
+  file are deliberately unbounded, because all of them live under `TEMP` or in the git directory the probe
+  is already answering from — no repository and no payload chooses those paths, and a temp directory too
+  sick to answer is one `pwsh` did not start on. `subagent-statusline.ps1` opens no file at all.
 - **One segment table, and the config moves what it can.** `Get-SegmentRegistry` is the single list of
   segments: its array order is the default `order`, its row keys the default `rows`, its ranks the
   shrink and drop order, and the build loop dispatches through it. The `order` and `rows` keys pick

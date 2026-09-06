@@ -275,30 +275,44 @@ value beneath it rather than to the built-in default. A project with no `.claude
 changes nothing, and so does an unreadable one. `-Config <path>` is the exception: it replaces the user
 file and skips the project file, so a render with it is the same whatever directory the payload names.
 
-That file arrives with the repository rather than from you, so it is read as untrusted input. The file is
-opened first and then judged by the handle: a handle that cannot seek is a device or a pipe rather than a
-file, and the size that has to fit under 64 KiB is the one the handle reports, not one read off the path
-beforehand. A link or another reparse point is refused as well. One clock covers every step — the open,
-the size, the link check, each read and the close at the end — and it starts before the first filesystem
-call: if 250 ms goes by the attempt is abandoned and the config beneath it stands, silently, the way a
-bad value does. Silently on the line, that is — every one of those refusals names itself in the
-diagnostics log below, so a config that is being ignored can say why.
+**Both config files are read under the same budget: 64 KiB and 250 ms.** One clock covers every step —
+the open, the size, each read and the close at the end — and it starts before the first filesystem call.
+If 250 ms goes by the attempt is abandoned and the config beneath it stands, silently, the way a bad
+value does. Silently on the line, that is — every one of those refusals names itself in the diagnostics
+log below, so a config that is being ignored can say why. The budget is not a judgement about who wrote
+the file: it is about a filesystem that does not answer, and a home directory on a dead network share
+hangs a render exactly the way a project directory on one does.
+
+What separates the two files is trust, and it comes to one extra check. The project file arrives with
+the repository rather than from you, so it is opened first and then judged by the handle: a handle that
+cannot seek is a device or a pipe rather than a file, and the size that has to fit under 64 KiB is the
+one the handle reports, not one read off the path beforehand. A link or another reparse point is refused
+as well. Your own file skips only that last check, so a `statusline.json` symlinked out of a dotfiles
+repository still loads — you chose that link, and a repository did not.
+
+Your file is read as bytes rather than through `Get-Content`, so the script decides its encoding from the
+mark at the front of it, by the same rule `Get-Content` follows: UTF-8 with or without a mark, UTF-16 in
+either byte order, UTF-32 in either byte order, and no mark means UTF-8. A config saved as UTF-16 by an
+editor keeps working. This is why the file was left unbounded when the project file was bounded, and it
+is what closing that gap needed first.
 
 A project directory with no `.claude\statusline.json` — the usual case if you keep no per-project
 config — costs one attempted open on the thread pool and nothing else: no attribute probe, no read and
 no close. It is not free, and cannot be: the deadline is the reason the open is dispatched rather than
 made here, and a cheaper check made first would either block on the render's own thread or cost a
-dispatch of its own and reopen the gap between asking about a name and opening it. `test.ps1` counts
-those operations rather than timing them, so the shape is pinned and the count cannot drift.
+dispatch of its own and reopen the gap between asking about a name and opening it. Your own file costs
+an open, a size and two reads on every render, which is what reading it has always cost. `test.ps1`
+counts those operations rather than timing them, so the shape is pinned and the count cannot drift.
 
-What that buys is a bound on this read, not on the machine. Abandoning is literal: a thread can stay
-stuck behind a hung open until the process exits, and a file left open that way is not closed on the way
-out, because closing it would wait on the same thing. The status line renders and exits without either.
-Two things the bound does not cover, said plainly rather than rounded off: your own `statusline.json` is
-read the ordinary way, with no deadline, so a home directory on a dead network share can still hold up a
-render; and a filesystem sick enough to hang calls this read never makes can hold one up somewhere else
-again. Your file is read that way on purpose — it is yours rather than a repository's, and it is the one
-whose text encoding the script does not get to choose.
+What that buys is a bound on these two reads, not on the machine. Abandoning is literal: a thread can
+stay stuck behind a hung open until the process exits, and a file left open that way is not closed on
+the way out, because closing it would wait on the same thing. The status line renders and exits without
+either. What the bound still does not cover, said plainly rather than rounded off: a filesystem sick
+enough to hang calls these reads never make can hold a render up somewhere else. Every other filesystem
+call a render can make is audited in a comment beside `Read-BoundedFileText` in `statusline.ps1`, with a
+decision recorded for each — the diagnostics log has a clock of its own, the git probe is a child process
+under its own timeout, and the git cache and the session state file are deliberately unbounded because
+both live in your temp directory, which no repository and no network chose.
 
 | Key | Values | What it does |
 |---|---|---|
@@ -911,10 +925,11 @@ appends a line to `claude-statusline-diag.log` in your temp folder:
 2026-09-03T09:14:02.415Z 24880 state: written (C:\Users\jim\AppData\Local\Temp\claude-statusline-state\abc.json)
 ```
 
-A project `.claude\statusline.json` that is not applied says which of the refusals it hit — it could
-not be opened, the handle is not an ordinary file, it is a link or a reparse point, it is over the
-byte cap, the deadline was spent, the file is empty, or it would not parse — so "why is my project
-config being ignored?" has an answer in the log rather than needing the script edited.
+A `statusline.json` that is not applied says which of the refusals it hit — it could not be opened,
+the handle is not an ordinary file, it is a link or a reparse point (the project's file only), it is
+over the byte cap, the deadline was spent, the file is empty, or it would not parse — so "why is my
+config being ignored?" has an answer in the log rather than needing the script edited. Both files
+report this way; the path in the line says which one it was.
 
 The printed line is the same either way, and a log that cannot be written is as silent as the failure
 it records. Writing a record is itself bounded: your temp folder is a filesystem like any other and

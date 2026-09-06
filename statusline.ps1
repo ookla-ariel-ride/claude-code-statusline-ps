@@ -713,12 +713,18 @@ function Get-ConfigPreset($Name) {
     return $null
 }
 
-# What a project config may cost to read. A config a person wrote is a few hundred bytes, so 64 KiB is
-# far past any real one and still reads in under a millisecond from a disk; the deadline is what a read
-# that never finishes may cost, and the status line is redrawn on every event, so a quarter of a second
-# is already longer than a render. Both are constants rather than config keys: they guard the file the
-# config itself comes from.
-function Get-ProjectConfigLimit { return @{ MaxBytes = 65536; TimeoutMs = 250 } }
+# What a config file may cost to read - either of them, the user's own and the project's. A config a
+# person wrote is a few hundred bytes, so 64 KiB is far past any real one and still reads in under a
+# millisecond from a disk; the deadline is what a read that never finishes may cost, and the status line
+# is redrawn on every event, so a quarter of a second is already longer than a render. Both are
+# constants rather than config keys: they guard the file the config itself comes from.
+# One pair of numbers for both files, because the thing being bounded is the same thing in both cases -
+# a filesystem that does not answer - and it is not a trust judgement, so there is nothing about the
+# user's file that would earn it a different budget. Measured before choosing that: the shipped 550-byte
+# config takes about two milliseconds to read this way on a warm local disk, a fraction of a millisecond
+# more than Get-Content took for the same file, and both are two orders of magnitude inside the deadline.
+# So a second budget would have been two numbers to keep in step for no case either of them separates.
+function Get-ConfigReadLimit { return @{ MaxBytes = 65536; TimeoutMs = 250 } }
 
 # The two calls the bounded read makes, each closed over the path so it can go straight to the thread
 # pool. Nothing here can be a script block: converted to a delegate one needs a runspace, and a thread
@@ -753,19 +759,115 @@ function Get-BoundedStreamDelegate($Stream) {
     }
 }
 
-# The text of a file a repository controls, or $null when it is anything but a small, ordinary, promptly
-# readable one. Test-Path and Get-Content are not enough for this file: they follow a link wherever it
-# leads and read whatever comes back, for as long as it takes, so a repository could point the path at a
-# device, a FIFO or a dead network share and hold up every render, or hand over a file large enough to
-# matter. So one clock covers the whole thing, started before the first filesystem call of any kind, and
-# every call runs on the thread pool and is waited on for what is left of it: the open, the file's length,
-# the attribute probe, each read, and the close at the end. When the budget runs out the attempt is
-# abandoned and the caller keeps the config it had, exactly like any other refusal. Abandoning means what
-# it says: a thread may stay blocked in the kernel until the process exits, a handle opened after that is
-# never closed, and a stream is left open rather than closed on the way out, since closing it would wait
-# on whatever is already stuck. That is the price of not waiting, and this process renders one line and
-# exits. What the clock does not cover is what the caller does with the text afterwards, or a filesystem
+# The encoding a run of bytes names for itself, as @{ Encoding; Preamble }, where Preamble is how many
+# of those bytes were the mark and are not text. Bytes rather than a stream: the bounded read already
+# has the whole file in a buffer, so this is arithmetic on what was read and makes no call of its own.
+#
+# This exists because the config is read as bytes and not through Get-Content, and a file's encoding is
+# the one thing about a config this script does not get to choose. The installer writes UTF-8, but the
+# file is the user's to edit afterwards, and an editor on Windows still offers to save it as UTF-16;
+# decoding one of those as UTF-8 gives a string of NUL characters that no JSON parser will take, so a
+# reader that assumed UTF-8 would silently throw away a config that had been working. The rules below
+# are StreamReader's own, which is what Get-Content uses and therefore what the file was working
+# against before: UTF-16 big-endian for FE FF, UTF-16 little-endian for FF FE unless two zero bytes
+# follow it, which makes it UTF-32 little-endian, UTF-8 for EF BB BF, UTF-32 big-endian for
+# 00 00 FE FF, and UTF-8 for anything else, a file with no mark included. The order matters: FF FE is a
+# prefix of the UTF-32 mark, so the longer one is tested inside the shorter one's case rather than
+# after it. UTF-32 is here for the same reason as the rest - not because a config is ever written that
+# way, but because Get-Content would have read it and the point of this function is that nothing a user
+# had working stops working.
+#
+# Every encoding here replaces bytes it cannot decode rather than throwing, which is again what
+# Get-Content does; a file that is not really the encoding its mark claims ends up as text with
+# U+FFFD in it, ConvertFrom-Json refuses it, and the config falls back exactly as any other invalid
+# file does.
+function Get-BoundedTextEncoding([byte[]] $Bytes, [int] $Count) {
+    if ($Count -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) {
+        return @{ Encoding = [System.Text.Encoding]::BigEndianUnicode; Preamble = 2 }
+    }
+    if ($Count -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) {
+        if ($Count -ge 4 -and $Bytes[2] -eq 0 -and $Bytes[3] -eq 0) {
+            return @{ Encoding = [System.Text.Encoding]::UTF32; Preamble = 4 }
+        }
+        return @{ Encoding = [System.Text.Encoding]::Unicode; Preamble = 2 }
+    }
+    if ($Count -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
+        return @{ Encoding = [System.Text.Encoding]::UTF8; Preamble = 3 }
+    }
+    if ($Count -ge 4 -and $Bytes[0] -eq 0 -and $Bytes[1] -eq 0 -and $Bytes[2] -eq 0xFE -and $Bytes[3] -eq 0xFF) {
+        return @{ Encoding = [System.Text.UTF32Encoding]::new($true, $true); Preamble = 4 }
+    }
+    return @{ Encoding = [System.Text.Encoding]::UTF8; Preamble = 0 }
+}
+
+# ---- EVERY FILESYSTEM CALL A RENDER CAN MAKE, AND WHAT BOUNDS IT ----
+# The audit #48 asked for, kept here beside the reader it is mostly about. A status line runs on every
+# event, so any call here that does not answer is a line that does not draw. Each row is a decision, not
+# a description: bounded (and how), deliberately unbounded (and why), or unreachable in practice.
+#
+#   BOUNDED, by the clock in Read-BoundedFileText (250 ms over the whole read, 64 KiB cap):
+#     - the user's own statusline.json, beside this script or named by -Config. Bounded since #48, with
+#       the encoding detection above, because a home directory can sit on a network share too. Read as
+#       trusted: the link and directory refusals below are skipped, so a config symlinked out of a
+#       dotfiles repository still loads, which is how it always worked.
+#     - the project's .claude\statusline.json. Bounded since #19, and read as untrusted: it arrives with
+#       the repository, so a handle that cannot seek, a reparse point and a directory are all refused.
+#   BOUNDED, by their own clock:
+#     - the diagnostics log's size probe, rollover and append, in Write-StatusDiag: 250 ms for a whole
+#       record, every call on the pool, with the rename attempted only above a reserve. Off entirely
+#       unless CLAUDE_STATUSLINE_DEBUG is set, so the common render makes none of them.
+#   BOUNDED, but not by a filesystem clock:
+#     - git status, in Get-GitBranch: a child process under config git.timeoutMs, killed if it overruns.
+#       The process is what waits on the filesystem, so a repository on a dead share costs that timeout
+#       and not a render. Its timing mechanics belong to #63 and were left alone here.
+#   DELIBERATELY UNBOUNDED, all in the temp directory:
+#     - the git cache: Get-GitRepoRoot walking up for .git, Get-GitStamp stat-ing the git directory and
+#       enumerating refs, the entry read, the atomic write, the sweep.
+#     - the session state file: the read before the segments are built, the write after the line is
+#       printed, and the same sweep.
+#     None of these is on a path anyone else chooses. The cache and state directories are under TEMP,
+#     which is local on every machine this runs on; the git directory is where git already is, and the
+#     git probe would have to be answering from it for these to matter. Bounding them would mean a
+#     delegate per call and a clock per function for a case that begins with a temp directory on a dead
+#     share, in which case pwsh itself did not start. The stamp walk has a cap of its own (256 ref
+#     directories) for cost rather than for hanging, and the sweep has a cap of 200 deletions. Recorded
+#     rather than fixed: if any of these ever wants a budget it is the same shape as the reader above.
+#     - Get-Command git, a PATH scan on the render thread. One lookup, on directories the shell already
+#       resolves for every command a user types.
+#   UNREACHABLE IN PRACTICE:
+#     - install.ps1, docs/render-*.ps1 and tools/capture-stdin.ps1 make filesystem calls of their own
+#       and none of them runs during a render.
+#     - subagent-statusline.ps1 opens no file at all. It reads stdin, renders and exits.
+#
+# ABANDONMENT IS LITERAL, and anything that copies this pattern copies that too. When the budget is
+# gone the reader does not cancel anything, because there is nothing here that can cancel a blocking
+# filesystem call: it stops waiting and returns. A pool thread can stay stuck in the kernel until the
+# process exits, a handle opened after the deadline passed is never closed, and a stream still open is
+# left open rather than closed on the way out, because closing it would wait on the same thing that is
+# already stuck. That is harmless in a process that draws one line and exits, and it is the right trade
+# there. It is not "nothing happened", and it would not be the right trade in something long-lived.
+
+# The text of a config file, or $null when it is anything but a small, promptly readable one - and, for
+# the project's file, an ordinary one. Test-Path and Get-Content are not enough here: they follow a link
+# wherever it leads and read whatever comes back, for as long as it takes, so a repository could point
+# the path at a device, a FIFO or a dead network share and hold up every render, or hand over a file
+# large enough to matter, and a home directory can sit on that same dead share without any repository
+# being involved. So one clock covers the whole thing, started before the first filesystem call of any
+# kind, and every call runs on the thread pool and is waited on for what is left of it: the open, the
+# file's length, the attribute probe, each read, and the close at the end. When the budget runs out the
+# attempt is abandoned and the caller keeps the config it had, exactly like any other refusal.
+# Abandonment is literal; the block above says what that means and why it is the right trade here.
+# What the clock does not cover is what the caller does with the text afterwards, or a filesystem
 # degraded enough to hang calls this function never makes.
+#
+# -Trusted is the user's own file, and it changes exactly one thing: the attribute probe is skipped.
+# THE CLOCK AND THE CAP ARE NOT A TRUST JUDGEMENT - they are about a filesystem that does not answer,
+# which is no respecter of whose file it is - so they apply either way. The probe is the trust
+# judgement: it refuses a link, and a config symlinked out of a dotfiles repository is a normal thing to
+# have and read fine before this function was pointed at it. Refusing one would be a config that
+# vanished for no reason a user could see. The project's file gets the probe because a repository chose
+# that path and this script did not. Skipping it also spends one filesystem call fewer on the file that
+# is read on every single render, whether or not a project directory was named.
 #
 # Every refusal also names itself. A project config that is silently ignored is correct behaviour and an
 # unanswerable support question at the same time, so each way out sets $why and the one call at the end
@@ -783,8 +885,8 @@ function Get-BoundedStreamDelegate($Stream) {
 # arriving as one caught exception. File.OpenRead still throws on the pool thread - a file that is not
 # there is the only answer that API has - but the fault is now read off the task rather than rethrown
 # into a PowerShell catch, and the catch was where the cost was.
-function Read-BoundedFileText([string] $Path) {
-    $limit = Get-ProjectConfigLimit
+function Read-BoundedFileText([string] $Path, [switch] $Trusted) {
+    $limit = Get-ConfigReadLimit
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $stream = $null
     $why = $null
@@ -821,14 +923,18 @@ function Read-BoundedFileText([string] $Path) {
         # APIs that name a handle's own target arrived in .NET 6, past the floor. So the name is asked
         # once more, and a reparse point or a directory is refused even though the handle looked ordinary.
         # The two are asked separately only so that the log can say which one it was; refusing both is
-        # the one rule, and an ordinary file answers no to both tests either way.
-        $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
-        if ($left -le 0) { $why = 'the deadline was spent before the attribute probe'; return $null }
-        $attr = [System.Threading.Tasks.Task]::Run($call.Attributes)
-        if ([System.Threading.Tasks.Task]::WaitAny(@($attr), [int] $left) -lt 0) { $why = "the attribute probe did not answer inside $($limit.TimeoutMs) ms"; return $null }
-        if (-not $attr.IsCompletedSuccessfully) { $why = 'its attributes could not be read'; $err = $attr.Exception; return $null }
-        if (($attr.Result -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { $why = 'it is a link or a reparse point'; return $null }
-        if (($attr.Result -band [System.IO.FileAttributes]::Directory) -ne 0) { $why = 'it is a directory'; return $null }
+        # the one rule, and an ordinary file answers no to both tests either way. This is the trust
+        # judgement and the only thing -Trusted skips; the clock below it is not skipped for anyone, and
+        # a directory that got this far is refused by the parse either way, since it reads as no bytes.
+        if (-not $Trusted) {
+            $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
+            if ($left -le 0) { $why = 'the deadline was spent before the attribute probe'; return $null }
+            $attr = [System.Threading.Tasks.Task]::Run($call.Attributes)
+            if ([System.Threading.Tasks.Task]::WaitAny(@($attr), [int] $left) -lt 0) { $why = "the attribute probe did not answer inside $($limit.TimeoutMs) ms"; return $null }
+            if (-not $attr.IsCompletedSuccessfully) { $why = 'its attributes could not be read'; $err = $attr.Exception; return $null }
+            if (($attr.Result -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { $why = 'it is a link or a reparse point'; return $null }
+            if (($attr.Result -band [System.IO.FileAttributes]::Directory) -ne 0) { $why = 'it is a directory'; return $null }
+        }
         $buf = [byte[]]::new($limit.MaxBytes + 1)
         $read = 0
         while ($read -lt $buf.Length) {
@@ -843,10 +949,13 @@ function Read-BoundedFileText([string] $Path) {
         }
         # The cap once more, in case the file grew past the length the handle reported.
         if ($read -gt $limit.MaxBytes) { $why = "it grew past the $($limit.MaxBytes) byte cap while it was being read"; return $null }
-        $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
-        # UTF8.GetString keeps a byte order mark as U+FEFF, which ConvertFrom-Json will not parse past.
-        if ($text.Length -gt 0 -and $text[0] -eq [char] 0xFEFF) { $text = $text.Substring(1) }
-        return $text
+        # The bytes decoded as whatever they say they are, with the mark itself skipped by its own
+        # length. No decoder here drops it: every one of them turns a byte order mark into U+FEFF, and
+        # ConvertFrom-Json will not parse past that character. Skipping the bytes rather than trimming
+        # the character afterwards is the same rule for all five encodings and leaves a U+FEFF that was
+        # really in the file's text alone, which is what StreamReader does too.
+        $enc = Get-BoundedTextEncoding $buf $read
+        return $enc.Encoding.GetString($buf, $enc.Preamble, $read - $enc.Preamble)
     } catch {
         $why = 'the read failed'
         $err = $_.Exception
@@ -896,27 +1005,22 @@ function Write-BoundedReadDiag {
 # Applies one config file over a table and returns it. Anything missing or invalid silently falls back to
 # the value already there, and each key falls back on its own: a valid order beside a broken thresholds
 # keeps the order. Files are applied lowest precedence first, so what an invalid value in the project
-# file falls back to is the user file's value rather than the built-in default. -Bounded reads the file
-# as untrusted input, which is what the project file is; the user's own file, written by the installer
-# or by the user, is read as it always was, so an encoding Get-Content works out still loads.
+# file falls back to is the user file's value rather than the built-in default. Both files are read
+# through Read-BoundedFileText, so both are under the same deadline and the same cap; -Trusted says
+# which of them is the user's own, and the reader turns that into one skipped check rather than into a
+# different budget.
 # A file that does not apply says so in the diagnostics log, for the same reason the bounded read does:
 # falling back quietly is right, and being unable to find out why is not. The read itself already named
 # the files it refused, so what is added here is what it cannot see - a file that is there and empty,
 # and one whose contents are not JSON this can merge.
-function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Bounded) {
+function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Trusted) {
     try {
         if (-not $Path) { return $Cfg }
-        $text = $null
-        if ($Bounded) {
-            $text = Read-BoundedFileText $Path
-            # The read records why it refused rather than writing it, because writing is filesystem work
-            # and the read is under a clock that must not carry any. Out here that clock has stopped, so
-            # the record goes to the log now.
-            if ($script:diagOn) { Write-BoundedReadDiag }
-        } else {
-            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $Cfg }
-            $text = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
-        }
+        $text = Read-BoundedFileText $Path -Trusted:$Trusted
+        # The read records why it refused rather than writing it, because writing is filesystem work
+        # and the read is under a clock that must not carry any. Out here that clock has stopped, so
+        # the record goes to the log now.
+        if ($script:diagOn) { Write-BoundedReadDiag }
         # $null is a refusal the read has already logged; an empty string is a file that is there and
         # says nothing, which nothing else would ever report.
         if (-not $text) {
@@ -1053,18 +1157,23 @@ function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Boun
 # file of {"layout": "two"} keeps every user toggle. A project directory that is missing, holds no
 # .claude\statusline.json, or holds an unreadable one leaves the config below it exactly as it was. That
 # file arrives with the repository rather than from the user, so it is read as bounded untrusted input.
+# The user's file is bounded too, and read as trusted: a home directory can be on a dead share as easily
+# as a project directory can, but nobody chose that path for the user. Either file falling back is the
+# same fall-back it always was - the values beneath it stand, and nothing is said on the line - so a
+# user config that is missing, empty, oversized, too slow or invalid all land where an invalid one
+# always landed, on the built-in defaults.
 # $ProjectDir is untyped and gated here rather than declared [string]: a payload spells project_dir
 # however it likes, and a [string] parameter would join an array into a path instead of rejecting it.
 # The caller passes it only when -Config named no file, so an explicit config renders the same whatever
 # directory the payload names.
 function Read-StatusConfig([string] $Path, $ProjectDir) {
-    $cfg = Merge-StatusConfigFile (Get-DefaultStatusConfig) $Path
+    $cfg = Merge-StatusConfigFile (Get-DefaultStatusConfig) $Path -Trusted
     if ($ProjectDir -isnot [string] -or -not $ProjectDir) { return $cfg }
     # No Test-Path on the project directory on the way in. It would be a filesystem call on a path the
     # repository chose, outside the one budget below, which is the whole thing that budget is for; a
     # directory that is not there is refused by the bounded read like anything else it cannot open.
     # Join-Path only joins strings, so the first call to touch a disk is inside Read-BoundedFileText.
-    try { return Merge-StatusConfigFile $cfg (Join-Path $ProjectDir '.claude' 'statusline.json') -Bounded } catch {
+    try { return Merge-StatusConfigFile $cfg (Join-Path $ProjectDir '.claude' 'statusline.json') } catch {
         if ($script:diagOn) { Write-StatusDiag "project config: nothing was read under $ProjectDir - $($_.Exception.Message)" }
         return $cfg
     }
