@@ -19,7 +19,9 @@
 #
 # One line per row, no wrapping and no second row: the panel is not a full-width bar. No git probe,
 # because a panel can hold several rows and each tick would pay for a git status per row. No config
-# file either, so this script has no toggles.
+# file either, so this script has no toggles - which is why the panel is always Nerd Font glyphs in
+# the dark palette whatever statusline.json says about `style` or `palette`. See #78 and the note
+# above Get-Palette.
 #
 # The helpers below, G, C, Get-VisibleWidth, Get-Palette, Get-ThresholdRole, Test-WideWindow, K,
 # Get-FiniteNumber, Get-PayloadNumber and Test-PayloadText, are copied verbatim from statusline.ps1
@@ -82,9 +84,41 @@ function Get-VisibleWidth([string] $Text) {
     return $width
 }
 
-# Colour table. Plain style uses the SGR codes the script has always used; powerline uses 256-colour
-# foreground/background pairs so blocks look the same on every terminal theme.
-function Get-Palette {
+# Colour table, copied whole from statusline.ps1 and pinned to it by the drift gate, light half
+# included. THE PANEL ALWAYS CALLS IT WITH NO ARGUMENT, so it always gets the dark table.
+# That is a limitation, stated rather than hidden: a palette is a property of the terminal, and this
+# script has nowhere to learn one from. It reads no config file - see the header - so `"palette":
+# "light"` in statusline.json reaches the status line and not the panel, and a user on a pale terminal
+# gets a readable bar above an unreadable panel. Every way to close that gap is a decision this issue
+# is not the place to make, and #78 is the issue that makes it for the style key: a config read the
+# panel pays for on every tick, a second place to configure the same thing in the environment, or an
+# argument the installer bakes into the subagentStatusLine command. The last is the closest fit and is
+# the one thing that cannot be bolted on here, because Test-OwnSubagentEntry in install.ps1 recognises
+# this project's command by its exact shape - pwsh, its switches, -File, and EXACTLY ONE argument after
+# it - so an extra argument would make the uninstaller stop recognising its own entry. The light table
+# is carried here anyway rather than stripped out, because the gate compares this function with the
+# other copy as text and a panel that learns a palette later should find it already here.
+function Get-Palette([string] $Palette = 'dark') {
+    if ($Palette -eq 'light') {
+        return @{
+            Roles = @{
+                model  = @{ Sgr = '1;38;5;24'; Fg = 16;  Bg = 44 }
+                ok     = @{ Sgr = '38;5;22';   Fg = 16;  Bg = 77 }
+                warn   = @{ Sgr = '38;5;94';   Fg = 16;  Bg = 214 }
+                bad    = @{ Sgr = '38;5;124';  Fg = 16;  Bg = 217 }
+                dim    = @{ Sgr = '38;5;240';  Fg = 236; Bg = 250 }
+                folder = @{ Sgr = '38;5;25';   Fg = 16;  Bg = 147 }
+                branch = @{ Sgr = '38;5;90';   Fg = 16;  Bg = 182 }
+            }
+            Inline = @{
+                added   = @{ Sgr = '38;5;22';    Fg = 22 }
+                removed = @{ Sgr = '38;5;124';   Fg = 124 }
+                track   = @{ Sgr = '38;5;240';   Fg = 240 }
+                muted   = @{ Sgr = '22;38;5;24'; Fg = 24 }
+                cached  = @{ Sgr = '38;5;240';   Fg = 238 }
+            }
+        }
+    }
     return @{
         Roles = @{
             model  = @{ Sgr = '1;36'; Fg = 231; Bg = 31 }

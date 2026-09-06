@@ -595,7 +595,7 @@ function Read-SegmentNameList($Value, [hashtable] $Known, [hashtable] $Seen) {
 # The built-in defaults: the table every config file is merged over. A fresh table each call, the nested
 # tables included, so a merge that changes one caller's copy cannot reach the next caller's.
 function Get-DefaultStatusConfig {
-    $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Links = $true; Taskbar = $false; Segments = @{}; Git = Get-DefaultGitConfig }
+    $cfg = @{ Layout = 'one'; Style = 'plain'; Palette = 'dark'; Folder = 'repo'; State = $true; Links = $true; Taskbar = $false; Segments = @{}; Git = Get-DefaultGitConfig }
     foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
     $cfg.Order = @((Get-SegmentRegistry).Name)
     # The segments pushed against the right edge of the first line. Empty by default, which is the whole
@@ -619,6 +619,11 @@ function Get-StatusConfigKey {
     return @(
         @{ Json = 'layout';  Key = 'Layout';  Kind = 'Enum'; Allowed = @('one', 'two') }
         @{ Json = 'style';   Key = 'Style';   Kind = 'Enum'; Allowed = @('plain', 'powerline', 'ascii') }
+        # A separate axis from style, not a fourth style: style is the shape of a line and palette is
+        # the colour numbers it is drawn with, so all six pairings are configurations this script draws.
+        # dark is the table the script has always used, which is what keeps an existing config's line
+        # exactly as it was.
+        @{ Json = 'palette'; Key = 'Palette'; Kind = 'Enum'; Allowed = @('dark', 'light') }
         @{ Json = 'folder';  Key = 'Folder';  Kind = 'Enum'; Allowed = @('repo', 'leaf') }
         @{ Json = 'state';   Key = 'State';   Kind = 'Bool'; Allowed = $null }
         @{ Json = 'links';   Key = 'Links';   Kind = 'Bool'; Allowed = $null }
@@ -1031,9 +1036,67 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
     }
 }
 
-# Colour table. Plain style uses the SGR codes the script has always used; powerline uses 256-colour
-# foreground/background pairs so blocks look the same on every terminal theme.
-function Get-Palette {
+# Colour table. Plain style uses SGR codes drawn straight onto whatever the terminal's background is;
+# powerline uses 256-colour foreground/background pairs, so a block paints its own ground and only the
+# arrow at its edge meets the terminal's.
+#
+# PALETTE IS A SEPARATE AXIS FROM STYLE, and the two are separate because they answer different
+# questions. `style` is the SHAPE of a line - a chevron between coloured words, a run of solid blocks,
+# or the same shape drawn in characters a plain font has. `palette` is the COLOUR NUMBERS those shapes
+# are drawn with, and the only thing it depends on is whether the terminal's background is dark or
+# light. Every one of the six combinations is meant: `ascii` with `light` is the ascii shapes in the
+# light numbers, and it cannot break the ascii promise, because an SGR code is digits and semicolons
+# and Get-VisibleWidth strips it before anything is measured.
+#
+# `dark` is the table this script has always had and is what an unrecognised name falls back to, so a
+# config file written before this parameter existed - and every caller inside this script that does not
+# pass one - renders the same bytes it did.
+#
+# HOW THE LIGHT NUMBERS WERE CHOSEN. Not by darkening the dark ones: a light table has to clear a
+# contrast bar on a pale ground, and the four rules below are checked by arithmetic in test.ps1 rather
+# than by eye, against the two grounds a light terminal actually has (#FFFFFF and an off-white
+# #F5F5F5). The ratios are WCAG 2.1 relative luminance, and the colour indices are the xterm 6x6x6 cube
+# on the levels 0, 95, 135, 175, 215, 255 with a grey ramp at 8 + 10n, so anyone can work out the hex
+# for a number here and check a ratio by hand.
+#   1. A plain-style foreground clears 4.5:1 on both grounds. The worst is warn, 94 (#875F00), at 5.25.
+#      All seven are 256-colour codes rather than the basic sixteen on purpose: the sixteen are
+#      whatever the terminal's scheme says they are, which is exactly the thing that goes wrong on a
+#      light theme, and a light table that could not say what a colour looks like would be no better
+#      than the dark one.
+#   2. A powerline block's own pair clears 4.5:1. All seven are near-black text on a pale block, which
+#      is the dark table's near-white-on-saturated turned over; the worst is dim at 6.95.
+#   3. A block's background clears 1.7:1 against the terminal's own ground, because the trailing arrow
+#      paints that background as a FOREGROUND on the terminal and every block edge is the same
+#      boundary. The light table's worst is bad, 217, at 1.75; the dark table's is dim, 238, at 2.01
+#      against Campbell, so the same rule holds for both.
+#   4. An inline foreground clears 4.5:1 on the ground in plain style and 3:1 inside every block in
+#      powerline, since a marker sits inside whichever segment called Format-Inline. The dark table
+#      does not meet the second half of that - its worst inline pairing is 1.05:1, `cached` on the
+#      model block - and it is left as it is: the numbers are on everyone's line already.
+# Role for role the two tables line up: ok is the same green as inline added, bad the same red as
+# removed, track and cached the same grey as dim, and muted is the model's own colour at normal
+# intensity, which is why its code opens with 22 in both tables.
+function Get-Palette([string] $Palette = 'dark') {
+    if ($Palette -eq 'light') {
+        return @{
+            Roles = @{
+                model  = @{ Sgr = '1;38;5;24'; Fg = 16;  Bg = 44 }
+                ok     = @{ Sgr = '38;5;22';   Fg = 16;  Bg = 77 }
+                warn   = @{ Sgr = '38;5;94';   Fg = 16;  Bg = 214 }
+                bad    = @{ Sgr = '38;5;124';  Fg = 16;  Bg = 217 }
+                dim    = @{ Sgr = '38;5;240';  Fg = 236; Bg = 250 }
+                folder = @{ Sgr = '38;5;25';   Fg = 16;  Bg = 147 }
+                branch = @{ Sgr = '38;5;90';   Fg = 16;  Bg = 182 }
+            }
+            Inline = @{
+                added   = @{ Sgr = '38;5;22';    Fg = 22 }
+                removed = @{ Sgr = '38;5;124';   Fg = 124 }
+                track   = @{ Sgr = '38;5;240';   Fg = 240 }
+                muted   = @{ Sgr = '22;38;5;24'; Fg = 24 }
+                cached  = @{ Sgr = '38;5;240';   Fg = 238 }
+            }
+        }
+    }
     return @{
         Roles = @{
             model  = @{ Sgr = '1;36'; Fg = 231; Bg = 31 }
@@ -1056,8 +1119,8 @@ function Get-Palette {
 
 # A foreground-only colour change inside a segment that restores the segment's own foreground afterwards,
 # so a powerline background is never interrupted by a reset.
-function Format-Inline([string] $Role, [string] $Text, [string] $SegmentRole, [string] $Style) {
-    $pal = Get-Palette
+function Format-Inline([string] $Role, [string] $Text, [string] $SegmentRole, [string] $Style, [string] $Palette = 'dark') {
+    $pal = Get-Palette $Palette
     if ($Style -eq 'powerline') { return "`e[38;5;$($pal.Inline[$Role].Fg)m$Text`e[38;5;$($pal.Roles[$SegmentRole].Fg)m" }
     return "`e[$($pal.Inline[$Role].Sgr)m$Text`e[$($pal.Roles[$SegmentRole].Sgr)m"
 }
@@ -1088,12 +1151,15 @@ function Format-Link($Url, [string] $Text) {
     return "`e]8;;$Url`e\$Text`e]8;;`e\"
 }
 
-# Renders an ordered list of segment records as one line in the given style.
-function Format-Line($Segments, [string] $Style) {
+# Renders an ordered list of segment records as one line in the given style and palette. The two are
+# read independently: $Style decides the shape - blocks, a chevron or an ascii divider - and $Palette
+# decides only which numbers go into the colour codes, so every pairing of the three styles and the two
+# palettes is a line this function draws.
+function Format-Line($Segments, [string] $Style, [string] $Palette = 'dark') {
     $segs = [System.Collections.Generic.List[hashtable]]::new()
     foreach ($s in $Segments) { if ($s) { $segs.Add($s) } }
     if ($segs.Count -eq 0) { return '' }
-    $pal = Get-Palette
+    $pal = Get-Palette $Palette
     if ($Style -eq 'powerline') {
         $arrow = [char]::ConvertFromUtf32(0xE0B0)
         $sb = [System.Text.StringBuilder]::new()
@@ -1115,7 +1181,11 @@ function Format-Line($Segments, [string] $Style) {
     # powerline branch above is not offered one: its look is a solid block with a background colour
     # behind it, which no ASCII character can stand in for, so ascii renders like plain and not like it.
     $divider = if ($Style -eq 'ascii') { '>' } else { [char]::ConvertFromUtf32(0xE0B1) }
-    $sep = " `e[90m$divider`e[0m "
+    # The divider's colour comes from the palette's dim role rather than a literal 90, which is what it
+    # used to be. The dark table spells that role 90, so this line renders the same bytes it always did;
+    # on a light terminal 90 is a pale grey on a pale ground and the chevron would be the one mark on
+    # the line that did not follow the theme.
+    $sep = " `e[$($pal.Roles.dim.Sgr)m$divider`e[0m "
     $parts = foreach ($s in $segs) { $c = $pal.Roles[$s.Role]; "`e[$($c.Sgr)m$($s.Text)`e[0m" }
     return ($parts -join $sep)
 }
@@ -1172,13 +1242,16 @@ function Join-AlignedLine([string] $Left, [string] $Right, [int] $Target) {
 # begins, so the case degrades exactly into the one-group fitting that was here before, and a left group
 # that still will not fit overflows with the model on it the way it always has.
 # Returns $null when nothing is left in either group.
-function Get-FittedLine($Segments, [string] $Style, $Width, [string[]] $ShrinkOrder = $null, [string[]] $DropOrder = $null, [string[]] $Right = $null) {
+# $Palette is carried rather than used: nothing in the fitting decides a colour, and every rendered
+# line this function builds and measures comes out of Format-Line, so the palette has to reach all of
+# them or a shrink stage would compare a light line against a dark one.
+function Get-FittedLine($Segments, [string] $Style, $Width, [string[]] $ShrinkOrder = $null, [string[]] $DropOrder = $null, [string[]] $Right = $null, [string] $Palette = 'dark') {
     $segs = [System.Collections.Generic.List[hashtable]]::new()
     foreach ($s in $Segments) { if ($s) { $segs.Add($s.Clone()) } }
     if ($segs.Count -eq 0) { return $null }
     # No width is no target to align to, so there is no right group either: every segment renders inline
     # in its ordinary place, which is what the caller with COLUMNS unset has always been given.
-    if ($null -eq $Width) { return (Format-Line $segs $Style) }
+    if ($null -eq $Width) { return (Format-Line $segs $Style $Palette) }
     $target = [int] $Width
     $rights = [System.Collections.Generic.List[hashtable]]::new()
     foreach ($name in $Right) {
@@ -1186,7 +1259,7 @@ function Get-FittedLine($Segments, [string] $Style, $Width, [string[]] $ShrinkOr
             if ($segs[$i].Name -eq $name) { $rights.Add($segs[$i]); $segs.RemoveAt($i); break }
         }
     }
-    $line = Join-AlignedLine (Format-Line $segs $Style) (Format-Line $rights $Style) $target
+    $line = Join-AlignedLine (Format-Line $segs $Style $Palette) (Format-Line $rights $Style $Palette) $target
     if ($line) { return $line }
     if ($null -eq $ShrinkOrder) { $ShrinkOrder = Get-SegmentOrder 'ShrinkRank' }
     if ($null -eq $DropOrder) { $DropOrder = Get-SegmentOrder 'DropRank' }
@@ -1197,7 +1270,7 @@ function Get-FittedLine($Segments, [string] $Style, $Width, [string[]] $ShrinkOr
             for ($i = 0; $i -lt $list.Count; $i++) {
                 if ($list[$i].Name -eq $name -and $list[$i].Short) {
                     $list[$i].Text = $list[$i].Short
-                    $line = Join-AlignedLine (Format-Line $segs $Style) (Format-Line $rights $Style) $target
+                    $line = Join-AlignedLine (Format-Line $segs $Style $Palette) (Format-Line $rights $Style $Palette) $target
                     if ($line) { return $line }
                 }
             }
@@ -1207,7 +1280,7 @@ function Get-FittedLine($Segments, [string] $Style, $Width, [string[]] $ShrinkOr
         if ($rights[$i].Name -eq 'model') { continue }
         $rights.RemoveAt($i)
         if ($segs.Count + $rights.Count -eq 0) { return $null }
-        $line = Join-AlignedLine (Format-Line $segs $Style) (Format-Line $rights $Style) $target
+        $line = Join-AlignedLine (Format-Line $segs $Style $Palette) (Format-Line $rights $Style $Palette) $target
         if ($line) { return $line }
     }
     foreach ($name in $DropOrder) {
@@ -1217,15 +1290,15 @@ function Get-FittedLine($Segments, [string] $Style, $Width, [string[]] $ShrinkOr
         if ($at -lt 0) { continue }
         $segs.RemoveAt($at)
         if ($segs.Count + $rights.Count -eq 0) { return $null }
-        $line = Join-AlignedLine (Format-Line $segs $Style) (Format-Line $rights $Style) $target
+        $line = Join-AlignedLine (Format-Line $segs $Style $Palette) (Format-Line $rights $Style $Palette) $target
         if ($line) { return $line }
     }
     # Nothing fits. The right group is empty by now unless the caller pushed the model itself to the
     # edge, which is the one member stage 2 leaves standing, so this is the over-wide line the function
     # has always returned - joined by a single space in the one case where there is still a group to
     # join, because there is no room left to align it into.
-    $leftLine = Format-Line $segs $Style
-    $rightLine = Format-Line $rights $Style
+    $leftLine = Format-Line $segs $Style $Palette
+    $rightLine = Format-Line $rights $Style $Palette
     if (-not $rightLine) { return $leftLine }
     if (-not $leftLine) { return $rightLine }
     return "$leftLine $rightLine"
@@ -1904,7 +1977,7 @@ function Get-ModelSegment($d, $cfg) {
     if (-not $model) { return $null }
     $role = if (Test-AlarmState $d $cfg) { 'bad' } else { 'model' }
     $text = Format-Icon $iconModel $model
-    if (Test-WideWindow $d.context_window.context_window_size) { $text += ' ' + (Format-Inline 'muted' '1M' $role $cfg.Style) }
+    if (Test-WideWindow $d.context_window.context_window_size) { $text += ' ' + (Format-Inline 'muted' '1M' $role $cfg.Style $cfg.Palette) }
     if ($d.exceeds_200k_tokens -is [bool] -and $d.exceeds_200k_tokens) { $text += " $iconConflict" }
     return @{ Name = 'model'; Text = $text; Short = $null; Role = $role; Bold = $true }
 }
@@ -2015,7 +2088,7 @@ function Get-ContextSegment($d, $cfg) {
     # Format-Inline hands the segment's own foreground back after the dim run: a role decided later
     # would leave the suffix restoring an ok green on a segment the meter has since turned red.
     $share = Get-CacheShare $d.context_window.current_usage
-    $tail = $counts + $(if ($null -ne $share) { ' ' + (Format-Inline 'cached' "$share% cached" $role $cfg.Style) } else { '' })
+    $tail = $counts + $(if ($null -ne $share) { ' ' + (Format-Inline 'cached' "$share% cached" $role $cfg.Style $cfg.Palette) } else { '' })
     $short = Format-Icon $iconCtx "$pct% $bar"
     return @{ Name = 'context'; Text = "$short$tail"; Short = $(if ($tail) { $short } else { $null }); Role = $role; Bold = $false }
 }
@@ -2281,7 +2354,7 @@ function Get-LinesSegment($d, $cfg) {
     $removed = [int] ($d.cost.total_lines_removed ?? 0)
     if ($added -le 0 -and $removed -le 0) { return $null }
     $minus = (Get-MarkSet $cfg.Style).Minus
-    $text = Format-Icon $iconLines ((Format-Inline 'added' "+$added" 'dim' $cfg.Style) + ' ' + (Format-Inline 'removed' ($minus + "$removed") 'dim' $cfg.Style))
+    $text = Format-Icon $iconLines ((Format-Inline 'added' "+$added" 'dim' $cfg.Style $cfg.Palette) + ' ' + (Format-Inline 'removed' ($minus + "$removed") 'dim' $cfg.Style $cfg.Palette))
     return @{ Name = 'lines'; Text = $text; Short = $null; Role = 'dim'; Bold = $false }
 }
 
@@ -2393,7 +2466,7 @@ function Get-LimitsSegment($d, $cfg) {
     # $null, so a payload carrying only a spend limit is never hidden by this key.
     if ($role -eq 'ok' -and -not ($paceAt -ge 0 -and $pace.Over) -and -not (Test-AlarmLevel $windowWorst $cfg.Alarm.Limits) -and (Test-QuietValue $cfg 'limits' $windowWorst)) { return $null }
     if ($paceAt -ge 0) {
-        $arrow = if ($pace.Red) { Format-Inline 'removed' $pace.Arrow $role $cfg.Style } else { $pace.Arrow }
+        $arrow = if ($pace.Red) { Format-Inline 'removed' $pace.Arrow $role $cfg.Style $cfg.Palette } else { $pace.Arrow }
         $bits[$paceAt] = "$paceHead $arrow$paceTail"
     }
     $text = Format-Icon $iconLimit ($bits -join ' ')
@@ -2685,7 +2758,7 @@ function Get-BranchSegment($d, $cfg) {
     foreach ($row in @(@('Ahead', $iconAhead, 'track'), @('Behind', $iconBehind, 'track'), @('Staged', '+', 'track'),
                        @('Modified', '~', 'track'), @('Untracked', '?', 'track'), @('Conflicts', $iconConflict, 'removed'))) {
         $n = $info[$row[0]]
-        if ($n -gt 0) { $counts += ' ' + (Format-Inline $row[2] "$($row[1])$n" $role $cfg.Style) }
+        if ($n -gt 0) { $counts += ' ' + (Format-Inline $row[2] "$($row[1])$n" $role $cfg.Style $cfg.Palette) }
     }
     $pencil = if ($info.Dirty) { " $iconDirty" } else { '' }
     # The link goes round each finished string whole, so the badge, the counts and their inline colour
@@ -2745,12 +2818,15 @@ if ($taskbar) { Write-Host $taskbar -NoNewline }
 # It carries the style too, because the glyph it prints comes from the same set every builder reads: the
 # ascii style leaves the model stand-in empty, so this line is the bare word `claude` with no space in
 # front of it, which is what Format-Icon is here for.
-# THE COLOUR IS STILL A RAW 36 AND NOT A PALETTE ROLE, deliberately. The ascii style changes what is
-# drawn, never what colour it is drawn in, and the model role is a bold cyan, 1;36 - so reaching for the
-# palette here would change the bytes of this line in all three styles for a feature that is about
-# glyphs. It is a decision left where #42 left it, not one inherited by accident.
+# THE COLOUR IS A RAW 36 ON THE DARK PALETTE AND THE MODEL ROLE ON THE LIGHT ONE. The ascii style
+# changes what is drawn and never what colour it is drawn in, so it left this literal alone; a palette
+# is nothing but what colour a thing is drawn in, so it cannot. The split keeps both promises at once:
+# the dark line is the same 36 it has been since #42, byte for byte, and the light line is not a bright
+# cyan on a pale ground - which on the one render where this is the ONLY thing on screen would be the
+# worst place in the script to leave a colour that does not follow the theme.
+$standInSgr = if ($cfg.Palette -eq 'light') { (Get-Palette $cfg.Palette).Roles.model.Sgr } else { '36' }
 if (-not $payloadOk) {
-    if ($modelWanted) { Write-Host (C '36' (Format-Icon $iconModel 'claude')) }
+    if ($modelWanted) { Write-Host (C $standInSgr (Format-Icon $iconModel 'claude')) }
     exit 0
 }
 
@@ -2785,7 +2861,7 @@ foreach ($rec in Get-SegmentRegistry) {
 # figures whatever the config chose to put on screen, and the state file is where the next render reads
 # them back from, so a display choice must not throw the sample away or skip the sweep. Falling through
 # is silent with no segments: Get-FittedLine returns $null for an empty line and the loop prints nothing.
-if ($segments.Count -eq 0 -and $modelWanted) { Write-Host (C '36' (Format-Icon $iconModel 'claude')) }
+if ($segments.Count -eq 0 -and $modelWanted) { Write-Host (C $standInSgr (Format-Icon $iconModel 'claude')) }
 
 # Claude Code sets COLUMNS before running the script. Leave one column free to avoid the pending-wrap glitch.
 $width = $null
@@ -2803,7 +2879,7 @@ if ([int]::TryParse([string] $env:COLUMNS, [ref] $cols) -and $cols -gt 0) { $wid
 $rightGroup = [string[]] $cfg.Right
 foreach ($names in $lineSets) {
     $onLine = foreach ($n in $names) { foreach ($s in $segments) { if ($s.Name -eq $n) { $s } } }
-    $text = Get-FittedLine @($onLine) $cfg.Style $width -Right $rightGroup
+    $text = Get-FittedLine @($onLine) $cfg.Style $width -Right $rightGroup -Palette $cfg.Palette
     $rightGroup = $null
     if ($text) { Write-Host $text }
 }

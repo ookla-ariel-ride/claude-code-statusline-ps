@@ -39,6 +39,7 @@ how close you are to a rate limit, and which modes are on.
 - A fork glyph and the worktree name beside the branch when the session is in a git worktree, so a window on `wt-review` is not mistaken for the main checkout. See [Worktree name](#worktree-name).
 - One line or two, plain separators or powerline blocks, and any segment switched off, all from `statusline.json`.
 - Every glyph has an ASCII stand-in: `"style": "ascii"` draws the whole line out of plain characters and keeps the colours, for a terminal whose font you cannot change. See [ASCII style](#ascii-style).
+- A light palette for a pale terminal background: `"palette": "light"` swaps every colour on the line for one that reads on white, in any of the three styles. `.\install.ps1 -DetectTheme` reads Windows Terminal's colour scheme and sets the key for you, or tells you it could not. See [Light palette](#light-palette).
 - Optionally, the context percentage on the window's taskbar button in Windows Terminal, so a full window is visible while Claude Code is minimised. Off by default; see [Taskbar progress](#taskbar-progress).
 - A matching line for each running subagent in the agent panel, with `.\install.ps1 -Subagents`. See [Subagent status line](#subagent-status-line).
 - A wall clock, off by default, and a `right` list that pushes any segments you name against the right edge of the first line — the time on the right of the prompt, the way a shell does it. See [Width fitting](#width-fitting) for what a narrow terminal does with it.
@@ -75,6 +76,7 @@ Restart Claude Code, or wait for its next status refresh.
 - With `-Subagents`, also copies `subagent-statusline.ps1` to `~/.claude/` and adds a `subagentStatusLine` entry. See [Subagent status line](#subagent-status-line).
 - With `-InstallFont`, installs JetBrainsMono Nerd Font through winget. Expect one elevation prompt.
 - With `-ConfigureWindowsTerminal`, sets Windows Terminal's default font to `JetBrainsMono NF` and backs up its settings.
+- With `-DetectTheme`, reads Windows Terminal's default colour scheme and writes `"palette": "dark"` or `"palette": "light"` into `~/.claude/statusline.json`, keeping every other key. It prints the scheme it found, that scheme's background and the palette it chose. When it cannot tell — no Windows Terminal, no default profile, a scheme it has no background for, or a profile set to follow the OS light/dark theme — **it writes nothing and says why**, because the palette already defaults to `dark` and a wrong guess of `light` would leave the line unreadable. Without the switch `statusline.json` is not touched. See [Light palette](#light-palette).
 
 The settings entry it writes after `.\install.ps1 -RefreshInterval 10`:
 
@@ -226,6 +228,7 @@ The script reads `statusline.json` from its own folder, so after installing that
 {
   "layout": "one",
   "style": "plain",
+  "palette": "dark",
   "folder": "repo",
   "state": true,
   "links": true,
@@ -301,6 +304,7 @@ whose text encoding the script does not get to choose.
 | `preset` | `minimal`, `cost`, `full` | A name for a layout, a style and the whole set of segment toggles, listed below. Every other key in the same file is applied over it, so a preset is a starting point rather than a lock. A name none of the three has, or a value that is not a string, changes nothing. |
 | `layout` | `one`, `two` | `two` puts model, folder, branch, pr, badges and time on the first line and context, cache, limits, cost, clock and lines on the second, unless `rows` says otherwise. |
 | `style` | `plain`, `powerline`, `ascii` | `plain` is coloured text with a dim chevron between segments. `powerline` is coloured blocks joined by solid arrows. `ascii` is `plain` with every character drawn from printable ASCII and a `>` between segments, for a terminal whose font you cannot change. See [ASCII style](#ascii-style). |
+| `palette` | `dark`, `light` | Which colour table the line is drawn with. `dark` is what the line has always been and stays the default, so nothing changes until you ask. `light` swaps every colour for one that reads on a pale background. **This is a separate key from `style`, not a fourth style**: `style` is the shape of the line and `palette` is the colours it is drawn in, so all six pairings work — `ascii` with `light` is the ASCII characters in the light colours. `.\install.ps1 -DetectTheme` can set it for you. See [Light palette](#light-palette). |
 | `folder` | `repo`, `leaf` | `repo` shows `owner/name` from `workspace.repo` when the payload has one, with the current directory's name after a `›` when it differs from the project root. `leaf` always shows the directory name alone. |
 | `segments.<name>` | `true`, `false` | `false` hides that segment. The names are the ones in the file above, plus `time`, the wall clock, which is the one segment off by default and so is not written there; `segments.pr` is the pull-request link. |
 | `state` | `true`, `false` | `false` stops the script writing a state file for the session. |
@@ -417,6 +421,89 @@ two — so a branch called `機能/x` renders `b 機能/x`, not `b ????`. This s
 Japanese branch name needs a Japanese font, which most terminals do have, and it is your data either
 way: a name shown as boxes at least tells you a font is missing, where one silently transliterated
 tells you nothing and cannot be read back.
+
+### Light palette
+
+The colours the line has always used are chosen for a dark terminal. On a pale background a bright
+cyan model name is barely there and the dim grey chevron is close to invisible. `{"palette": "light"}`
+swaps the whole table for one chosen against white.
+
+```json
+{ "palette": "light" }
+```
+
+`palette` and `style` are separate keys because they answer separate questions. `style` is the
+**shape** of the line — coloured words with a chevron, solid blocks with arrows, or the same shape in
+characters any font has. `palette` is the **colour numbers** those shapes are drawn with, and the only
+thing it depends on is whether the terminal's background is dark or light. All six pairings are real
+configurations:
+
+| | `dark` | `light` |
+|---|---|---|
+| `plain` | what the line has always been | the same chevron, in colours that read on white |
+| `powerline` | near-white text on saturated blocks | near-black text on pale blocks |
+| `ascii` | the ASCII characters, dark colours | the ASCII characters, light colours |
+
+`ascii` with `light` needs no special case in either direction: a colour code is digits and
+semicolons, so a palette can never put a non-ASCII character on the line, and the ASCII style never
+touches a colour.
+
+**How the colours were chosen, and how to check them.** The light table is not the dark one with
+darker numbers. Every value in it is an xterm 256-colour index picked to clear a contrast ratio, and
+the ratios are checked by arithmetic in `test.ps1` rather than by eye — an index is turned into its hex, and the hex
+into a [WCAG 2.1](https://www.w3.org/TR/WCAG21/#dfn-relative-luminance) contrast ratio, by code that
+shares nothing with the script. Four rules, each asserted for every colour in the table:
+
+| Rule | Bar | Where the light table lands |
+|---|---|---|
+| A plain-style colour against the terminal's background | 4.5:1 on `#FFFFFF` **and** on an off-white `#F5F5F5` | worst 5.25 (`warn`) |
+| A powerline block's own text against its own background | 4.5:1 | worst 6.95 (`dim`) |
+| A block's background against the terminal's background — the trailing arrow paints it as a *foreground*, and every block edge is that boundary | 1.7:1 | worst 1.75 (`bad`); the dark table's worst is 2.01 against Campbell, and the same rule is asserted for it |
+| An inline marker (`+156`, `92% cached`, `1M`, `↑2`) — on the terminal's background in plain style, inside a block in powerline | 4.5:1 and 3:1 | worst 7.03 and 3.48 |
+
+The plain-style colours are 256-colour codes rather than the basic sixteen on purpose. The sixteen are
+whatever your terminal's scheme says they are, which is the thing that goes wrong on a light theme in
+the first place; a table that cannot say what a colour looks like cannot promise it is readable.
+
+To check a value by hand: the indices 16–231 are a 6×6×6 cube on the levels 0, 95, 135, 175, 215, 255
+(so index `24` is `16 + 0×36 + 1×6 + 2`, giving `#005F87`), and 232–255 are a grey ramp at `8 + 10n`.
+Put the hex into any contrast checker against `#FFFFFF`.
+
+**Letting the installer decide.** `.\install.ps1 -DetectTheme` reads Windows Terminal's
+`settings.json`, follows `defaultProfile` to a profile, that profile's `colorScheme` to a scheme, and
+the scheme to its `background`, then computes the background's relative luminance and writes `light`
+above 0.5 and `dark` below. Every scheme Windows Terminal ships is under 0.05 or over 0.85, so the cut
+sits in an empty band.
+
+**That is a read of a configuration file, not a look at your screen.** Terminals
+do not reliably report their own background — `COLORFGBG` is not universal and an OSC 11 query needs a
+reply that may never come — so there is nothing here to probe. If you run Claude Code in conhost, in
+VS Code, over SSH, or in a Windows Terminal profile that is not the default one, `-DetectTheme` has
+read a file about a different terminal. That is why it prints the scheme name it found beside the
+palette it chose, and why the answer is one key you can edit.
+
+When any link in the chain is missing it **writes nothing and prints why**:
+
+- no Windows Terminal settings file, or one that will not parse;
+- no `defaultProfile`, or no profile carrying that guid and no `colorScheme` on `profiles.defaults`;
+- a scheme that is neither defined in the file nor one of the nine Windows Terminal ships;
+- a `colorScheme` set to an object with `light` and `dark` members, which means the profile follows
+  the OS theme. Both scheme names are printed. Nothing in the settings file says which is in force, so
+  there is no answer to give, and a coin toss between the readable palette and the unreadable one is
+  worse than leaving the key alone.
+
+Leaving it alone is safe because the palette already defaults to `dark`: a detection that fails
+changes nothing, and the failure is one line of output rather than a line you cannot read.
+
+**The agent panel stays dark.** `subagent-statusline.ps1` reads no config file at all — it takes a
+payload on stdin and answers — so `"palette": "light"` reaches the status line and not the panel. On a
+pale terminal that leaves a readable bar above a panel that is not. Closing the gap is
+[#78](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/78), which has the same
+problem for `"style": "ascii"` and has to decide where the panel learns a setting from before either
+can be fixed. The route that looks cheapest — an argument baked into the `subagentStatusLine` command
+by the installer — is also the one that could not be added here without changing the uninstaller: it
+recognises its own entry by the command's exact shape, `pwsh`, its switches, `-File`, and exactly one
+argument after it, so an extra argument would make it stop recognising the entry it wrote.
 
 ### Taskbar progress
 
@@ -639,7 +726,14 @@ render with a failing `git` on `PATH`, a fetch from a bare remote, a push, a wor
 group writes and reads session files in a temp folder. The install group runs `install.ps1` with
 `USERPROFILE` and `-SettingsPath` pointed into a temp folder: a fresh settings file, an existing one
 with unrelated keys, `-RefreshInterval`, a refused value, and `-Uninstall`. It checks afterwards
-that the real `~/.claude` files were not touched. The subagent group pipes every payload in
+that the real `~/.claude` files were not touched. `-DetectTheme` is covered twice over: the settings
+walk and the luminance arithmetic are lifted out of `install.ps1` and run against temp Windows
+Terminal settings files — a user-defined scheme, a built-in one, a redefined built-in, a scheme on
+`profiles.defaults`, the older flat `profiles` list, a profile that follows the OS theme, and eleven
+ways the chain can break — and then the switch itself runs with both `USERPROFILE` and `LOCALAPPDATA`
+redirected, so a light scheme writes `"palette": "light"`, Campbell writes `dark`, and a missing,
+broken, unknown or OS-following scheme leaves `statusline.json` byte for byte as it was. The light
+palette's own group recomputes every contrast ratio in the table from the xterm colour cube. The subagent group pipes every payload in
 `samples/subagent/` through `subagent-statusline.ps1` and reads the replies the way the panel does:
 each line must be an object with a string `id` and a string `content`, every id must belong to a task
 in the payload, every row must be one line carrying the robot glyph, and it must fit the payload's
@@ -745,7 +839,10 @@ The line still wraps: the script measures width with a small approximation. Wide
 in a folder or branch name can be counted short on some terminals. At very narrow widths the model
 segment prints even when it does not fit.
 
-Colours look wrong: the script assumes a dark terminal theme.
+Colours look washed out, or the chevron between segments is invisible: the default colours are chosen
+for a dark terminal. Set `"palette": "light"` in `statusline.json`, or run `.\install.ps1 -DetectTheme`
+to have it read Windows Terminal's colour scheme and set the key for you. See
+[Light palette](#light-palette). The agent panel is not covered by the key and stays dark.
 
 `]8;;` or a URL printed as text on the line: the terminal does not understand OSC 8 hyperlinks and does
 not swallow them either. Set `"links": false` in `statusline.json` and the folder, branch and
@@ -866,9 +963,11 @@ Done so far:
 - [x] Context percentage on the taskbar button, behind a `taskbar` key
 - [x] An `ascii` style that needs no Nerd Font
 - [x] A right-aligned group under a `right` key, and a wall-clock segment to put in it
+- [x] A light palette under a `palette` key, and `-DetectTheme` to set it from Windows Terminal's scheme
 
-[Issues #2 to #43](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
-each with its own plan. In rough order: a light palette, and the rest of the terminal work.
+[The open issues](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes
+next, each with its own plan. The nearest is giving the agent panel a way to be told about `style` and
+`palette` (#78), which it has no config file to learn either from.
 ## License
 
 MIT. See [`LICENSE`](LICENSE).

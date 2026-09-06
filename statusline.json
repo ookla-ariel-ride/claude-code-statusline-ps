@@ -1,6 +1,7 @@
 {
   "layout": "one",
   "style": "plain",
+  "palette": "dark",
   "folder": "repo",
   "state": true,
   "links": true,
