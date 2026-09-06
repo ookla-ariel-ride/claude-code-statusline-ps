@@ -137,39 +137,39 @@ function Get-Palette([string] $Palette = 'dark') {
     if ($Palette -eq 'light') {
         return @{
             Roles = @{
-                model  = @{ Sgr = '1;38;5;24'; Fg = 16;  Bg = 44 }
-                ok     = @{ Sgr = '38;5;22';   Fg = 16;  Bg = 77 }
-                warn   = @{ Sgr = '38;5;94';   Fg = 16;  Bg = 214 }
-                bad    = @{ Sgr = '38;5;124';  Fg = 16;  Bg = 217 }
-                dim    = @{ Sgr = '38;5;240';  Fg = 236; Bg = 250 }
-                folder = @{ Sgr = '38;5;25';   Fg = 16;  Bg = 147 }
-                branch = @{ Sgr = '38;5;90';   Fg = 16;  Bg = 182 }
+                model  = @{ Sgr = '1;38;5;24'; Fg = 16; Bg = 44;  Ink = 'Dark' }
+                ok     = @{ Sgr = '38;5;22';   Fg = 16; Bg = 77;  Ink = 'Dark' }
+                warn   = @{ Sgr = '38;5;94';   Fg = 16; Bg = 214; Ink = 'Dark' }
+                bad    = @{ Sgr = '38;5;124';  Fg = 16; Bg = 217; Ink = 'Dark' }
+                dim    = @{ Sgr = '38;5;240';  Fg = 16; Bg = 250; Ink = 'Dark' }
+                folder = @{ Sgr = '38;5;25';   Fg = 16; Bg = 147; Ink = 'Dark' }
+                branch = @{ Sgr = '38;5;90';   Fg = 16; Bg = 182; Ink = 'Dark' }
             }
             Inline = @{
-                added   = @{ Sgr = '38;5;22';    Fg = 22 }
-                removed = @{ Sgr = '38;5;124';   Fg = 124 }
-                track   = @{ Sgr = '38;5;240';   Fg = 240 }
-                muted   = @{ Sgr = '22;38;5;24'; Fg = 24 }
-                cached  = @{ Sgr = '38;5;240';   Fg = 238 }
+                added   = @{ Sgr = '38;5;22';    Dark = 22 }
+                removed = @{ Sgr = '38;5;124';   Dark = 124 }
+                track   = @{ Sgr = '38;5;240';   Dark = 240 }
+                muted   = @{ Sgr = '22;38;5;24'; Dark = 24 }
+                cached  = @{ Sgr = '38;5;240';   Dark = 238 }
             }
         }
     }
     return @{
         Roles = @{
-            model  = @{ Sgr = '1;36'; Fg = 231; Bg = 31 }
-            ok     = @{ Sgr = '32';   Fg = 231; Bg = 28 }
-            warn   = @{ Sgr = '33';   Fg = 16;  Bg = 178 }
-            bad    = @{ Sgr = '31';   Fg = 231; Bg = 160 }
-            dim    = @{ Sgr = '90';   Fg = 250; Bg = 238 }
-            folder = @{ Sgr = '34';   Fg = 231; Bg = 25 }
-            branch = @{ Sgr = '35';   Fg = 231; Bg = 90 }
+            model  = @{ Sgr = '1;36'; Fg = 231; Bg = 31;  Ink = 'Light' }
+            ok     = @{ Sgr = '32';   Fg = 231; Bg = 28;  Ink = 'Light' }
+            warn   = @{ Sgr = '33';   Fg = 16;  Bg = 178; Ink = 'Dark' }
+            bad    = @{ Sgr = '31';   Fg = 231; Bg = 160; Ink = 'Light' }
+            dim    = @{ Sgr = '90';   Fg = 250; Bg = 238; Ink = 'Light' }
+            folder = @{ Sgr = '34';   Fg = 231; Bg = 25;  Ink = 'Light' }
+            branch = @{ Sgr = '35';   Fg = 231; Bg = 90;  Ink = 'Light' }
         }
         Inline = @{
-            added   = @{ Sgr = '32'; Fg = 46 }
-            removed = @{ Sgr = '31'; Fg = 203 }
-            track   = @{ Sgr = '90'; Fg = 245 }
-            muted   = @{ Sgr = '22;36'; Fg = 152 }
-            cached  = @{ Sgr = '90'; Fg = 244 }
+            added   = @{ Sgr = '32';    Light = 46;  Dark = 22 }
+            removed = @{ Sgr = '31';    Light = 222; Dark = 124 }
+            track   = @{ Sgr = '90';    Light = 123; Dark = 240 }
+            muted   = @{ Sgr = '22;36'; Light = 87;  Dark = 24 }
+            cached  = @{ Sgr = '90';    Light = 86;  Dark = 238 }
         }
     }
 }
