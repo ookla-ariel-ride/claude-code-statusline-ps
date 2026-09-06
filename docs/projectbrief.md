@@ -57,7 +57,8 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | Context | `context_window.used_percentage`, `total_input_tokens`, `total_output_tokens`, `context_window_size`, `current_usage.{input_tokens, cache_creation_input_tokens, cache_read_input_tokens}` | Percent, ten-block bar, used/total in k or M, then the cached share as a dim `92% cached`. Green below 60%, yellow below 85%, red above. A 1M window uses 70% and 90%, so red still means about 100k tokens of room. The share is the cache read over the whole of `current_usage`, rounded by `Get-WholePercent` like every other percentage; a missing block, a missing field, a zero total or any negative count leaves it off. A negative count is refused rather than repaired, because a negative `input_tokens` beside a positive read divides out above 100 and would print as a confident `100% cached`; "we cannot tell" is the honest answer and the one a missing block already gets. With every count non-negative the share is in range by arithmetic, so there is no clamp - but only because the division happens before the scale: `100 * read` would overflow to infinity for a read above about 1.8e306 and print `2147483647% cached`, which is what an earlier version did while this table claimed it could not. It lives in `Text` and not in `Short`, so the fitting sheds it with the token counts |
 | Cache | `prompt_cache.warm`, `expires_at`, `caching_observed`, `requests` | Fire glyph and how long the prompt cache has left: `cache 42m` green, `cache 4m` yellow inside the last five minutes, `cache <1m` under a minute. `cache cold` red when `warm` is the boolean false or the expiry has already passed — the timestamp is the specific claim and beats a `warm` that contradicts it. `cache off` red when `caching_observed` is the boolean false with at least three requests behind it, tested before the countdown because a cache the client says is not working still carries an expiry and that countdown would be the most reassuring thing on the line at the moment it is least true; it fires with `warm` absent as well as true, since gating it on a field that may not be there would restore the very countdown it suppresses. `cache warm`, no figure, when the cache is alive but the expiry is missing or refused. `Get-CacheSecondsLeft` is the refusal: `expires_at` is epoch seconds, divided by 1000 when it is past 1e12, and a value that is not a finite number, is zero or less, or is more than a day out is refused rather than clamped — the longest documented prompt cache lifetime is an hour, and clamping the 2100 epoch samples carry (which the rate-limit countdown beside it renders as `(26781d)`) would print a calm green `cache 24h00m` over a payload nobody can vouch for. Nothing usable in the block, and no block at all, are both no segment: that is what Claude Code before 2.1.251 sends and what the first turns of a session send. This is NOT `Get-CacheShare`: that reads `context_window.current_usage` for the hit ratio the meter prints as `92% cached`, and a turn can honestly be 92% cached off a cache with four minutes to live. **No `quiet` key, deliberately**: three of the four states are the warning, and quiet never hides a warning, so there is nothing here for a threshold to be a threshold on. Short drops the word and keeps the glyph and the value |
 | Cost | `cost.total_cost_usd`, `cost_usd` from the session state file | Dimmed, two decimals, then the change since the previous render in parentheses: `$1.07 (+$0.12)`. The suffix is built only when the total rose by at least a cent, so no state, a first render, an unchanged total and one that went backwards all print the total alone. Precisely, the comparison is against the last total the file holds, so a render that ended before the write leaves the next delta spanning both turns — still a real difference between two totals, and that render printed no total to contradict. Both figures go through the same `'{0:N2}'`, so the delta follows the culture the total is written in. The short form is the total without the suffix, and it is the first detail the fitting sheds |
-| Clock | `cost.total_duration_ms`, `cost.total_api_duration_ms` | Dimmed, never bold and never banded: `1h12m · api 38%`. `Format-Elapsed` gives the three forms — `<1m` under a minute, `12m` under an hour, `1h12m` above one with the minutes zero-padded — and the arithmetic goes through a `[TimeSpan]`, so the hours cannot overflow the format and a count of milliseconds too large to be a span is refused with everything else. The api share is `Get-WholePercent` over api ÷ total, the same rounding as every other percentage on the line; it does not take the `[math]::Floor` exception `subagent-statusline.ps1` has, because nothing bands on this figure and that exception exists to stop a colour running ahead of its number. Both fields are optional: no total is no segment, no api figure is the elapsed time alone with no dot. A figure that could not be true is refused rather than clamped — a total that is missing, zero, negative or past `[TimeSpan]::MaxValue` leaves the segment out, and an api time longer than the session has existed leaves the elapsed time alone rather than printing `api 100%`, the same rule that keeps a negative token count from rendering `100% cached`. The short form is the elapsed time without the share, and the two ranks say the rest: last in the shrink order, so the share is the last detail worth keeping, and second in the drop order behind lines, so the segment is the first number worth losing |
+| Clock | `cost.total_duration_ms`, `cost.total_api_duration_ms` | Dimmed, never bold and never banded: `1h12m · api 38%`. `Format-Elapsed` gives the three forms — `<1m` under a minute, `12m` under an hour, `1h12m` above one with the minutes zero-padded — and the arithmetic goes through a `[TimeSpan]`, so the hours cannot overflow the format and a count of milliseconds too large to be a span is refused with everything else. The api share is `Get-WholePercent` over api ÷ total, the same rounding as every other percentage on the line; it does not take the `[math]::Floor` exception `subagent-statusline.ps1` has, because nothing bands on this figure and that exception exists to stop a colour running ahead of its number. Both fields are optional: no total is no segment, no api figure is the elapsed time alone with no dot. A figure that could not be true is refused rather than clamped — a total that is missing, zero, negative or past `[TimeSpan]::MaxValue` leaves the segment out, and an api time longer than the session has existed leaves the elapsed time alone rather than printing `api 100%`, the same rule that keeps a negative token count from rendering `100% cached`. The short form is the elapsed time without the share, and the two ranks say the rest: last in the shrink order, so the share is the last detail worth keeping, and third in the drop order behind the wall clock and lines, so the segment is the first figure about the session worth losing |
+| Time | none — `Get-Date` | The wall clock, `14:05`: the local time of day, 24 hour, dim and never banded. It reads no payload field because Claude Code sends no timestamp, which makes it the one segment whose value moves without a new payload and the reason the README says to set `statusLine.refreshInterval` beside it — without one the script runs on Claude Code's events and an idle session shows the time of the last one. The colon is escaped in the format string (`'HH\:mm'`): a bare `:` is the culture's time separator, and under fi-FI that is a dot. **This is not the Clock segment.** That one is how long the session has run and what share of it went on the API; this one is what time it is, and a session that has run 1h12m says nothing about whether it is now 09:14 or 23:47. Two segments, two numbers, two glyphs — a stopwatch and a wall clock. It is the only registry record whose `Default` is false, because turning a clock on for every existing install would be a behaviour change carried by a default. No short form, since there is nothing in five characters to shed; `DropRank` 1 instead, ahead of lines, because it is the one figure on the line that says nothing about the session |
 | Lines | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` red. Hidden when both are zero |
 | Limits | `rate_limits.five_hour`, `seven_day`, `spend_limit` | Coloured by the worst of the figures. A pace arrow follows the 5-hour figure, before its countdown: `→` while the current rate lands inside the window, `↑` when it overruns, red through the `removed` inline role once the projection reaches 120%. The elapsed fraction comes from `resets_at` and the fixed five-hour window, so there is no arrow without a reset time, after one, inside the first tenth of a window, or before anything has been used. The arrow never reaches the short form. The spend figure is `$ 62%`, a literal dollar sign, shown only when the payload carries `spend_limit`, which Claude Code sends behind a Claude apps gateway with a spend limit (2.1.251 or later); its reset time is not shown |
 | Badges | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode`, `agent.name`, `session_name` | Dim glyphs, in that order: the four modes, which come and go as the session runs, then the two identities, which do not. `agent.name` is the custom agent driving the main thread and `session_name` the name the user gave the session; both pass the payload-text guard the branch name passes, which refuses a control character and strips the Unicode Format characters, and both are then cut to 20 cells by `Get-ClippedText`, the clipping rule the agent panel already uses, which measures with `Get-VisibleWidth` so a name in wide characters is cut where it draws. The short form is the mode badges alone, so a narrow line sheds the two identities before the segment goes. Hidden when none of the six is present; a session that is named or agent-driven shows the segment with every mode off. `session_id` is deliberately not rendered |
@@ -91,6 +92,30 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 - **Segment records and one renderer.** Each segment is a small record (name, text, short text,
   colour role, bold); one function renders a line in plain, powerline or ascii style, and width fitting
   shrinks then drops records in a fixed order.
+- **The right group is a layout, and a layout is the first thing a narrow line gives up.** `right`
+  names segments that leave the packed line and sit flush against the right edge of the FIRST line;
+  everything else stays where it was. `Get-FittedLine` splits the records in two, renders each group
+  with the one `Format-Line`, and joins them with `target - leftWidth - rightWidth` spaces, so the
+  result is exactly the target width. **The padding is counted in cells and never in characters.** A
+  line carries an SGR code in front of every segment and can carry six OSC 8 hyperlink wrappers — the
+  folder and branch segments each emit one in `Text` and another in `Short`, and the pr segment emits
+  one — and none of that draws a cell; a subtraction from `.Length` would be short by over a hundred
+  characters on a linked line and the "aligned" line would not reach the edge. `Get-VisibleWidth` is
+  the measurement the fitting stages already use, so the padding and the fitting cannot disagree.
+  Fitting gains one stage between the two that were there: shrink both groups, then empty the right
+  group last-name-first, then drop from the left group in the drop order. **The right group goes whole
+  and goes early, before any packed segment**, because a segment pushed to the edge is decoration and
+  the alternative is a line that keeps a clock and loses a rate limit; a dropped right member is gone
+  rather than moved back inline, since re-inlining it would make the line wider, which is the opposite
+  of what the stage is for. That ordering is also what answers the case where the two groups cannot
+  both fit however much is shed: the right group is empty before the last stage starts, so the whole
+  thing degrades into exactly the one-group fitting that was there before, model overflow included.
+  With `COLUMNS` unset there is no target, so there is no right group either and every segment renders
+  inline — the early return that was already at the top of the function.
+- **An empty `right` is kept, unlike an empty `order` or `rows`.** Those two fall back because a line
+  naming no segment is not a layout and there is nothing a file could have meant by it. An empty right
+  group is the built-in default and a real thing to ask for, and keeping it is the only way a project
+  file can take back a group the user file asked for.
 - **One style key, not a style and an icon set.** `ascii` (#27) is the whole no-Nerd-Font answer rather
   than an axis crossed with the other two: the separator glyph and the icon table have the same single
   cause, the font, so one word settles both and the incoherent pairing — powerline's block separators
@@ -101,7 +126,13 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   column while some terminals draw them as two. So `Get-IconAscii` answers for the glyphs and
   `Get-MarkSet` for the characters that are not glyphs, and the `icons` overrides — code points, every
   one — are ignored in this style, so the promise holds whatever a user or a repository's own config
-  asks for. Colours are the plain palette, role for role.
+  asks for. Colours are the plain palette, role for role. Each of the twenty-four stand-ins follows one
+  rule in three clauses: nothing at all where what follows already names the segment (the model name,
+  `$1.07`, `1h12m`, `14:05`, `+156 -23`, `5h 24%`, an effort level, a vim mode); otherwise the mark
+  ASCII already uses for the thing (`~` home, `*` a dirty tree, `^` and `v` ahead and behind, `!` a
+  conflict, `/` a step down a path, `@` a person, `#` a tag); otherwise the shortest lower-case
+  abbreviation (`ctx`, `dir`, `pr`, `wt`, `fast`, `think`), cut to one letter where the segment's own
+  text carries the word (`b` branch, `c` cache).
 - **The ascii style does not touch payload text, and the promise is scoped to say so.** A branch, a
   folder, a repo owner, a model, agent or session name reaches the line as the payload supplied it in
   every style, so an ascii line can hold characters outside ASCII and be exactly right. The style is
@@ -411,7 +442,9 @@ second script for the agent panel (#15). A state file per session (#4) carries t
 and the cost segment reads it for its per-turn delta (#5). Every silent catch can be traced through an
 optional log behind `CLAUDE_STATUSLINE_DEBUG` (#43). Both fallback lines are printed only where the
 config allows a model segment, and a render that shows nothing still writes its state (#42). A light
-palette is still a constant in the script.
+palette is still a constant in the script. A `right` key pushes any named segments against the right
+edge of the first line, and a wall-clock segment gives that edge something to hold (#25); the clock is
+the only registry record that is off by default.
 
 ## Future work
 
@@ -428,10 +461,11 @@ twelve short functions and a drift test. The intended order for the rest:
    the folder and branch links (#13) are done, reusing `Format-Link` around the finished text of each.
 2. Config: presets, a quiet block, an alarm colour (#21 to #23). Each is one key over
    `Merge-StatusConfigFile`.
-3. Style and terminal: a light palette, a right-aligned group with a clock (#25, #28). Taskbar
-   progress (#24) is done and is the first writer of terminal state that outlives the render, and the
-   ASCII style (#27) is done: a third `style` value, its own icon and mark tables, and the `icons`
-   overrides refused under it so the line it promises is the line it draws.
+3. Style and terminal: a light palette (#28). The right-aligned group and its wall clock (#25) are
+   done, and are the first thing on the line whose position is decided by the width rather than by
+   the order. The ASCII style (#27) is done: a third `style` value, its own icon and mark tables, and
+   the `icons` overrides refused under it so the line it promises is the line it draws. Taskbar
+   progress (#24) is done and is the first writer of terminal state that outlives the render.
 
 ## License
 
