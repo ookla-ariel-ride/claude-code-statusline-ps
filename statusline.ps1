@@ -104,7 +104,13 @@ function Read-StdinText() {
 # waiter - the kernel drops the lock at process exit, though on Unix that does not raise
 # AbandonedMutexException the way it does on Windows, so $held below must not depend on the catch
 # firing there. Crossing users is a bounded, accepted side effect: the diag log is off by default,
-# best-effort, and the trade is an occasional extra skipped rollover, not a wait or a corruption.
+# best-effort, and the ordinary trade is an occasional extra skipped rollover, not a wait or a
+# corruption. What Global\ widens rather than creates: the append after a skipped rollover is not
+# itself bound to the cap, and the rename this function does is the one call here with no timeout, so
+# a holder stuck inside it - anyone's render, on a stalled filesystem - already left the cap merely
+# approximate before this change, for as long as that holder does not let go. A bare name only exposed
+# that to the same session; Global\ exposes it machine-wide. Bounding the append itself is a change to
+# #43's cap design, not to this name, and is out of scope here.
 # macOS was not tested. See issue #49 for the full method.
 function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [int] $TimeoutMs) {
     $mutex = [System.Threading.Mutex]::new($false, 'Global\claude-code-statusline-diag-rollover')
