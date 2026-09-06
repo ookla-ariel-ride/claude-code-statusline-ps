@@ -3664,18 +3664,36 @@ foreach ($odd in @(@{ Label = 'string true'; Value = 'true' }, @{ Label = 'numbe
     $p | Add-Member -NotePropertyName exceeds_200k_tokens -NotePropertyValue $odd.Value
     Confirm-Equal (Get-ModelSegment $p $plainCfg).Text "$iconModel Fable 5.1" "model exceeds as $($odd.Label): no glyph"
 }
-Confirm-Equal (Get-ModelSegment ([pscustomobject]@{ model = [pscustomobject]@{ display_name = '' } }) $plainCfg) $null 'model: empty name omits the segment'
+Confirm-Equal (Get-ModelSegment ([pscustomobject]@{ model = [pscustomobject]@{ display_name = '' } }) $plainCfg).Text "$iconModel claude" 'model: empty name falls back to claude rather than omitting the segment'
 # display_name is payload text, found unguarded while auditing #61's badges fix: it went straight from
 # the payload to the rendered line with only an "-not $model" check, which a number or a boolean would
 # pass and a control character or a right-to-left override would sail through unstripped. Same pair as
-# every other payload name in the script now.
-foreach ($bad in @('""', '"   "', '12', 'true', 'null', '[]', '{}')) {
-    Confirm-Equal (Get-ModelSegment (('{"model":{"display_name":' + $bad + '}}') | ConvertFrom-Json) $plainCfg) $null "model: display_name $bad is not a name"
+# every other payload name in the script now, but with one difference from every other guarded field
+# (Codex review on #61's own PR): this segment is documented and tested as the one the alarm rides on
+# because the fitting code never drops it, and the zero-segment "claude" stand-in only fires when EVERY
+# segment is empty, so returning $null here for a hostile name would have let that one payload field
+# silence the alarm on a render where the context or limits segment still gets through. An unusable
+# name falls back to "claude" - the same word - instead, so the segment, its role and its alarm colour
+# all survive. That fallback is for a display_name that IS present but fails the guard; a payload
+# naming no model at all - no model object, or one with no display_name key - is the different case
+# the outer zero-segment stand-in exists for, and still omits this segment so that mechanism still
+# runs (covered separately below, and by the render: zero-segment fallback suite).
+foreach ($bad in @('""', '"   "', '12', 'true', '[]', '{}')) {
+    Confirm-Equal (Get-ModelSegment (('{"model":{"display_name":' + $bad + '}}') | ConvertFrom-Json) $plainCfg).Text "$iconModel claude" "model: display_name $bad falls back to claude"
 }
-Confirm-Equal (Get-ModelSegment ('{"model":{"display_name":"\u001b[31mred"}}' | ConvertFrom-Json) $plainCfg) $null 'model: a name carrying an escape is refused outright'
-Confirm-Equal (Get-ModelSegment ('{"model":{"display_name":"\u202e"}}' | ConvertFrom-Json) $plainCfg) $null 'model: a name of nothing but a format character is not a name'
+Confirm-Equal (Get-ModelSegment ('{"model":{"display_name":null}}' | ConvertFrom-Json) $plainCfg) $null 'model: an explicit null display_name omits the segment, same as the field being absent'
+Confirm-Equal (Get-ModelSegment ('{}' | ConvertFrom-Json) $plainCfg) $null 'model: no model object at all omits the segment'
+Confirm-Equal (Get-ModelSegment ('{"model":{}}' | ConvertFrom-Json) $plainCfg) $null 'model: a model object with no display_name key omits the segment'
+Confirm-Equal (Get-ModelSegment ('{"model":{"display_name":"\u001b[31mred"}}' | ConvertFrom-Json) $plainCfg).Text "$iconModel claude" 'model: a name carrying an escape falls back to claude'
+Confirm-Equal (Get-ModelSegment ('{"model":{"display_name":"\u202e"}}' | ConvertFrom-Json) $plainCfg).Text "$iconModel claude" 'model: a name of nothing but a format character falls back to claude'
 $seg = Get-ModelSegment ('{"model":{"display_name":"Fa\u202eble 5.1"}}' | ConvertFrom-Json) $plainCfg
 Confirm-True ([string]::Equals($seg.Text, "$iconModel Fable 5.1", [System.StringComparison]::Ordinal)) 'model: a format character is stripped out of the name rather than refusing it'
+# The alarm carrier survives a hostile name: a real 95% context alongside an unusable display_name
+# still turns the segment - now reading "claude" - red, exactly as it would with a good name.
+# Built inline rather than with Get-ModelAlarmConfig, which is not defined until further down the file.
+$hostileNameAlarm = Get-ModelSegment ('{"model":{"display_name":"\u001b[31mred"},"context_window":{"used_percentage":95}}' | ConvertFrom-Json) @{ Style = 'plain'; Alarm = @{ Context = 90; Limits = 0 } }
+Confirm-Equal $hostileNameAlarm.Text "$iconModel claude" 'model: alarm survives a hostile name: text is the claude fallback'
+Confirm-Equal $hostileNameAlarm.Role 'bad' 'model: alarm survives a hostile name: role is still bad'
 # The alarm changes the role and nothing else. Get-ModelPayload sits at 65%, so the alarm is decided by
 # the config here: 66 fires, 65 fires (at or above), 64 does not, and the text is the same either way.
 function Get-ModelAlarmConfig($At, [string] $Style = 'plain') { return @{ Style = $Style; Alarm = @{ Context = $At; Limits = 0 } } }

@@ -1977,9 +1977,24 @@ function K([double] $n) { if ($n -ge 1000000) { '{0:N1}M' -f ($n / 1000000) } el
 # where vim.mode and effort.level had been left out of the same pair in the badges builder - and
 # Format-PayloadText strips the format characters out of what is left, so a right-to-left override or a
 # zero-width joiner in a model name cannot reorder or hide the rest of the line it leads.
+# An unusable name falls back to the same "claude" word the zero-segment stand-in prints, rather than
+# omitting the segment: this is the one segment the block above never drops, because the alarm rides on
+# it, and the zero-segment stand-in only fires when EVERY segment is empty - a payload with a hostile
+# display_name but a real 95% context figure still builds a context segment, so $segments.Count is
+# never 0 and that stand-in never runs. Dropping the model segment here would have made a hostile
+# display_name a way to silence the one carrier a narrow terminal cannot also fit away. (Caught by
+# Codex review: the first cut of this guard returned $null the way every other guarded field does,
+# which is right for a name-only badge and wrong for the segment the alarm depends on.)
 function Get-ModelSegment($d, $cfg) {
-    if (-not (Test-PayloadText $d.model.display_name)) { return $null }
-    $model = Format-PayloadText ([string] $d.model.display_name)
+    # $null here means the payload names no model at all - no model object, or one with no
+    # display_name key - which is the case the OUTER zero-segment stand-in exists for: it fires only
+    # when every enabled, listed segment comes back $null, and returning $null here is what lets a
+    # payload with nothing buildable at all still reach it. A display_name that IS present but fails
+    # the guard - a blank string, a control character, a number, an object - is a different case: the
+    # field is there, it is just unusable, and this segment does not go missing for it.
+    $raw = $d.model.display_name
+    $model = if ($null -eq $raw) { $null } elseif (Test-PayloadText $raw) { Format-PayloadText ([string] $raw) } else { 'claude' }
+    if ($null -eq $model) { return $null }
     $role = if (Test-AlarmState $d $cfg) { 'bad' } else { 'model' }
     $text = Format-Icon $iconModel $model
     if (Test-WideWindow $d.context_window.context_window_size) { $text += ' ' + (Format-Inline 'muted' '1M' $role $cfg.Style $cfg.Palette) }
