@@ -93,6 +93,7 @@ function Get-IconDefault {
     return @{
         model    = 0xF06A9   # nf-md-robot
         context  = 0xF035B   # nf-md-memory
+        cache    = 0xF0238   # nf-md-fire  (prompt cache warmth)
         cost     = 0xF0155   # nf-md-cash
         # nf-md-timer_outline, the outline stopwatch. Issue #8 named that glyph and then wrote F13AB
         # beside it, which is nf-md-timer, the filled one; the name is what says how the glyph should
@@ -284,15 +285,16 @@ function Get-SegmentRegistry {
     if (-not $script:segmentRegistry) {
         $script:segmentRegistry = @(
             @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 3;     DropRank = 9;     Row = 2; RowRank = 1 }
-            @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 4;     Row = 2; RowRank = 3 }
-            @{ Name = 'clock';   Build = 'Get-ClockSegment';   Default = $true; ShrinkRank = 7;     DropRank = 2;     Row = 2; RowRank = 4 }
-            @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 5 }
-            @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 5;     Row = 2; RowRank = 2 }
-            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 6;     DropRank = 3;     Row = 1; RowRank = 5 }
-            @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 6;     Row = 1; RowRank = 4 }
-            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 5;     DropRank = 7;     Row = 1; RowRank = 2 }
-            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 4;     DropRank = 8;     Row = 1; RowRank = 3 }
+            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 4;     DropRank = 10;    Row = 2; RowRank = 1 }
+            @{ Name = 'cache';   Build = 'Get-CacheSegment';   Default = $true; ShrinkRank = 3;     DropRank = 3;     Row = 2; RowRank = 2 }
+            @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 5;     Row = 2; RowRank = 4 }
+            @{ Name = 'clock';   Build = 'Get-ClockSegment';   Default = $true; ShrinkRank = 8;     DropRank = 2;     Row = 2; RowRank = 5 }
+            @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 6 }
+            @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 6;     Row = 2; RowRank = 3 }
+            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 7;     DropRank = 4;     Row = 1; RowRank = 5 }
+            @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 7;     Row = 1; RowRank = 4 }
+            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 6;     DropRank = 8;     Row = 1; RowRank = 2 }
+            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 5;     DropRank = 9;     Row = 1; RowRank = 3 }
         )
     }
     return $script:segmentRegistry
@@ -332,7 +334,7 @@ function Read-SegmentNameList($Value, [hashtable] $Known, [hashtable] $Seen) {
 # The built-in defaults: the table every config file is merged over. A fresh table each call, the nested
 # tables included, so a merge that changes one caller's copy cannot reach the next caller's.
 function Get-DefaultStatusConfig {
-    $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Taskbar = $false; Segments = @{}; Git = Get-DefaultGitConfig }
+    $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Links = $true; Taskbar = $false; Segments = @{}; Git = Get-DefaultGitConfig }
     foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
     $cfg.Order = @((Get-SegmentRegistry).Name)
     $cfg.Rows = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
@@ -351,10 +353,11 @@ function Get-DefaultStatusConfig {
 # is a string, but it stands for several keys at once rather than landing in one.
 function Get-StatusConfigKey {
     return @(
-        @{ Json = 'layout'; Key = 'Layout'; Kind = 'Enum'; Allowed = @('one', 'two') }
-        @{ Json = 'style';  Key = 'Style';  Kind = 'Enum'; Allowed = @('plain', 'powerline') }
-        @{ Json = 'folder'; Key = 'Folder'; Kind = 'Enum'; Allowed = @('repo', 'leaf') }
-        @{ Json = 'state';  Key = 'State';  Kind = 'Bool'; Allowed = $null }
+        @{ Json = 'layout';  Key = 'Layout';  Kind = 'Enum'; Allowed = @('one', 'two') }
+        @{ Json = 'style';   Key = 'Style';   Kind = 'Enum'; Allowed = @('plain', 'powerline') }
+        @{ Json = 'folder';  Key = 'Folder';  Kind = 'Enum'; Allowed = @('repo', 'leaf') }
+        @{ Json = 'state';   Key = 'State';   Kind = 'Bool'; Allowed = $null }
+        @{ Json = 'links';   Key = 'Links';   Kind = 'Bool'; Allowed = $null }
         @{ Json = 'taskbar'; Key = 'Taskbar'; Kind = 'Bool'; Allowed = $null }
     )
 }
@@ -378,7 +381,7 @@ function Get-ConfigPreset($Name) {
     switch ($Name.ToLowerInvariant()) {
         'minimal' {
             return @{ Layout = 'one'; Style = 'plain'; Segments = @{
-                    model = $true; context = $true; cost = $false; clock = $false; lines = $false; limits = $false
+                    model = $true; context = $true; cache = $false; cost = $false; clock = $false; lines = $false; limits = $false
                     badges = $false; pr = $false; folder = $true; branch = $true
                 }
             }
@@ -388,14 +391,14 @@ function Get-ConfigPreset($Name) {
             # elapsed time is the denominator under every rate on it. `minimal` answers which model,
             # how full and where am I, and how long the session has run is none of the three.
             return @{ Layout = 'one'; Style = 'plain'; Segments = @{
-                    model = $true; context = $true; cost = $true; clock = $true; lines = $true; limits = $true
+                    model = $true; context = $true; cache = $true; cost = $true; clock = $true; lines = $true; limits = $true
                     badges = $false; pr = $false; folder = $false; branch = $false
                 }
             }
         }
         'full' {
             return @{ Layout = 'two'; Style = 'powerline'; Segments = @{
-                    model = $true; context = $true; cost = $true; clock = $true; lines = $true; limits = $true
+                    model = $true; context = $true; cache = $true; cost = $true; clock = $true; lines = $true; limits = $true
                     badges = $true; pr = $true; folder = $true; branch = $true
                 }
             }
@@ -693,7 +696,13 @@ function Format-Inline([string] $Role, [string] $Text, [string] $SegmentRole, [s
 # array into one that passes), at most 2083 characters (the classic browser cap), free of whitespace and
 # of any Unicode control character (category Cc: the C0 range, DEL and the C1 range, where U+009B,
 # U+009C and U+009D are CSI, ST and OSC in their 8-bit forms), and parses as an absolute http or https
-# URI. So nothing a payload puts there can end the sequence early or put a stray escape on the line.
+# URI whose scheme this allows. So nothing a payload puts there can end the sequence early or put a
+# stray escape on the line.
+# Three schemes: http and https for the pull request and the branch page, and file for the folder, which
+# is how a terminal is told to open a directory. file carries one rule the other two do not need - the
+# authority has to be empty. file:///C:/x is a path on this machine; file://server/share is a UNC path,
+# and a click on one reaches out over SMB to a machine the payload named, which is a request the person
+# at the keyboard did not make. Everything else is refused as it always was.
 # The link goes into the segment's Text, so Format-Line wraps it in the segment's colour codes in either
 # style: OSC 8 carries no SGR state, so a powerline background runs on through it, and Get-VisibleWidth
 # strips it before measuring.
@@ -701,7 +710,9 @@ function Format-Link($Url, [string] $Text) {
     if ($Url -isnot [string] -or $Url.Length -gt 2083 -or $Url -match '[\s\p{Cc}]') { return $Text }
     $uri = $null
     if (-not [System.Uri]::TryCreate($Url, [System.UriKind]::Absolute, [ref] $uri)) { return $Text }
-    if ($uri.Scheme -ne 'http' -and $uri.Scheme -ne 'https') { return $Text }
+    if ($uri.Scheme -eq 'file') {
+        if ($uri.Host) { return $Text }
+    } elseif ($uri.Scheme -ne 'http' -and $uri.Scheme -ne 'https') { return $Text }
     return "`e]8;;$Url`e\$Text`e]8;;`e\"
 }
 
@@ -734,9 +745,11 @@ function Format-Line($Segments, [string] $Style) {
 }
 
 # Renders a line and, when a width is given, shrinks then drops segments until it fits.
-# Stage 1 swaps segments for their Short form in $ShrinkOrder (cost, limits, context, branch, folder,
-# badges, then clock by default: the cost segment's Short is the session total without its per-turn
-# delta, so the delta is the first detail on the line to go, and the clock's api share is the last).
+# Stage 1 swaps segments for their Short form in $ShrinkOrder (cost, limits, cache, context, branch,
+# folder, badges, then clock by default: the cost segment's Short is the session total without its
+# per-turn delta, so the delta is the first detail on the line to go; the cache segment's Short drops
+# the word and keeps the countdown, which costs one word and loses nothing; and the clock's api share
+# is the last).
 # Stage 2 drops whole segments in $DropOrder. Either order left $null comes from the registry's ranks; an
 # empty array skips that stage. The model segment is never dropped whatever the drop order says, so it may
 # overflow on its own. Returns $null when nothing is left.
@@ -1280,6 +1293,7 @@ $cfg = Read-StatusConfig $configPath $projectDir
 $icons = Get-IconSet $cfg
 $iconModel = $icons.model
 $iconCtx = $icons.context
+$iconCache = $icons.cache
 $iconCost = $icons.cost
 $iconClock = $icons.clock
 $iconFolder = $icons.folder
@@ -1545,6 +1559,125 @@ function Get-ContextSegment($d, $cfg) {
     return @{ Name = 'context'; Text = "$short$tail"; Short = $(if ($tail) { $short } else { $null }); Role = $role; Bold = $false }
 }
 
+# ---- Prompt cache warmth ----
+# THE ONE THING TO GET STRAIGHT BEFORE READING THESE THREE: they do not answer the question
+# Get-CacheShare answers, and the two must not be folded together. Get-CacheShare reads
+# context_window.current_usage and gives the share of THIS TURN'S input the cache served - a hit ratio,
+# printed as the context segment's dim "92% cached". These read the prompt_cache block and give whether
+# the cache is alive at all and for how long. Different block, different question, no shared arithmetic.
+# A turn can honestly be 92% cached off a cache with four minutes left to live, and that pair - a good
+# ratio beside a lapsing window - is exactly the moment the segment exists to show, so both belong on
+# the line at once. Neither figure is derivable from the other.
+
+# Seconds until the prompt cache expires, or $null when the payload's expires_at could not be one.
+# The field is epoch seconds, like rate_limits.five_hour.resets_at, but it is not documented with a
+# unit, so a client sending milliseconds is a real possibility: a value past 1e12 - year 33658 read as
+# seconds, which no cache expiry is - is divided by 1000 first.
+# WHAT IS REFUSED, AND WHY REFUSED RATHER THAN CLAMPED. A value that is not a finite number is not a
+# time. A value at or below 0 is 1970 or earlier, and calling that "expired" would let a plainly
+# malformed field print a confident red "cache cold" - a definite claim built out of nothing. And a
+# value more than a day out is refused for the same reason: the longest prompt cache lifetime Anthropic
+# documents is an hour, so a day is generous head-room and still refuses the far-future epochs payloads
+# really carry - sample 06's 4102444800 is 1 January 2100, which the rate-limit countdown beside this
+# one renders as a nonsense "(26781d)". Clamping any of these to a boundary would put a number on the
+# line that reads as fact; refusing leaves the caller to say "warm, and I cannot tell you how long",
+# which is the honest answer and the one an absent field already gets.
+# $Now is the current epoch and defaults to the clock, so no caller passes one. It exists for the tests,
+# the way Get-PaceArrow's does: an epoch derived from an earlier reading of the clock is one second out
+# whenever the second ticks in between, which is enough to move a case off the boundary it was written
+# for. Both guards run before the [int] cast, which is what keeps the cast in range: the ceiling caps
+# the top at 86400 and refusing an expiry of 0 or less caps the bottom at -$Now.
+function Get-CacheSecondsLeft($Value, [long] $Now = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) {
+    $at = Get-FiniteNumber $Value
+    if ($null -eq $at) { return $null }
+    if ($at -gt 1e12) { $at = $at / 1000 }
+    if ($at -le 0) { return $null }
+    $left = $at - $Now
+    if ($left -gt 86400) { return $null }
+    return [int] [math]::Floor($left)
+}
+
+# A count of whole seconds as the text the segment prints: "<1m" under a minute, "42m" under an hour,
+# "2h05m" above it - the same h{mm}m shape TimeLeft uses for the rate-limit reset, so the two countdowns
+# that can share a line are read the same way. Minutes are floored rather than rounded, because a
+# countdown that says 5m with four and a half minutes left is telling you there is more time than there
+# is. Callers pass a positive count and the ceiling above caps it at a day, so the widest this returns
+# is "24h00m".
+function Format-MinutesLeft([int] $Seconds) {
+    if ($Seconds -lt 60) { return '<1m' }
+    $minutes = [int] [math]::Floor($Seconds / 60)
+    if ($minutes -lt 60) { return "${minutes}m" }
+    return '{0}h{1:00}m' -f [int] [math]::Floor($minutes / 60), ($minutes % 60)
+}
+
+# The five-minute line: at or below it the segment is a warning, above it it is calm. Five minutes is
+# about one long turn, so it is the point where "send a cheap keep-alive now" stops being premature.
+# THIS IS A FUNCTION RATHER THAN AN INLINE COMPARISON FOR A TESTING REASON, and it is the same reason
+# Get-ThresholdRole is one. A boundary that lives inside a builder can only be reached through a
+# payload, and a payload's expires_at is measured against a clock read at one instant while the builder
+# reads its own an instant later. One tick turns an intended 300 into 299 - still 'warn', so the test
+# passes either way, and a `-lt 300` mutant survives it. Worse, the same tick turns the rendered text
+# from 5m into 4m, which fails correct code. As a pure function of whole seconds the boundary is pinned
+# exactly, with no clock between the input and the answer, and the builder's own cases can then sit
+# safely mid-minute where drift cannot reach them.
+function Get-CacheRole([int] $Seconds) { if ($Seconds -le 300) { 'warn' } else { 'ok' } }
+
+# Whether the prompt cache is still warm and how long it has left: "cache 42m" in green, "cache 4m" in
+# yellow inside the last five minutes, "cache cold" in red once it has lapsed, and "cache off" in red
+# when the client has been asking for caching and has never seen it work. A cache miss costs real money
+# and real latency, so a window about to close is the difference between sending a cheap keep-alive turn
+# and taking a break; a cache that is not working at all is worth interrupting for.
+# The block arrived in Claude Code 2.1.251 and is absent both on older versions and early in a session,
+# so the segment has to disappear cleanly rather than render an empty shape - which is the last rule
+# below and the one the omission cases are written around.
+# The order of the four states is the whole logic and it is not arbitrary:
+#   1. Nothing usable. Neither a boolean `warm` nor an expires_at this script will believe means there
+#      is no question to answer, so there is no segment. This is also where a payload from an older
+#      Claude Code lands.
+#   2. Cold. `warm` is the boolean false, or the expiry has already passed. An expiry in the past beats
+#      a `warm` beside it that says true: the timestamp is the specific claim and the flag is the
+#      summary, and a summary that contradicts its own timestamp is the one to distrust.
+#   3. Off. `caching_observed` is the boolean false with at least three requests behind it. The field is
+#      false until the client has actually seen a hit, so it says nothing at all on the first turn or
+#      two; three requests is where it starts to mean "asked for, never delivered". This is checked
+#      BEFORE the countdown, because it is the more specific claim: a cache the client says is not
+#      working has an expires_at like any other, and printing that countdown over it would be the most
+#      reassuring thing on the line at the moment it is least true. It is allowed to fire with `warm`
+#      absent as well as true, for the same reason - gating the warning on a field that may simply not
+#      be there would restore exactly the countdown it exists to suppress. A `requests` that is not a
+#      whole positive count cannot reach three, so a malformed one refuses to make the claim rather than
+#      being repaired into it.
+#   4. Warm. With a believable expiry, the countdown, yellow inside five minutes. Without one - refused
+#      as nonsense, or simply absent - the word "warm" and no number, because `warm` on its own is a
+#      real answer to "is the cache alive" and the honest thing is to leave the part we cannot tell off
+#      the line rather than invent it.
+# ON QUIET: this segment deliberately has no `quiet` key, and adding one would break the rule that quiet
+# never hides a segment carrying a warning, an error or an alarm. Three of its four states - cold, off
+# and the last five minutes - ARE that warning, and the fourth is a countdown whose whole value is being
+# there before it turns yellow. There is no boring number here to hide, so there is nothing for a
+# threshold to be a threshold on, and Test-QuietValue is never asked about 'cache'.
+# Short drops the word and keeps the glyph and the value, so a narrow line reads as a fire and "42m".
+function Get-CacheSegment($d) {
+    $pc = $d.prompt_cache
+    if ($pc -isnot [System.Management.Automation.PSCustomObject]) { return $null }
+    $warm = if ($pc.warm -is [bool]) { [bool] $pc.warm } else { $null }
+    $left = Get-CacheSecondsLeft $pc.expires_at
+    if ($null -eq $warm -and $null -eq $left) { return $null }
+    if ($warm -eq $false -or ($null -ne $left -and $left -le 0)) {
+        return @{ Name = 'cache'; Text = "$iconCache cache cold"; Short = "$iconCache cold"; Role = 'bad'; Bold = $false }
+    }
+    $requests = Get-PayloadNumber $pc.requests
+    if ($pc.caching_observed -is [bool] -and -not $pc.caching_observed -and $null -ne $requests -and $requests -ge 3) {
+        return @{ Name = 'cache'; Text = "$iconCache cache off"; Short = "$iconCache off"; Role = 'bad'; Bold = $false }
+    }
+    if ($null -eq $left) {
+        return @{ Name = 'cache'; Text = "$iconCache cache warm"; Short = "$iconCache warm"; Role = 'ok'; Bold = $false }
+    }
+    $value = Format-MinutesLeft $left
+    $role = Get-CacheRole $left
+    return @{ Name = 'cache'; Text = "$iconCache cache $value"; Short = "$iconCache $value"; Role = $role; Bold = $false }
+}
+
 # Session cost in dollars, two decimals, and the change since the previous render in parentheses behind
 # it, "$1.07 (+$0.12)", so the turn just paid for is visible and not only the running total that tells
 # you nothing about it. The previous total is $state.cost_usd, the figure the last render of this session
@@ -1621,7 +1754,10 @@ function Format-Elapsed([object] $ms) {
 # How long the session has been running and how much of that went on waiting for the model:
 # `1h12m · api 38%`. Dim and never bold, with no threshold band and no alarm behind it, because a long
 # session is not an error - it is the one figure on the line that says nothing about what the session is
-# doing right now, which is also why it is the first whole segment worth dropping.
+# doing right now, which is also why it is the first whole segment worth dropping once the lines
+# counts have gone. It goes ahead of the cache segment, which is the other candidate for that slot:
+# both are arguably the least urgent number on the line, but this one is dim by construction and that
+# one has a warn band and two bad states, and a dropped segment takes its colour with it.
 # The separator is a middle dot with a space either side rather than a dash: a dash beside a percentage
 # reads as a range.
 # The share goes through Get-WholePercent, the one percentage rule on the line. It is not a candidate for
@@ -1810,6 +1946,64 @@ function Get-BadgesSegment($d) {
     return @{ Name = 'badges'; Text = ($badges -join ' '); Short = $short; Role = 'dim'; Bold = $false }
 }
 
+# ---- Links. One switch and two URL builders, shared by the pr, folder and branch segments. ----
+
+# The switch. `links` is one key for every hyperlink on the line rather than one per segment, because
+# the reason to turn them off is never about a segment: it is a terminal that prints the escape as text
+# instead of swallowing it, and that terminal is broken for all three at once. The key defaults to true,
+# so only the boolean false turns them off; a config that does not name the key, and a builder called
+# with no config at all, get the default.
+function Test-LinkWanted($cfg) { return ($cfg.Links -ne $false) }
+
+# The folder segment's URL: the session's directory as a file: URL, so ctrl-click opens it. TryCreate
+# rather than a [uri] cast, because the cast throws on anything that is not an absolute URI and this
+# runs on every render; AbsoluteUri then does the escaping, so C:\src\my project becomes
+# file:///C:/src/my%20project and a # in a directory name becomes %23 instead of opening a fragment.
+# Three answers of $null, each rendering the segment unlinked rather than guessing: a path that is not
+# an absolute URI at all (a relative one, a bare name, an empty string, a value that is not a string),
+# a path that parses as something other than a file (current_dir is a payload field, and
+# "https://evil.example/x" parses perfectly well as an absolute URI), and a UNC path, whose authority
+# is a machine name. $Dir is untyped for the usual reason: a [string] parameter would join an array
+# into a path instead of refusing it.
+function Get-FolderUrl($Dir) {
+    if ($Dir -isnot [string] -or -not $Dir) { return $null }
+    $uri = $null
+    if (-not [System.Uri]::TryCreate($Dir, [System.UriKind]::Absolute, [ref] $uri)) { return $null }
+    if (-not $uri.IsFile -or $uri.Host) { return $null }
+    return $uri.AbsoluteUri
+}
+
+# The branch segment's URL, from workspace.repo, which the payload carries only for a checkout with a
+# recognised remote. github.com gets the branch page, /<owner>/<name>/tree/<branch>; every other host
+# gets the repository home, /<owner>/<name>. GitLab spells a branch /-/tree/, Bitbucket /src/ and Azure
+# DevOps something else again, and a wrong guess lands the click on a 404, while a repository home is
+# right everywhere. https always: the field is a host name rather than a URL, and there is no reason to
+# send a click over plaintext.
+# Every field here is repository-supplied text - a remote is written by whoever made the checkout - so
+# each is guarded rather than pasted in. The host has to look like a host and nothing else: a "host" of
+# "evil.example/a?" would put the owner and the name in a query string on somebody else's site, and one
+# carrying an @ would make the whole thing userinfo in front of a different host again. The owner and
+# the name go through EscapeDataString, so a slash in either cannot climb the path. The branch is
+# escaped a segment at a time, which keeps the slash in feature/x, where it is a real separator on the
+# branch page, and still turns a space into %20 and a # into %23; EscapeUriString, which the issue
+# suggested, leaves the # alone and would truncate the URL into a fragment. Format-Link is still the
+# last gate on all of it. A detached HEAD gets no link: "detached" is the word this script prints for
+# the state, not a ref anything can be looked up by.
+function Get-BranchUrl($d, [string] $Branch) {
+    if (-not $Branch -or $Branch -eq 'detached') { return $null }
+    $repo = $d.workspace.repo
+    if (-not (Test-PayloadText $repo.host) -or -not (Test-PayloadText $repo.owner) -or -not (Test-PayloadText $repo.name)) { return $null }
+    $repoHost = Format-PayloadText ([string] $repo.host)
+    if ($repoHost -notmatch '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$') { return $null }
+    $owner = [uri]::EscapeDataString((Format-PayloadText ([string] $repo.owner)))
+    $name = [uri]::EscapeDataString((Format-PayloadText ([string] $repo.name)))
+    $url = "https://$repoHost/$owner/$name"
+    if (-not [string]::Equals($repoHost, 'github.com', [System.StringComparison]::OrdinalIgnoreCase)) { return $url }
+    $parts = $Branch -split '/'
+    for ($i = 0; $i -lt $parts.Count; $i++) { $parts[$i] = [uri]::EscapeDataString($parts[$i]) }
+    return "$url/tree/$($parts -join '/')"
+}
+
 # The pull request on the session's branch: the glyph and #number, the whole text wrapped in a link to
 # pr.url, coloured by pr.review_state - approved is ok, changes requested (spaces or underscores, any
 # case) is bad, anything else is dim, including a state that is not text at all. The number goes
@@ -1817,14 +2011,15 @@ function Get-BadgesSegment($d) {
 # object holds. The url goes to Format-Link as it is, which leaves the text unlinked for anything that
 # is not a plain http(s) URL. pr.kind is not rendered. Omitted when the payload has no pr object, or
 # has something other than an object there.
-function Get-PrSegment($d) {
+function Get-PrSegment($d, $cfg) {
     $pr = $d.pr
     if ($pr -isnot [System.Management.Automation.PSCustomObject]) { return $null }
     $number = Get-PayloadNumber $pr.number
     if ($null -eq $number -or $number -le 0) { return $null }
     $state = if (Test-PayloadText $pr.review_state) { [regex]::Replace($pr.review_state, '[_\s]+', ' ').Trim().ToLowerInvariant() } else { '' }
     $role = switch ($state) { 'approved' { 'ok' } 'changes requested' { 'bad' } default { 'dim' } }
-    return @{ Name = 'pr'; Text = (Format-Link $pr.url "$iconPr #$number"); Short = $null; Role = $role; Bold = $false }
+    $url = if (Test-LinkWanted $cfg) { $pr.url } else { $null }
+    return @{ Name = 'pr'; Text = (Format-Link $url "$iconPr #$number"); Short = $null; Role = $role; Bold = $false }
 }
 
 # With workspace.repo in the payload and the folder config at repo, the text is owner/name, followed by a
@@ -1839,10 +2034,15 @@ function Get-FolderSegment($d, $cfg) {
     # Every piece of text this segment draws comes from outside it - a directory name, a repo owner -
     # and each one is stripped of its Format characters, so none of them can reorder the rest of the line.
     $leaf = Format-PayloadText (Split-Path $dir -Leaf)
+    # The link goes round the finished text, glyph included, in both shapes below and round the Short
+    # form as well, so a narrow line keeps the link it sheds the detail from. $null here, which is what
+    # a path with no URL and a config with links off both give, leaves Format-Link returning its text
+    # unchanged: the segment is then byte for byte what it was before this existed.
+    $link = if (Test-LinkWanted $cfg) { Get-FolderUrl $dir } else { $null }
     $owner = $d.workspace.repo.owner
     $name = $d.workspace.repo.name
     if ($cfg.Folder -eq 'leaf' -or -not (Test-PayloadText $owner) -or -not (Test-PayloadText $name)) {
-        return @{ Name = 'folder'; Text = "$iconFolder $leaf"; Short = $null; Role = 'folder'; Bold = $false }
+        return @{ Name = 'folder'; Text = (Format-Link $link "$iconFolder $leaf"); Short = $null; Role = 'folder'; Bold = $false }
     }
     $owner = Format-PayloadText ([string] $owner)
     $name = Format-PayloadText ([string] $name)
@@ -1851,7 +2051,7 @@ function Get-FolderSegment($d, $cfg) {
     $there = ($root -replace '/', '\').TrimEnd('\')
     $text = "$owner/$name"
     if ($root -and $here -ne $there) { $text += " $iconChevron $leaf" }
-    return @{ Name = 'folder'; Text = "$iconFolder $text"; Short = "$iconFolder $name"; Role = 'folder'; Bold = $false }
+    return @{ Name = 'folder'; Text = (Format-Link $link "$iconFolder $text"); Short = (Format-Link $link "$iconFolder $name"); Role = 'folder'; Bold = $false }
 }
 
 # A payload value as a count, or $null when it is not one: a whole number that fits an Int32. ConvertFrom-Json
@@ -1996,7 +2196,12 @@ function Get-BranchSegment($d, $cfg) {
         if ($n -gt 0) { $counts += ' ' + (Format-Inline $row[2] "$($row[1])$n" $role $cfg.Style) }
     }
     $pencil = if ($info.Dirty) { " $iconDirty" } else { '' }
-    return @{ Name = 'branch'; Text = "$name$badge$counts$pencil"; Short = "$name$pencil"; Role = $role; Bold = $false }
+    # The link goes round each finished string whole, so the badge, the counts and their inline colour
+    # codes keep the places they were built in; OSC 8 carries no colour state of its own, so wrapping
+    # text that already has SGR codes in it changes nothing about how it draws, and Get-VisibleWidth
+    # strips the wrapper before it measures. No link, or links off, leaves both strings as they were.
+    $link = if (Test-LinkWanted $cfg) { Get-BranchUrl $d $info.Branch } else { $null }
+    return @{ Name = 'branch'; Text = (Format-Link $link "$name$badge$counts$pencil"); Short = (Format-Link $link "$name$pencil"); Role = $role; Bold = $false }
 }
 
 # ---- Build, lay out, fit, print ----

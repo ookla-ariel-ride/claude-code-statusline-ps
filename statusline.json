@@ -3,6 +3,7 @@
   "style": "plain",
   "folder": "repo",
   "state": true,
+  "links": true,
   "taskbar": false,
   "thresholds": { "warn": 60, "bad": 85 },
   "alarm": { "context": 90, "limits": 90 },
@@ -15,6 +16,7 @@
   "segments": {
     "model": true,
     "context": true,
+    "cache": true,
     "cost": true,
     "clock": true,
     "lines": true,
