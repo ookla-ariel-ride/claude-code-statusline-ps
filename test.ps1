@@ -5843,12 +5843,16 @@ namespace StatuslineTest {
     // A stand-in for the FileStream a real lock open hands back, so a delayed or a held lock can be
     // simulated without a real second process: Locked plays the part FileShare.None otherwise would,
     // Dispose is the only member Invoke-StatusDiagRollover ever calls on what Lock returns, and both are
-    // enough to tell a leaked handle (issue #49 review finding 1) from a released one.
+    // enough to tell a leaked handle (issue #49 review finding 1) from a released one. DisposeDelayMs
+    // simulates the pending-lock sweep's own close landing on the same stalled share the guard exists
+    // for (issue #49 review round 3 finding 1): Dispose is what runs on the pool thread the sweep
+    // dispatches to, so delaying it is what proves the sweep's wait on that close is bounded rather than
+    // however long the close itself takes.
     public class LockToken : IDisposable {
-        public void Dispose() { DiagSink.Locked = false; }
+        public void Dispose() { Thread.Sleep(DiagSink.DisposeDelayMs); DiagSink.Locked = false; }
     }
     public static class DiagSink {
-        public static int OpenDelayMs, LengthDelayMs, CloseDelayMs, LockDelayMs;
+        public static int OpenDelayMs, LengthDelayMs, CloseDelayMs, LockDelayMs, DisposeDelayMs;
         public static bool Closed, Locked;
         // The size the double reports, and which call it starts stalling on. Write-StatusDiag reads the
         // size once to decide whether a rollover is due and Invoke-StatusDiagRollover reads it again
@@ -5858,7 +5862,7 @@ namespace StatuslineTest {
         public static long LengthValue;
         public static int SlowFromCall, LengthCalls, LockCalls;
         public static void ResetLength() { LengthValue = 0L; SlowFromCall = 0; LengthCalls = 0; LengthDelayMs = 0; }
-        public static void ResetLock() { Locked = false; LockDelayMs = 0; LockCalls = 0; }
+        public static void ResetLock() { Locked = false; LockDelayMs = 0; DisposeDelayMs = 0; LockCalls = 0; }
         public static long Length() {
             int n = Interlocked.Increment(ref LengthCalls);
             if (SlowFromCall > 0 && n >= SlowFromCall) { Thread.Sleep(LengthDelayMs); }
@@ -6027,6 +6031,35 @@ namespace StatuslineTest {
         [StatuslineTest.DiagSink]::ResetLock()
         [StatuslineTest.DiagSink]::ResetLength()
 
+        # The sweep's own close (issue #49 review round 3 finding 1) is a filesystem call too - the one
+        # call in the sweep that touches a disk at all - and a slow one is exactly what this guard exists
+        # for: if the pending lock's Dispose stalls, the render sweeping it up must wait for its own
+        # bound, not for however long that close takes, the same answer the live lock's own close below
+        # already gives.
+        [StatuslineTest.DiagSink]::ResetLock()
+        [StatuslineTest.DiagSink]::ResetLength()
+        [StatuslineTest.DiagSink]::LengthValue = $diagCapBytes
+        [StatuslineTest.DiagSink]::LockDelayMs = 5000
+        Clear-DiagLog
+        Write-StatusDiag 'a record whose lock will not answer in time, again'
+        Start-Sleep -Milliseconds 5500
+        Confirm-True ([StatuslineTest.DiagSink]::Locked) 'diag rollover lock: the delayed lock from this round is also still marked held once it has finished, before the sweep has looked'
+        [StatuslineTest.DiagSink]::LockDelayMs = 0
+        [StatuslineTest.DiagSink]::DisposeDelayMs = 5000
+        $diagSweepSw = [System.Diagnostics.Stopwatch]::StartNew()
+        Write-StatusDiag 'a record whose sweep finds a slow close'
+        $diagSweepMs = $diagSweepSw.ElapsedMilliseconds
+        Confirm-True ($diagSweepMs -lt 2000) "diag rollover lock: the sweep's own close is bounded by this call's budget, not by how long the close takes, took $diagSweepMs ms (issue #49 review round 3 finding 1)"
+        # The close is abandoned, not cancelled: it keeps running in the background, and Locked comes
+        # back down once it actually finishes - the same "abandoned handle, process exit closes it"
+        # answer this file gives everywhere else a wait would cost more than it is worth.
+        $diagDisposeDeadline = [DateTime]::UtcNow.AddSeconds(8)
+        while ([StatuslineTest.DiagSink]::Locked -and [DateTime]::UtcNow -lt $diagDisposeDeadline) { Start-Sleep -Milliseconds 50 }
+        Confirm-True (-not [StatuslineTest.DiagSink]::Locked) 'diag rollover lock: the abandoned close still runs to completion in the background'
+        [StatuslineTest.DiagSink]::DisposeDelayMs = 0
+        [StatuslineTest.DiagSink]::ResetLock()
+        [StatuslineTest.DiagSink]::ResetLength()
+
         # A sink that answers at once still writes the record, so the checks above are of a path that
         # would otherwise work rather than one that never wrote anything.
         Clear-DiagLog
@@ -6053,8 +6086,8 @@ namespace StatuslineTest {
     # moves it aside first. The cap is spelled out here rather than read from the script, so the two
     # cannot agree with each other about a wrong number.
     #
-    # Every check from here to the end of the mutex section is about where the bytes go, never about how
-    # long the filesystem took, and they all go through a whole record - which carries a quarter-second
+    # Every check from here to the end of the rollover lock section is about where the bytes go, never
+    # about how long the filesystem took, and they all go through a whole record - which carries a quarter-second
     # budget for all of its filesystem calls. On a machine running four test suites at once that budget
     # is spent before the line is appended: the record is dropped, the log sits at exactly the cap, and
     # a check about rolling fails for a reason that is not in the script. That is #63. So the budget is
@@ -6262,6 +6295,7 @@ Start-Sleep -Seconds 60
     $diagLimitFn = [System.Management.Automation.Language.Parser]::ParseFile($script, [ref] $null, [ref] $null).Find(
         { param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-StatusDiagLimit' }, $true)
     Confirm-Equal ((Get-Item function:Get-StatusDiagLimit).Definition.Trim()) ($diagLimitFn.Body.Extent.Text.Trim().TrimStart('{').TrimEnd('}').Trim()) 'diag rollover: and the body is the script''s own rather than a replica'
+    if ($env:CLAUDE_TEST_STOP_AFTER_DIAG) { Write-Host "STOP_AFTER_DIAG reached, failed=$script:failed"; exit 77 }
 
     # The whole script, run twice on one payload: the log changes nothing a terminal would show, and
     # the run with it on leaves a log behind.

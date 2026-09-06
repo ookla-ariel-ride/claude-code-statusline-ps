@@ -121,20 +121,35 @@ function Read-StdinText() {
 # before it opens anything of its own. A render that reaches this function at all is what performs the
 # cleanup a background continuation cannot; one that never does again leaves the handle for the process
 # exit, the same answer this file gives everywhere else a wait would cost more than it is worth.
+# That dispose is a filesystem close - the one call in this sweep that touches the disk at all - so it
+# goes to the pool and is bounded by what is left of this call's own budget, floored the same 20 ms as
+# the live lock's own close below: a stalled share is exactly what this guard exists for, and closing a
+# finished handle from it on the render's own thread would reintroduce the wait the pool dispatch exists
+# to avoid. The list itself is bounded too, not just each entry in it: a share stalled long enough would
+# otherwise take one abandoned task per render forever, so once the finished ones are swept, anything
+# past the newest 8 still running is dropped from the list outright rather than kept waiting its turn -
+# abandoned for good, the same trade a call that never returns here again already makes with the one
+# it leaves behind.
 function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [int] $TimeoutMs) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $call = Get-StatusDiagDelegate $Path
     if ($null -eq $script:diagPendingLocks) { $script:diagPendingLocks = [System.Collections.Generic.List[object]]::new() }
     for ($i = $script:diagPendingLocks.Count - 1; $i -ge 0; $i--) {
         $pending = $script:diagPendingLocks[$i]
         if ($pending.IsCompleted) {
-            if ($pending.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) { try { $pending.Result.Dispose() } catch { $null = $_ } }
+            if ($pending.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) {
+                $closeLeft = [Math]::Max($TimeoutMs - [int] $sw.ElapsedMilliseconds, 20)
+                $closePending = [System.Threading.Tasks.Task]::Run([System.Delegate]::CreateDelegate([Action], $pending.Result, $script:diagUnlockMethod))
+                [void] [System.Threading.Tasks.Task]::WaitAny(@($closePending), $closeLeft)
+            }
             $script:diagPendingLocks.RemoveAt($i)
         }
     }
-    if ($TimeoutMs -le 0) { return }
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $call = Get-StatusDiagDelegate $Path
+    while ($script:diagPendingLocks.Count -gt 8) { $script:diagPendingLocks.RemoveAt(0) }
+    $left = $TimeoutMs - [int] $sw.ElapsedMilliseconds
+    if ($left -le 0) { return }
     $open = [System.Threading.Tasks.Task]::Run($call.Lock)
-    if ([System.Threading.Tasks.Task]::WaitAny(@($open), $TimeoutMs) -lt 0) {
+    if ([System.Threading.Tasks.Task]::WaitAny(@($open), $left) -lt 0) {
         $script:diagPendingLocks.Add($open)
         return
     }
