@@ -9561,15 +9561,37 @@ $ellipsisAscii = (Get-MarkSet 'ascii').Ellipsis
 # the SAME drawing here and both are accepted anyway, so the argument the installer bakes in can be the
 # `style` value from statusline.json whatever it says: the panel has no separators between segments and
 # no chevrons, which is the whole of what powerline changes on the main line.
-$subAxes = @(
-    @{ Label = 'default';         Args = @();                                    Icon = $iconRobot;      Ellipsis = $ellipsis;       ModelSgr = '1;36' }
-    @{ Label = 'plain dark';      Args = @('-Style', 'plain', '-Palette', 'dark');     Icon = $iconRobot;      Ellipsis = $ellipsis;       ModelSgr = '1;36' }
-    @{ Label = 'powerline dark';  Args = @('-Style', 'powerline', '-Palette', 'dark'); Icon = $iconRobot;      Ellipsis = $ellipsis;       ModelSgr = '1;36' }
-    @{ Label = 'ascii dark';      Args = @('-Style', 'ascii', '-Palette', 'dark');     Icon = $iconRobotAscii; Ellipsis = $ellipsisAscii;  ModelSgr = '1;36' }
-    @{ Label = 'plain light';     Args = @('-Style', 'plain', '-Palette', 'light');    Icon = $iconRobot;      Ellipsis = $ellipsis;       ModelSgr = '1;38;5;24' }
-    @{ Label = 'powerline light'; Args = @('-Style', 'powerline', '-Palette', 'light'); Icon = $iconRobot;     Ellipsis = $ellipsis;       ModelSgr = '1;38;5;24' }
-    @{ Label = 'ascii light';     Args = @('-Style', 'ascii', '-Palette', 'light');    Icon = $iconRobotAscii; Ellipsis = $ellipsisAscii;  ModelSgr = '1;38;5;24' }
-)
+#
+# BUILT FROM THE CONFIG TABLE'S OWN ALLOWED LISTS, not typed out: every style crossed with every
+# palette, so a fourth style or a third palette added to statusline.json arrives here as new matrix
+# rows that have to be answered for, rather than passing because nobody widened a literal list. The
+# argument-less default is prepended, because "no arguments at all" is the shape of every command
+# written before this feature existed and it has to keep drawing what it drew.
+$subStyles = @((Get-StatusConfigKey | Where-Object { $_.Json -eq 'style' }).Allowed)
+$subPalettes = @((Get-StatusConfigKey | Where-Object { $_.Json -eq 'palette' }).Allowed)
+# What each pairing is expected to draw, keyed off the axis rather than restated per row: the style
+# decides the glyph and the mark a clipped name ends with, the palette decides the model role's SGR.
+$subIconFor = @{ plain = $iconRobot; powerline = $iconRobot; ascii = $iconRobotAscii }
+$subEllipsisFor = @{ plain = $ellipsis; powerline = $ellipsis; ascii = $ellipsisAscii }
+$subModelSgrFor = @{ dark = '1;36'; light = '1;38;5;24' }
+Confirm-Equal (($subStyles | Sort-Object) -join ',') 'ascii,plain,powerline' 'subagent matrix: the styles come from the config table'
+Confirm-Equal (($subPalettes | Sort-Object) -join ',') 'dark,light' 'subagent matrix: the palettes come from the config table'
+$subAxes = @(@{ Label = 'default'; Args = @(); Style = 'plain'; Palette = 'dark' })
+foreach ($st in $subStyles) {
+    foreach ($pal in $subPalettes) {
+        $subAxes += @{ Label = "$st $pal"; Args = @('-Style', $st, '-Palette', $pal); Style = $st; Palette = $pal }
+    }
+}
+# Every row is answered for. A style or palette with no expectation here is a matrix row that would
+# assert nothing about what it draws, which is what these three tables existing separately risks.
+foreach ($axis in $subAxes) {
+    Confirm-True ($subIconFor.ContainsKey($axis.Style)) "subagent matrix [$($axis.Label)]: the style has an expected glyph"
+    Confirm-True ($subEllipsisFor.ContainsKey($axis.Style)) "subagent matrix [$($axis.Label)]: the style has an expected clip mark"
+    Confirm-True ($subModelSgrFor.ContainsKey($axis.Palette)) "subagent matrix [$($axis.Label)]: the palette has an expected model colour"
+    $axis.Icon = $subIconFor[$axis.Style]
+    $axis.Ellipsis = $subEllipsisFor[$axis.Style]
+    $axis.ModelSgr = $subModelSgrFor[$axis.Palette]
+}
 
 # Runs the subagent script in a child pwsh and reads stdout the way Claude Code does, through the one
 # reply parser this file has: line by line, each line an object with a string id and a string content,
@@ -9607,7 +9629,20 @@ foreach ($sample in $subSamples) {
         $content = $r.Rows[$id]
         Confirm-True ($ids -contains $id) "${label}: row id '$id' is one of the payload's tasks"
         Confirm-True ($content -notmatch "[`r`n]") "${label}/${id}: one line, no newline inside it"
-        Confirm-True ((ConvertTo-PlainText $content).Contains($axis.Icon)) "${label}/${id}: carries the style's own glyph"
+        $plain = ConvertTo-PlainText $content
+        Confirm-True ($plain.Contains($axis.Icon)) "${label}/${id}: carries the style's own glyph"
+        # Both halves, because the ascii stand-in is `@` and a payload could carry one of those itself:
+        # the Nerd Font glyph has to be ABSENT under ascii and present otherwise. Checking only that the
+        # stand-in appears would pass on a row that drew the robot beside an @ in somebody's name.
+        if ($axis.Style -eq 'ascii') {
+            Confirm-True (-not $plain.Contains($iconRobot)) "${label}/${id}: the private-use glyph is gone under ascii"
+        } else {
+            Confirm-True ($plain.Contains($iconRobot)) "${label}/${id}: the private-use glyph is what a font style draws"
+        }
+        # The palette decides the model role's SGR, and the glyph is always in it, so every row on every
+        # pairing carries the colour its palette asked for. Without this the palette half of the matrix
+        # launched a process and asserted nothing about the colours it came back with.
+        Confirm-True ($content.Contains("$esc[$($axis.ModelSgr)m$($axis.Icon)")) "${label}/${id}: the glyph is in the $($axis.Palette) palette's model colour"
         if ($cols -gt 0) {
             $w = Measure-VisibleWidth $content
             Confirm-True ($w -le $cols) "${label}/${id}: visible width $w fits the payload's $cols columns"
@@ -9793,14 +9828,17 @@ Confirm-Equal $rBoth.Rows['task_01'] "$esc[1;38;5;24m$iconRobotAscii Explore$esc
 
 # The mark a clipped name ends with follows the style too, and it is the only other character the panel
 # picks. At 20 columns the name is what gets cut, which is the case that puts it on the row.
-foreach ($case in @(
-        @{ Args = @();                   Mark = $ellipsis;      Label = 'the default' }
-        @{ Args = @('-Style', 'plain');  Mark = $ellipsis;      Label = 'plain' }
-        @{ Args = @('-Style', 'ascii');  Mark = $ellipsisAscii; Label = 'ascii' })) {
-    $c = Invoke-SubagentLine ('{ "columns": 20, "tasks": [ ' + $narrowTask + ' ] }') $case.Args
+# Driven off the same matrix, so every pairing's Ellipsis column is read rather than declared: the
+# style decides this character and the palette must not, which is only checked by running both.
+foreach ($axis in $subAxes) {
+    $c = Invoke-SubagentLine ('{ "columns": 20, "tasks": [ ' + $narrowTask + ' ] }') $axis.Args
     $text = ConvertTo-PlainText $c.Rows['n1']
-    Confirm-True ($text.Contains($case.Mark)) "subagent clip mark: $($case.Label) clips with its own mark, got '$text'"
-    Confirm-True ($c.Rows['n1'].Contains('60%') -and $c.Rows['n1'].Contains('120k')) "subagent clip mark: $($case.Label) keeps the figures"
+    Confirm-True ($text.Contains($axis.Ellipsis)) "subagent clip mark [$($axis.Label)]: clips with its own mark, got '$text'"
+    # And not with the other style's, which is the half that catches a clip tail that never changed:
+    # the two marks are different characters, so a row may carry one of them and not both.
+    $otherMark = if ($axis.Style -eq 'ascii') { $ellipsis } else { $ellipsisAscii }
+    Confirm-True (-not $text.Contains($otherMark)) "subagent clip mark [$($axis.Label)]: and not the other style's mark"
+    Confirm-True ($c.Rows['n1'].Contains('60%') -and $c.Rows['n1'].Contains('120k')) "subagent clip mark [$($axis.Label)]: keeps the figures"
 }
 # The glyph is the last thing to go at any width, in the ascii style as in the other two, so a row
 # never disappears. An empty stand-in would make this fail, which is why the panel does not take the
@@ -9954,7 +9992,7 @@ Confirm-True (-not (Test-Path -LiteralPath "$capBigFile.2")) 'capture oversize: 
 
 # The two ownership tests, driven directly. Both decide whether the uninstaller may delete something, so
 # each one is checked against the forms that must NOT count as ours as well as the ones that must.
-. (Import-ScriptFunction $installer @('Split-CommandArgument', 'Test-SamePath', 'Get-SubagentArgumentSpec', 'Test-OwnSubagentEntry', 'Test-OwnSubagentScript'))
+. (Import-ScriptFunction $installer @('Split-CommandArgument', 'Test-SamePath', 'Get-SubagentArgumentSpec', 'Get-StatusConfigReadLimit', 'Test-OwnSubagentEntry', 'Test-OwnSubagentScript'))
 $subagentMarkerLine = '# claude-code-statusline-ps:subagent-statusline'
 $subagentMarkerWithin = 10
 Confirm-True ((Get-Content -LiteralPath $installer -Raw).Contains("`$subagentMarkerLine = '$subagentMarkerLine'")) 'ownership: the marker the tests use is the one install.ps1 defines'
@@ -10014,6 +10052,50 @@ Confirm-Equal (($subArgSpec | Where-Object { $_.Name -eq 'Palette' }).Allowed -j
 # written before this feature existed - no arguments at all - draws what it always drew.
 Confirm-Equal (($subArgSpec | Where-Object { $_.Name -eq 'Style' }).Default) 'plain' 'subagent arguments: the style default is the shipped one'
 Confirm-Equal (($subArgSpec | Where-Object { $_.Name -eq 'Palette' }).Default) 'dark' 'subagent arguments: the palette default is the shipped one'
+# The statusline.json key each argument stands for, so the write loop and the read-back both name the
+# key the status line actually reads rather than a lower-cased parameter name that happens to match.
+Confirm-Equal (($subArgSpec | ForEach-Object { $_.Key }) -join ',') 'style,palette' 'subagent arguments: each row names its statusline.json key'
+# Detected marks the row -DetectTheme decides. It works out a background, so exactly one row - the
+# palette - may carry it; a second would mean the detection branch fires for a setting it cannot know.
+Confirm-Equal (@($subArgSpec | Where-Object { $_.Detected }).Count) 1 'subagent arguments: exactly one row is decided by the theme detection'
+Confirm-Equal (($subArgSpec | Where-Object { $_.Detected }).Name) 'Palette' 'subagent arguments: and it is the palette'
+
+# ---- THE FOUR COPIES OF THE SAME TWO ENUMS ----
+# statusline.json's allowed values (Get-StatusConfigKey), the installer's table (checked above), the
+# ValidateSet on the installer's own parameters, and the literal lists in the panel. None of them can
+# import from another - the panel loads nothing, and the ValidateSet is an attribute on a parameter -
+# so the only thing that can keep them together is reading all four out of the source and comparing.
+# Without this, a fourth style added to the config table and the panel but not to the ValidateSet is an
+# installer that refuses a value it would otherwise have written, and nothing fails until someone tries.
+function Get-ScriptParameterValidateSet([string] $Path, [string] $Name) {
+    $t = $null; $e = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref] $t, [ref] $e)
+    if ($e.Count -gt 0) { throw "parse error in ${Path}: $($e[0].Message)" }
+    $p = @($ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq $Name })
+    if ($p.Count -ne 1) { throw "expected one -$Name parameter in $Path, found $($p.Count)" }
+    $set = @($p[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })
+    if ($set.Count -ne 1) { return $null }
+    return @($set[0].PositionalArguments | ForEach-Object { $_.Value })
+}
+# The panel's lists, read off the Get-EnumArgument calls that consume them rather than off a comment,
+# so the assertion follows the values the script actually falls back through.
+function Get-PanelEnumList([string] $Path, [string] $VariableName) {
+    $text = Get-Content -LiteralPath $Path -Raw
+    $m = [regex]::Match($text, [regex]::Escape("`$$VariableName = Get-EnumArgument") + "\s+\`$\w+\s+@\(([^)]*)\)")
+    if (-not $m.Success) { throw "could not find the Get-EnumArgument call for `$$VariableName in $Path" }
+    return @($m.Groups[1].Value -split ',' | ForEach-Object { $_.Trim().Trim("'") })
+}
+foreach ($case in @(
+        @{ Json = 'style';   Param = 'Style';   Panel = 'styleName' }
+        @{ Json = 'palette'; Param = 'Palette'; Panel = 'paletteName' })) {
+    $allowed = ((Get-StatusConfigKey | Where-Object { $_.Json -eq $case.Json }).Allowed) -join ','
+    Confirm-Equal ((Get-ScriptParameterValidateSet (Resolve-Path $installer).Path $case.Param) -join ',') $allowed "enum copies: install.ps1's -$($case.Param) ValidateSet is statusline.json's $($case.Json) values"
+    Confirm-Equal ((Get-PanelEnumList (Resolve-Path $subScript).Path $case.Panel) -join ',') $allowed "enum copies: the panel's `$$($case.Panel) list is statusline.json's $($case.Json) values"
+}
+# The helpers above have to be able to fail, or the two assertions are decoration: a set that is not
+# there comes back $null and a list that is not there throws, and both are how a rename would show up.
+Confirm-Equal (Get-ScriptParameterValidateSet (Resolve-Path $installer).Path 'SettingsPath') $null 'enum copies: a parameter with no ValidateSet reads back as none'
+Confirm-True ((try { Get-PanelEnumList (Resolve-Path $subScript).Path 'notAVariable'; $false } catch { $true })) 'enum copies: a list that is not there is an error, not an empty answer'
 
 # The marker has to be a line of its own near the top. The token appearing anywhere else is not evidence
 # the file is ours, and treating it as such would delete somebody's script.
@@ -10199,6 +10281,73 @@ foreach ($bad in @(@('-Style', 'neon'), @('-Palette', 'sepia'))) {
 }
 $r = Invoke-Installer 'install -Subagents after the refused values' @('-Subagents', '-SettingsPath', $subSettings)
 Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent style refused: a good install after them is clean'
+
+# ---- An entry this installer owns is refreshed by ANY run that changes the pair ----
+# The command carries the style and the palette, so a run that changes either and leaves the entry
+# alone leaves it describing a status line that no longer exists. -Subagents creates the entry; it is
+# not required to keep it honest.
+Invoke-Installer 'install -Subagents before the refresh cases' @('-Subagents', '-Style', 'plain', '-Palette', 'dark', '-SettingsPath', $subSettings) | Out-Null
+Confirm-Equal (Read-SettingFile $subSettings).subagentStatusLine.command $expectSubCommand 'subagent refresh: the entry starts on the shipped pair'
+$r = Invoke-Installer 'install -Style ascii with NO -Subagents' @('-Style', 'ascii', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0) "subagent refresh: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "subagent refresh: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-Equal (Read-SettingFile $subSettings).subagentStatusLine.command "$expectSubCommandBare -Style ascii -Palette dark" 'subagent refresh: a run without -Subagents still brings the panel command along'
+Confirm-True ((($r.Lines -join "`n")) -match 'Refreshed subagentStatusLine') "subagent refresh: and says it refreshed it, got '$($r.Lines -join ' | ')'"
+# The refresh is ownership, not the switch: an entry this installer did not write is left exactly as
+# it is, and reported. This is the case that would rewrite somebody's own panel command if it regressed.
+$s = Read-SettingFile $subSettings
+$s.subagentStatusLine.command = 'node /home/me/my-own-panel.js'
+$s | ConvertTo-Json -Depth 32 | Set-Content -LiteralPath $subSettings -Encoding utf8NoBOM
+$r = Invoke-Installer 'install -Style plain over a foreign panel entry' @('-Style', 'plain', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent refresh foreign: exit code 0, stderr empty'
+Confirm-Equal (Read-SettingFile $subSettings).subagentStatusLine.command 'node /home/me/my-own-panel.js' 'subagent refresh foreign: a foreign command is not rewritten'
+Confirm-True ((($r.Lines -join "`n")) -match "Kept: the subagentStatusLine entry .* is not this installer's") "subagent refresh foreign: and the run says so, got '$($r.Lines -join ' | ')'"
+# A run that changes nothing about the pair leaves the entry byte for byte as it was, so "refresh"
+# does not mean "rewrite on every install".
+Remove-Item -LiteralPath $subSettings -Force
+Set-Content -LiteralPath $subSettings -Value '{ "theme": "dark" }' -Encoding utf8NoBOM
+Invoke-Installer 'install -Subagents before the no-op refresh' @('-Subagents', '-SettingsPath', $subSettings) | Out-Null
+$beforeCommand = (Read-SettingFile $subSettings).subagentStatusLine.command
+$r = Invoke-Installer 'install with no style switches at all' @('-SettingsPath', $subSettings)
+Confirm-Equal (Read-SettingFile $subSettings).subagentStatusLine.command $beforeCommand 'subagent refresh: a run that decides the same pair writes the same command'
+
+# ---- statusline.json is written BEFORE the command that has to agree with it ----
+# A config write that fails must not leave settings.json promising the value the file does not hold.
+# An unparseable statusline.json is the cheapest way to make Write-StatusConfigValue throw: it refuses
+# a file that does not read back as a JSON object, and Read-StatusConfigEnum answers $null for it too,
+# so the decided pair falls back to the defaults and the command has to carry THOSE.
+$subConfigTarget = Join-Path $subHome '.claude\statusline.json'
+Copy-Item -LiteralPath $subConfigTarget -Destination "$subConfigTarget.keep" -Force
+Set-Content -LiteralPath $subConfigTarget -Value 'this is not json' -Encoding utf8NoBOM
+$r = Invoke-Installer 'install -Subagents -Style ascii over an unparseable config' @('-Subagents', '-Style', 'ascii', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0) "subagent config-first: the install still finishes, exit $($r.ExitCode)"
+Confirm-Equal (Get-Content -LiteralPath $subConfigTarget -Raw).Trim() 'this is not json' 'subagent config-first: the file that could not be written is untouched'
+Confirm-Equal (Read-SettingFile $subSettings).subagentStatusLine.command $expectSubCommand 'subagent config-first: the command carries what the file yields, not what the switch asked for'
+$text = ($r.Lines + $r.Err) -join "`n"
+Confirm-True ($text -match 'asked for .*style.*ascii') "subagent config-first: the run says what was asked for, got '$text'"
+Confirm-True ($text -match 'command follows the file') "subagent config-first: and that the command followed the file instead"
+Move-Item -LiteralPath "$subConfigTarget.keep" -Destination $subConfigTarget -Force
+
+# ---- The installer reads statusline.json under the same size cap the render path does ----
+# Over the cap the status line falls back to its defaults, so the panel has to as well: the one rule
+# this feature keeps is that the two agree, and a file too big to read is the case where following it
+# would break that silently. The cap is checked at the seam, with a real file either side of it.
+Invoke-Installer 'install -Subagents -Style ascii -Palette light before the cap case' @('-Subagents', '-Style', 'ascii', '-Palette', 'light', '-SettingsPath', $subSettings) | Out-Null
+Confirm-Equal (Read-SettingFile $subSettings).subagentStatusLine.command "$expectSubCommandBare -Style ascii -Palette light" 'subagent cap: a config under the cap is followed'
+$subCfg = Get-Content -LiteralPath $subConfigTarget -Raw | ConvertFrom-Json
+$subCapBytes = (Get-BoundedReadLimit).MaxBytes
+Confirm-True ((Get-Item -LiteralPath $subConfigTarget).Length -le $subCapBytes) 'subagent cap: the config under test starts under the cap'
+$subCfg | Add-Member -NotePropertyName pad -NotePropertyValue ('x' * $subCapBytes) -Force
+$subCfg | ConvertTo-Json -Depth 32 | Set-Content -LiteralPath $subConfigTarget -Encoding utf8NoBOM
+Confirm-True ((Get-Item -LiteralPath $subConfigTarget).Length -gt $subCapBytes) 'subagent cap: and is over it once padded'
+$r = Invoke-Installer 'install -Subagents over an oversized config' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent cap: the install is still clean'
+Confirm-Equal (Read-SettingFile $subSettings).subagentStatusLine.command $expectSubCommand 'subagent cap: a config over the cap is ignored, so the panel gets the defaults the bar gets'
+Confirm-Equal ((Get-Content -LiteralPath $subConfigTarget -Raw | ConvertFrom-Json).style) 'ascii' 'subagent cap: and the oversized file itself is left alone'
+# The number is the status line's own, not a second opinion about how big is too big.
+Confirm-Equal (Get-StatusConfigReadLimit) (Get-BoundedReadLimit).MaxBytes 'subagent cap: the installer reads under the same cap the render path does'
+Remove-Item -LiteralPath $subConfigTarget -Force
+Invoke-Installer 'install -Subagents to restore the config' @('-Subagents', '-Style', 'plain', '-Palette', 'dark', '-SettingsPath', $subSettings) | Out-Null
 
 # Uninstall takes both entries out in a single write, so the .bak still holds the settings as they
 # were, and deletes both scripts. The switch is not needed for the removal.

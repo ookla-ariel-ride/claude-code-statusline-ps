@@ -163,10 +163,28 @@ main line, and it accepts the value anyway so the installer can pass `style` thr
 
 Where the pair comes from, highest first: `-Style` and `-Palette` on the installer, then the palette
 `-DetectTheme` worked out, then the `style` and `palette` already in `~/.claude/statusline.json`, then
-`plain` and `dark`. So editing `statusline.json` and running `.\install.ps1 -Subagents` again is what
-carries a change into the panel. It is fixed until then, which is the shape of the setting rather than
-a shortcut: a font belongs to the terminal and a background to its colour scheme, and neither of those
-changes between sessions.
+`plain` and `dark`. So editing `statusline.json` and running `.\install.ps1` again is what carries a
+change into the panel — any run of it, not only `-Subagents`: the installer refreshes a panel entry it
+recognises as its own, and `-Subagents` is only what creates one. It is fixed until then, which is the
+shape of the setting rather than a shortcut: a font belongs to the terminal and a background to its
+colour scheme, and neither of those changes between sessions.
+
+**Two things in that file the panel does not follow.** The installer reads the literal `style` and
+`palette` keys of your own `~/.claude/statusline.json`. A [preset](#presets) stands for a style without
+naming one, so it does not reach the panel; and a repository's own `.claude/statusline.json`, which the
+status line merges over yours per project (see [Configuration](#configuration)), does not either. Today the first
+changes nothing that is drawn, because all three presets name `plain` or `powerline` and the panel
+draws those the same. The second cannot be followed at all: one command serves the whole session, so
+there is no per-project answer for it to carry. Name `style` and `palette` in your own file if you want
+the panel to follow them. The same read also ignores a `statusline.json` over 64 KiB — so does the
+status line, so both fall back to the defaults together.
+
+**The command line is the installer's, not a place to configure this.** Change `style` or `palette` in
+`statusline.json` and run the installer again. Editing the command by hand has two failure modes the
+panel cannot defend against: an argument left half-typed — `-Style` with nothing after it — fails
+PowerShell's parameter binding *before* the script runs, so its error goes where the panel expects JSON
+and **every row goes blank**, not just the one argument; and an entry edited into a shape the installer
+does not recognise is one `-Uninstall` walks past and leaves behind.
 
 A value the panel does not know — from a command line edited by hand — falls back to the default and
 the row still renders. There is no `ValidateSet` on those parameters on purpose: a binding failure
@@ -316,6 +334,10 @@ value beneath it rather than to the built-in default. A project with no `.claude
 changes nothing, and so does an unreadable one. `-Config <path>` is the exception: it replaces the user
 file and skips the project file, so a render with it is the same whatever directory the payload names.
 
+The agent panel follows none of this. It takes its style and palette as arguments the installer bakes
+in from your **own** file, so a project file changes the bar in that repository and leaves the panel
+where it was. See [Style and palette in the panel](#style-and-palette-in-the-panel).
+
 **Both config files are read under the same budget: 64 KiB and 250 ms.** One clock covers every step of
 one file — the open, the size, each read and the close at the end — and it starts before the first
 filesystem call. The clock is per file, and the two are read one after the other, so a machine where
@@ -426,6 +448,11 @@ group either, so every segment renders inline in its ordinary place.
 
 Turning five segments off by hand is the first edit most people make, so the three usual shapes have
 names. The whole file can be `{"preset": "minimal"}`.
+
+A preset sets a style without naming one, and the installer reads the `style` key rather than the
+preset, so a preset does not reach the agent panel. It makes no visible difference today — all three
+name `plain` or `powerline`, which the panel draws identically — but name `style` yourself if you want
+to be sure. See [Style and palette in the panel](#style-and-palette-in-the-panel).
 
 | Preset | Layout | Style | Segments on |
 |---|---|---|---|
@@ -962,7 +989,9 @@ segment prints even when it does not fit.
 Colours look washed out, or the chevron between segments is invisible: the default colours are chosen
 for a dark terminal. Set `"palette": "light"` in `statusline.json`, or run `.\install.ps1 -DetectTheme`
 to have it read Windows Terminal's colour scheme and set the key for you. See
-[Light palette](#light-palette). The agent panel is not covered by the key and stays dark.
+[Light palette](#light-palette). The agent panel follows the same key: it reads no config file, so
+the installer bakes the palette into the command it writes - rerun `.install.ps1` after changing the
+key and the panel comes along. See [Style and palette in the panel](#style-and-palette-in-the-panel).
 
 `]8;;` or a URL printed as text on the line: the terminal does not understand OSC 8 hyperlinks and does
 not swallow them either. Set `"links": false` in `statusline.json` and the folder, branch and

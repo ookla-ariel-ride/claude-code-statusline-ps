@@ -31,6 +31,17 @@
 # See #78. The values are the same two enums statusline.json takes, folded to lower case and falling
 # back to the default when they are anything else - never a ValidateSet, because this command line can
 # be edited by hand and a panel that throws takes every row down with it.
+#
+# WHAT THE FALLBACK DOES NOT COVER, and cannot: a command line that TRUNCATES an argument. `-Style`
+# with nothing after it is a parameter binding failure, and binding happens before the first line of
+# this script runs, so PowerShell prints its own error where the panel expects JSON and every row goes
+# blank - not just the argument that was mistyped. No shape of parameter avoids that; reading $args by
+# hand instead would trade one panel-wide failure for a script that accepts anything and quietly draws
+# the wrong thing. THE COMMAND LINE IS THE INSTALLER'S, not a place to configure this: change `style`
+# or `palette` in statusline.json and run install.ps1 again, and the installer rewrites the command -
+# it refreshes an entry it recognises whether or not -Subagents is passed. Test-OwnSubagentEntry does
+# not recognise a truncated argument either, so an entry edited into that state is one -Uninstall
+# leaves behind, which is the other half of the same reason not to edit it.
 # `powerline` is accepted and draws exactly what `plain` draws: the panel has no separators between
 # segments and no chevrons, which is the whole of what that style changes on the main line. Accepting
 # it anyway is what lets the installer pass `style` through verbatim rather than mapping it.
@@ -287,6 +298,13 @@ function Get-PayloadText($v) {
 # The two arguments, read once, here rather than at the top of the file: this is where the only three
 # things they decide are built. Anything the lists do not hold falls back to the default and the row
 # still renders - see Get-EnumArgument for why that is not a ValidateSet.
+#
+# THE FOURTH COPY OF THESE TWO ENUMS, and the one furthest from the others: statusline.json's allowed
+# values live in Get-StatusConfigKey, the installer's in Get-SubagentArgumentSpec and again in the
+# ValidateSet on its parameters, and these literals are the panel's. They cannot be shared - this
+# script loads nothing, which is the same constraint that makes the copied helpers copies - so
+# test.ps1 reads all four out of the source and compares them. A value added to one list and not the
+# others is a failure there rather than a panel that silently refuses what the installer just wrote.
 $styleName = Get-EnumArgument $Style @('plain', 'powerline', 'ascii') 'plain'
 $paletteName = Get-EnumArgument $Palette @('dark', 'light') 'dark'
 

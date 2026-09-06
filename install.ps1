@@ -20,7 +20,9 @@
 .PARAMETER Subagents
   Also install subagent-statusline.ps1 and add a "subagentStatusLine" entry, the per-subagent line
   Claude Code renders in the agent panel. Its settings schema is {type, command} only, so the entry
-  carries no padding or vim key. Leave the switch out and neither the file nor the key is written.
+  carries no padding or vim key. Leave the switch out and neither the file nor the key is CREATED - but
+  an entry this installer already wrote is refreshed by any run that changes the style or the palette,
+  so the command never outlives the settings it describes.
   The command carries -Style and -Palette: the panel reads no config file, so the pair the status line
   will use is baked into the command here. It is the pair -Style and -Palette were given, else the one
   -DetectTheme worked out, else the one already in ~/.claude/statusline.json, else plain and dark. It
@@ -29,14 +31,16 @@
 
 .PARAMETER Style
   plain, powerline or ascii, written as the "style" key in ~/.claude/statusline.json (every other key
-  is kept) and carried into the subagentStatusLine command with -Subagents. Leave it out and both the
-  file and the panel keep the style already in that file. The panel draws ascii differently and draws
-  plain and powerline the same, because it has no separators to shape.
+  is kept) and carried into the subagentStatusLine command - which is refreshed whenever this installer
+  recognises the entry as its own, with or without -Subagents. Leave it out and both the file and the
+  panel keep the style already in that file. The panel draws ascii differently and draws plain and
+  powerline the same, because it has no separators to shape.
 
 .PARAMETER Palette
   dark or light, written as the "palette" key in ~/.claude/statusline.json (every other key is kept)
-  and carried into the subagentStatusLine command with -Subagents. It outranks -DetectTheme, which
-  still says what it found. Leave it out and the palette comes from the detection, or from the file.
+  and carried into the subagentStatusLine command, which is refreshed whenever this installer
+  recognises the entry as its own. It outranks -DetectTheme, which still says what it found. Leave it
+  out and the palette comes from the detection, or from the file.
 
 .PARAMETER DetectTheme
   Look at Windows Terminal's default colour scheme, work out whether its background is light or dark,
@@ -136,19 +140,28 @@ function Format-ScriptCommand([string] $ScriptPath) {
     return 'pwsh -NoProfile -NoLogo -NonInteractive -File "' + ($ScriptPath -replace '\\', '/') + '"'
 }
 
-# The arguments this installer puts on the subagentStatusLine command, the values each one takes, and
-# what it falls back to. ONE table with two readers - Format-SubagentCommand, which writes them, and
-# Test-OwnSubagentEntry, which recognises them - because those two disagreeing is worse here than
-# anywhere else in this file: an entry this installer wrote and no longer recognises is a key
-# -Uninstall walks past and leaves for the user to find.
+# The arguments this installer puts on the subagentStatusLine command: the parameter name, the
+# statusline.json key that holds the same setting, the values each takes, what it falls back to, and
+# whether -DetectTheme can decide it.
+#
+# ONE TABLE, AND EVERY READER LOOPS OVER IT. Format-SubagentCommand writes the arguments,
+# Test-OwnSubagentEntry recognises them, the decide block below works out the value of each, the
+# statusline.json write puts them in the file, and every printed line reads the answer back out. Those
+# disagreeing is worse here than anywhere else in this file: an entry this installer wrote and no
+# longer recognises is a key -Uninstall walks past and leaves for the user to find. A third argument
+# should be one row here and nothing else, and it was hand-unrolled into five places before this.
+#
 # The values are the ones statusline.json allows for `style` and `palette` and the ones the panel
-# accepts; test.ps1 compares this table against the status line's own key table rather than taking the
-# comment's word for it. A function and not a script variable, because test.ps1 lifts functions out of
-# this file by name and a script-level constant does not come with them.
+# accepts; test.ps1 compares this table against the status line's own key table, and against the
+# panel's own two lists and the ValidateSet below, rather than taking the comment's word for it.
+# A function and not a script variable, because test.ps1 lifts functions out of this file by name and
+# a script-level constant does not come with them.
 function Get-SubagentArgumentSpec {
     return @(
-        @{ Name = 'Style';   Allowed = @('plain', 'powerline', 'ascii'); Default = 'plain' }
-        @{ Name = 'Palette'; Allowed = @('dark', 'light');               Default = 'dark' }
+        @{ Name = 'Style';   Key = 'style';   Allowed = @('plain', 'powerline', 'ascii'); Default = 'plain'; Detected = $false }
+        # Detected: -DetectTheme works out a palette and nothing else, so the detection branch of the
+        # decide block is a property of this row rather than a name tested for in the loop.
+        @{ Name = 'Palette'; Key = 'palette'; Allowed = @('dark', 'light');               Default = 'dark';  Detected = $true }
     )
 }
 
@@ -157,28 +170,62 @@ function Get-SubagentArgumentSpec {
 # the two settings it needs are baked in here, from the same statusline.json the status line reads.
 # BOTH ARE ALWAYS WRITTEN, defaults included. A command that leaves them out would mean "whatever the
 # panel's own defaults are", which is a different promise from "what the status line draws today", and
-# the whole point of writing them is that the two agree. A value outside the table cannot get this far
-# - the parameters are ValidateSet and the config reader refuses anything else - and is defaulted here
-# rather than passed through, so this function cannot compose a command the ownership check refuses.
-function Format-SubagentCommand([string] $ScriptPath, [string] $Style, [string] $Palette) {
-    $chosen = @{ Style = $Style; Palette = $Palette }
+# the whole point of writing them is that the two agree.
+#
+# $Decided is the map the block below builds, one entry per row of the spec, so the composer reads the
+# same object every other reader does rather than a pair of positional strings that could be passed the
+# wrong way round.
+#
+# A value outside the table THROWS rather than being quietly defaulted. Nothing should be able to get
+# one this far - the parameters are ValidateSet, the config reader refuses anything else, and the
+# detection only ever answers with a row's own value - so a value that arrives here anyway means the
+# decide block has a bug, and defaulting it would compose a command that silently disagrees with
+# statusline.json. Throwing stops the install with the settings file untouched, which is the failure
+# this whole table exists to make impossible.
+function Format-SubagentCommand([string] $ScriptPath, $Decided) {
     $command = Format-ScriptCommand $ScriptPath
     foreach ($rec in Get-SubagentArgumentSpec) {
-        $v = ([string] $chosen[$rec.Name]).ToLowerInvariant()
-        if ($v -notin $rec.Allowed) { $v = $rec.Default }
+        $v = ([string] $Decided[$rec.Name].Value).ToLowerInvariant()
+        if ($v -notin $rec.Allowed) {
+            throw "Refusing to compose the subagentStatusLine command: -$($rec.Name) worked out to `"$v`", which is not one of $($rec.Allowed -join ', ')."
+        }
         $command += " -$($rec.Name) $v"
     }
     return $command
 }
 
+# The size cap this installer reads statusline.json under. The same 65536 the status line's own
+# Get-BoundedReadLimit uses, so a file the render path refuses to read is a file this refuses to read.
+# Written out rather than imported because install.ps1 loads nothing from statusline.ps1; test.ps1
+# compares the two numbers. A function rather than a script variable for the same reason the argument
+# spec is one: test.ps1 lifts functions out of this file by name, and a constant would not come along.
+function Get-StatusConfigReadLimit { return 65536 }
+
 # One enum value out of statusline.json, folded to lower case, or $null when the file, the key or the
 # value is not there or is not one of $Allowed - the same answer Merge-StatusConfigFile gives the same
-# key, and the reason the installer can read the file the panel does not: this runs once, by hand, and
-# not on a render, so it needs neither the bounded reader nor the whole defaults table.
+# key.
+#
+# BOUNDED THE SAME WAY THE RENDER PATH IS, and for a reason that is not this installer's own safety.
+# Read-BoundedFileText in statusline.ps1 refuses a config over 64 KiB and falls back to the defaults,
+# so a file over the cap gives the BAR its defaults; if this read had no cap the PANEL would be
+# installed with that file's values instead, and the one rule this feature exists to keep - the panel
+# draws what the status line draws - would break on exactly the file that is hardest to notice.
+# Same cap, same answer, both on the defaults.
+#
+# What is deliberately NOT copied is the 250 ms clock. That bound is there because a render may not
+# block; an installer someone typed may wait, and a slow disk should hold this up rather than silently
+# hand the panel a different answer from the bar's. So one divergence remains, stated rather than
+# hidden: a config on a share slow enough to trip the render's clock but not this read leaves the bar
+# on its defaults and the panel on the file's values. It needs a filesystem that answers in over 250 ms
+# and a user who reinstalls while it is that slow, and closing it would mean a panel whose settings
+# depend on how busy the disk was during the install.
 function Read-StatusConfigEnum([string] $Path, [string] $Name, [string[]] $Allowed) {
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $null }
     $obj = $null
     try {
+        $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+        # A directory, or anything without a length, is not a config file either.
+        if ($item -isnot [System.IO.FileInfo] -or $item.Length -gt (Get-StatusConfigReadLimit)) { return $null }
         $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
         if ($raw) { $obj = $raw | ConvertFrom-Json -ErrorAction Stop }
     } catch { return $null }
@@ -525,19 +572,27 @@ function Get-SchemeBackground([string] $Path) {
     return $answer
 }
 
-# Sets one top-level key in statusline.json and leaves every other key exactly as it was. The same
+# Sets top-level keys in statusline.json and leaves every other key exactly as it was. The same
 # atomic shape Write-UserSetting uses - serialize to a uniquely named sibling, read it back, then move
 # it over the destination - because the status line reads this file on every render and a reader must
 # never see a half-written one. No lock file: nothing else writes this file, and the render path only
 # reads it. The file is reformatted by the round trip through ConvertTo-Json, which is a cosmetic
 # change to a file the user may have laid out by hand, and is the price of not writing a JSON editor.
-function Write-StatusConfigValue([string] $Path, [string] $Name, $Value) {
+#
+# A MAP OF KEYS RATHER THAN ONE KEY, so `style` and `palette` are one read-modify-write and one move.
+# Called once per key this used to leave a window where the first key was committed and the second
+# threw - a file saying `ascii` and `dark` when the install had decided `ascii` and `light`, with the
+# subagentStatusLine command carrying the pair that was decided rather than the pair on disk. All the
+# keys land or none of them do.
+function Write-StatusConfigValue([string] $Path, $Values) {
     $obj = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
     if ($null -eq $obj -or $obj -isnot [System.Management.Automation.PSCustomObject]) {
         throw "Refusing to write $Path : it did not read back as a JSON object."
     }
-    if ($obj.PSObject.Properties[$Name]) { $obj.$Name = $Value }
-    else { $obj | Add-Member -NotePropertyName $Name -NotePropertyValue $Value }
+    foreach ($name in @($Values.Keys)) {
+        if ($obj.PSObject.Properties[$name]) { $obj.$name = $Values[$name] }
+        else { $obj | Add-Member -NotePropertyName $name -NotePropertyValue $Values[$name] }
+    }
     $json = ConvertTo-Json -InputObject $obj -Depth 32
     if (-not $json) { throw "Refusing to write $Path : it serialized to nothing." }
     $tmp = "$Path.tmp-$([System.IO.Path]::GetRandomFileName())"
@@ -669,25 +724,68 @@ if ($DetectTheme) {
 # table too. And a REPOSITORY's own .claude\statusline.json, which the status line merges over the user
 # file per project: the panel is one command for the whole session and there is no per-project answer
 # for it to carry, so it follows the user file and nothing else.
-$styleSpec = (Get-SubagentArgumentSpec | Where-Object { $_.Name -eq 'Style' })
-$paletteSpec = (Get-SubagentArgumentSpec | Where-Object { $_.Name -eq 'Palette' })
-$wantStyle = $PSBoundParameters.ContainsKey('Style')
-$wantPalette = $PSBoundParameters.ContainsKey('Palette')
-$effectiveStyle = $styleSpec.Default
-if ($wantStyle) {
-    $effectiveStyle = $Style.ToLowerInvariant()
-} else {
-    $fromFile = Read-StatusConfigEnum $configTarget 'style' $styleSpec.Allowed
-    if ($fromFile) { $effectiveStyle = $fromFile }
+#
+# One loop over the spec, one record per row, and every reader below iterates the same map: the
+# statusline.json write, the command composer, and every line printed about either. Want says the
+# switch was given; Write says this run puts the value into statusline.json (a switch, or the palette
+# the detection worked out); Source names where the value came from, for the messages; Written and
+# Error are filled in by the write and are what the messages are conditioned on, so nothing claims a
+# key landed that did not.
+$decided = [ordered]@{}
+foreach ($rec in Get-SubagentArgumentSpec) {
+    $want = $PSBoundParameters.ContainsKey($rec.Name)
+    $value = $rec.Default
+    $source = 'the built-in default'
+    if ($want) {
+        $value = ([string] $PSBoundParameters[$rec.Name]).ToLowerInvariant()
+        $source = "-$($rec.Name)"
+    } elseif ($rec.Detected -and $themePalette) {
+        $value = $themePalette
+        $source = 'theme detection'
+    } else {
+        $fromFile = Read-StatusConfigEnum $configTarget $rec.Key $rec.Allowed
+        if ($fromFile) { $value = $fromFile; $source = "the `"$($rec.Key)`" key already in $configTarget" }
+    }
+    $decided[$rec.Name] = @{
+        Name = $rec.Name; Key = $rec.Key; Want = $want; Source = $source
+        # Requested is what this run decided to put in the file; Value is what the file turned out to
+        # hold afterwards and is what the command carries. They differ exactly when a write failed,
+        # which is the case the messages below have to be able to tell apart.
+        Requested = $value; Value = $value
+        Write = ($want -or ($rec.Detected -and $null -ne $themePalette)); Written = $false; Error = $null
+    }
 }
-$effectivePalette = $paletteSpec.Default
-if ($wantPalette) {
-    $effectivePalette = $Palette.ToLowerInvariant()
-} elseif ($themePalette) {
-    $effectivePalette = $themePalette
-} else {
-    $fromFile = Read-StatusConfigEnum $configTarget 'palette' $paletteSpec.Allowed
-    if ($fromFile) { $effectivePalette = $fromFile }
+
+# ---- statusline.json first, THEN the command that has to agree with it ----
+# The order is the whole point. The panel's command is a claim about what the status line will draw,
+# and a claim written before the thing it describes can outlive it: this used to commit the pair into
+# settings.json and only then try statusline.json, where the write could be skipped (no file) or throw
+# and the run still exit 0, leaving a command promising `light` over a file that says `dark`.
+# So the file is written here, the values are read back from it, and the command is composed from what
+# the file NOW HOLDS. A write that fails leaves the file as it was and the command follows the file, so
+# the two still agree - on the old value, which is the honest answer - and the failure is printed.
+$configKeysToWrite = [ordered]@{}
+foreach ($d in $decided.Values) { if ($d.Write) { $configKeysToWrite[$d.Key] = $d.Requested } }
+if ($configKeysToWrite.Count -gt 0) {
+    if (-not (Test-Path -LiteralPath $configTarget)) {
+        foreach ($d in $decided.Values) { if ($d.Write) { $d.Error = "there is no $configTarget to write it into" } }
+    } else {
+        try {
+            Write-StatusConfigValue $configTarget $configKeysToWrite
+            foreach ($d in $decided.Values) { if ($d.Write) { $d.Written = $true } }
+        } catch {
+            $why = $_.Exception.Message
+            foreach ($d in $decided.Values) { if ($d.Write) { $d.Error = $why } }
+        }
+    }
+}
+# What the file holds now decides what the command says. A key that was written reads back as itself;
+# one whose write failed reads back as whatever survived, and the command carries that rather than the
+# value this run wanted. Anything the file cannot answer for falls back to the row's default, which is
+# the same rule Merge-StatusConfigFile applies to the same key.
+foreach ($rec in Get-SubagentArgumentSpec) {
+    $onDisk = Read-StatusConfigEnum $configTarget $rec.Key $rec.Allowed
+    $decided[$rec.Name].Value = if ($onDisk) { $onDisk } else { $rec.Default }
 }
 
 # The subagent script is staged beside its destination under a temporary name. A directory that cannot
@@ -717,8 +815,20 @@ if ($old) { $s.statusLine = $entry } else { $s | Add-Member -NotePropertyName st
 # The per-subagent line is a second command Claude Code runs for the agent panel. Its settings schema
 # is {type, command}, so no padding and no vim key go with it, and it is written into the same object
 # so both entries land in one write and one .bak.
-if ($Subagents) {
-    $subagentEntry = [pscustomobject]@{ type = 'command'; command = (Format-SubagentCommand $subagentTarget $effectiveStyle $effectivePalette) }
+#
+# WHEN THE ENTRY IS REWRITTEN, and it is not only under -Subagents. The command carries the style and
+# the palette, so a run that changes either - `-Style ascii`, `-Palette light`, `-DetectTheme` - and
+# leaves an installed panel entry alone would leave that entry describing a status line that no longer
+# exists: the bar redrawn in ascii on the next render, the panel still on the pair it was installed
+# with, and nothing said about it. So an entry that is ALREADY THIS INSTALLER'S is refreshed by any
+# run, whether or not -Subagents was passed. Ownership is the whole test, and it is the same
+# Test-OwnSubagentEntry -Uninstall uses: an entry someone else wrote is not ours to rewrite any more
+# than it is ours to delete. Only -Subagents CREATES one, so a user who has never asked for the panel
+# still gets no key.
+$panelOwned = $s.PSObject.Properties['subagentStatusLine'] -and (Test-OwnSubagentEntry $s.subagentStatusLine $subagentTarget)
+$panelForeign = $s.PSObject.Properties['subagentStatusLine'] -and -not $panelOwned
+if ($Subagents -or $panelOwned) {
+    $subagentEntry = [pscustomobject]@{ type = 'command'; command = (Format-SubagentCommand $subagentTarget $decided) }
     if ($s.PSObject.Properties['subagentStatusLine']) { $s.subagentStatusLine = $subagentEntry }
     else { $s | Add-Member -NotePropertyName subagentStatusLine -NotePropertyValue $subagentEntry }
 }
@@ -748,30 +858,36 @@ if ($Subagents) {
 # changed no key at all, and every path settings.json names is already a file on disk.
 Write-UserSetting $s $settingsPath
 Write-Host "Configured statusLine in $settingsPath (hideVimModeIndicator on$(if ($wantRefresh) { ", refreshInterval $RefreshInterval s" }))"
-if ($Subagents) { Write-Host "Configured subagentStatusLine in $settingsPath (style $effectiveStyle, palette $effectivePalette)" }
+if ($Subagents -or $panelOwned) {
+    $pair = (@(Get-SubagentArgumentSpec | ForEach-Object { "$($_.Key) $($decided[$_.Name].Value)" }) -join ', ')
+    $verb = if ($Subagents) { 'Configured' } else { 'Refreshed' }
+    $why = if ($Subagents) { '' } else { ' (it is this installer''s, and the pair it carried is no longer what the status line uses)' }
+    Write-Host "$verb subagentStatusLine in $settingsPath ($pair)$why"
+} elseif ($panelForeign) {
+    Write-Warning "Kept: the subagentStatusLine entry in $settingsPath is not this installer's, so the style and palette on it were left alone."
+}
 } finally {
     # A staged file still under its temporary name means the install did not finish; it is this script's
     # to clean up either way.
     if ($subagentStaged -and (Test-Path -LiteralPath $subagentStaged)) { Remove-Item -LiteralPath $subagentStaged -Force -ErrorAction SilentlyContinue }
 }
 
-# The keys that go into statusline.json, written after the install so the file is at its destination,
-# and after the settings write so nothing here can stand between a working install and the entry that
-# names it. A switch is written because it was asked for; the detected palette is written only when no
-# -Palette said otherwise. The values are the same ones the subagentStatusLine command above carries,
-# so the line and the panel are installed agreeing.
-foreach ($rec in @(@{ Switch = 'Style'; Key = 'style'; Want = $wantStyle; Value = $effectiveStyle },
-                   @{ Switch = 'Palette'; Key = 'palette'; Want = $wantPalette; Value = $effectivePalette })) {
-    if (-not $rec.Want) { continue }
-    if (-not (Test-Path -LiteralPath $configTarget)) {
-        Write-Warning "-$($rec.Switch) was given as `"$($rec.Value)`", but there is no $configTarget to write it into. The subagent command still carries it."
-        continue
-    }
-    try {
-        Write-StatusConfigValue $configTarget $rec.Key $rec.Value
-        Write-Host "Wrote `"$($rec.Key)`": `"$($rec.Value)`" to $configTarget; every other key was kept."
-    } catch {
-        Write-Warning "Could not write `"$($rec.Key)`" to $configTarget : $($_.Exception.Message)"
+# What the statusline.json write above actually did, one line per key that was meant to change, read
+# off the outcome rather than assumed from the intent. The write itself happened before the settings
+# entry, because the command has to be composed from the file; the REPORTING is here, after the
+# install, so a line about a config key never sits between a working install and the entry naming it.
+# A switch is written because it was asked for; the detected palette is written only when no -Palette
+# said otherwise; and a key whose write failed says so and says what the command carries instead.
+foreach ($rec in Get-SubagentArgumentSpec) {
+    $d = $decided[$rec.Name]
+    if (-not $d.Write) { continue }
+    # The -DetectTheme block below tells the whole story for the row it decides - what it found, what it
+    # chose and what became of the write - so this loop does not say half of it first.
+    if ($DetectTheme -and $rec.Detected) { continue }
+    if ($d.Written) {
+        Write-Host "Wrote `"$($d.Key)`": `"$($d.Value)`" to $configTarget; every other key was kept."
+    } else {
+        Write-Warning "$($d.Source) asked for `"$($d.Key)`": `"$($d.Requested)`", but $($d.Error). The subagentStatusLine command follows the file, so it carries `"$($d.Value)`" instead."
     }
 }
 
@@ -784,26 +900,27 @@ if ($DetectTheme) {
     # empty band. The scheme name is printed beside the number because THIS IS A READ OF A
     # CONFIGURATION, NOT A LOOK AT YOUR SCREEN - a session in conhost, VS Code, an SSH client or a
     # profile that is not the default one is a terminal this never saw.
+    # The write is up above too, in the one batch that puts every decided key in the file at once; what
+    # is left here is the explanation, and EVERY BRANCH READS THE OUTCOME rather than restating the
+    # intent. "-Palette was given, so that is what was written" was printed unconditionally before this,
+    # including on runs where the write was skipped for want of a file or had thrown - the one line a
+    # user would check to find out what happened, saying the opposite of what did.
     $found = $themeFound
     $lum = $themeLuminance
-    if ($wantPalette) {
+    $p = $decided['Palette']
+    $landed = if ($p.Written) { "Wrote `"palette`": `"$($p.Requested)`" to $configTarget; every other key was kept." }
+              else { "Nothing was written: $($p.Error). $configTarget still says `"$($p.Value)`"." }
+    if ($p.Want) {
         # -Palette is the user saying in so many words what the detection was there to guess, so the
         # guess does not overwrite it. It is still reported: a probe silenced without a word is a probe
         # nobody can check, and the two answers disagreeing is worth seeing.
         $saw = if ($null -ne $lum) { "would have chosen $themePalette from colour scheme `"$($found.Scheme)`"" } else { "could not tell: $($found.Reason)" }
-        Write-Host "Theme detection: -Palette $effectivePalette was given, so that is what was written. Detection $saw."
+        Write-Host "Theme detection: -Palette $($p.Requested) was given, so the detection did not decide this. Detection $saw. $landed"
     } elseif ($null -eq $lum) {
         Write-Host "Theme detection: $($found.Reason). Nothing was written, so $configTarget keeps the palette it had - dark unless you have set one. Set `"palette`" to `"light`" in that file by hand if your terminal has a pale background."
-    } elseif (-not (Test-Path -LiteralPath $configTarget)) {
-        Write-Warning "Theme detection found a background of $($found.Background), but there is no $configTarget to write it into."
     } else {
-        try {
-            Write-StatusConfigValue $configTarget 'palette' $themePalette
-            Write-Host ("Theme detection: Windows Terminal's default profile uses colour scheme `"{0}`" ({1}), whose background {2} has a relative luminance of {3:N3}. Wrote `"palette`": `"{4}`" to {5}; every other key was kept." -f $found.Scheme, $found.Reason, $found.Background, $lum, $themePalette, $configTarget)
-            Write-Host "  If that is not the terminal you use Claude Code in, edit that one key."
-        } catch {
-            Write-Warning "Theme detection chose the $themePalette palette but could not write it to $configTarget : $($_.Exception.Message)"
-        }
+        Write-Host ("Theme detection: Windows Terminal's default profile uses colour scheme `"{0}`" ({1}), whose background {2} has a relative luminance of {3:N3}, so it chose `"{4}`". {5}" -f $found.Scheme, $found.Reason, $found.Background, $lum, $p.Requested, $landed)
+        if ($p.Written) { Write-Host "  If that is not the terminal you use Claude Code in, edit that one key." }
     }
 }
 
