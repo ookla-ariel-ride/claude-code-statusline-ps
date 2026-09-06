@@ -8,14 +8,16 @@ A PowerShell status line for [Claude Code](https://code.claude.com) on Windows. 
 
 ![Status line rendered in Windows Terminal with JetBrainsMono Nerd Font](docs/statusline.png)
 
-Left to right: model, context meter, cost, lines changed, rate limits, session badges, the pull
-request, folder, and the branch with its change counts. Each segment starts with a Nerd Font icon,
-which GitHub cannot show in text, so the rest of this file names the icons instead.
+Left to right: model, context meter, cache warmth, cost, session clock, lines changed, rate limits,
+session badges, the pull request, folder, and the branch with its change counts — the eleven segments
+that ship on by default. Each segment starts with a Nerd Font icon, which GitHub cannot show in text,
+so the rest of this file names the icons instead.
 
 ![Two-line powerline layout](docs/statusline-two-line.png)
 
-The same data in the two-line powerline layout. Both come from one script; a small JSON file
-picks the layout and style.
+The same data in the two-line powerline layout, with the twelfth segment - the wall clock, off by
+default - turned on too, so this is the one image that shows every segment at once. Both come from
+one script; a small JSON file picks the layout, the style, and which segments are on.
 
 ## About
 
