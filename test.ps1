@@ -5735,7 +5735,10 @@ namespace StatuslineTest {
     # already rotating appends rather than waiting on it. A mutex belongs to a thread and is reentrant,
     # so only another process can hold it against this one: a child pwsh takes it, says so by writing a
     # file, and keeps it until this one says to let go. The name is spelled out here rather than read
-    # from the script, so the two cannot agree with each other about the wrong one.
+    # from the script, so the two cannot agree with each other about the wrong one - including the
+    # Global\ prefix (issue #49): drop it from either side and the two processes stop contending for
+    # the same table, the child's "held" file still appears, but the rollover below happens when it
+    # should not, which is what pins the prefix rather than just the name.
     Clear-DiagLog
     Clear-DiagRollover
     [System.IO.File]::WriteAllText($diagLog, ('y' * $diagCap))
@@ -5780,7 +5783,6 @@ $m.Dispose()
     Confirm-Equal (Get-DiagLine).Count 1 'diag rollover lock: and the fresh log holds only the new record'
     Clear-DiagLog
     Clear-DiagRollover
-    if ($env:CLAUDE_TEST_STOP_AFTER_DIAG) { Write-Host "STOP_AFTER_DIAG reached, failed=$script:failed"; exit 77 }
 
     # The whole script, run twice on one payload: the log changes nothing a terminal would show, and
     # the run with it on leaves a log behind.
