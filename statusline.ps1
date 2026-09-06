@@ -23,6 +23,29 @@ function G([int] $cp) { [char]::ConvertFromUtf32($cp) }
 $e = [char]27
 function C([string] $code, [string] $text) { "$e[${code}m$text$e[0m" }
 
+# The payload, read as UTF-8 whatever the console is set to. Claude Code sends UTF-8; [Console]::In
+# decodes with the console's INPUT code page, which is 437 on an ordinary Windows console and is the
+# machine's OEM one in a console the host makes fresh for the render, whatever the terminal is set to.
+# So a branch, a folder or a name that was not English arrived here as mojibake before any segment had
+# seen it - two characters of Japanese in, six of Latin-1 and box drawing out - in every style, on
+# every render. The reader below names the encoding instead, which is the whole fix. Assigning
+# [Console]::InputEncoding was the other way to do it and is worse: it writes the console's own code
+# page, which this script does not own and which outlives the process.
+# detectEncodingFromByteOrderMarks is left on, so a payload written with a byte order mark has it
+# consumed rather than left on the front of the string where ConvertFrom-Json would refuse it, and one
+# written as UTF-16 by some other producer is read rather than becoming a line of NULs. The encoding
+# emits no mark of its own, and nothing is ever written through this reader in any case.
+# Everything is swallowed and answered with the empty string, which is what an empty stdin already
+# gives and what every caller downstream already handles: a status line that throws where the line
+# should be is worse than one that prints its fallback.
+function Read-StdinText() {
+    $reader = $null
+    try {
+        $reader = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false), $true)
+        return $reader.ReadToEnd()
+    } catch { return '' } finally { if ($null -ne $reader) { $reader.Dispose() } }
+}
+
 # ---- Diagnostics log ----
 # The git probe, the probe cache and the state file swallow every failure on purpose: a status line
 # that throws, or that prints an error where the branch should be, is worse than one that is a little
@@ -1799,7 +1822,7 @@ function Write-SessionState([string] $SessionId, $State) {
     } catch { if ($script:diagOn) { Write-StatusDiag "state write failed: $($_.Exception.Message)" } }
 }
 
-$raw = [Console]::In.ReadToEnd()
+$raw = Read-StdinText
 $payloadOk = $true
 $d = $null
 try { $d = $raw | ConvertFrom-Json } catch { $payloadOk = $false }

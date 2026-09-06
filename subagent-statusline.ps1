@@ -23,9 +23,10 @@
 # the dark palette whatever statusline.json says about `style` or `palette`. See #78 and the note
 # above Get-Palette.
 #
-# The helpers below, G, C, Get-VisibleWidth, Get-Palette, Get-ThresholdRole, Test-WideWindow, K,
-# Get-FiniteNumber, Get-PayloadNumber and Test-PayloadText, are copied verbatim from statusline.ps1
-# and test.ps1 checks that the two copies stay byte-identical. They cannot be shared by dot-sourcing:
+# The helpers below, G, C, Read-StdinText, Get-VisibleWidth, Get-Palette, Get-ThresholdRole,
+# Test-WideWindow, K, Get-FiniteNumber, Get-PayloadNumber and Test-PayloadText, are copied verbatim
+# from statusline.ps1 and test.ps1 checks that the two copies stay byte-identical. They cannot be
+# shared by dot-sourcing:
 # statusline.ps1 reads stdin to the end and prints as it loads, so loading it here would eat this
 # script's payload and print a status line.
 [CmdletBinding()]
@@ -38,6 +39,29 @@ $PSStyle.OutputRendering = 'Ansi'
 function G([int] $cp) { [char]::ConvertFromUtf32($cp) }
 $e = [char]27
 function C([string] $code, [string] $text) { "$e[${code}m$text$e[0m" }
+
+# The payload, read as UTF-8 whatever the console is set to. Claude Code sends UTF-8; [Console]::In
+# decodes with the console's INPUT code page, which is 437 on an ordinary Windows console and is the
+# machine's OEM one in a console the host makes fresh for the render, whatever the terminal is set to.
+# So a branch, a folder or a name that was not English arrived here as mojibake before any segment had
+# seen it - two characters of Japanese in, six of Latin-1 and box drawing out - in every style, on
+# every render. The reader below names the encoding instead, which is the whole fix. Assigning
+# [Console]::InputEncoding was the other way to do it and is worse: it writes the console's own code
+# page, which this script does not own and which outlives the process.
+# detectEncodingFromByteOrderMarks is left on, so a payload written with a byte order mark has it
+# consumed rather than left on the front of the string where ConvertFrom-Json would refuse it, and one
+# written as UTF-16 by some other producer is read rather than becoming a line of NULs. The encoding
+# emits no mark of its own, and nothing is ever written through this reader in any case.
+# Everything is swallowed and answered with the empty string, which is what an empty stdin already
+# gives and what every caller downstream already handles: a status line that throws where the line
+# should be is worse than one that prints its fallback.
+function Read-StdinText() {
+    $reader = $null
+    try {
+        $reader = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false), $true)
+        return $reader.ReadToEnd()
+    } catch { return '' } finally { if ($null -ne $reader) { $reader.Dispose() } }
+}
 
 # Visible cell width of a rendered line: escapes stripped, combining marks and the Unicode Format
 # characters 0, CJK and emoji 2, else 1. Format is the whole category rather than the U+200B to U+200D
@@ -279,7 +303,7 @@ function Format-SubagentRow($task, [int] $Width) {
 # Anything unusable prints nothing and exits 0. A bare glyph is not valid JSON, so it cannot stand in
 # for a whole-payload failure the way the main script's fallback line does; the per-row fallback below
 # covers a task whose own fields are all unusable.
-$raw = [Console]::In.ReadToEnd()
+$raw = Read-StdinText
 $d = $null
 if ($raw) { try { $d = $raw | ConvertFrom-Json } catch { $d = $null } }
 if ($d -isnot [System.Management.Automation.PSCustomObject]) { exit 0 }

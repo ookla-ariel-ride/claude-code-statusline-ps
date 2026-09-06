@@ -75,15 +75,24 @@ function Write-CaptureStop([string] $Reason) {
 # Reads at most $MaxChars characters from stdin and stops, so a payload of any size costs a bounded
 # amount of memory. What is left unread goes nowhere; this is a capture stub and the record is cut to
 # the cap below in any case.
+# UTF-8 explicitly, and for the same reason statusline.ps1 reads its payload that way: [Console]::In
+# decodes with the console's INPUT code page, so a capture taken through it wrote a file of mojibake
+# whenever the session's text was not English - which is exactly the session someone reaches for this
+# stub to look at. The file is written as UTF-8 further down, so decoding it as anything else here is
+# the one thing that could not be recovered afterwards. A byte order mark on the front is consumed
+# rather than captured.
 function Read-BoundedInput([int] $MaxChars) {
     $sb = [System.Text.StringBuilder]::new()
     $buf = [char[]]::new(8192)
-    while ($sb.Length -lt $MaxChars) {
-        $want = [Math]::Min($buf.Length, $MaxChars - $sb.Length)
-        $n = [Console]::In.Read($buf, 0, $want)
-        if ($n -le 0) { break }
-        [void] $sb.Append($buf, 0, $n)
-    }
+    $reader = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false), $true)
+    try {
+        while ($sb.Length -lt $MaxChars) {
+            $want = [Math]::Min($buf.Length, $MaxChars - $sb.Length)
+            $n = $reader.Read($buf, 0, $want)
+            if ($n -le 0) { break }
+            [void] $sb.Append($buf, 0, $n)
+        }
+    } finally { $reader.Dispose() }
     return $sb.ToString()
 }
 
