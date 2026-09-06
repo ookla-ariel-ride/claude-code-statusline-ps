@@ -10095,7 +10095,10 @@ foreach ($case in @(
 # The helpers above have to be able to fail, or the two assertions are decoration: a set that is not
 # there comes back $null and a list that is not there throws, and both are how a rename would show up.
 Confirm-Equal (Get-ScriptParameterValidateSet (Resolve-Path $installer).Path 'SettingsPath') $null 'enum copies: a parameter with no ValidateSet reads back as none'
-Confirm-True ((try { Get-PanelEnumList (Resolve-Path $subScript).Path 'notAVariable'; $false } catch { $true })) 'enum copies: a list that is not there is an error, not an empty answer'
+# `try` is a statement, not an expression, so this cannot be folded into the Confirm-True argument.
+$enumListThrew = $false
+try { Get-PanelEnumList (Resolve-Path $subScript).Path 'notAVariable' | Out-Null } catch { $enumListThrew = $true }
+Confirm-True $enumListThrew 'enum copies: a list that is not there is an error, not an empty answer'
 
 # The marker has to be a line of its own near the top. The token appearing anywhere else is not evidence
 # the file is ours, and treating it as such would delete somebody's script.
