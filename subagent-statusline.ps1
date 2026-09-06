@@ -123,7 +123,7 @@ function Get-Palette([string] $Palette = 'dark') {
         Roles = @{
             model  = @{ Sgr = '1;36'; Fg = 231; Bg = 31 }
             ok     = @{ Sgr = '32';   Fg = 231; Bg = 28 }
-            warn   = @{ Sgr = '33';   Fg = 16;  Bg = 178 }
+            warn   = @{ Sgr = '33';   Fg = 231; Bg = 130 }
             bad    = @{ Sgr = '31';   Fg = 231; Bg = 160 }
             dim    = @{ Sgr = '90';   Fg = 250; Bg = 238 }
             folder = @{ Sgr = '34';   Fg = 231; Bg = 25 }
@@ -131,10 +131,10 @@ function Get-Palette([string] $Palette = 'dark') {
         }
         Inline = @{
             added   = @{ Sgr = '32'; Fg = 46 }
-            removed = @{ Sgr = '31'; Fg = 203 }
-            track   = @{ Sgr = '90'; Fg = 245 }
-            muted   = @{ Sgr = '22;36'; Fg = 152 }
-            cached  = @{ Sgr = '90'; Fg = 244 }
+            removed = @{ Sgr = '31'; Fg = 224 }
+            track   = @{ Sgr = '90'; Fg = 255 }
+            muted   = @{ Sgr = '22;36'; Fg = 159 }
+            cached  = @{ Sgr = '90'; Fg = 254 }
         }
     }
 }

@@ -1064,18 +1064,39 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
 #      light theme, and a light table that could not say what a colour looks like would be no better
 #      than the dark one.
 #   2. A powerline block's own pair clears 4.5:1. All seven are near-black text on a pale block, which
-#      is the dark table's near-white-on-saturated turned over; the worst is dim at 6.95.
+#      is the dark table's near-white-on-saturated turned over; the worst is dim at 6.95. The dark
+#      table is held to 4.0 rather than 4.5 on this one, because its own floor is model, 231 on 31, at
+#      4.13 and this table's block backgrounds are not what #82 set out to retune; the bar is there so
+#      a background moved for rule 4 cannot be moved out from under the block's own text.
 #   3. A block's background clears 1.7:1 against the terminal's own ground, because the trailing arrow
 #      paints that background as a FOREGROUND on the terminal and every block edge is the same
 #      boundary. The light table's worst is bad, 217, at 1.75; the dark table's is dim, 238, at 2.01
 #      against Campbell, so the same rule holds for both.
 #   4. An inline foreground clears 4.5:1 on the ground in plain style and 3:1 inside every block in
-#      powerline, since a marker sits inside whichever segment called Format-Inline. The dark table
-#      does not meet the second half of that - its worst inline pairing is 1.05:1, `cached` on the
-#      model block - and it is left as it is: the numbers are on everyone's line already.
+#      powerline, since a marker sits inside whichever segment called Format-Inline.
+#
+# WHY THE DARK MARKERS AND THE WARN BLOCK MOVED (#82). The dark table predates rule 4 and did not meet
+# it: `cached` 244 on the model block measured 1.05:1, which is one colour drawn on itself for all a
+# reader can tell, so the `92% cached` suffix was simply absent on a default line. Four of the five
+# markers failed somewhere, and the arithmetic says why a foreground-only fix was not available. A
+# marker has ONE colour and lands in whichever block called it, so it has to clear the darkest and the
+# lightest block at once. The old warn block, 178 (#D7AF00), has relative luminance 0.45 while dim, 238
+# (#444444), has 0.058: anything readable on the yellow has to be darker than 0.117, anything readable
+# on the dim has to be lighter than 0.273, and no colour is both. The warn block was the outlier - the
+# one LIGHT block in a table of dark ones, and the only reason it needed black text - so it moved to
+# 130 (#AF5F00), a burnt orange in the same hue family at luminance 0.17, with white text like every
+# other block. With that one background in the family, the markers keep their hues and only get
+# brighter: removed 203 -> 224, track 245 -> 255, muted 152 -> 159, cached 244 -> 254, and added stays
+# at 46. On a dark palette "quieter" cannot mean darker - a marker darker than these blocks is
+# unreadable on them - so the quiet markers are pale rather than mid grey.
+# The floor is checked against EVERY block, not the pairs today's segment builders happen to produce,
+# because a role moving between segments must not be able to reopen this. The tightest pairing is added
+# 46 inside the model block at 3.01:1, which is the whole margin the xterm cube leaves for a green that
+# saturated; the rest are 3.14 and up.
 # Role for role the two tables line up: ok is the same green as inline added, bad the same red as
 # removed, track and cached the same grey as dim, and muted is the model's own colour at normal
-# intensity, which is why its code opens with 22 in both tables.
+# intensity, which is why its code opens with 22 in both tables. In the dark table the inline greys are
+# lighter than dim's own 250 rather than darker, which is rule 4 asking for it.
 function Get-Palette([string] $Palette = 'dark') {
     if ($Palette -eq 'light') {
         return @{
@@ -1101,7 +1122,7 @@ function Get-Palette([string] $Palette = 'dark') {
         Roles = @{
             model  = @{ Sgr = '1;36'; Fg = 231; Bg = 31 }
             ok     = @{ Sgr = '32';   Fg = 231; Bg = 28 }
-            warn   = @{ Sgr = '33';   Fg = 16;  Bg = 178 }
+            warn   = @{ Sgr = '33';   Fg = 231; Bg = 130 }
             bad    = @{ Sgr = '31';   Fg = 231; Bg = 160 }
             dim    = @{ Sgr = '90';   Fg = 250; Bg = 238 }
             folder = @{ Sgr = '34';   Fg = 231; Bg = 25 }
@@ -1109,10 +1130,10 @@ function Get-Palette([string] $Palette = 'dark') {
         }
         Inline = @{
             added   = @{ Sgr = '32'; Fg = 46 }
-            removed = @{ Sgr = '31'; Fg = 203 }
-            track   = @{ Sgr = '90'; Fg = 245 }
-            muted   = @{ Sgr = '22;36'; Fg = 152 }
-            cached  = @{ Sgr = '90'; Fg = 244 }
+            removed = @{ Sgr = '31'; Fg = 224 }
+            track   = @{ Sgr = '90'; Fg = 255 }
+            muted   = @{ Sgr = '22;36'; Fg = 159 }
+            cached  = @{ Sgr = '90'; Fg = 254 }
         }
     }
 }
