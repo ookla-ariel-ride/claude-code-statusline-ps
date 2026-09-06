@@ -5409,9 +5409,11 @@ $badEntries = @(
     @{ Name = 'stamps with an extra field'; Change = { param($j) $j.stamps = $j.stamps + ',0' } }
     @{ Name = 'string writtenAt';     Change = { param($j) $j.writtenAt = 'now' } }
     @{ Name = 'writtenAt missing';    Change = { param($j) $j.PSObject.Properties.Remove('writtenAt') } }
-    # Over the byte cap of the bounded read. An entry this script wrote is a few hundred bytes, so one
-    # this size is a file something else put there, and it is a miss like any other unusable entry.
-    @{ Name = 'over the byte cap';    Text = '{ "v": 1, "pad": "' + ('x' * (Get-BoundedReadLimit).MaxBytes) + '" }' }
+    # Over the byte cap of the bounded read. Everything else about this entry is right - the root, the
+    # stamps, the time, the record - so it would HIT if the cap were not there, which is what makes it a
+    # test of the cap rather than of the guards. An entry this script wrote is a few hundred bytes, so
+    # one this size is a file something else put there.
+    @{ Name = 'over the byte cap';    Change = { param($j) $j | Add-Member -NotePropertyName pad -NotePropertyValue ('x' * (Get-BoundedReadLimit).MaxBytes) -Force } }
 )
 foreach ($case in $badEntries) {
     $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
