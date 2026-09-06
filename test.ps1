@@ -5897,6 +5897,34 @@ $s.Dispose()
     Clear-DiagLog
     Clear-DiagRollover
 
+    # A lock file with no write permission at all - the shape a different user's leftover lock takes,
+    # unopenable by anyone forever rather than by this process for as long as a holder lives - is not
+    # "held elsewhere" (issue #49 review): it throws UnauthorizedAccessException rather than the
+    # IOException a sharing conflict gives, so it is let through rather than read as contention, and
+    # drops the whole record the same way a directory occupying .log.1 already does, rather than
+    # appending past the cap on every subsequent record forever.
+    Clear-DiagLog
+    Clear-DiagRollover
+    [System.IO.File]::WriteAllText($diagLog, ('v' * $diagCap))
+    $diagLockPath = "$diagLog.lock"
+    if (Test-Path -LiteralPath $diagLockPath) { Remove-Item -LiteralPath $diagLockPath -Force }
+    [System.IO.File]::WriteAllText($diagLockPath, '')
+    Set-ItemProperty -LiteralPath $diagLockPath -Name IsReadOnly -Value $true
+    try {
+        $diagPermThrew = $false
+        $diagPermOut = @('not run')
+        try { $diagPermOut = @(Write-StatusDiag 'a lock this process cannot open') } catch { $diagPermThrew = $true }
+        Confirm-True (-not $diagPermThrew) 'diag rollover lock permission: the helper does not throw'
+        Confirm-Equal $diagPermOut.Count 0 'diag rollover lock permission: nothing reaches the pipeline'
+        Confirm-Equal (Get-DiagLogSize) $diagCap 'diag rollover lock permission: the log is left exactly as it was, not grown past the cap'
+    } finally {
+        Set-ItemProperty -LiteralPath $diagLockPath -Name IsReadOnly -Value $false
+        Remove-Item -LiteralPath $diagLockPath -Force
+    }
+    Clear-DiagLog
+    Clear-DiagRollover
+    if ($env:CLAUDE_TEST_STOP_AFTER_DIAG) { Write-Host "STOP_AFTER_DIAG reached, failed=$script:failed"; exit 77 }
+
     # The whole script, run twice on one payload: the log changes nothing a terminal would show, and
     # the run with it on leaves a log behind.
     Clear-DiagLog

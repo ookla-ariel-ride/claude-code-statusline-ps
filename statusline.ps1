@@ -108,10 +108,17 @@ function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [i
     $lockCall = [System.Delegate]::CreateDelegate([Func[System.IO.FileStream]], ($Path + '.lock'), $script:diagLockMethod)
     $open = [System.Threading.Tasks.Task]::Run($lockCall)
     if ([System.Threading.Tasks.Task]::WaitAny(@($open), $TimeoutMs) -lt 0) { return }
-    # Held elsewhere is a faulted task here, the same as any other filesystem call that could not
-    # complete: no lock, no rollover, and the caller appends anyway - the zero-wait, skip-on-contention
-    # trade #43 chose.
-    if (-not $open.IsCompletedSuccessfully) { return }
+    if (-not $open.IsCompletedSuccessfully) {
+        # Held elsewhere is IOException on every platform this was checked on - Windows, and .NET
+        # Core 3.1 and .NET 8 on Linux - and nothing else here throws that from a plain OpenWrite:
+        # no lock, no rollover, and the caller appends anyway, the zero-wait skip-on-contention trade
+        # #43 chose. Anything else - chiefly UnauthorizedAccessException, a lock file some other user
+        # left behind that this one cannot open at all, permanently rather than for as long as a
+        # holder lives - is a structural failure the same as a directory occupying .log.1, and is let
+        # through so the whole record is dropped rather than appended past the cap forever.
+        if ($open.Exception.InnerException -is [System.IO.IOException]) { return }
+        throw $open.Exception.InnerException
+    }
     $lock = $open.Result
     try {
         $left = $TimeoutMs - [int] $sw.ElapsedMilliseconds
