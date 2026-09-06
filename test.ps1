@@ -6191,10 +6191,13 @@ $gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; NoStderr 
 # that the probe stops waiting at all, by NoFinish below, which is the marker the fake writes on its way
 # out and no hang case may find. The 100 ms case keeps no clock: a floor of 100 is met by any render
 # that starts a pwsh whatever the timeout is, so it never said anything.
-# What these cases deliberately do not ask any more is whether the ping child is gone. A render that
-# killed nothing does not return early - the child's redirected pipes hold it open until the whole tree
-# closes them - so after any render that has finished, the ping is gone whatever the probe did. The kill
-# is asserted in process instead, where the probe returns while the fake is still running.
+# What these cases deliberately do not ask any more is whether the ping child is gone. The render does
+# come back while the ping is still alive - measured at about 5.2 seconds with the kill made a no-op -
+# but by then the fake's ten seconds of ping have only about four left, and any wait long enough to be
+# reliable is longer than that. The check polled for six, so the ping went inside the window whether the
+# kill took it or it simply finished, and the answer was the same either way. The kill is asserted in
+# process instead, where the probe returns within milliseconds of the verdict and the fake still has
+# most of its ping to run.
 $fakeHang3000 = Write-FakeGit 'fake-hang-3000' $hangBody
 $fakeHang100 = Write-FakeGit 'fake-hang-100' $hangBody
 $gitTimeout3000 = Write-TempConfig 'git-timeout-3000.json' '{ "git": { "timeoutMs": 3000 } }'
@@ -6212,12 +6215,15 @@ function Get-FakePingCount([string] $Tag) {
 # The kill takes the tree down at once; the operating system reaps it a moment later, and on a machine
 # running four test suites that moment is longer than any fixed sleep worth writing. So wait for the
 # ping to go rather than sleeping a guessed interval and looking once.
-# Where this can be asked matters, and it took a mutation to see it. A render whose probe killed nothing
-# does not return early: its child's redirected pipes stay open until the whole tree closes them, so the
-# render outlives the ping either way and every look taken after a render has finished finds no ping
-# whether the kill worked or not. Measured: with Kill($true) made a no-op, the hang render took 11.9
-# seconds instead of 3.5 and the ping was gone by the time it returned. So this is only ever asked where
-# the answer can still be no - in process, where the probe returns while the fake is still running.
+# Where this can be asked matters, and it took a mutation to see it. The window has to be long enough
+# that a killed tree has certainly been reaped inside it, and short enough that a tree nobody killed is
+# still running when it ends - and after a whole child render there is no such window. With Kill($true)
+# made a no-op the render still comes back, at about 5.2 seconds, but the fake's ten seconds of ping
+# have around four left by then, less than the six this polls for, so the ping goes inside the window on
+# its own and the check says the same thing either way. Widening or narrowing does not fix that: four
+# seconds of remaining ping is not enough room for a wait that has to survive a loaded machine.
+# So this is only asked where the answer can still be no - in process, where the probe returns within
+# milliseconds of the verdict and the fake has most of its ping still to run.
 function Wait-FakePingGone([string] $Tag, [int] $TimeoutMs = 6000) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     while ((Get-FakePingCount $Tag) -gt 0 -and $sw.ElapsedMilliseconds -lt $TimeoutMs) { Start-Sleep -Milliseconds 100 }
@@ -6583,11 +6589,12 @@ foreach ($case in @(
 # seconds to start on a loaded machine can be past the probe before the first look, and the check would
 # fail for want of a window rather than for want of a ping. 3000 is enough of a window and keeps the
 # case short.
-# What is deliberately NOT asked here is whether the ping is gone afterwards. A render whose probe
-# killed nothing does not come back early - its child's redirected pipes hold it open until the whole
-# tree closes them - so the ping is always gone by the time the render has exited, and the question has
-# only one answer whatever the kill did. It used to be asked, and a mutation that made Kill($true) a
-# no-op left it green while four other checks caught the change.
+# What is deliberately NOT asked here is whether the ping is gone afterwards. The render does come back
+# with the ping still alive when the probe killed nothing - about 5.2 seconds, measured with Kill($true)
+# made a no-op - but the fake's ten seconds of ping have only about four left at that point, and the
+# wait that would ask the question polls for six. The ping therefore goes inside the window whether the
+# kill took it or it ran itself out, and the check has one answer either way. It used to be asked, and
+# that mutation left it green while four other checks caught the change.
 $hang = Invoke-StatusLineAsync (Get-GitPayload $notRepo) $fakeHang $gitTimeout3000
 $midPings = 0
 $midMs = 0
