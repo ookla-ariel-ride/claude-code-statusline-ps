@@ -6067,23 +6067,46 @@ namespace StatuslineTest {
         public BlockingWriter() : base(new MemoryStream()) { }
         protected override void Dispose(bool disposing) { Thread.Sleep(DiagSink.CloseDelayMs); DiagSink.Closed = true; base.Dispose(disposing); }
     }
+    // A stand-in for the FileStream a real lock open hands back, so a delayed or a held lock can be
+    // simulated without a real second process: Locked plays the part FileShare.None otherwise would,
+    // Dispose is the only member Invoke-StatusDiagRollover ever calls on what Lock returns, and both are
+    // enough to tell a leaked handle (issue #49 review finding 1) from a released one. DisposeDelayMs
+    // simulates the pending-lock sweep's own close landing on the same stalled share the guard exists
+    // for (issue #49 review round 3 finding 1): Dispose is what runs on the pool thread the sweep
+    // dispatches to, so delaying it is what proves the sweep's wait on that close is bounded rather than
+    // however long the close itself takes.
+    public class LockToken : IDisposable {
+        public void Dispose() { Thread.Sleep(DiagSink.DisposeDelayMs); DiagSink.Locked = false; }
+    }
     public static class DiagSink {
-        public static int OpenDelayMs, LengthDelayMs, CloseDelayMs;
-        public static bool Closed;
+        public static int OpenDelayMs, LengthDelayMs, CloseDelayMs, LockDelayMs, DisposeDelayMs;
+        public static bool Closed, Locked;
         // The size the double reports, and which call it starts stalling on. Write-StatusDiag reads the
         // size once to decide whether a rollover is due and Invoke-StatusDiagRollover reads it again
-        // with the mutex held, so SlowFromCall 2 lets the first read answer at once - entering the
+        // with the lock held, so SlowFromCall 2 lets the first read answer at once - entering the
         // rollover - and the second one stall inside it. LengthCalls is how a test sees which of those
         // two reads happened, and so whether the rollover branch was entered at all.
         public static long LengthValue;
-        public static int SlowFromCall, LengthCalls;
+        public static int SlowFromCall, LengthCalls, LockCalls;
         public static void ResetLength() { LengthValue = 0L; SlowFromCall = 0; LengthCalls = 0; LengthDelayMs = 0; }
+        public static void ResetLock() { Locked = false; LockDelayMs = 0; DisposeDelayMs = 0; LockCalls = 0; }
         public static long Length() {
             int n = Interlocked.Increment(ref LengthCalls);
             if (SlowFromCall > 0 && n >= SlowFromCall) { Thread.Sleep(LengthDelayMs); }
             return LengthValue;
         }
         public static StreamWriter Open() { Thread.Sleep(OpenDelayMs); return new BlockingWriter(); }
+        // Held elsewhere throws before the delay, the same order a real sharing violation happens in:
+        // instantly, against whatever is already there. A lock nothing else holds sleeps for LockDelayMs
+        // and then is held until its own Dispose runs - which is what lets a test tell whether something
+        // still holds it a moment after the call that took it has already returned.
+        public static IDisposable Lock() {
+            Interlocked.Increment(ref LockCalls);
+            if (Locked) { throw new IOException("locked"); }
+            Locked = true;
+            Thread.Sleep(LockDelayMs);
+            return new LockToken();
+        }
     }
 }
 '@
@@ -6101,6 +6124,7 @@ namespace StatuslineTest {
             return @{
                 Length = [System.Delegate]::CreateDelegate([Func[long]], [StatuslineTest.DiagSink].GetMethod('Length'))
                 Append = [System.Delegate]::CreateDelegate([Func[System.IO.StreamWriter]], [StatuslineTest.DiagSink].GetMethod('Open'))
+                Lock   = [System.Delegate]::CreateDelegate([Func[System.IDisposable]], [StatuslineTest.DiagSink].GetMethod('Lock'))
             }
         }
         # An open that never answers. The record is lost, which is the trade, and the call comes back.
@@ -6154,7 +6178,7 @@ namespace StatuslineTest {
         # one: the double could not reach the branch, so the branch had no test. The double now reports a
         # size past the cap, which makes the rollover due, and can stall on the second read rather than
         # the first - Write-StatusDiag reads the size to decide, and the rollover reads it again with the
-        # mutex held, so a delay from the second call lands inside the rollover and nowhere else.
+        # lock held, so a delay from the second call lands inside the rollover and nowhere else.
         $diagCapBytes = 4194304
         $diagRolloverMs = (Get-StatusDiagLimit).RolloverMs
         Confirm-True ($diagRolloverMs -gt 0 -and $diagRolloverMs -le (Get-StatusDiagLimit).TimeoutMs) 'diag rollover: the reserve is a real part of the record budget'
@@ -6202,6 +6226,67 @@ namespace StatuslineTest {
         . ([scriptblock]::Create("function Get-StatusDiagLimit { return @{ TimeoutMs = $($diagRealDiagLimit.TimeoutMs); RolloverMs = $($diagRealDiagLimit.RolloverMs) } }"))
         Confirm-Equal (Get-StatusDiagLimit).RolloverMs $diagRealDiagLimit.RolloverMs 'diag rollover: the real reserve is back'
         [StatuslineTest.DiagSink]::ResetLength()
+        # The lock open goes through the same delegate factory as the length and the append (issue #49
+        # review finding 3), so it is exactly as coverable as either: a lock slower than the record's
+        # budget must cost that budget, not the sink's, and must not reach the rollover's own size read
+        # at all, since nothing was ever held to make that read meaningful.
+        [StatuslineTest.DiagSink]::ResetLock()
+        [StatuslineTest.DiagSink]::ResetLength()
+        [StatuslineTest.DiagSink]::LengthValue = $diagCapBytes
+        [StatuslineTest.DiagSink]::LockDelayMs = 5000
+        Clear-DiagLog
+        $diagLockSinkSw = [System.Diagnostics.Stopwatch]::StartNew()
+        Write-StatusDiag 'a record whose lock will not answer in time'
+        $diagLockSinkMs = $diagLockSinkSw.ElapsedMilliseconds
+        Confirm-True ($diagLockSinkMs -lt 2000) "diag rollover lock: a lock open that stalls costs the record's budget, not the sink's, took $diagLockSinkMs ms"
+        Confirm-Equal ([StatuslineTest.DiagSink]::LengthCalls) 1 'diag rollover lock: a lock that has not answered yet never reaches the size read inside the rollover'
+        # The delayed open is still running underneath - the double's own Thread.Sleep(LockDelayMs) does
+        # not stop just because this call gave up waiting on it - so the fix (issue #49 review finding 1)
+        # is not something a background continuation does the moment that finishes: a PowerShell script
+        # block cannot run as one, verified empirically ("no Runspace available to run scripts in this
+        # thread" on every attempt), so nothing here watches the task asynchronously at all. What cleans
+        # it up is the next call to reach this function, which checks what earlier calls left running
+        # before it opens anything of its own - so Locked is still expected to be true here, once the
+        # delayed task has had time to actually finish making it so, and only comes back down once a
+        # later call has had the chance to notice.
+        Start-Sleep -Milliseconds 5500
+        Confirm-True ([StatuslineTest.DiagSink]::Locked) 'diag rollover lock: nothing watches the late-finishing task on its own - the delayed lock is still marked held once it has actually finished, before any later call has looked'
+        [StatuslineTest.DiagSink]::LockDelayMs = 0
+        Write-StatusDiag 'a second record after the slow lock finished underneath'
+        Confirm-True (-not [StatuslineTest.DiagSink]::Locked) 'diag rollover lock: the next call to reach the rollover disposes a finished, abandoned lock before opening its own (issue #49 review finding 1)'
+        Confirm-Equal ([StatuslineTest.DiagSink]::LengthCalls) 3 'diag rollover lock: with the old handle disposed first, this call still reaches its own size read rather than finding its own leaked handle in the way'
+        [StatuslineTest.DiagSink]::ResetLock()
+        [StatuslineTest.DiagSink]::ResetLength()
+
+        # The sweep's own close (issue #49 review round 3 finding 1) is a filesystem call too - the one
+        # call in the sweep that touches a disk at all - and a slow one is exactly what this guard exists
+        # for: if the pending lock's Dispose stalls, the render sweeping it up must wait for its own
+        # bound, not for however long that close takes, the same answer the live lock's own close below
+        # already gives.
+        [StatuslineTest.DiagSink]::ResetLock()
+        [StatuslineTest.DiagSink]::ResetLength()
+        [StatuslineTest.DiagSink]::LengthValue = $diagCapBytes
+        [StatuslineTest.DiagSink]::LockDelayMs = 5000
+        Clear-DiagLog
+        Write-StatusDiag 'a record whose lock will not answer in time, again'
+        Start-Sleep -Milliseconds 5500
+        Confirm-True ([StatuslineTest.DiagSink]::Locked) 'diag rollover lock: the delayed lock from this round is also still marked held once it has finished, before the sweep has looked'
+        [StatuslineTest.DiagSink]::LockDelayMs = 0
+        [StatuslineTest.DiagSink]::DisposeDelayMs = 5000
+        $diagSweepSw = [System.Diagnostics.Stopwatch]::StartNew()
+        Write-StatusDiag 'a record whose sweep finds a slow close'
+        $diagSweepMs = $diagSweepSw.ElapsedMilliseconds
+        Confirm-True ($diagSweepMs -lt 2000) "diag rollover lock: the sweep's own close is bounded by this call's budget, not by how long the close takes, took $diagSweepMs ms (issue #49 review round 3 finding 1)"
+        # The close is abandoned, not cancelled: it keeps running in the background, and Locked comes
+        # back down once it actually finishes - the same "abandoned handle, process exit closes it"
+        # answer this file gives everywhere else a wait would cost more than it is worth.
+        $diagDisposeDeadline = [DateTime]::UtcNow.AddSeconds(8)
+        while ([StatuslineTest.DiagSink]::Locked -and [DateTime]::UtcNow -lt $diagDisposeDeadline) { Start-Sleep -Milliseconds 50 }
+        Confirm-True (-not [StatuslineTest.DiagSink]::Locked) 'diag rollover lock: the abandoned close still runs to completion in the background'
+        [StatuslineTest.DiagSink]::DisposeDelayMs = 0
+        [StatuslineTest.DiagSink]::ResetLock()
+        [StatuslineTest.DiagSink]::ResetLength()
+
         # A sink that answers at once still writes the record, so the checks above are of a path that
         # would otherwise work rather than one that never wrote anything.
         Clear-DiagLog
@@ -6228,8 +6313,8 @@ namespace StatuslineTest {
     # moves it aside first. The cap is spelled out here rather than read from the script, so the two
     # cannot agree with each other about a wrong number.
     #
-    # Every check from here to the end of the mutex section is about where the bytes go, never about how
-    # long the filesystem took, and they all go through a whole record - which carries a quarter-second
+    # Every check from here to the end of the rollover lock section is about where the bytes go, never
+    # about how long the filesystem took, and they all go through a whole record - which carries a quarter-second
     # budget for all of its filesystem calls. On a machine running four test suites at once that budget
     # is spent before the line is appended: the record is dropped, the log sits at exactly the cap, and
     # a check about rolling fails for a reason that is not in the script. That is #63. So the budget is
@@ -6258,13 +6343,17 @@ namespace StatuslineTest {
     Confirm-True ($diagLines[0].EndsWith('over the cap')) 'diag rollover: and that line is the one just written'
     Confirm-True (Test-Path -LiteralPath $diagRolled) 'diag rollover: the full log is kept as .log.1'
     Confirm-Equal (Get-Item -LiteralPath $diagRolled).Length $diagCap 'diag rollover: the kept file is the one that was full'
-    # A second rollover replaces the first .log.1 rather than piling up a third file.
+    # A second rollover replaces the first .log.1 rather than piling up a third rotated file. The lock
+    # file the rollover takes (issue #49) is left behind beside the log the same way install.ps1 leaves
+    # its settings lock behind - deleting it on release would race a process already waiting to open it
+    # - so it is the one extra, constant file in this count: the log, one rotation, and the lock never a
+    # fourth or a growing pile of either.
     Write-DiagLogText ('z' * $diagCap)
     Write-StatusDiag 'over the cap again'
     $diagStream = [System.IO.File]::OpenRead($diagRolled)
     try { $diagFirstByte = $diagStream.ReadByte() } finally { $diagStream.Dispose() }
     Confirm-Equal $diagFirstByte 122 'diag rollover: the second rollover replaced the first .log.1'
-    Confirm-Equal @(Get-ChildItem -LiteralPath $diagTemp -File -Filter 'claude-statusline-diag.log*').Count 2 'diag rollover: two files at most, never a third'
+    Confirm-Equal @(Get-ChildItem -LiteralPath $diagTemp -File -Filter 'claude-statusline-diag.log*').Count 3 'diag rollover: the log, one rotation and the lock file - never a fourth'
 
     # Bounded through the real callers: with the log parked just under the cap, a run of cache reads and
     # state reads and writes rolls it over instead of pushing past it.
@@ -6311,49 +6400,49 @@ namespace StatuslineTest {
     Write-StatusDiag ('r' * 5000)
     Confirm-True ((Get-DiagLogSize) -le $diagCap) 'diag record cap: an enormous reason on a full log still leaves the log at or under the cap'
 
-    # The rollover is taken under a named mutex with no wait at all, so a render that finds another one
-    # already rotating appends rather than waiting on it. A mutex is owned by a thread and is reentrant,
-    # so the thread taking this one cannot contend with itself: another process holds it here, which is
-    # also how it is contended for in life. A child pwsh takes it, says so by writing a file, and keeps
-    # it until this one says to let go. The name is spelled out here rather than read from the script,
-    # so the two cannot agree with each other about the wrong one.
+    # The rollover is taken under an exclusive lock on the log's .lock file with no wait at all, so a
+    # render that finds it already open elsewhere appends rather than waiting on it. A lock file can
+    # contend with itself inside one process just as well as across two - unlike a mutex, which is
+    # reentrant per thread, nothing here is - so a second process is not what proves contention; it is
+    # what proves the property a mutex could not: killing the holder, rather than asking it to let go,
+    # and finding the very next rollover proceeds anyway, because a lock file leaves no stale lock for a
+    # kernel to answer for the way a name in a table might.
     #
     # What is asserted first is the decision on its own, through Invoke-StatusDiagRollover directly,
     # because a whole record brings two clocks with it that this check is not about: a record has a
     # quarter-second budget for all its filesystem calls, and on a machine running four test suites at
     # once that budget is spent before the line is appended - the log then sits at exactly the cap and
-    # the append check fails for a reason that has nothing to do with the mutex, which is #63. The
-    # direct call takes its timeout as an argument, so the size read inside it is given a generous one
-    # and cannot be the reason the file was left alone either: with the mutex the only thing left that
-    # can stop the move, a file that did not move says the mutex stopped it. The checks here that do go
+    # the append check fails for a reason that has nothing to do with the lock, which is #63. The direct
+    # call takes its timeout as an argument, so the size read inside it is given a generous one and
+    # cannot be the reason the file was left alone either: with the lock the only thing left that can
+    # stop the move, a file that did not move says the lock stopped it. The checks here that do go
     # through Write-StatusDiag are covered by the record budget pinned for the whole group above, so
-    # what they report is the mutex decision and not the filesystem's mood.
+    # what they report is the lock's decision and not the filesystem's mood.
     Clear-DiagLog
     Clear-DiagRollover
     Write-DiagLogText ('y' * $diagCap)
     $diagReady = Join-Path $tmp 'diag-lock-ready'
-    $diagGo = Join-Path $tmp 'diag-lock-go'
-    foreach ($diagSignal in @($diagReady, $diagGo)) { if (Test-Path -LiteralPath $diagSignal) { Remove-Item -LiteralPath $diagSignal -Force } }
-    $diagHoldFile = Join-Path $tmp 'diag-hold-mutex.ps1'
+    if (Test-Path -LiteralPath $diagReady) { Remove-Item -LiteralPath $diagReady -Force }
+    $diagHoldFile = Join-Path $tmp 'diag-hold-lock.ps1'
     [System.IO.File]::WriteAllText($diagHoldFile, @'
-param([string] $Ready, [string] $Go)
-$m = [System.Threading.Mutex]::new($false, 'claude-code-statusline-diag-rollover')
-[void] $m.WaitOne()
+param([string] $LockPath, [string] $Ready)
+$ErrorActionPreference = 'Stop'
+$s = [System.IO.File]::Open($LockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
 [System.IO.File]::WriteAllText($Ready, 'held')
-$deadline = [DateTime]::UtcNow.AddSeconds(30)
-while (-not [System.IO.File]::Exists($Go) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 20 }
-$m.ReleaseMutex()
-$m.Dispose()
+# $s is never disposed here: the parent always kills this process before it would run this itself, and
+# is rooted only so the open handle it names is not what a GC pass mistakes for garbage in the meantime.
+Start-Sleep -Seconds 60
 '@)
-    $diagPsi = [System.Diagnostics.ProcessStartInfo]::new($pwshExe)
-    foreach ($diagArg in @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', $diagHoldFile, $diagReady, $diagGo)) { $diagPsi.ArgumentList.Add($diagArg) }
-    $diagPsi.UseShellExecute = $false
-    $diagPsi.CreateNoWindow = $true
+    $diagPsi = Get-ChildPwshStartInfo @('-File', $diagHoldFile, "$diagLog.lock", $diagReady)
     $diagHolder = [System.Diagnostics.Process]::Start($diagPsi)
+    # Both drained on their own tasks, started now rather than read later, so the child cannot block on
+    # a full pipe while this waits on $diagReady below; only stderr is worth a look if it never appears.
+    $diagHolderErr = $diagHolder.StandardError.ReadToEndAsync()
+    $null = $diagHolder.StandardOutput.ReadToEndAsync()
     try {
         $diagDeadline = [DateTime]::UtcNow.AddSeconds(30)
         while (-not [System.IO.File]::Exists($diagReady) -and [DateTime]::UtcNow -lt $diagDeadline) { Start-Sleep -Milliseconds 20 }
-        Confirm-True ([System.IO.File]::Exists($diagReady)) 'diag rollover lock: another process holds the mutex the rollover takes'
+        Confirm-True ([System.IO.File]::Exists($diagReady)) "diag rollover lock: another process holds the lock the rollover takes$(if (-not [System.IO.File]::Exists($diagReady)) { " (stderr: $($diagHolderErr.Result))" })"
         # The decision, with nothing else left that could account for it: the log is over the cap, the
         # size read has thirty seconds, and the move does not happen.
         $diagRollThrewHeld = $false
@@ -6372,23 +6461,51 @@ $m.Dispose()
         Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover lock: the record did not roll the log either'
         Confirm-True ((Get-DiagLogSize) -gt $diagCap) 'diag rollover lock: the line is appended anyway rather than waited for, which is what makes the cap approximate'
     } finally {
-        [System.IO.File]::WriteAllText($diagGo, 'go')
+        # Killed, not asked to let go: a process that never reaches its own Dispose call is the case a
+        # stale lock would show up in, if one could.
+        if (-not $diagHolder.HasExited) { $diagHolder.Kill($true) }
         [void] $diagHolder.WaitForExit(30000)
         $diagHolder.Dispose()
     }
-    # With the mutex free again the next record rotates as it always did. The wait for it to come free
-    # is a wait and not an assumption because the name is machine-wide: another copy of this suite,
-    # running beside this one, holds the same mutex for the length of its own check above.
-    $diagFreeMutex = [System.Threading.Mutex]::new($false, 'claude-code-statusline-diag-rollover')
-    $diagFree = $false
-    try {
-        try { $diagFree = $diagFreeMutex.WaitOne(30000) } catch [System.Threading.AbandonedMutexException] { $diagFree = $true }
-        if ($diagFree) { $diagFreeMutex.ReleaseMutex() }
-    } finally { $diagFreeMutex.Dispose() }
-    Confirm-True $diagFree 'diag rollover lock: the other render lets the mutex go'
-    Write-StatusDiag 'the other render has finished'
-    Confirm-True (Test-Path -LiteralPath $diagRolled) 'diag rollover lock: once the mutex is free the rollover happens'
+    # The kernel released the lock when the process died, so the very next rollover proceeds without
+    # anyone having released anything on purpose. No wait is needed first, unlike a machine-wide mutex
+    # name that another copy of this suite running beside this one could still be holding: the lock is
+    # a file under this run's own PID-scoped temp directory, so a concurrent run's holder is a different
+    # file and was never in this one's way to begin with.
+    Write-StatusDiag 'the other render was killed'
+    Confirm-True (Test-Path -LiteralPath $diagRolled) 'diag rollover lock: once the lock is free the rollover happens'
     Confirm-Equal (Get-DiagLine).Count 1 'diag rollover lock: and the fresh log holds only the new record'
+    Clear-DiagLog
+    Clear-DiagRollover
+
+    # A lock file that can never be opened at all - the shape a different user's leftover lock takes,
+    # unopenable by anyone forever rather than by this process for as long as a holder lives - is not
+    # "held elsewhere" (issue #49 review): it throws UnauthorizedAccessException rather than the
+    # IOException a sharing conflict gives, so it is let through rather than read as contention, and
+    # drops the whole record the same way a directory occupying .log.1 already does, rather than
+    # appending past the cap on every subsequent record forever. A directory at the lock path, rather
+    # than a read-only file, is what proves this on every platform and under every account this runs
+    # as: a read-only file is a permission a file's own owner - including root - can simply ignore,
+    # where opening a directory as if it were a writable file is refused by the filesystem itself,
+    # UnauthorizedAccessException either way (issue #49 review finding 8). Kept under the same generous
+    # record budget as the checks above, and for the same reason (#63): a structural failure this test
+    # means to pin could otherwise be a budget spent before the lock was ever tried.
+    Clear-DiagLog
+    Clear-DiagRollover
+    Write-DiagLogText ('v' * $diagCap)
+    $diagLockPath = "$diagLog.lock"
+    if (Test-Path -LiteralPath $diagLockPath) { Remove-Item -LiteralPath $diagLockPath -Recurse -Force }
+    New-Item -ItemType Directory -Force $diagLockPath | Out-Null
+    try {
+        $diagPermThrew = $false
+        $diagPermOut = @('not run')
+        try { $diagPermOut = @(Write-StatusDiag 'a lock this process cannot open') } catch { $diagPermThrew = $true }
+        Confirm-True (-not $diagPermThrew) 'diag rollover lock permission: the helper does not throw'
+        Confirm-Equal $diagPermOut.Count 0 'diag rollover lock permission: nothing reaches the pipeline'
+        Confirm-Equal (Get-DiagLogSize) $diagCap 'diag rollover lock permission: the log is left exactly as it was, not grown past the cap'
+    } finally {
+        Remove-Item -LiteralPath $diagLockPath -Recurse -Force
+    }
     Clear-DiagLog
     Clear-DiagRollover
     } finally {
@@ -7578,6 +7695,23 @@ try {
     # A key spelled in a way the script does not accept would be a detection that changed nothing.
     Confirm-Equal (Read-StatusConfig $themeConfig).Palette 'light' 'detect user scheme: the script reads back the palette the installer wrote'
     Confirm-Equal (Read-StatusConfig $themeConfig).Style 'plain' 'detect user scheme: and the rest of the file still reads'
+    # -Palette says what the detection was there to guess, so it wins and the detection writes nothing.
+    # It still says what it found: a switch that silences a probe without saying so is a probe nobody
+    # can check. The Windows Terminal file here is the light "Paper" scheme from the case above.
+    $r = Invoke-Installer 'install -DetectTheme -Palette dark' @('-DetectTheme', '-Palette', 'dark', '-SettingsPath', $themeSettings)
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'detect overridden: exit code 0, stderr empty'
+    Confirm-Equal (Read-ThemeConfig).palette 'dark' 'detect overridden: -Palette dark is what landed, not the detected light'
+    $text = $r.Lines -join "`n"
+    Confirm-True ($text -match '-Palette') "detect overridden: the run says the switch is why nothing was detected into the file, got '$text'"
+    # And with the switch out of the way the detection is back, so the case above was not disabled.
+    $r = Invoke-Installer 'install -DetectTheme after the override' @('-DetectTheme', '-SettingsPath', $themeSettings)
+    Confirm-Equal (Read-ThemeConfig).palette 'light' 'detect overridden: the detection still works without the switch'
+    # -Style has no detection behind it, so it is simply written, and it leaves the palette alone.
+    $r = Invoke-Installer 'install -Style ascii' @('-Style', 'ascii', '-SettingsPath', $themeSettings)
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'style switch: exit code 0, stderr empty'
+    Confirm-Equal (Read-StatusConfig $themeConfig).Style 'ascii' 'style switch: the status line reads back the style the installer wrote'
+    Confirm-Equal (Read-StatusConfig $themeConfig).Palette 'light' 'style switch: the palette it did not name is left alone'
+    Invoke-Installer 'install -Style plain back' @('-Style', 'plain', '-SettingsPath', $themeSettings) | Out-Null
     # -Uninstall keeps statusline.json, palette key and all, exactly as it keeps every other key in it.
     $before = Get-Content -LiteralPath $themeConfig -Raw
     $r = Invoke-Installer 'uninstall after -DetectTheme' @('-Uninstall', '-SettingsPath', $themeSettings)
@@ -9582,12 +9716,57 @@ $subTmp = Join-Path ([System.IO.Path]::GetTempPath()) "statusline-subagent-test-
 New-Item -ItemType Directory -Force $subTmp | Out-Null
 $iconRobot = [char]::ConvertFromUtf32(0xF06A9)
 $ellipsis = [char]::ConvertFromUtf32(0x2026)
+# The two characters the ascii style puts in their place, taken from statusline.ps1's own tables rather
+# than retyped, so the panel's stand-ins are pinned to the tables that hold every other stand-in. The
+# panel draws one icon and the robot is the model segment's glyph, but the ascii table's `model` entry
+# is empty by design - the model NAME follows it on the main line - and an empty one would leave a
+# panel row with nothing on it at all, so the panel takes the `agent` mark instead: the character that
+# table already uses for a person driving a thread, which is what a panel row is.
+$iconRobotAscii = (Get-IconAscii).agent
+$ellipsisAscii = (Get-MarkSet 'ascii').Ellipsis
+
+# The panel's two axes and what each pairing draws. The style decides the one glyph the script chooses
+# and the mark it clips a name with; the palette decides the colour numbers. plain and powerline are
+# the SAME drawing here and both are accepted anyway, so the argument the installer bakes in can be the
+# `style` value from statusline.json whatever it says: the panel has no separators between segments and
+# no chevrons, which is the whole of what powerline changes on the main line.
+#
+# BUILT FROM THE CONFIG TABLE'S OWN ALLOWED LISTS, not typed out: every style crossed with every
+# palette, so a fourth style or a third palette added to statusline.json arrives here as new matrix
+# rows that have to be answered for, rather than passing because nobody widened a literal list. The
+# argument-less default is prepended, because "no arguments at all" is the shape of every command
+# written before this feature existed and it has to keep drawing what it drew.
+$subStyles = @((Get-StatusConfigKey | Where-Object { $_.Json -eq 'style' }).Allowed)
+$subPalettes = @((Get-StatusConfigKey | Where-Object { $_.Json -eq 'palette' }).Allowed)
+# What each pairing is expected to draw, keyed off the axis rather than restated per row: the style
+# decides the glyph and the mark a clipped name ends with, the palette decides the model role's SGR.
+$subIconFor = @{ plain = $iconRobot; powerline = $iconRobot; ascii = $iconRobotAscii }
+$subEllipsisFor = @{ plain = $ellipsis; powerline = $ellipsis; ascii = $ellipsisAscii }
+$subModelSgrFor = @{ dark = '1;36'; light = '1;38;5;24' }
+Confirm-Equal (($subStyles | Sort-Object) -join ',') 'ascii,plain,powerline' 'subagent matrix: the styles come from the config table'
+Confirm-Equal (($subPalettes | Sort-Object) -join ',') 'dark,light' 'subagent matrix: the palettes come from the config table'
+$subAxes = @(@{ Label = 'default'; Args = @(); Style = 'plain'; Palette = 'dark' })
+foreach ($st in $subStyles) {
+    foreach ($pal in $subPalettes) {
+        $subAxes += @{ Label = "$st $pal"; Args = @('-Style', $st, '-Palette', $pal); Style = $st; Palette = $pal }
+    }
+}
+# Every row is answered for. A style or palette with no expectation here is a matrix row that would
+# assert nothing about what it draws, which is what these three tables existing separately risks.
+foreach ($axis in $subAxes) {
+    Confirm-True ($subIconFor.ContainsKey($axis.Style)) "subagent matrix [$($axis.Label)]: the style has an expected glyph"
+    Confirm-True ($subEllipsisFor.ContainsKey($axis.Style)) "subagent matrix [$($axis.Label)]: the style has an expected clip mark"
+    Confirm-True ($subModelSgrFor.ContainsKey($axis.Palette)) "subagent matrix [$($axis.Label)]: the palette has an expected model colour"
+    $axis.Icon = $subIconFor[$axis.Style]
+    $axis.Ellipsis = $subEllipsisFor[$axis.Style]
+    $axis.ModelSgr = $subModelSgrFor[$axis.Palette]
+}
 
 # Runs the subagent script in a child pwsh and reads stdout the way Claude Code does, through the one
 # reply parser this file has: line by line, each line an object with a string id and a string content,
 # anything else dropped.
-function Invoke-SubagentLine([string] $Payload) {
-    $r = Invoke-ChildPwsh $subScript @() $Payload
+function Invoke-SubagentLine([string] $Payload, [string[]] $Arguments = @()) {
+    $r = Invoke-ChildPwsh $subScript @($Arguments) $Payload
     $reply = Get-SubagentReply $r.Lines
     $r.Rows = $reply.Rows
     $r.Bad = $reply.Bad
@@ -9603,11 +9782,12 @@ try {
 # fits the columns the payload asked for.
 $subSamples = Get-ChildItem $subSampleDir -Filter *.json | Sort-Object Name
 Confirm-True ($subSamples.Count -gt 0) 'subagent samples: the directory holds payloads'
+foreach ($axis in $subAxes) {
 foreach ($sample in $subSamples) {
     $payload = Get-Content -LiteralPath $sample.FullName -Raw
     $json = $payload | ConvertFrom-Json
-    $r = Invoke-SubagentLine $payload
-    $label = "subagent $($sample.Name)"
+    $r = Invoke-SubagentLine $payload $axis.Args
+    $label = "subagent $($sample.Name) [$($axis.Label)]"
     Confirm-True ($r.ExitCode -eq 0) "${label}: exit code $($r.ExitCode)"
     Confirm-True ($r.Err.Count -eq 0) "${label}: stderr empty, got '$($r.Err -join ' | ')'"
     Confirm-Equal $r.Bad 0 "${label}: every line parses as an id and a content string"
@@ -9618,12 +9798,26 @@ foreach ($sample in $subSamples) {
         $content = $r.Rows[$id]
         Confirm-True ($ids -contains $id) "${label}: row id '$id' is one of the payload's tasks"
         Confirm-True ($content -notmatch "[`r`n]") "${label}/${id}: one line, no newline inside it"
-        Confirm-True ((ConvertTo-PlainText $content).Contains($iconRobot)) "${label}/${id}: carries the robot glyph"
+        $plain = ConvertTo-PlainText $content
+        Confirm-True ($plain.Contains($axis.Icon)) "${label}/${id}: carries the style's own glyph"
+        # Both halves, because the ascii stand-in is `@` and a payload could carry one of those itself:
+        # the Nerd Font glyph has to be ABSENT under ascii and present otherwise. Checking only that the
+        # stand-in appears would pass on a row that drew the robot beside an @ in somebody's name.
+        if ($axis.Style -eq 'ascii') {
+            Confirm-True (-not $plain.Contains($iconRobot)) "${label}/${id}: the private-use glyph is gone under ascii"
+        } else {
+            Confirm-True ($plain.Contains($iconRobot)) "${label}/${id}: the private-use glyph is what a font style draws"
+        }
+        # The palette decides the model role's SGR, and the glyph is always in it, so every row on every
+        # pairing carries the colour its palette asked for. Without this the palette half of the matrix
+        # launched a process and asserted nothing about the colours it came back with.
+        Confirm-True ($content.Contains("$esc[$($axis.ModelSgr)m$($axis.Icon)")) "${label}/${id}: the glyph is in the $($axis.Palette) palette's model colour"
         if ($cols -gt 0) {
             $w = Measure-VisibleWidth $content
             Confirm-True ($w -le $cols) "${label}/${id}: visible width $w fits the payload's $cols columns"
         }
     }
+}
 }
 
 # 01: two running agents on a 200k window. The percentage takes the threshold colour and the token
@@ -9759,15 +9953,116 @@ foreach ($bad in @('"columns": "80"', '"columns": 20.5', '"columns": true', '"co
     Confirm-True ((ConvertTo-PlainText $r.Rows['n1']) -eq "$iconRobot a name long enough to need clipping  60%  120k") "subagent $($bad): an unusable columns value cuts nothing"
 }
 
+# ---- Subagent style and palette (#78) ----
+# The panel takes its style and its palette as arguments rather than from a config file, because it has
+# no config file to read and a read on every tick is the thing the panel is built to avoid. The two are
+# separate axes here exactly as they are in statusline.json, and the installer bakes the pair it chose
+# into the subagentStatusLine command, so what the panel draws follows what the status line draws.
+
+# The style decides the one glyph the script picks and the mark it clips a name with. Nothing else on a
+# panel row is the script's own character, so those two are the whole of the difference.
+$r = Invoke-SubagentLine (Get-SubagentSample '01-two-agents.json') @('-Style', 'ascii')
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) "subagent ascii: exit code 0, stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-Equal (ConvertTo-PlainText $r.Rows['task_01']) "$iconRobotAscii Explore  24%  48k" 'subagent ascii: the robot glyph is the ascii table''s agent mark'
+Confirm-Equal (ConvertTo-PlainText $r.Rows['task_02']) "$iconRobotAscii general-purpose  91%  182k" 'subagent ascii: the second row reads the same way'
+# The promise the ascii style makes on the main line, made here: every character the SCRIPT chose is
+# printable ASCII. This sample's own text is ASCII too, so the whole row has to be.
+foreach ($id in @('task_01', 'task_02')) {
+    Confirm-Equal ((Get-NonAsciiName (ConvertTo-PlainText $r.Rows[$id])) -join ',') '' "subagent ascii: row $id holds nothing outside printable ASCII"
+}
+# The colours are untouched by the style: the same SGR codes the plain style writes.
+Confirm-True ($r.Rows['task_01'].Contains("$esc[1;36m$iconRobotAscii Explore$esc[0m")) 'subagent ascii: the glyph and the name are still the model colour'
+
+# plain and powerline are the same drawing, byte for byte. The panel has no separators and no chevrons,
+# which is the whole of what powerline changes on the main line, so the third value is accepted for
+# consistency with the `style` key and changes nothing here. Said as an assertion rather than in a
+# comment, so a powerline shape added to the panel later has to come here and say so.
+$rPlain = Invoke-SubagentLine (Get-SubagentSample '01-two-agents.json') @('-Style', 'plain')
+$rPower = Invoke-SubagentLine (Get-SubagentSample '01-two-agents.json') @('-Style', 'powerline')
+foreach ($id in @('task_01', 'task_02')) {
+    Confirm-Equal $rPower.Rows[$id] $rPlain.Rows[$id] "subagent powerline: row $id is the plain drawing, byte for byte"
+    Confirm-True (-not [string]::Equals($r.Rows[$id], $rPlain.Rows[$id], [System.StringComparison]::Ordinal)) "subagent ascii: row $id is NOT the plain drawing"
+}
+
+# The palette decides the colour numbers and nothing else: the same text, the light table's SGR codes.
+# 24% is the ok role and the token figure is dim, so all three roles on the row are checked at once.
+$rLight = Invoke-SubagentLine (Get-SubagentSample '01-two-agents.json') @('-Palette', 'light')
+Confirm-True ($rLight.ExitCode -eq 0 -and $rLight.Err.Count -eq 0) "subagent light: exit code 0, stderr empty, got '$($rLight.Err -join ' | ')'"
+Confirm-Equal (ConvertTo-PlainText $rLight.Rows['task_01']) "$iconRobot Explore  24%  48k" 'subagent light: the palette changes no text'
+Confirm-Equal $rLight.Rows['task_01'] "$esc[1;38;5;24m$iconRobot Explore$esc[0m  $esc[38;5;22m24%$esc[0m  $esc[38;5;240m48k$esc[0m" 'subagent light: the model, ok and dim roles come from the light table'
+Confirm-Equal $rPlain.Rows['task_01'] "$esc[1;36m$iconRobot Explore$esc[0m  $esc[32m24%$esc[0m  $esc[90m48k$esc[0m" 'subagent dark: the same three roles from the dark table'
+# The two axes are independent: ascii on the light palette is the ascii glyph and the light colours.
+$rBoth = Invoke-SubagentLine (Get-SubagentSample '01-two-agents.json') @('-Style', 'ascii', '-Palette', 'light')
+Confirm-Equal $rBoth.Rows['task_01'] "$esc[1;38;5;24m$iconRobotAscii Explore$esc[0m  $esc[38;5;22m24%$esc[0m  $esc[38;5;240m48k$esc[0m" 'subagent ascii light: the ascii glyph and the light colours together'
+
+# The mark a clipped name ends with follows the style too, and it is the only other character the panel
+# picks. At 20 columns the name is what gets cut, which is the case that puts it on the row.
+# Driven off the same matrix, so every pairing's Ellipsis column is read rather than declared: the
+# style decides this character and the palette must not, which is only checked by running both.
+foreach ($axis in $subAxes) {
+    $c = Invoke-SubagentLine ('{ "columns": 20, "tasks": [ ' + $narrowTask + ' ] }') $axis.Args
+    $text = ConvertTo-PlainText $c.Rows['n1']
+    Confirm-True ($text.Contains($axis.Ellipsis)) "subagent clip mark [$($axis.Label)]: clips with its own mark, got '$text'"
+    # And not with the other style's, which is the half that catches a clip tail that never changed:
+    # the two marks are different characters, so a row may carry one of them and not both.
+    $otherMark = if ($axis.Style -eq 'ascii') { $ellipsis } else { $ellipsisAscii }
+    Confirm-True (-not $text.Contains($otherMark)) "subagent clip mark [$($axis.Label)]: and not the other style's mark"
+    Confirm-True ($c.Rows['n1'].Contains('60%') -and $c.Rows['n1'].Contains('120k')) "subagent clip mark [$($axis.Label)]: keeps the figures"
+}
+# The glyph is the last thing to go at any width, in the ascii style as in the other two, so a row
+# never disappears. An empty stand-in would make this fail, which is why the panel does not take the
+# ascii table's `model` entry.
+foreach ($cols in @(80, 20, 4, 1)) {
+    $c = Invoke-SubagentLine ('{ "columns": ' + $cols + ', "tasks": [ ' + $narrowTask + ' ] }') @('-Style', 'ascii')
+    $text = ConvertTo-PlainText $c.Rows['n1']
+    Confirm-True ($text.Contains($iconRobotAscii)) "subagent ascii columns ${cols}: the glyph is never dropped, got '$text'"
+    Confirm-True ((Measure-VisibleWidth $c.Rows['n1']) -le $cols) "subagent ascii columns ${cols}: the row still fits"
+}
+
+# A value the panel does not know falls back to the default rather than throwing, the same answer
+# statusline.json gets for a `style` or `palette` it cannot read. The panel is launched by a command
+# line somebody may have edited by hand, and a panel that dies takes every row with it, so there is no
+# ValidateSet here: the row still renders, in the style the script would have used anyway.
+$subFallbackDefault = $rPlain.Rows['task_01']
+foreach ($case in @(
+        @{ Args = @('-Style', 'bogus');                    Label = 'an unknown style' }
+        @{ Args = @('-Style', '');                         Label = 'an empty style' }
+        @{ Args = @('-Palette', 'bogus');                  Label = 'an unknown palette' }
+        @{ Args = @('-Palette', '');                       Label = 'an empty palette' }
+        @{ Args = @('-Style', 'ASCII-ish', '-Palette', 'darkish'); Label = 'two values that only start like the real ones' }
+        @{ Args = @('-Style', 'bogus', '-Palette', 'bogus'); Label = 'both unknown at once' })) {
+    $c = Invoke-SubagentLine (Get-SubagentSample '01-two-agents.json') $case.Args
+    Confirm-True ($c.ExitCode -eq 0) "subagent fallback: $($case.Label) still exits 0, got $($c.ExitCode)"
+    Confirm-True ($c.Err.Count -eq 0) "subagent fallback: $($case.Label) writes nothing to stderr, got '$($c.Err -join ' | ')'"
+    Confirm-Equal $c.Rows['task_01'] $subFallbackDefault "subagent fallback: $($case.Label) draws the default row"
+}
+# Case is folded, the way every enum in statusline.json is folded, so a command line that spells the
+# value the way a person would still gets the style it asked for.
+foreach ($case in @(
+        @{ Args = @('-Style', 'ASCII');   Expect = $r.Rows['task_01'];      Label = 'ASCII' }
+        @{ Args = @('-Style', 'Ascii');   Expect = $r.Rows['task_01'];      Label = 'Ascii' }
+        @{ Args = @('-Palette', 'Light'); Expect = $rLight.Rows['task_01']; Label = 'Light' })) {
+    $c = Invoke-SubagentLine (Get-SubagentSample '01-two-agents.json') $case.Args
+    Confirm-Equal $c.Rows['task_01'] $case.Expect "subagent case folding: -$($case.Label) is the same as its lower-case spelling"
+}
+
 # The helpers the subagent script copies out of statusline.ps1. Both copies are pulled from the source
 # by the parser and compared as text, so a fix made to one and not the other fails here instead of
 # turning into two scripts that measure a line or colour a percentage differently.
-$sharedHelpers = @('G', 'C', 'Read-StdinText', 'Get-VisibleWidth', 'Get-ClippedText', 'Get-Palette', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText')
+$sharedHelpers = @('G', 'C', 'Read-StdinText', 'Get-VisibleWidth', 'Get-ClippedText', 'Get-Palette', 'Get-MarkSet', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText')
 foreach ($name in $sharedHelpers) {
     $a = try { "$(Import-ScriptFunction $script @($name))" } catch { "not found in statusline.ps1" }
     $b = try { "$(Import-ScriptFunction $subScript @($name))" } catch { "not found in subagent-statusline.ps1" }
     Confirm-Equal $b $a "subagent drift: $name is the same text in both scripts"
 }
+# The header comment names the same set. A helper added to one list and not the other leaves the file
+# describing itself wrongly, and that description is the only thing telling the next reader which
+# functions may not be edited on their own. The one-character names are skipped: they match anything.
+$subHeader = ((Get-Content -LiteralPath $subScript -TotalCount 60) -join "`n")
+foreach ($name in @($sharedHelpers | Where-Object { $_.Length -gt 2 })) {
+    Confirm-True ($subHeader.Contains($name)) "subagent header: the copied-helper list names $name"
+}
+Confirm-True ($subHeader.Contains('fifteen of them')) 'subagent header: the copied-helper list says how many there are'
 
 
 # ---- Review findings: bounded capture, atomic settings write, ownership, quoting, explicit zero ----
@@ -9866,7 +10161,7 @@ Confirm-True (-not (Test-Path -LiteralPath "$capBigFile.2")) 'capture oversize: 
 
 # The two ownership tests, driven directly. Both decide whether the uninstaller may delete something, so
 # each one is checked against the forms that must NOT count as ours as well as the ones that must.
-. (Import-ScriptFunction $installer @('Split-CommandArgument', 'Test-SamePath', 'Test-OwnSubagentEntry', 'Test-OwnSubagentScript'))
+. (Import-ScriptFunction $installer @('Split-CommandArgument', 'Test-SamePath', 'Get-SubagentArgumentSpec', 'Get-StatusConfigReadLimit', 'Test-OwnSubagentEntry', 'Test-OwnSubagentScript'))
 $subagentMarkerLine = '# claude-code-statusline-ps:subagent-statusline'
 $subagentMarkerWithin = 10
 Confirm-True ((Get-Content -LiteralPath $installer -Raw).Contains("`$subagentMarkerLine = '$subagentMarkerLine'")) 'ownership: the marker the tests use is the one install.ps1 defines'
@@ -9883,6 +10178,17 @@ foreach ($case in @(
         @{ Own = $true;  Command = 'pwsh.exe -NoProfile -File "c:/users/me/.claude/SUBAGENT-STATUSLINE.PS1"'; Label = 'a different case and an .exe suffix' }
         @{ Own = $false; Command = 'node wrapper.js "C:/Users/me/.claude/subagent-statusline.ps1"'; Label = 'a foreign wrapper that carries the path as an argument' }
         @{ Own = $false; Command = 'pwsh -NoProfile -File other.ps1 # C:/Users/me/.claude/subagent-statusline.ps1'; Label = 'the path only in a trailing comment' }
+        @{ Own = $true;  Command = 'pwsh -NoProfile -NoLogo -NonInteractive -File "C:/Users/me/.claude/subagent-statusline.ps1" -Style ascii -Palette light'; Label = 'the form the installer writes with both arguments' }
+        @{ Own = $true;  Command = 'pwsh -NoProfile -NoLogo -NonInteractive -File "C:/Users/me/.claude/subagent-statusline.ps1" -Palette light -Style ascii'; Label = 'the two arguments in the other order' }
+        @{ Own = $true;  Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" -Style plain'; Label = 'only one of the two arguments' }
+        @{ Own = $true;  Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" -STYLE Ascii -palette DARK'; Label = 'the argument names and values in any case' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" -Style ascii -Style plain'; Label = 'the same argument twice' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" -Style neon'; Label = 'a value the panel does not have' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" -Palette ascii'; Label = 'a real value under the wrong argument' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" -Style'; Label = 'an argument with no value after it' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" -Style ascii -Verbose'; Label = 'a switch this installer never writes' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" ascii'; Label = 'a bare value with no argument name' }
+        @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" -Style ascii ; rm -rf /'; Label = 'a chained command behind the arguments' }
         @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" --extra'; Label = 'an argument after the script' }
         @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" & rm -rf /'; Label = 'a chained command' }
         @{ Own = $false; Command = 'pwsh -NoProfile -File "C:/Users/me/.claude/subagent-statusline.ps1" | tee log'; Label = 'a pipeline' }
@@ -9901,6 +10207,67 @@ Confirm-Equal (Test-OwnSubagentEntry ([pscustomobject]@{ type = 'other'; command
 Confirm-Equal (Test-OwnSubagentEntry ([pscustomobject]@{ type = 'command'; command = @('pwsh', '-File', $ownTarget) }) $ownTarget) $false 'ownership entry: a command that is an array, not a string'
 Confirm-Equal (Test-OwnSubagentEntry 'a bare string' $ownTarget) $false 'ownership entry: an entry that is not an object'
 Confirm-Equal (Test-OwnSubagentEntry $null $ownTarget) $false 'ownership entry: no entry at all'
+
+# The arguments the check tolerates are the arguments the installer writes, from one table, and their
+# values are the values statusline.json allows. Three lists have to agree here - what is composed, what
+# is recognised, and what the panel understands - and a command this installer wrote but no longer
+# recognises is an uninstall that leaves its own key behind. So the table is checked against the config
+# key table rather than retyped, and the composer is the same table's only other reader.
+$subArgSpec = @(Get-SubagentArgumentSpec)
+Confirm-Equal (($subArgSpec | ForEach-Object { $_.Name }) -join ',') 'Style,Palette' 'subagent arguments: the two the installer writes'
+Confirm-Equal (($subArgSpec | Where-Object { $_.Name -eq 'Style' }).Allowed -join ',') ((Get-StatusConfigKey | Where-Object { $_.Json -eq 'style' }).Allowed -join ',') 'subagent arguments: the styles are the ones statusline.json allows'
+Confirm-Equal (($subArgSpec | Where-Object { $_.Name -eq 'Palette' }).Allowed -join ',') ((Get-StatusConfigKey | Where-Object { $_.Json -eq 'palette' }).Allowed -join ',') 'subagent arguments: the palettes are the ones statusline.json allows'
+# And the panel's own parameters carry the same defaults the installer falls back to, so a command
+# written before this feature existed - no arguments at all - draws what it always drew.
+Confirm-Equal (($subArgSpec | Where-Object { $_.Name -eq 'Style' }).Default) 'plain' 'subagent arguments: the style default is the shipped one'
+Confirm-Equal (($subArgSpec | Where-Object { $_.Name -eq 'Palette' }).Default) 'dark' 'subagent arguments: the palette default is the shipped one'
+# The statusline.json key each argument stands for, so the write loop and the read-back both name the
+# key the status line actually reads rather than a lower-cased parameter name that happens to match.
+Confirm-Equal (($subArgSpec | ForEach-Object { $_.Key }) -join ',') 'style,palette' 'subagent arguments: each row names its statusline.json key'
+# Detected marks the row -DetectTheme decides. It works out a background, so exactly one row - the
+# palette - may carry it; a second would mean the detection branch fires for a setting it cannot know.
+Confirm-Equal (@($subArgSpec | Where-Object { $_.Detected }).Count) 1 'subagent arguments: exactly one row is decided by the theme detection'
+Confirm-Equal (($subArgSpec | Where-Object { $_.Detected }).Name) 'Palette' 'subagent arguments: and it is the palette'
+
+# ---- THE FOUR COPIES OF THE SAME TWO ENUMS ----
+# statusline.json's allowed values (Get-StatusConfigKey), the installer's table (checked above), the
+# ValidateSet on the installer's own parameters, and the literal lists in the panel. None of them can
+# import from another - the panel loads nothing, and the ValidateSet is an attribute on a parameter -
+# so the only thing that can keep them together is reading all four out of the source and comparing.
+# Without this, a fourth style added to the config table and the panel but not to the ValidateSet is an
+# installer that refuses a value it would otherwise have written, and nothing fails until someone tries.
+function Get-ScriptParameterValidateSet([string] $Path, [string] $Name) {
+    $t = $null; $e = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref] $t, [ref] $e)
+    if ($e.Count -gt 0) { throw "parse error in ${Path}: $($e[0].Message)" }
+    $p = @($ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq $Name })
+    if ($p.Count -ne 1) { throw "expected one -$Name parameter in $Path, found $($p.Count)" }
+    $set = @($p[0].Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' })
+    if ($set.Count -ne 1) { return $null }
+    return @($set[0].PositionalArguments | ForEach-Object { $_.Value })
+}
+# The panel's lists, read off the Get-EnumArgument calls that consume them rather than off a comment,
+# so the assertion follows the values the script actually falls back through.
+function Get-PanelEnumList([string] $Path, [string] $VariableName) {
+    $text = Get-Content -LiteralPath $Path -Raw
+    $m = [regex]::Match($text, [regex]::Escape("`$$VariableName = Get-EnumArgument") + "\s+\`$\w+\s+@\(([^)]*)\)")
+    if (-not $m.Success) { throw "could not find the Get-EnumArgument call for `$$VariableName in $Path" }
+    return @($m.Groups[1].Value -split ',' | ForEach-Object { $_.Trim().Trim("'") })
+}
+foreach ($case in @(
+        @{ Json = 'style';   Param = 'Style';   Panel = 'styleName' }
+        @{ Json = 'palette'; Param = 'Palette'; Panel = 'paletteName' })) {
+    $allowed = ((Get-StatusConfigKey | Where-Object { $_.Json -eq $case.Json }).Allowed) -join ','
+    Confirm-Equal ((Get-ScriptParameterValidateSet (Resolve-Path $installer).Path $case.Param) -join ',') $allowed "enum copies: install.ps1's -$($case.Param) ValidateSet is statusline.json's $($case.Json) values"
+    Confirm-Equal ((Get-PanelEnumList (Resolve-Path $subScript).Path $case.Panel) -join ',') $allowed "enum copies: the panel's `$$($case.Panel) list is statusline.json's $($case.Json) values"
+}
+# The helpers above have to be able to fail, or the two assertions are decoration: a set that is not
+# there comes back $null and a list that is not there throws, and both are how a rename would show up.
+Confirm-Equal (Get-ScriptParameterValidateSet (Resolve-Path $installer).Path 'SettingsPath') $null 'enum copies: a parameter with no ValidateSet reads back as none'
+# `try` is a statement, not an expression, so this cannot be folded into the Confirm-True argument.
+$enumListThrew = $false
+try { Get-PanelEnumList (Resolve-Path $subScript).Path 'notAVariable' | Out-Null } catch { $enumListThrew = $true }
+Confirm-True $enumListThrew 'enum copies: a list that is not there is an error, not an empty answer'
 
 # The marker has to be a line of its own near the top. The token appearing anywhere else is not evidence
 # the file is ours, and treating it as such would delete somebody's script.
@@ -10090,7 +10457,12 @@ $subSettings = Join-Path $subHome 'settings.json'
 $subSettingsBak = Get-JsonBackupPath $subSettings
 Set-Content -LiteralPath $subSettings -Value '{ "theme": "dark" }' -Encoding utf8NoBOM
 $installedSub = Join-Path $subHome '.claude\subagent-statusline.ps1'
-$expectSubCommand = 'pwsh -NoProfile -NoLogo -NonInteractive -File "' + ($installedSub -replace '\\', '/') + '"'
+$subHomeConfig = Join-Path $subHome '.claude\statusline.json'
+# The panel takes its style and its palette as arguments, so the command carries the pair the installer
+# chose. Both are always written, even at their defaults: the command then says what the panel will
+# draw rather than leaving it to whatever the panel's own defaults happen to be later.
+$expectSubCommandBare = 'pwsh -NoProfile -NoLogo -NonInteractive -File "' + ($installedSub -replace '\\', '/') + '"'
+$expectSubCommand = "$expectSubCommandBare -Style plain -Palette dark"
 
 # Without the switch neither the file nor the key appears, so an existing install is left as it was.
 $r = Invoke-Installer 'install without -Subagents' @('-SettingsPath', $subSettings)
@@ -10123,6 +10495,121 @@ if (Test-Path -LiteralPath $installedSub) {
 $r = Invoke-Installer 'install -Subagents again' @('-Subagents', '-SettingsPath', $subSettings)
 Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent install twice: exit code 0, stderr empty'
 Confirm-Equal (Get-KeyList (Read-SettingFile $subSettings)) 'theme,statusLine,subagentStatusLine' 'subagent install twice: still one subagentStatusLine key'
+
+# ---- The style and palette the installer bakes into the command (#78) ----
+# One rule: the panel is installed with the style and palette the STATUS LINE will use. The switches
+# set both, in statusline.json for the line and on the command line for the panel, so the two cannot be
+# installed disagreeing; without the switches the command carries what statusline.json already says.
+$r = Invoke-Installer 'install -Subagents -Style ascii -Palette light' @('-Subagents', '-Style', 'ascii', '-Palette', 'light', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0) "subagent style: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "subagent style: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-Equal (Read-SettingFile $subSettings).subagentStatusLine.command "$expectSubCommandBare -Style ascii -Palette light" 'subagent style: the command carries the pair that was asked for'
+$subCfg = Get-Content -LiteralPath $subHomeConfig -Raw | ConvertFrom-Json
+Confirm-Equal $subCfg.style 'ascii' 'subagent style: the status line''s own config got the style too'
+Confirm-Equal $subCfg.palette 'light' 'subagent style: and the palette'
+Confirm-Equal $subCfg.layout 'one' 'subagent style: every other key in statusline.json survived'
+# The entry the installer just wrote is still one it recognises as its own, which is the whole risk of
+# putting arguments on the command: an uninstall that stops seeing its own key leaves it behind.
+Confirm-True (Test-OwnSubagentEntry (Read-SettingFile $subSettings).subagentStatusLine $installedSub) 'subagent style: the installer still recognises the command it wrote'
+# End to end: the installed copy, run with the arguments the installed command carries, draws ascii.
+if (Test-Path -LiteralPath $installedSub) {
+    $c = Invoke-ChildPwsh $installedSub @('-Style', 'ascii', '-Palette', 'light') (Get-SubagentSample '01-two-agents.json')
+    Confirm-True ($c.ExitCode -eq 0 -and $c.Err.Count -eq 0) 'subagent style: the installed copy runs clean with the arguments'
+    $row = (Get-SubagentReply $c.Lines).Rows['task_01']
+    Confirm-Equal (ConvertTo-PlainText $row) "$iconRobotAscii Explore  24%  48k" 'subagent style: the installed copy draws the ascii row'
+}
+# A reinstall with no switches keeps the pair, because it reads them back out of statusline.json rather
+# than resetting to the built-in defaults. This is what makes the panel follow a hand-edited config.
+$r = Invoke-Installer 'install -Subagents with no style switches' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent style kept: exit code 0, stderr empty'
+Confirm-Equal (Read-SettingFile $subSettings).subagentStatusLine.command "$expectSubCommandBare -Style ascii -Palette light" 'subagent style kept: the command follows the config file'
+# An uninstall recognises the entry with the arguments on it and takes both it and the script away.
+$r = Invoke-Installer 'uninstall a subagent line carrying arguments' @('-Uninstall', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent style uninstall: exit code 0, stderr empty'
+Confirm-Equal (Get-KeyList (Read-SettingFile $subSettings)) 'theme' 'subagent style uninstall: the entry with arguments was removed'
+Confirm-True (-not (Test-Path -LiteralPath $installedSub)) 'subagent style uninstall: the script was deleted'
+# Back to the shipped pair for the cases below, so they read the command they expect.
+Invoke-Installer 'install -Subagents back to the defaults' @('-Subagents', '-Style', 'plain', '-Palette', 'dark', '-SettingsPath', $subSettings) | Out-Null
+Confirm-Equal (Read-SettingFile $subSettings).subagentStatusLine.command $expectSubCommand 'subagent style reset: the command is back to the shipped pair'
+$r = Invoke-Installer 'uninstall after the style cases' @('-Uninstall', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent style reset: the uninstall after it is clean'
+# A value neither the panel nor statusline.json has is refused by the installer outright, rather than
+# written into a command the ownership check would then not recognise. This is the one place the three
+# lists have to agree, so it is checked at the seam rather than in a table.
+foreach ($bad in @(@('-Style', 'neon'), @('-Palette', 'sepia'))) {
+    $r = Invoke-Installer "install -Subagents $($bad -join ' ')" (@('-Subagents') + $bad + @('-SettingsPath', $subSettings))
+    Confirm-True ($r.ExitCode -ne 0) "subagent style refused: $($bad -join ' ') is refused, exit $($r.ExitCode)"
+    Confirm-True (-not (Read-SettingFile $subSettings).PSObject.Properties['subagentStatusLine']) "subagent style refused: $($bad -join ' ') wrote no entry"
+}
+$r = Invoke-Installer 'install -Subagents after the refused values' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent style refused: a good install after them is clean'
+
+# ---- An entry this installer owns is refreshed by ANY run that changes the pair ----
+# The command carries the style and the palette, so a run that changes either and leaves the entry
+# alone leaves it describing a status line that no longer exists. -Subagents creates the entry; it is
+# not required to keep it honest.
+Invoke-Installer 'install -Subagents before the refresh cases' @('-Subagents', '-Style', 'plain', '-Palette', 'dark', '-SettingsPath', $subSettings) | Out-Null
+Confirm-Equal (Read-SettingFile $subSettings).subagentStatusLine.command $expectSubCommand 'subagent refresh: the entry starts on the shipped pair'
+$r = Invoke-Installer 'install -Style ascii with NO -Subagents' @('-Style', 'ascii', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0) "subagent refresh: exit code $($r.ExitCode)"
+Confirm-True ($r.Err.Count -eq 0) "subagent refresh: stderr empty, got '$($r.Err -join ' | ')'"
+Confirm-Equal (Read-SettingFile $subSettings).subagentStatusLine.command "$expectSubCommandBare -Style ascii -Palette dark" 'subagent refresh: a run without -Subagents still brings the panel command along'
+Confirm-True ((($r.Lines -join "`n")) -match 'Refreshed subagentStatusLine') "subagent refresh: and says it refreshed it, got '$($r.Lines -join ' | ')'"
+# The refresh is ownership, not the switch: an entry this installer did not write is left exactly as
+# it is, and reported. This is the case that would rewrite somebody's own panel command if it regressed.
+$s = Read-SettingFile $subSettings
+$s.subagentStatusLine.command = 'node /home/me/my-own-panel.js'
+$s | ConvertTo-Json -Depth 32 | Set-Content -LiteralPath $subSettings -Encoding utf8NoBOM
+$r = Invoke-Installer 'install -Style plain over a foreign panel entry' @('-Style', 'plain', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent refresh foreign: exit code 0, stderr empty'
+Confirm-Equal (Read-SettingFile $subSettings).subagentStatusLine.command 'node /home/me/my-own-panel.js' 'subagent refresh foreign: a foreign command is not rewritten'
+Confirm-True ((($r.Lines -join "`n")) -match "Kept: the subagentStatusLine entry .* is not this installer's") "subagent refresh foreign: and the run says so, got '$($r.Lines -join ' | ')'"
+# A run that changes nothing about the pair leaves the entry byte for byte as it was, so "refresh"
+# does not mean "rewrite on every install".
+Remove-Item -LiteralPath $subSettings -Force
+Set-Content -LiteralPath $subSettings -Value '{ "theme": "dark" }' -Encoding utf8NoBOM
+Invoke-Installer 'install -Subagents before the no-op refresh' @('-Subagents', '-SettingsPath', $subSettings) | Out-Null
+$beforeCommand = (Read-SettingFile $subSettings).subagentStatusLine.command
+$r = Invoke-Installer 'install with no style switches at all' @('-SettingsPath', $subSettings)
+Confirm-Equal (Read-SettingFile $subSettings).subagentStatusLine.command $beforeCommand 'subagent refresh: a run that decides the same pair writes the same command'
+
+# ---- statusline.json is written BEFORE the command that has to agree with it ----
+# A config write that fails must not leave settings.json promising the value the file does not hold.
+# An unparseable statusline.json is the cheapest way to make Write-StatusConfigValue throw: it refuses
+# a file that does not read back as a JSON object, and Read-StatusConfigEnum answers $null for it too,
+# so the decided pair falls back to the defaults and the command has to carry THOSE.
+$subConfigTarget = Join-Path $subHome '.claude\statusline.json'
+Copy-Item -LiteralPath $subConfigTarget -Destination "$subConfigTarget.keep" -Force
+Set-Content -LiteralPath $subConfigTarget -Value 'this is not json' -Encoding utf8NoBOM
+$r = Invoke-Installer 'install -Subagents -Style ascii over an unparseable config' @('-Subagents', '-Style', 'ascii', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0) "subagent config-first: the install still finishes, exit $($r.ExitCode)"
+Confirm-Equal (Get-Content -LiteralPath $subConfigTarget -Raw).Trim() 'this is not json' 'subagent config-first: the file that could not be written is untouched'
+Confirm-Equal (Read-SettingFile $subSettings).subagentStatusLine.command $expectSubCommand 'subagent config-first: the command carries what the file yields, not what the switch asked for'
+$text = ($r.Lines + $r.Err) -join "`n"
+Confirm-True ($text -match 'asked for .*style.*ascii') "subagent config-first: the run says what was asked for, got '$text'"
+Confirm-True ($text -match 'command follows the file') "subagent config-first: and that the command followed the file instead"
+Move-Item -LiteralPath "$subConfigTarget.keep" -Destination $subConfigTarget -Force
+
+# ---- The installer reads statusline.json under the same size cap the render path does ----
+# Over the cap the status line falls back to its defaults, so the panel has to as well: the one rule
+# this feature keeps is that the two agree, and a file too big to read is the case where following it
+# would break that silently. The cap is checked at the seam, with a real file either side of it.
+Invoke-Installer 'install -Subagents -Style ascii -Palette light before the cap case' @('-Subagents', '-Style', 'ascii', '-Palette', 'light', '-SettingsPath', $subSettings) | Out-Null
+Confirm-Equal (Read-SettingFile $subSettings).subagentStatusLine.command "$expectSubCommandBare -Style ascii -Palette light" 'subagent cap: a config under the cap is followed'
+$subCfg = Get-Content -LiteralPath $subConfigTarget -Raw | ConvertFrom-Json
+$subCapBytes = (Get-BoundedReadLimit).MaxBytes
+Confirm-True ((Get-Item -LiteralPath $subConfigTarget).Length -le $subCapBytes) 'subagent cap: the config under test starts under the cap'
+$subCfg | Add-Member -NotePropertyName pad -NotePropertyValue ('x' * $subCapBytes) -Force
+$subCfg | ConvertTo-Json -Depth 32 | Set-Content -LiteralPath $subConfigTarget -Encoding utf8NoBOM
+Confirm-True ((Get-Item -LiteralPath $subConfigTarget).Length -gt $subCapBytes) 'subagent cap: and is over it once padded'
+$r = Invoke-Installer 'install -Subagents over an oversized config' @('-Subagents', '-SettingsPath', $subSettings)
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'subagent cap: the install is still clean'
+Confirm-Equal (Read-SettingFile $subSettings).subagentStatusLine.command $expectSubCommand 'subagent cap: a config over the cap is ignored, so the panel gets the defaults the bar gets'
+Confirm-Equal ((Get-Content -LiteralPath $subConfigTarget -Raw | ConvertFrom-Json).style) 'ascii' 'subagent cap: and the oversized file itself is left alone'
+# The number is the status line's own, not a second opinion about how big is too big.
+Confirm-Equal (Get-StatusConfigReadLimit) (Get-BoundedReadLimit).MaxBytes 'subagent cap: the installer reads under the same cap the render path does'
+Remove-Item -LiteralPath $subConfigTarget -Force
+Invoke-Installer 'install -Subagents to restore the config' @('-Subagents', '-Style', 'plain', '-Palette', 'dark', '-SettingsPath', $subSettings) | Out-Null
 
 # Uninstall takes both entries out in a single write, so the owned backup still holds the settings as
 # they were, and deletes both scripts. The switch is not needed for the removal.
@@ -10369,7 +10856,9 @@ $s = Read-SettingFile $spacedSettings
 $spacedMain = Join-Path $spacedHome '.claude\statusline.ps1'
 $spacedSub = Join-Path $spacedHome '.claude\subagent-statusline.ps1'
 Confirm-Equal $s.statusLine.command ('pwsh -NoProfile -NoLogo -NonInteractive -File "' + ($spacedMain -replace '\\', '/') + '"') 'spaced profile: the statusLine path is quoted'
-Confirm-Equal $s.subagentStatusLine.command ('pwsh -NoProfile -NoLogo -NonInteractive -File "' + ($spacedSub -replace '\\', '/') + '"') 'spaced profile: the subagentStatusLine path is quoted'
+# The panel's own arguments come after the quoted path, so the quoting has to hold with something
+# following it - which is the case a closing quote in the wrong place would break.
+Confirm-Equal $s.subagentStatusLine.command ('pwsh -NoProfile -NoLogo -NonInteractive -File "' + ($spacedSub -replace '\\', '/') + '" -Style plain -Palette dark') 'spaced profile: the subagentStatusLine path is quoted'
 Confirm-True ($s.statusLine.command.Contains(' c/.claude/')) 'spaced profile: the path really does carry a space'
 Confirm-True ($s.statusLine.command.Contains('&')) 'spaced profile: the path really does carry an ampersand'
 # Through cmd, which is what Claude Code hands the command to on Windows. The subagent line answers a

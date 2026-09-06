@@ -41,7 +41,7 @@ how close you are to a rate limit, and which modes are on.
 - Every glyph has an ASCII stand-in: `"style": "ascii"` draws the whole line out of plain characters and keeps the colours, for a terminal whose font you cannot change. See [ASCII style](#ascii-style).
 - A light palette for a pale terminal background: `"palette": "light"` swaps every colour on the line for one that reads on white, in any of the three styles. `.\install.ps1 -DetectTheme` reads Windows Terminal's colour scheme and sets the key for you, or tells you it could not. See [Light palette](#light-palette).
 - Optionally, the context percentage on the window's taskbar button in Windows Terminal, so a full window is visible while Claude Code is minimised. Off by default; see [Taskbar progress](#taskbar-progress).
-- A matching line for each running subagent in the agent panel, with `.\install.ps1 -Subagents`. See [Subagent status line](#subagent-status-line).
+- A matching line for each running subagent in the agent panel, with `.\install.ps1 -Subagents`, in the same style and palette as the bar. See [Subagent status line](#subagent-status-line).
 - A wall clock, off by default, and a `right` list that pushes any segments you name against the right edge of the first line — the time on the right of the prompt, the way a shell does it. See [Width fitting](#width-fitting) for what a narrow terminal does with it.
 - Fits the terminal width. A line that is too long first loses detail from the cost, limits, cache, context, branch, folder, badges and clock segments, then the right group, then whole segments from the right, so lines stop wrapping in normal use.
 - If a field is missing from the payload, the script drops that segment. If the payload will not parse, it still prints the model glyph.
@@ -75,9 +75,10 @@ Restart Claude Code, or wait for its next status refresh.
 - Sets `hideVimModeIndicator` inside that entry. The badges segment already shows the vim mode, so Claude Code's own indicator would be the same word twice on one bar.
 - With `-RefreshInterval <seconds>`, sets `refreshInterval` inside that entry so Claude Code re-renders the line on a timer as well as on events. Without the switch the key is not written. A value below 1 is refused and nothing is written.
 - With `-Subagents`, also copies `subagent-statusline.ps1` to `~/.claude/` and adds a `subagentStatusLine` entry. See [Subagent status line](#subagent-status-line).
+- With `-Style plain|powerline|ascii` or `-Palette dark|light`, writes that key into `~/.claude/statusline.json`, keeping every other key, and carries the same value into the `subagentStatusLine` command. Leave them out and both come from the file as it already stands.
 - With `-InstallFont`, installs JetBrainsMono Nerd Font through winget. Expect one elevation prompt.
 - With `-ConfigureWindowsTerminal`, sets Windows Terminal's default font to `JetBrainsMono NF` and keeps a copy of its settings first, the same project-owned backup treatment as `settings.json` gets.
-- With `-DetectTheme`, reads Windows Terminal's default colour scheme and writes `"palette": "dark"` or `"palette": "light"` into `~/.claude/statusline.json`, keeping every other key. It prints the scheme it found, that scheme's background and the palette it chose. When it cannot tell — no Windows Terminal, no default profile, a scheme it has no background for, or a profile set to follow the OS light/dark theme — **it writes nothing and says why**, because the palette already defaults to `dark` and a wrong guess of `light` would leave the line unreadable. Without the switch `statusline.json` is not touched. See [Light palette](#light-palette).
+- With `-DetectTheme`, reads Windows Terminal's default colour scheme and writes `"palette": "dark"` or `"palette": "light"` into `~/.claude/statusline.json`, keeping every other key. It prints the scheme it found, that scheme's background and the palette it chose. When it cannot tell — no Windows Terminal, no default profile, a scheme it has no background for, or a profile set to follow the OS light/dark theme — **it writes nothing and says why**, because the palette already defaults to `dark` and a wrong guess of `light` would leave the line unreadable. `-Palette` outranks it, and it still prints what it found. Without any of the three, `statusline.json` is not touched. See [Light palette](#light-palette).
 
 The settings entry it writes after `.\install.ps1 -RefreshInterval 10`:
 
@@ -136,17 +137,71 @@ wraps the panel. A `columns` of exactly `0` is the panel saying it has no room a
 printed for it; a `columns` that is missing or malformed says nothing about the width, so the row
 renders in full and the terminal decides.
 
-There is no config file, no git probe and no powerline style: a panel row is not a full-width bar, and
-a git probe per row per tick is too much for something that ticks every five seconds.
+There is no config file and no git probe: a panel row is not a full-width bar, and a git probe per row
+per tick is too much for something that ticks every five seconds.
 
-The entry it writes:
+#### Style and palette in the panel
+
+The panel has no config file to read — the command runs once per tick for the whole panel, and that
+read is exactly what the status line's own config path had to be bounded and made cheap to survive. So
+the two settings that decide how a row is *drawn* ride on the command instead, and the installer bakes
+in the pair the status line itself will use:
 
 ```json
 "subagentStatusLine": {
   "type": "command",
-  "command": "pwsh -NoProfile -NoLogo -NonInteractive -File \"C:/Users/<you>/.claude/subagent-statusline.ps1\""
+  "command": "pwsh -NoProfile -NoLogo -NonInteractive -File \"C:/Users/<you>/.claude/subagent-statusline.ps1\" -Style ascii -Palette light"
 }
 ```
+
+`-Style` takes the same three values as the `style` key and `-Palette` the same two as `palette`.
+`ascii` draws the row's glyph and the tail on a clipped name in printable ASCII — `@ Explore  24%  48k`
+rather than `󰚩 Explore  24%  48k` — and `light` swaps the colour numbers for the light table's, so a
+pale terminal gets a readable panel under its readable bar. `plain` and `powerline` draw the same row:
+the panel has no separators between segments, which is the whole of what `powerline` changes on the
+main line, and it accepts the value anyway so the installer can pass `style` through unchanged.
+
+Where the pair comes from, highest first: `-Style` and `-Palette` on the installer, then the palette
+`-DetectTheme` worked out, then the `style` and `palette` already in `~/.claude/statusline.json`, then
+`plain` and `dark`. So editing `statusline.json` and running `.\install.ps1` again is what carries a
+change into the panel — any run of it, not only `-Subagents`: the installer refreshes a panel entry it
+recognises as its own, and `-Subagents` is only what creates one. It is fixed until then, which is the
+shape of the setting rather than a shortcut: a font belongs to the terminal and a background to its
+colour scheme, and neither of those changes between sessions.
+
+**Two things in that file the panel does not follow.** The installer reads the literal `style` and
+`palette` keys of your own `~/.claude/statusline.json`. A [preset](#presets) stands for a style without
+naming one, so it does not reach the panel; and a repository's own `.claude/statusline.json`, which the
+status line merges over yours per project (see [Configuration](#configuration)), does not either. Today the first
+changes nothing that is drawn, because all three presets name `plain` or `powerline` and the panel
+draws those the same. The second cannot be followed at all: one command serves the whole session, so
+there is no per-project answer for it to carry. Name `style` and `palette` in your own file if you want
+the panel to follow them. The same read also ignores a `statusline.json` over 64 KiB — so does the
+status line, so both fall back to the defaults together.
+
+**The command line is the installer's, not a place to configure this.** Change `style` or `palette` in
+`statusline.json` and run the installer again. Editing the command by hand has two failure modes the
+panel cannot defend against: an argument left half-typed — `-Style` with nothing after it — fails
+PowerShell's parameter binding *before* the script runs, so its error goes where the panel expects JSON
+and **every row goes blank**, not just the one argument; and an entry edited into a shape the installer
+does not recognise is one `-Uninstall` walks past and leaves behind.
+
+A value the panel does not know — from a command line edited by hand — falls back to the default and
+the row still renders. There is no `ValidateSet` on those parameters on purpose: a binding failure
+would print a PowerShell error where the panel expects JSON, and take every row down with it rather
+than the one argument that was mistyped.
+
+The entry the installer writes with no switches, and with `statusline.json` at its shipped values:
+
+```json
+"subagentStatusLine": {
+  "type": "command",
+  "command": "pwsh -NoProfile -NoLogo -NonInteractive -File \"C:/Users/<you>/.claude/subagent-statusline.ps1\" -Style plain -Palette dark"
+}
+```
+
+Both arguments are always written, defaults included: the command then says what the panel draws
+rather than leaving it to whatever the panel's own defaults happen to be in a later version.
 
 `padding` and `hideVimModeIndicator` are left out on purpose: the setting's schema is `type` and
 `command` only. The path is double-quoted, and so is the one in the `statusLine` entry, because a
@@ -189,10 +244,14 @@ It removes `subagentStatusLine` and `~/.claude/subagent-statusline.ps1` too, wit
 names may well be something you set up yourself.
 
 The key counts as ours only when the whole `command` is the form the installer writes: `pwsh`, then
-only the switches it passes, then `-File`, then exactly one more argument that *is* the path to
-`~/.claude/subagent-statusline.ps1`, and nothing after it. A command that merely mentions that path
-somewhere — as an argument to a wrapper, in a comment, behind a `&` — is not ours and is kept, because
-it never runs our script.
+only the switches it passes, then `-File`, then one more argument that *is* the path to
+`~/.claude/subagent-statusline.ps1`, and after it only the panel's own `-Style` and `-Palette` — each
+at most once, in either order, with a value the panel has — and then the end of the command. A command
+that merely mentions that path somewhere — as an argument to a wrapper, in a comment, behind a `&` — is
+not ours and is kept, because it never runs our script. So is one that runs our script with anything
+else attached: `-Style neon`, a second `-Style`, a `-Style` with nothing after it, or any switch this
+installer does not write. An entry written before the arguments existed, with nothing after the path,
+is still recognised.
 
 The file counts as ours only when the marker line `# claude-code-statusline-ps:subagent-statusline`
 appears as a whole line of its own within the first ten lines. The token turning up inside some other
@@ -292,6 +351,10 @@ built-in defaults, user file, project file, and a value the project file gets wr
 value beneath it rather than to the built-in default. A project with no `.claude\statusline.json`
 changes nothing, and so does an unreadable one. `-Config <path>` is the exception: it replaces the user
 file and skips the project file, so a render with it is the same whatever directory the payload names.
+
+The agent panel follows none of this. It takes its style and palette as arguments the installer bakes
+in from your **own** file, so a project file changes the bar in that repository and leaves the panel
+where it was. See [Style and palette in the panel](#style-and-palette-in-the-panel).
 
 **Both config files are read under the same budget: 64 KiB and 250 ms.** One clock covers every step of
 one file — the open, the size, each read and the close at the end — and it starts before the first
@@ -404,6 +467,11 @@ group either, so every segment renders inline in its ordinary place.
 Turning five segments off by hand is the first edit most people make, so the three usual shapes have
 names. The whole file can be `{"preset": "minimal"}`.
 
+A preset sets a style without naming one, and the installer reads the `style` key rather than the
+preset, so a preset does not reach the agent panel. It makes no visible difference today — all three
+name `plain` or `powerline`, which the panel draws identically — but name `style` yourself if you want
+to be sure. See [Style and palette in the panel](#style-and-palette-in-the-panel).
+
 | Preset | Layout | Style | Segments on |
 |---|---|---|---|
 | `minimal` | `one` | `plain` | model, context, folder, branch |
@@ -459,6 +527,7 @@ abbreviation, cut to a single letter where the segment's own text carries the wo
 | pace on track, overrunning | `→` `↑` | `=` `^` |
 | clipped name | `…` | `.` |
 | between segments | dim chevron in `plain`, solid arrow in `powerline` | `>` |
+| subagent panel row | robot | `@` |
 
 Two things follow from ASCII being the promise rather than "no Nerd Font". Everything the script
 chooses is drawn from U+0020 to U+007E, which is both the range every font has and the range every
@@ -474,6 +543,14 @@ two — so a branch called `機能/x` renders `b 機能/x`, not `b ????`. This s
 Japanese branch name needs a Japanese font, which most terminals do have, and it is your data either
 way: a name shown as boxes at least tells you a font is missing, where one silently transliterated
 tells you nothing and cannot be read back.
+
+**The agent panel too, at install time.** The panel reads no config file, so `.\install.ps1 -Subagents`
+puts `-Style ascii` on the command it writes when that is what the status line is set to. A panel row
+has only two characters of its own — the robot glyph and the tail on a clipped name — and they become
+`@` and `.`. The `@` is this table's own mark for a person driving a thread, which is what a panel row
+is; the `model` row above is empty for a reason that does not hold there, because on the main line the
+model's name follows the glyph and on a panel row the glyph is the one thing that always survives. See
+[Style and palette in the panel](#style-and-palette-in-the-panel).
 
 ### Light palette
 
@@ -567,15 +644,13 @@ When any link in the chain is missing it **writes nothing and prints why**:
 Leaving it alone is safe because the palette already defaults to `dark`: a detection that fails
 changes nothing, and the failure is one line of output rather than a line you cannot read.
 
-**The agent panel stays dark.** `subagent-statusline.ps1` reads no config file at all — it takes a
-payload on stdin and answers — so `"palette": "light"` reaches the status line and not the panel. On a
-pale terminal that leaves a readable bar above a panel that is not. Closing the gap is
-[#78](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/78), which has the same
-problem for `"style": "ascii"` and has to decide where the panel learns a setting from before either
-can be fixed. The route that looks cheapest — an argument baked into the `subagentStatusLine` command
-by the installer — is also the one that could not be added here without changing the uninstaller: it
-recognises its own entry by the command's exact shape, `pwsh`, its switches, `-File`, and exactly one
-argument after it, so an extra argument would make it stop recognising the entry it wrote.
+**The agent panel follows, but only at install time.** `subagent-statusline.ps1` still reads no config
+file — it takes a payload on stdin and answers — so the palette reaches it as a `-Palette` argument the
+installer bakes into the `subagentStatusLine` command, from this same key. That is
+[#78](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/78), which did the same for
+`style`. Change the key by hand and the bar follows on the next render while the panel keeps what it
+was installed with; run `.\install.ps1 -Subagents` again to bring the panel along. See
+[Style and palette in the panel](#style-and-palette-in-the-panel).
 
 ### Taskbar progress
 
@@ -809,14 +884,17 @@ palette's own group recomputes every contrast ratio in both tables from the xter
 holds each of them to a 3:1 floor for every inline marker inside every block it can be drawn in. The subagent group pipes every payload in
 `samples/subagent/` through `subagent-statusline.ps1` and reads the replies the way the panel does:
 each line must be an object with a string `id` and a string `content`, every id must belong to a task
-in the payload, every row must be one line carrying the robot glyph, and it must fit the payload's
-`columns` down to a single column. It also checks that malformed, empty, array-shaped and
-task-less payloads print nothing and still exit 0, and that the helpers `subagent-statusline.ps1`
+in the payload, every row must be one line carrying that style's own glyph, and it must fit the
+payload's `columns` down to a single column — all of it once per `-Style` × `-Palette` pairing, the way
+the main matrix runs styles and palettes. It also checks that malformed, empty, array-shaped and
+task-less payloads print nothing and still exit 0, that an argument value the panel does not know falls
+back to the default row instead of throwing, and that the helpers `subagent-statusline.ps1`
 copies out of `statusline.ps1` are still the same text in both files. Its own install cases run
 `install.ps1 -Subagents` and `-Uninstall` against a second temp home. The ownership rules are checked
 against the forms that must not count as ours as well as the ones that must: a command that carries
 the path as a wrapper argument or in a trailing comment, one with something chained after it, one
-using `-Command`, and a file where the marker token appears only inside another line, in a string
+using `-Command`, one carrying a switch or a value the installer never writes, and a file where the
+marker token appears only inside another line, in a string
 literal, in a trailing comment or below the header window. Beyond that: an install over a file that is
 not ours is refused and changes nothing, a profile whose path holds a space and an `&` produces a
 command that really runs under cmd, a settings write that cannot complete leaves the old file intact
@@ -866,6 +944,7 @@ To try a payload of your own:
 Get-Content my-payload.json -Raw | pwsh -NoProfile -File .\statusline.ps1
 Get-Content my-payload.json -Raw | pwsh -NoProfile -File .\statusline.ps1 -Config .\docs\statusline-two-line.json
 Get-Content .\samples\subagent\01-two-agents.json -Raw | pwsh -NoProfile -File .\subagent-statusline.ps1
+Get-Content .\samples\subagent\01-two-agents.json -Raw | pwsh -NoProfile -File .\subagent-statusline.ps1 -Style ascii -Palette light
 ```
 
 ## Customise
@@ -878,7 +957,7 @@ under Configuration. What is left sits at the top of `statusline.ps1`:
 - `$defaultEffort` is the level at which the effort badge is hidden.
 - The 70% and 90% cut-offs of a 1M window are passed by the context block to `Get-ThresholdRole`; `thresholds` does not move them. The `alarm` percentages are separate from both: `Test-AlarmState` reads the payload directly, so it does not care about the window size or about which segments are switched on.
 - `Get-WholePercent` is the one rule that turns a payload figure into the percentage on the line. The context meter, the limits figures, the cached share, the colour bands and the alarms all go through it, so a fractional percentage cannot print as 90% in one segment and count as 89% in another. It rounds half to even, which is what the casts it replaced already did. The cached share is computed from token counts rather than read as a percentage, and it still goes through the same rule: it prints beside the meter's own percentage, and two rounding rules on one segment is the disagreement this function exists to rule out.
-- `Get-Palette` holds the colours for both styles; `ascii` uses the plain ones role for role.
+- `Get-Palette` holds the colours for both palettes; `ascii` uses the same ones role for role. `subagent-statusline.ps1` carries its own copy of it and of `Get-MarkSet`, pinned to these by the drift gate, and takes the style and the palette as `-Style` and `-Palette` arguments because it has no config file to read.
 - `Get-SegmentRegistry` is the segment table. Its array order is the default `order`, `Row` and `RowRank` give the default `rows`, `Default` says whether a segment is on before any config is read, and `ShrinkRank` and `DropRank` set the fitting order, which the config does not change. What the config does change is which segments leave that order for the right edge, under `right`.
 
 ## Troubleshooting
@@ -886,7 +965,9 @@ under Configuration. What is left sits at the top of `statusline.ps1`:
 Icons show as boxes or question marks: the terminal font is not a Nerd Font. Set it to
 `JetBrainsMono NF` or any other Nerd Font. Where the font is not yours to change — the VS Code
 terminal, a session over SSH — put `"style": "ascii"` in `statusline.json` instead and the same line
-is drawn out of plain ASCII, colours and all. See [ASCII style](#ascii-style).
+is drawn out of plain ASCII, colours and all. See [ASCII style](#ascii-style). Reinstall with
+`.\install.ps1 -Subagents` afterwards if you use the agent panel: it reads no config file, so the style
+reaches it as an argument on the command the installer writes.
 
 A branch or folder name that is not English comes out as `µ⌐ƒΦâ╜/x` or `funci├│n`: that was a defect
 in the status line itself and is fixed. Claude Code sends the payload as UTF-8, and both scripts now
@@ -928,7 +1009,9 @@ segment prints even when it does not fit.
 Colours look washed out, or the chevron between segments is invisible: the default colours are chosen
 for a dark terminal. Set `"palette": "light"` in `statusline.json`, or run `.\install.ps1 -DetectTheme`
 to have it read Windows Terminal's colour scheme and set the key for you. See
-[Light palette](#light-palette). The agent panel is not covered by the key and stays dark.
+[Light palette](#light-palette). The agent panel follows the same key: it reads no config file, so
+the installer bakes the palette into the command it writes - rerun `.install.ps1` after changing the
+key and the panel comes along. See [Style and palette in the panel](#style-and-palette-in-the-panel).
 
 `]8;;` or a URL printed as text on the line: the terminal does not understand OSC 8 hyperlinks and does
 not swallow them either. Set `"links": false` in `statusline.json` and the folder, branch and
@@ -979,14 +1062,16 @@ terminal would act on rather than show — an escape, a format character — is 
 notation, because a repository's own config file can put text into a parser's error message, and a log
 you open to read should not be able to clear your screen. The log rolls over into
 `claude-statusline-diag.log.1` once it would pass 4 MB, so
-leaving the variable set costs two files of that size at most. Treat the 4 MB as approximate: the log
-is best-effort and never waits on anything, so two renders that overlap can leave the file a little
-over the cap, or lose one of their lines to each other. Rolling over means renaming, and a rename is
-the one thing here that cannot be put behind the deadline, so it is only attempted when the folder has
-just answered two size questions quickly. If it has not — a share gone slow — the record is dropped
-and the log sits at its cap until a render finds the folder responsive again, which it does on its
-own. Unset the variable when you are done (`0`,
-`false`, `no` and `off` also count as off) and delete both files.
+leaving the variable set costs two files of that size at most, plus a small `.lock` file kept beside
+the log to serialise a rollover against another render's — left behind by design rather than deleted
+on release, since deleting it would race a process already waiting to open it. Treat the 4 MB as
+approximate: the log is best-effort and never waits on anything, so two renders that overlap can leave
+the file a little over the cap, or lose one of their lines to each other. Rolling over means renaming,
+and a rename is the one thing here that cannot be put behind the deadline, so it is only attempted
+when the folder has just answered two size questions quickly. If it has not — a share gone slow — the
+record is dropped and the log sits at its cap until a render finds the folder responsive again, which
+it does on its own. Unset the variable when you are done (`0`,
+`false`, `no` and `off` also count as off) and delete all three files.
 
 ## Contributing
 
@@ -1041,6 +1126,7 @@ Done so far:
 - [x] Pace arrow on the 5-hour rate limit
 - [x] Per-project `statusline.json` merged over the user file
 - [x] A subagent status line for the agent panel, installed with `-Subagents`
+- [x] `-Style` and `-Palette` on the subagent panel, baked into the command by the installer
 - [x] Named presets: `minimal`, `cost` and `full` under one `preset` key
 - [x] Worktree name beside the branch
 - [x] Cost per turn beside the session total, from the state file
