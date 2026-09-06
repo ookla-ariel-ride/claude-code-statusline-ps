@@ -6118,6 +6118,21 @@ try {
     Confirm-True $waitSpy.Running 'git timeout decision, hanging git: and git itself was still running when the verdict was given'
     Confirm-True (Wait-FakePingGone $pingTag) 'git timeout decision, hanging git: the ping child is killed with the tree'
 } finally { $env:PATH = $oldPath }
+# The parameter is for this file and nothing else, and that is read out of the scripts rather than
+# promised in a comment: a call that passed a wait of its own would take the decision away from the
+# clock in a real render, which is the one thing an injection point put there for a test must not do.
+# Two arguments plus the command name is three elements; anything longer is a caller with an opinion.
+foreach ($probePath in @($script, $subScript)) {
+    $probeTokens = $null
+    $probeErrors = $null
+    $probeAst = [System.Management.Automation.Language.Parser]::ParseFile($probePath, [ref] $probeTokens, [ref] $probeErrors)
+    $probeCalls = @($probeAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-GitBranch' }, $true))
+    $probeWaits = @($probeCalls | Where-Object { $_.CommandElements.Count -gt 3 })
+    Confirm-Equal $probeWaits.Count 0 "git timeout decision: no call in $(Split-Path $probePath -Leaf) passes a wait of its own, found: $(($probeWaits | ForEach-Object { $_.Extent.Text }) -join ' | ')"
+}
+# And the control for that, which would otherwise pass on a script that had stopped calling the probe.
+$mainProbeAst = [System.Management.Automation.Language.Parser]::ParseFile($script, [ref] $null, [ref] $null)
+Confirm-True (@($mainProbeAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-GitBranch' }, $true)).Count -ge 1) 'git timeout decision: the script really does call the probe (control)'
 
 foreach ($case in $gitCases) {
     $r = Invoke-StatusLine (Get-GitPayload $case.Dir) $case.Config 0 $case.PathPrefix
