@@ -7743,19 +7743,42 @@ try {
     Confirm-Equal (Get-Content -LiteralPath $wtBackupPath -Raw) $wtBefore2 'configure wt again: owned backup now holds the version just replaced'
     Confirm-True ($wtBefore2 -ne $wtBefore) 'configure wt again: the two backups are of genuinely different content, so this is not a no-op check'
 
-    # A foreign file at the owned backup name: left alone, not overwritten, and reported. The font change
-    # itself is unaffected either way - losing the rollback copy is the smaller harm.
+    # A foreign file at the owned backup name: left alone, not overwritten, and reported. Unlike
+    # settings.json, a font change with no way back is refused outright rather than made anyway: the
+    # whole Windows Terminal settings file is left byte for byte as it was, not merely its font key.
     $wtForeignText = '{ "not": "ours" }'
     Set-Content -LiteralPath $wtBackupPath -Value $wtForeignText -Encoding utf8NoBOM
     if (Test-Path -LiteralPath (Get-BackupHashPath $wtBackupPath)) { Remove-Item -LiteralPath (Get-BackupHashPath $wtBackupPath) -Force }
+    $wtBefore3 = Get-Content -LiteralPath $wtSettingsPath -Raw
     $r = Invoke-Installer 'configure windows terminal over a foreign backup' @('-ConfigureWindowsTerminal', '-SettingsPath', $themeSettings)
     Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'configure wt foreign backup: exit code 0, stderr empty'
     Confirm-Equal (Get-Content -LiteralPath $wtBackupPath -Raw).Trim() $wtForeignText 'configure wt foreign backup: the foreign file is untouched'
     $text = ($r.Lines + $r.Err) -join "`n"
-    Confirm-True ($text -match 'Kept:.+not backed up') "configure wt foreign backup: the run says the backup was skipped, got '$text'"
-    $wtAfter3 = Get-Content -LiteralPath $wtSettingsPath -Raw | ConvertFrom-Json
-    Confirm-Equal $wtAfter3.profiles.defaults.font.face 'JetBrainsMono NF' 'configure wt foreign backup: the font change still went through regardless of the skipped backup'
+    Confirm-True ($text -match "Kept:.+does not carry this project's hash record.+not backed up") "configure wt foreign backup: the run names the specific reason, got '$text'"
+    Confirm-Equal (Get-Content -LiteralPath $wtSettingsPath -Raw) $wtBefore3 'configure wt foreign backup: the font change is refused outright, so the whole file is untouched, not just left at its old font'
     Remove-Item -LiteralPath $wtBackupPath -Force -ErrorAction SilentlyContinue
+
+    # A destination backup that cannot be written for a reason other than ownership - held open against
+    # a replace - refuses the font change the same way, and names the write failure rather than the
+    # ownership reason.
+    Invoke-Installer 'configure windows terminal to restore a real backup' @('-ConfigureWindowsTerminal', '-SettingsPath', $themeSettings) | Out-Null
+    Confirm-True (Test-Path -LiteralPath $wtBackupPath) 'configure wt locked backup: a real owned backup exists before the locked case'
+    $wtBefore4 = Get-Content -LiteralPath $wtSettingsPath -Raw
+    $wtLockHandle = $null
+    try {
+        $wtLockHandle = [System.IO.File]::Open($wtBackupPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    } catch { $wtLockHandle = $null }
+    Confirm-True ($null -ne $wtLockHandle) 'configure wt locked backup: the test can hold the backup destination open against a replace'
+    if ($null -ne $wtLockHandle) {
+        $r = Invoke-Installer 'configure windows terminal over a locked backup' @('-ConfigureWindowsTerminal', '-SettingsPath', $themeSettings)
+        $wtLockHandle.Dispose()
+        Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'configure wt locked backup: exit code 0, stderr empty'
+        $text = ($r.Lines + $r.Err) -join "`n"
+        Confirm-True ($text -match 'Kept:.+the write failed.+not backed up') "configure wt locked backup: the run names a write failure, not an ownership one, got '$text'"
+        Confirm-Equal (Get-Content -LiteralPath $wtSettingsPath -Raw) $wtBefore4 'configure wt locked backup: the font change is refused, so the file is untouched'
+    }
+    Remove-Item -LiteralPath $wtBackupPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Get-BackupHashPath $wtBackupPath) -Force -ErrorAction SilentlyContinue
 } finally {
     $env:USERPROFILE = $oldThemeProfile
     if ($null -ne $oldLocalAppData) { $env:LOCALAPPDATA = $oldLocalAppData } else { Remove-Item Env:LOCALAPPDATA -ErrorAction SilentlyContinue }
@@ -10300,69 +10323,96 @@ $settingsBaseline = @{}
 
 # Test-OwnBackupFile and Backup-OwnedFile driven directly, against plain files with nothing to do with
 # settings.json, so the provenance mechanism is proven on its own before the higher-level tests below
-# lean on it.
+# lean on it. Backup-OwnedFile takes the CONTENT to back up, not a path to copy from - the same reason
+# Write-UserSetting hands it $settingsBaseline[$Path] rather than a fresh read of $Path - so these tests
+# pass literal strings straight in rather than writing a source file first.
 $backupTmp = Join-Path $subTmp 'backup-mechanism'
 New-Item -ItemType Directory -Force $backupTmp | Out-Null
 Confirm-Equal (Get-JsonBackupPath 'C:\x\settings.json') 'C:\x\settings.json.claude-code-statusline-ps-rollback' 'backup path: a project-owned suffix, not .bak'
 Confirm-Equal (Get-BackupHashPath 'C:\x\settings.json.claude-code-statusline-ps-rollback') 'C:\x\settings.json.claude-code-statusline-ps-rollback.sha256' 'backup hash path: the sidecar sits beside the backup'
-$bmSource = Join-Path $backupTmp 'source.json'
-Set-Content -LiteralPath $bmSource -Value '{ "v": 1 }' -Encoding utf8NoBOM
-$bmBackup = Get-JsonBackupPath $bmSource
+$bmBackup = Join-Path $backupTmp 'backup.json'
 Confirm-Equal (Test-OwnBackupFile $bmBackup) $false 'backup mechanism: a backup path with nothing there is not ours'
-Confirm-Equal (Backup-OwnedFile $bmSource $bmBackup) $true 'backup mechanism: nothing at the name, so the backup is written'
-Confirm-Equal (Get-Content -LiteralPath $bmBackup -Raw) (Get-Content -LiteralPath $bmSource -Raw) 'backup mechanism: the backup holds the source content'
+Confirm-Equal (Backup-OwnedFile '{ "v": 1 }' $bmBackup) $null 'backup mechanism: nothing at the name, so the backup is written'
+Confirm-Equal (Get-Content -LiteralPath $bmBackup -Raw) '{ "v": 1 }' 'backup mechanism: the backup holds the content it was given'
 Confirm-True (Test-Path -LiteralPath (Get-BackupHashPath $bmBackup)) 'backup mechanism: the hash sidecar is written alongside it'
 Confirm-True (Test-OwnBackupFile $bmBackup) 'backup mechanism: the backup just written passes its own check'
-# The source changes; a second backup overwrites the first, because it is still ours.
-Set-Content -LiteralPath $bmSource -Value '{ "v": 2 }' -Encoding utf8NoBOM
-Confirm-Equal (Backup-OwnedFile $bmSource $bmBackup) $true 'backup mechanism: own backup, so a second write overwrites it'
-Confirm-Equal (Get-Content -LiteralPath $bmBackup -Raw).Trim() '{ "v": 2 }' 'backup mechanism: the backup now holds the version just replaced'
-# A foreign file at the backup name, with no sidecar at all: not ours, left alone.
+Confirm-Equal (@(Get-ChildItem -LiteralPath $backupTmp -Filter '*.tmp-*' -Force).Count) 0 'backup mechanism: no temporary file is left behind after a successful write'
+# A second write overwrites the first, because it is still ours.
+Confirm-Equal (Backup-OwnedFile '{ "v": 2 }' $bmBackup) $null 'backup mechanism: own backup, so a second write overwrites it'
+Confirm-Equal (Get-Content -LiteralPath $bmBackup -Raw) '{ "v": 2 }' 'backup mechanism: the backup now holds the version just replaced'
+# A foreign file at the backup name, with no sidecar at all: not ours, left alone, and the reason names
+# what was wrong with it rather than a single string shared with every other cause.
 $bmForeignBackup = Join-Path $backupTmp 'foreign.json'
 $bmForeignText = '{ "mine": true }'
 Set-Content -LiteralPath $bmForeignBackup -Value $bmForeignText -Encoding utf8NoBOM
 Confirm-Equal (Test-OwnBackupFile $bmForeignBackup) $false 'backup mechanism: a file with no sidecar is not ours'
-Confirm-Equal (Backup-OwnedFile $bmSource $bmForeignBackup) $false 'backup mechanism: a foreign file is not overwritten'
+$bmForeignReason = Backup-OwnedFile '{ "v": 3 }' $bmForeignBackup
+Confirm-True ($bmForeignReason -match "does not carry this project's hash record") "backup mechanism: a foreign file's reason names the missing hash record, got '$bmForeignReason'"
 Confirm-Equal (Get-Content -LiteralPath $bmForeignBackup -Raw).Trim() $bmForeignText 'backup mechanism: its content is untouched'
 Confirm-True (-not (Test-Path -LiteralPath (Get-BackupHashPath $bmForeignBackup))) 'backup mechanism: no sidecar is written for a foreign file either'
 # A sidecar present but recording the wrong hash: still not ours, because the marker is what is checked,
 # not merely whether one exists.
 Set-Content -LiteralPath (Get-BackupHashPath $bmForeignBackup) -Value 'not-a-real-hash' -Encoding UTF8 -NoNewline
 Confirm-Equal (Test-OwnBackupFile $bmForeignBackup) $false 'backup mechanism: a sidecar with the wrong hash is not ours'
-Confirm-Equal (Backup-OwnedFile $bmSource $bmForeignBackup) $false 'backup mechanism: a mismatched sidecar still blocks the overwrite'
+Confirm-True ((Backup-OwnedFile '{ "v": 4 }' $bmForeignBackup) -match "does not carry this project's hash record") 'backup mechanism: a mismatched sidecar still blocks the overwrite, same reason'
 # A sidecar that does record the actual hash of unrelated content: this is indistinguishable from a
 # backup this installer wrote, which is the point - the hash, not the name, is the proof.
 $bmMatchedBackup = Join-Path $backupTmp 'matched.json'
 Set-Content -LiteralPath $bmMatchedBackup -Value $bmForeignText -Encoding utf8NoBOM
 Set-Content -LiteralPath (Get-BackupHashPath $bmMatchedBackup) -Value (Get-FileHash -LiteralPath $bmMatchedBackup -Algorithm SHA256).Hash -Encoding UTF8 -NoNewline
 Confirm-True (Test-OwnBackupFile $bmMatchedBackup) 'backup mechanism: a sidecar recording the real hash of the content there counts as ours'
-Confirm-Equal (Backup-OwnedFile $bmSource $bmMatchedBackup) $true 'backup mechanism: so it is safe to overwrite'
-# An orphan sidecar: the hash file is there but the backup itself is not, so there is no backup content
-# left to check it against. As unverifiable as a foreign file, so it is left alone the same way.
+Confirm-Equal (Backup-OwnedFile '{ "v": 5 }' $bmMatchedBackup) $null 'backup mechanism: so it is safe to overwrite'
+# An orphan sidecar - the hash file is there but the backup itself is not - is NOT treated as foreign:
+# nothing but this function ever writes that sidecar's name, so a leftover one (a hand-deleted backup,
+# or a run that failed between the two writes) is safe to overwrite along with everything else.
 $bmOrphanBackup = Join-Path $backupTmp 'orphan.json'
 $bmOrphanHash = Get-BackupHashPath $bmOrphanBackup
 Set-Content -LiteralPath $bmOrphanHash -Value 'deadbeef' -Encoding UTF8 -NoNewline
-Confirm-Equal (Test-OwnBackupFile $bmOrphanBackup) $false 'backup mechanism: an orphan sidecar with no backup is not ours either'
-Confirm-Equal (Backup-OwnedFile $bmSource $bmOrphanBackup) $false 'backup mechanism: an orphan sidecar blocks the write, not just a foreign backup'
-Confirm-True (-not (Test-Path -LiteralPath $bmOrphanBackup)) 'backup mechanism: no backup is created over an orphan sidecar'
-Confirm-Equal (Get-Content -LiteralPath $bmOrphanHash -Raw) 'deadbeef' 'backup mechanism: the orphan sidecar itself is left exactly as it was'
+Confirm-Equal (Test-OwnBackupFile $bmOrphanBackup) $false 'backup mechanism: an orphan sidecar with no backup is not (yet) ours either'
+Confirm-Equal (Backup-OwnedFile '{ "v": 6 }' $bmOrphanBackup) $null 'backup mechanism: but an orphan sidecar does not block the write the way a foreign backup does'
+Confirm-Equal (Get-Content -LiteralPath $bmOrphanBackup -Raw) '{ "v": 6 }' 'backup mechanism: the backup is written over the orphan sidecar'
+Confirm-True (Test-OwnBackupFile $bmOrphanBackup) 'backup mechanism: the fresh pair passes its own check afterwards'
+
 # A destination that cannot be replaced - held open against a write, the technique the subagent
-# move-failure case uses below - must not be reported as a successful backup. The content Copy-Item
-# could not update is left exactly as it was, not hashed and certified as if the copy had gone through.
-$bmLockedSource = Join-Path $backupTmp 'locked-source.json'
-Set-Content -LiteralPath $bmLockedSource -Value '{ "locked": 1 }' -Encoding utf8NoBOM
+# move-failure case uses below - must not be reported as a successful backup: the reason names the
+# failure, and the content Copy-Item could not update is left exactly as it was, not hashed and
+# certified as if the write had gone through.
 $bmLockedBackup = Join-Path $backupTmp 'locked-backup.json'
 Set-Content -LiteralPath $bmLockedBackup -Value '{ "locked": 0 }' -Encoding utf8NoBOM
+Set-Content -LiteralPath (Get-BackupHashPath $bmLockedBackup) -Value (Get-FileHash -LiteralPath $bmLockedBackup -Algorithm SHA256).Hash -Encoding UTF8 -NoNewline
 $bmLockHandle = $null
 try {
     $bmLockHandle = [System.IO.File]::Open($bmLockedBackup, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
 } catch { $bmLockHandle = $null }
 Confirm-True ($null -ne $bmLockHandle) 'backup mechanism: the test can hold the backup destination open against a replace'
 if ($null -ne $bmLockHandle) {
-    Confirm-Equal (Backup-OwnedFile $bmLockedSource $bmLockedBackup) $false 'backup mechanism: a copy that cannot complete is reported as not backed up'
+    $bmLockedReason = Backup-OwnedFile '{ "locked": 1 }' $bmLockedBackup
     $bmLockHandle.Dispose()
+    Confirm-True ($bmLockedReason -match 'the write failed') "backup mechanism: a write that cannot complete names itself as a write failure, got '$bmLockedReason'"
     Confirm-Equal (Get-Content -LiteralPath $bmLockedBackup -Raw).Trim() '{ "locked": 0 }' 'backup mechanism: the destination still holds its own content, not a half-applied or falsely certified copy'
-    Confirm-True (-not (Test-Path -LiteralPath (Get-BackupHashPath $bmLockedBackup))) 'backup mechanism: no sidecar is written for a copy that never completed'
+    Confirm-True (Test-OwnBackupFile $bmLockedBackup) 'backup mechanism: the untouched pair still passes its own check, because nothing about it actually changed'
+    Confirm-Equal (@(Get-ChildItem -LiteralPath $backupTmp -Filter '*.tmp-*' -Force).Count) 0 'backup mechanism: the temporary file from the failed attempt is cleaned up'
+}
+# The backup and its sidecar are two separate files, so a rename that replaces one can still be followed
+# by a sidecar write that fails on its own - the sidecar held open, here, while the backup itself is
+# free. The property that matters is not that this heals itself within the one call (it cannot, in
+# general, without treating two files as one atomic unit - stated plainly rather than implied away, the
+# same way Write-UserSetting owns the gap its own lock cannot close) but that nothing is left CERTIFIED
+# as a good backup when it is not: Test-OwnBackupFile has to say no to the mismatched pair this leaves.
+$bmSidecarBackup = Join-Path $backupTmp 'sidecar-fail-backup.json'
+Set-Content -LiteralPath $bmSidecarBackup -Value '{ "v": "old" }' -Encoding utf8NoBOM
+Set-Content -LiteralPath (Get-BackupHashPath $bmSidecarBackup) -Value (Get-FileHash -LiteralPath $bmSidecarBackup -Algorithm SHA256).Hash -Encoding UTF8 -NoNewline
+Confirm-True (Test-OwnBackupFile $bmSidecarBackup) 'backup mechanism: the pre-existing pair for the sidecar-failure case starts out ours'
+$bmSidecarHandle = $null
+try {
+    $bmSidecarHandle = [System.IO.File]::Open((Get-BackupHashPath $bmSidecarBackup), [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+} catch { $bmSidecarHandle = $null }
+Confirm-True ($null -ne $bmSidecarHandle) 'backup mechanism: the test can hold the sidecar open against a replace'
+if ($null -ne $bmSidecarHandle) {
+    $bmSidecarReason = Backup-OwnedFile '{ "v": "new" }' $bmSidecarBackup
+    $bmSidecarHandle.Dispose()
+    Confirm-True ([bool] $bmSidecarReason) "backup mechanism: a sidecar that cannot be written is reported as a failure, got '$bmSidecarReason'"
+    Confirm-Equal (Test-OwnBackupFile $bmSidecarBackup) $false 'backup mechanism: the mismatched pair this leaves behind is never certified as a good backup'
 }
 $settingsLockTimeoutMs = 5000
 
@@ -10434,7 +10484,23 @@ $foreignSettingsObj | Add-Member -NotePropertyName after -NotePropertyValue 2
 $warnMsgs = Write-UserSetting $foreignSettingsObj $foreignSettingsBackupPath 3>&1
 Confirm-Equal ((Get-Content -LiteralPath $foreignSettingsBackupPath -Raw | ConvertFrom-Json).after) 2 'settings write over a foreign backup: the settings write itself still goes through'
 Confirm-Equal (Get-Content -LiteralPath $foreignSettingsBackup -Raw).Trim() $foreignBackupText 'settings write over a foreign backup: the foreign file is untouched'
-Confirm-True ((@($warnMsgs) -join ' ') -match 'Kept:.+not backed up') "settings write over a foreign backup: a warning names the skip, got '$((@($warnMsgs) -join ' | '))'"
+Confirm-True ((@($warnMsgs) -join ' ') -match "Kept:.+does not carry this project's hash record.+not backed up") "settings write over a foreign backup: a warning names the specific reason, got '$((@($warnMsgs) -join ' | '))'"
+
+# The backup that protects a settings write has to be taken from $settingsBaseline[$Path] - the text
+# this process already read - not a fresh disk read taken between the two Confirm-SettingUnchanged
+# calls: a fresh read there could capture and certify a lock-ignoring writer's content moments before
+# the second check refuses the write over it (code review, #52). That window is one function call's own
+# internal ordering with no seam a synchronous test can pause on, so - the same way this suite already
+# checks the lock timeout against the installer's own source text a few lines up - the invariant is
+# checked by reading Write-UserSetting's source rather than by racing a second writer into a gap no
+# single-threaded test can land in on purpose.
+$writeUserSettingText = (Import-ScriptFunction $installer @('Write-UserSetting')).ToString()
+Confirm-True ($writeUserSettingText -match [regex]::Escape('Backup-OwnedFile $settingsBaseline[$Path]')) 'settings write ordering: the backup call passes the baseline text, not a fresh read of $Path'
+$secondCheckIndex = $writeUserSettingText.IndexOf('Confirm-SettingUnchanged $Path', $writeUserSettingText.IndexOf('Confirm-SettingUnchanged $Path') + 1)
+$backupCallIndex = $writeUserSettingText.IndexOf('Backup-OwnedFile $settingsBaseline[$Path]')
+$moveCallIndex = $writeUserSettingText.IndexOf('[System.IO.File]::Move($tmp, $Path, $true)')
+Confirm-True ($secondCheckIndex -ge 0 -and $backupCallIndex -gt $secondCheckIndex) 'settings write ordering: the backup call comes after the second Confirm-SettingUnchanged, not between the two - so a write the second check refuses never touches the previous rollback at all'
+Confirm-True ($moveCallIndex -gt $backupCallIndex) 'settings write ordering: and before the Move, so as little as possible sits between "backed up" and "replaced"'
 
 # ---- Install group: install.ps1 -Subagents against a settings.json inside the temp tree ----
 # USERPROFILE is redirected under $subTmp and -SettingsPath points there too, so the copy target, the
@@ -10759,25 +10825,31 @@ Confirm-True ((($r.Lines + $r.Err) -join ' ') -match "Kept:.+rollback.+marker li
 Remove-Item -LiteralPath $installedRollback -Force
 
 # The same question asked of settings.json's own backup name: a foreign file there, with no sidecar
-# hash, is this project's to leave alone in both directions, and the settings write itself still
-# completes either way.
+# hash - genuinely none, not one left behind by an earlier legitimate write in this test sequence and
+# forgotten about - is this project's to leave alone in both directions, and the settings write itself
+# still completes either way.
 $foreignSettingsBackupText = '# my own backup of my own settings.json'
+Remove-Item -LiteralPath (Get-BackupHashPath $subSettingsBak) -Force -ErrorAction SilentlyContinue
 Set-Content -LiteralPath $subSettingsBak -Value $foreignSettingsBackupText -Encoding utf8NoBOM
+Confirm-True (-not (Test-Path -LiteralPath (Get-BackupHashPath $subSettingsBak))) 'foreign settings backup: the case starts with genuinely no sidecar, not a stale one'
 $r = Invoke-Installer 'install -Subagents beside a foreign settings backup' @('-Subagents', '-SettingsPath', $subSettings)
 Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'foreign settings backup: the install is clean'
 Confirm-Equal (Get-Content -LiteralPath $subSettingsBak -Raw).Trim() $foreignSettingsBackupText 'foreign settings backup: an install does not overwrite it'
 $s = Read-SettingFile $subSettings
 Confirm-True ($null -ne $s.PSObject.Properties['statusLine']) 'foreign settings backup: the install still wrote statusLine despite the skipped backup'
 $text = ($r.Lines + $r.Err) -join "`n"
-Confirm-True ($text -match 'Kept:.+not backed up') "foreign settings backup: the run says the backup was skipped, got '$text'"
+Confirm-True ($text -match "Kept:.+does not carry this project's hash record.+not backed up") "foreign settings backup: the run names the specific reason, got '$text'"
 $r = Invoke-Installer 'uninstall beside a foreign settings backup' @('-Uninstall', '-SettingsPath', $subSettings)
 Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'foreign settings backup: the uninstall is clean'
 Confirm-Equal (Get-KeyList (Read-SettingFile $subSettings)) 'theme' 'foreign settings backup: the uninstall still removed statusLine despite the skipped backup'
 Confirm-True (Test-Path -LiteralPath $subSettingsBak) 'foreign settings backup: an uninstall does not delete it'
 Confirm-Equal (Get-Content -LiteralPath $subSettingsBak -Raw).Trim() $foreignSettingsBackupText 'foreign settings backup: its content is untouched throughout'
 $text = ($r.Lines + $r.Err) -join "`n"
-Confirm-True ($text -match 'Kept:.+not backed up') "foreign settings backup: the uninstall also says the backup was skipped, got '$text'"
+Confirm-True ($text -match "Kept:.+does not carry this project's hash record.+not backed up") "foreign settings backup: the uninstall names the specific reason too, got '$text'"
+# Cleaned up completely - the foreign file AND the sidecar it never had - so the next run in this
+# sequence starts from a clean slate rather than leaving an orphan sidecar for it to trip over.
 Remove-Item -LiteralPath $subSettingsBak -Force
+Remove-Item -LiteralPath (Get-BackupHashPath $subSettingsBak) -Force -ErrorAction SilentlyContinue
 
 # The subagent script goes into place before settings.json is written, not after it. A move that cannot
 # happen therefore leaves no subagentStatusLine key naming a file that is not on disk - which is what
@@ -10787,6 +10859,9 @@ Remove-Item -LiteralPath $subSettingsBak -Force
 # run really does reach the move.
 $r = Invoke-Installer 'install -Subagents before the failing move' @('-Subagents', '-SettingsPath', $subSettings)
 Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'move failure: the install that seeds the destination is clean'
+# Nothing was left behind by the foreign-backup cases above - not the foreign file, not an orphan
+# sidecar either - so this run's own backup goes through cleanly with no ownership complaint at all.
+Confirm-True (-not (($r.Lines -join "`n") -match 'Kept:')) "move failure: the run after the foreign-backup cases starts clean, with no leftover to warn about, got '$($r.Lines -join ' | ')'"
 Set-Content -LiteralPath $subSettings -Value '{ "theme": "dark" }' -Encoding utf8NoBOM
 Remove-Item -LiteralPath $subSettingsBak -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Get-BackupHashPath $subSettingsBak) -Force -ErrorAction SilentlyContinue
