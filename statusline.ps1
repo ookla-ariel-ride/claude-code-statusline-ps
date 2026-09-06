@@ -126,6 +126,13 @@ function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [i
 # a record that cannot be written inside it is dropped. Losing a line is the right trade against holding
 # the line up, and it is the trade #43 already made when it took a zero wait on the rollover mutex and
 # an approximate cap over guaranteed ones.
+# What that trade costs is more than the one line, and saying so here rather than leaving it to be
+# rediscovered: an open or a close that overruns leaves a writer on the log that nothing in this process
+# is waiting for any longer. A pool thread closes it a moment later, but until then the file is held. A
+# render writes one line and exits, so there it is invisible; in a long-lived process that writes many -
+# a test run, or anything that dot-sources this - the next record's open can meet that handle and be
+# dropped in turn, and a rollover's rename can throw on it, so one overrun record can cost several. It
+# heals as soon as the filesystem does.
 # RolloverMs is how much of that budget has to be left before the one call this function cannot bound -
 # the rename a rollover does - is attempted at all. Half, so that reaching it means both size reads
 # answered in well under half a record's clock. The note at the call site has the reasoning.
