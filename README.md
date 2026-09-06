@@ -38,6 +38,7 @@ how close you are to a rate limit, and which modes are on.
 - Counts beside the branch name: `↑N` `↓N` commits ahead of or behind the upstream, `+N` staged, `~N` changed, `?N` untracked, and a red triangle with a count when files are in conflict. See [Branch counts](#branch-counts).
 - A fork glyph and the worktree name beside the branch when the session is in a git worktree, so a window on `wt-review` is not mistaken for the main checkout. See [Worktree name](#worktree-name).
 - One line or two, plain separators or powerline blocks, and any segment switched off, all from `statusline.json`.
+- Every glyph has an ASCII stand-in: `"style": "ascii"` draws the whole line out of plain characters and keeps the colours, for a terminal whose font you cannot change. See [ASCII style](#ascii-style).
 - Optionally, the context percentage on the window's taskbar button in Windows Terminal, so a full window is visible while Claude Code is minimised. Off by default; see [Taskbar progress](#taskbar-progress).
 - A matching line for each running subagent in the agent panel, with `.\install.ps1 -Subagents`. See [Subagent status line](#subagent-status-line).
 - A wall clock, off by default, and a `right` list that pushes any segments you name against the right edge of the first line — the time on the right of the prompt, the way a shell does it. See [Width fitting](#width-fitting) for what a narrow terminal does with it.
@@ -51,7 +52,7 @@ how close you are to a rate limit, and which modes are on.
 - Windows 10 or 11
 - [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows) on your `PATH` as `pwsh`
 - Claude Code
-- A [Nerd Font](https://www.nerdfonts.com/) in your terminal. The installer can set up JetBrainsMono Nerd Font for you.
+- A [Nerd Font](https://www.nerdfonts.com/) in your terminal. The installer can set up JetBrainsMono Nerd Font for you. Where the font is not yours to set, `"style": "ascii"` needs none — see [ASCII style](#ascii-style).
 - `git` on your `PATH` if you want the branch segment. Without it the segment is skipped and everything else still renders.
 
 ## Installation
@@ -299,7 +300,7 @@ whose text encoding the script does not get to choose.
 |---|---|---|
 | `preset` | `minimal`, `cost`, `full` | A name for a layout, a style and the whole set of segment toggles, listed below. Every other key in the same file is applied over it, so a preset is a starting point rather than a lock. A name none of the three has, or a value that is not a string, changes nothing. |
 | `layout` | `one`, `two` | `two` puts model, folder, branch, pr, badges and time on the first line and context, cache, limits, cost, clock and lines on the second, unless `rows` says otherwise. |
-| `style` | `plain`, `powerline` | `plain` is coloured text with a dim chevron between segments. `powerline` is coloured blocks joined by solid arrows. |
+| `style` | `plain`, `powerline`, `ascii` | `plain` is coloured text with a dim chevron between segments. `powerline` is coloured blocks joined by solid arrows. `ascii` is `plain` with every character drawn from printable ASCII and a `>` between segments, for a terminal whose font you cannot change. See [ASCII style](#ascii-style). |
 | `folder` | `repo`, `leaf` | `repo` shows `owner/name` from `workspace.repo` when the payload has one, with the current directory's name after a `›` when it differs from the project root. `leaf` always shows the directory name alone. |
 | `segments.<name>` | `true`, `false` | `false` hides that segment. The names are the ones in the file above, plus `time`, the wall clock, which is the one segment off by default and so is not written there; `segments.pr` is the pull-request link. |
 | `state` | `true`, `false` | `false` stops the script writing a state file for the session. |
@@ -311,7 +312,7 @@ whose text encoding the script does not get to choose.
 | `thresholds` | `{ "warn": 20, "bad": 40 }` | Where the context meter and the rate limits turn yellow and red: whole numbers from 0 to 100 (`20` or `20.0`, not `20.5`), `warn` no higher than `bad`. Either value wrong keeps 60 and 85 for both. A 1M window keeps its own 70 and 90. |
 | `alarm` | `{ "context": 90, "limits": 90 }` | Where the model segment itself turns red: `context` is read against `context_window.used_percentage` and `limits` against the higher of the 5-hour and 7-day figures. Whole numbers, each read on its own, so a file naming one leaves the other at 90. `0` turns that alarm off, a negative counts as `0`, and a number above 100 is kept as written and fires only if the payload reports a figure that high — which a context window never does, since the meter clamps to 100, and a rate limit can, since a limit really at 105% is left unclamped to say so. The spend limit is a billing ceiling rather than a rate and raises no alarm; neither does a percentage that is missing or null, which is what a session sends before its first API response. What is compared is the whole number the segments print, rounded half to even, so the meter and the model can never disagree about whether 90% has been reached: at 89.6 the meter reads 90% and the alarm fires. The alarm reads the percentage whatever the window size, so on a 1M window it fires at the same figure as the window's own fixed 90 band. |
 | `quiet` | `{ "cost": 1.00, "context": 30, "limits": 50 }` | The smallest value a segment is worth showing at: dollars for `cost`, percent for `context`, and percent for `limits` against the larger of the 5-hour and 7-day figures (the spend limit is not one of them, and a payload carrying only a spend limit is never hidden here). Below it the segment is not built at all, so it takes no room and has nothing to shed at a narrow width. **Quiet never hides a segment that is carrying a warning, an error or an alarm**: a context meter or a limits segment already yellow or red stays whatever the threshold says, so does a 5-hour figure whose pace arrow projects an overrun — which is the case that matters most, because a low percentage early in a window is exactly the one that projects red — and so does a figure at or above its `alarm` level, since `alarm` may be set below `thresholds.warn` and a red model segment with no number under it explains nothing. `cost` has no warning state of its own and no alarm is read against a dollar figure, so there its threshold is the whole story. Fractions are allowed, a negative counts as zero, and the test is on the raw figure rather than the printed one, so `"cost": 1.00` hides a cost of 0.996 even though it would have printed `$1.00`. The default is `0` everywhere, which hides nothing; a value that is not a number leaves that one name at `0` and the other two alone. There is deliberately no `quiet.cache`: three of that segment's four states are the warning, and the fourth is a countdown whose whole value is being on the line before it turns yellow, so there is no boring number there for a threshold to hide. |
-| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cache`, `cost`, `clock`, `time`, `folder`, `chevron`, `branch`, `worktree`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `pr`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`, `agent`, `session`. A name the list does not have, or a value that is not a single printable glyph, keeps the built-in one. To count as a glyph a code point has to be inside Unicode, not a surrogate half and not a noncharacter, one or two cells wide, and none of: a control (`A` is a newline, `1B` a bare escape), a format character (`202E` is a right-to-left override, `200D` a zero-width joiner), a line or paragraph separator, a space, or a combining mark. Private use is where the Nerd Font glyphs live, so it is allowed. |
+| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cache`, `cost`, `clock`, `time`, `folder`, `chevron`, `branch`, `worktree`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `pr`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`, `agent`, `session`. A name the list does not have, or a value that is not a single printable glyph, keeps the built-in one. To count as a glyph a code point has to be inside Unicode, not a surrogate half and not a noncharacter, one or two cells wide, and none of: a control (`A` is a newline, `1B` a bare escape), a format character (`202E` is a right-to-left override, `200D` a zero-width joiner), a line or paragraph separator, a space, or a combining mark. Private use is where the Nerd Font glyphs live, so it is allowed. Ignored entirely under `"style": "ascii"`, which promises that every glyph the script chooses is printable ASCII and a code point is the one thing that cannot keep it. |
 | `git.timeoutMs` | `100` to `10000` | How long the branch segment waits for `git status`, in milliseconds, before it gives up and leaves the segment out. A value outside the range is clamped to it. |
 | `git.cacheSeconds` | `0` to `300` | How long a `git status` result is reused for, in seconds, before git is asked again. `0` asks git on every render. Clamped like `timeoutMs`. |
 | `git.cache` | `true`, `false` | `false` asks git on every render, whatever `cacheSeconds` says. |
@@ -362,6 +363,60 @@ the branch put back. It sets nothing but the layout, the style and the toggles �
 `thresholds`, `icons`, `state` and the `git` block are untouched. A preset in a project file sits
 where any other project key sits, so it is written over the user file whole; a preset in the user file
 is a base for the project file to change.
+
+### ASCII style
+
+Every icon on the line is a Nerd Font code point, so on a terminal without one the line is a row of
+boxes. `{"style": "ascii"}` draws every glyph the script chooses in printable ASCII instead and keeps
+every colour, for the VS Code terminal, a session over SSH, or anywhere the font is not yours to
+change.
+
+```
+Fable 5.1 > ctx 32% ###....... 64k/200k 92% cached > $1.07 > 1h12m | api 38%
+  > +156 -23 > 5h 24% (2h11m) 7d 88% > fast think xhigh NORMAL > dir my-project > ~ main
+```
+
+The rule for each stand-in, in order: nothing at all where what follows already names the segment; a
+mark ASCII already uses for the thing where there is one; otherwise the shortest lower-case
+abbreviation, cut to a single letter where the segment's own text carries the word.
+
+| Element | Nerd Font | ASCII |
+|---|---|---|
+| model, cost, clock, time, lines, limits, effort, vim | robot, cash, stopwatch, wall clock, code, tachometer, speedometer, vim | nothing — the name, the `$1.07`, the `1h12m`, the `14:05`, the `+156 -23`, the `5h 24%`, the level and the mode say it |
+| context | memory | `ctx` |
+| context bar, filled and empty | `█` `░` | `#` `.` |
+| cache | fire | `c` |
+| folder | folder | `dir` |
+| owner/name to leaf | `›` | `/` |
+| branch | branch | `b` |
+| main or master | home | `~` |
+| dirty tree | pencil | `*` |
+| worktree | fork | `wt` |
+| ahead, behind | `↑` `↓` | `^` `v` |
+| conflicts, past 200k | warning triangle | `!` |
+| pull request | pull request | `pr` |
+| fast mode, thinking | bolt, brain | `fast`, `think` |
+| agent, session name | user, tag | `@`, `#` |
+| removed lines | `−` | `-` |
+| clock's api share | `·` | `\|` |
+| pace on track, overrunning | `→` `↑` | `=` `^` |
+| clipped name | `…` | `.` |
+| between segments | dim chevron in `plain`, solid arrow in `powerline` | `>` |
+
+Two things follow from ASCII being the promise rather than "no Nerd Font". Everything the script
+chooses is drawn from U+0020 to U+007E, which is both the range every font has and the range every
+terminal draws one cell wide — the second half matters, because the width fitting counts a meter block
+or an arrow as one column and some terminals draw them as two. And an `icons` override is a code point,
+so it is ignored in this style; set the style back to `plain` if you want your own glyph. Colours,
+thresholds, layout, segment order and fitting are exactly as they are in `plain`.
+
+**Your own text is left alone.** The branch, the folder, the repo owner, the model name and the agent
+and session names come from the payload and are drawn as they arrived, in this style as in the other
+two — so a branch called `機能/x` renders `b 機能/x`, not `b ????`. This style replaces the glyphs
+*the script picked*, which live in the private use area and need a font your terminal may not have. A
+Japanese branch name needs a Japanese font, which most terminals do have, and it is your data either
+way: a name shown as boxes at least tells you a font is missing, where one silently transliterated
+tells you nothing and cannot be read back.
 
 ### Taskbar progress
 
@@ -617,7 +672,13 @@ the terminal width. At a set width a segment with a short form (limits, context,
 badges) must be whole, shortened, or gone, never half shed. At the unset width the matrix also checks
 content: each segment the sample and config enable must appear on its row, in the configured order,
 with its glyph and value, disabled segments must not, and the separators must match the style. Those
-content checks only run when `-Columns` includes `0`, which the default does. A few renders after the
+content checks only run when `-Columns` includes `0`, which the default does. The `ascii` style gets a
+pass of its own rather than an eighth config: every sample once at the unset width, against its own
+marker table, plus the assertion the matrix cannot make — that every non-ASCII character on the line
+came from the payload, and that no stand-in left an empty space behind it. One more render puts a
+non-English name in every text field the line can draw from and pins the set exactly: the only
+characters outside ASCII are the ones the payload supplied, which is what says the style replaced the
+script's glyphs and nothing of the user's. A few renders after the
 matrix run with no `-Config` at all: they point a payload at a temp project directory and check that
 its `.claude\statusline.json` reaches the line, that a broken one does not, and that `-Config` ignores
 it. The taskbar sequence is checked by rendering each payload twice, once with `"taskbar": true` and
@@ -643,18 +704,20 @@ Get-Content .\samples\subagent\01-two-agents.json -Raw | pwsh -NoProfile -File .
 Segment order, the two rows, the colour cut-offs and the glyphs are `statusline.json` keys, described
 under Configuration. What is left sits at the top of `statusline.ps1`:
 
-- `Get-IconDefault` holds the built-in code point of every glyph, under the name the `icons` key takes. The [Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet) lists alternatives.
+- `Get-IconDefault` holds the built-in code point of every glyph, under the name the `icons` key takes. The [Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet) lists alternatives. `Get-IconAscii` holds the ASCII stand-in for each of the same names, and `Get-MarkSet` the characters that are not icons — the meter cells, the minus, the clock's separator, the pace arrows and a clipped name's tail.
 - How long the branch segment waits for `git status` is `git.timeoutMs` in `statusline.json`, not a constant in the script.
 - `$defaultEffort` is the level at which the effort badge is hidden.
 - The 70% and 90% cut-offs of a 1M window are passed by the context block to `Get-ThresholdRole`; `thresholds` does not move them. The `alarm` percentages are separate from both: `Test-AlarmState` reads the payload directly, so it does not care about the window size or about which segments are switched on.
 - `Get-WholePercent` is the one rule that turns a payload figure into the percentage on the line. The context meter, the limits figures, the cached share, the colour bands and the alarms all go through it, so a fractional percentage cannot print as 90% in one segment and count as 89% in another. It rounds half to even, which is what the casts it replaced already did. The cached share is computed from token counts rather than read as a percentage, and it still goes through the same rule: it prints beside the meter's own percentage, and two rounding rules on one segment is the disagreement this function exists to rule out.
-- `Get-Palette` holds the colours for both styles.
+- `Get-Palette` holds the colours for both styles; `ascii` uses the plain ones role for role.
 - `Get-SegmentRegistry` is the segment table. Its array order is the default `order`, `Row` and `RowRank` give the default `rows`, `Default` says whether a segment is on before any config is read, and `ShrinkRank` and `DropRank` set the fitting order, which the config does not change. What the config does change is which segments leave that order for the right edge, under `right`.
 
 ## Troubleshooting
 
 Icons show as boxes or question marks: the terminal font is not a Nerd Font. Set it to
-`JetBrainsMono NF` or any other Nerd Font.
+`JetBrainsMono NF` or any other Nerd Font. Where the font is not yours to change — the VS Code
+terminal, a session over SSH — put `"style": "ascii"` in `statusline.json` instead and the same line
+is drawn out of plain ASCII, colours and all. See [ASCII style](#ascii-style).
 
 The status line is blank: run `.\test.ps1` to confirm the script works, then check that `pwsh` is on
 your `PATH` and that the `command` path in `settings.json` exists.
@@ -801,11 +864,11 @@ Done so far:
 - [x] Session clock with the share of it spent waiting on the API
 - [x] Ctrl-clickable folder and branch, under a `links` key
 - [x] Context percentage on the taskbar button, behind a `taskbar` key
+- [x] An `ascii` style that needs no Nerd Font
 - [x] A right-aligned group under a `right` key, and a wall-clock segment to put in it
 
 [Issues #2 to #43](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
-each with its own plan. In rough order: an ASCII style that needs no Nerd Font and a light palette.
-
+each with its own plan. In rough order: a light palette, and the rest of the terminal work.
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
