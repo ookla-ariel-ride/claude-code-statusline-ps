@@ -231,6 +231,12 @@ function Get-IconDefault {
         # beside it, which is nf-md-timer, the filled one; the name is what says how the glyph should
         # look, so this is F051B, the code point the Nerd Fonts glyph list gives that name.
         clock    = 0xF051B   # nf-md-timer_outline
+        # nf-md-clock_outline, the outline wall clock, checked against the Nerd Fonts glyphnames.json
+        # the cheat sheet is generated from and rendered out of JetBrainsMono NF by docs/render-icons.ps1
+        # before the builder was written. It is a DIFFERENT glyph from `clock` above and deliberately so:
+        # that one is a stopwatch, for how long this session has run, and this one is a wall clock, for
+        # what time it is. Two segments, two numbers, two faces.
+        time     = 0xF0150   # nf-md-clock_outline
         folder   = 0xF07C    # nf-fa-folder_open
         chevron  = 0x203A    # single right-pointing angle quotation mark (between owner/name and the leaf)
         branch   = 0xE0A0    # powerline branch
@@ -416,17 +422,23 @@ function Get-ClippedText([string] $Text, [int] $Width) {
 function Get-SegmentRegistry {
     if (-not $script:segmentRegistry) {
         $script:segmentRegistry = @(
-            @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 4;     DropRank = 10;    Row = 2; RowRank = 1 }
-            @{ Name = 'cache';   Build = 'Get-CacheSegment';   Default = $true; ShrinkRank = 3;     DropRank = 3;     Row = 2; RowRank = 2 }
-            @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 5;     Row = 2; RowRank = 4 }
-            @{ Name = 'clock';   Build = 'Get-ClockSegment';   Default = $true; ShrinkRank = 8;     DropRank = 2;     Row = 2; RowRank = 5 }
-            @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 6 }
-            @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 6;     Row = 2; RowRank = 3 }
-            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 7;     DropRank = 4;     Row = 1; RowRank = 5 }
-            @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 7;     Row = 1; RowRank = 4 }
-            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 6;     DropRank = 8;     Row = 1; RowRank = 2 }
-            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 5;     DropRank = 9;     Row = 1; RowRank = 3 }
+            @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true;  ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
+            @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true;  ShrinkRank = 4;     DropRank = 11;    Row = 2; RowRank = 1 }
+            @{ Name = 'cache';   Build = 'Get-CacheSegment';   Default = $true;  ShrinkRank = 3;     DropRank = 4;     Row = 2; RowRank = 2 }
+            @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true;  ShrinkRank = 1;     DropRank = 6;     Row = 2; RowRank = 4 }
+            @{ Name = 'clock';   Build = 'Get-ClockSegment';   Default = $true;  ShrinkRank = 8;     DropRank = 3;     Row = 2; RowRank = 5 }
+            @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true;  ShrinkRank = $null; DropRank = 2;     Row = 2; RowRank = 6 }
+            @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true;  ShrinkRank = 2;     DropRank = 7;     Row = 2; RowRank = 3 }
+            @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true;  ShrinkRank = 7;     DropRank = 5;     Row = 1; RowRank = 5 }
+            @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true;  ShrinkRank = $null; DropRank = 8;     Row = 1; RowRank = 4 }
+            @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true;  ShrinkRank = 6;     DropRank = 9;     Row = 1; RowRank = 2 }
+            @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true;  ShrinkRank = 5;     DropRank = 10;    Row = 1; RowRank = 3 }
+            # The wall clock, and the only record here whose Default is false: it is a segment nobody had
+            # before this release, its value moves without a payload, and turning it on for every existing
+            # install would change every render. It has no ShrinkRank because there is nothing in `14:05`
+            # to shed, and DropRank 1 because it is the one figure on the line that says nothing whatever
+            # about the session - not what it costs, not how full it is, not how long it has run.
+            @{ Name = 'time';    Build = 'Get-TimeSegment';    Default = $false; ShrinkRank = $null; DropRank = 1;     Row = 1; RowRank = 6 }
         )
     }
     return $script:segmentRegistry
@@ -469,6 +481,9 @@ function Get-DefaultStatusConfig {
     $cfg = @{ Layout = 'one'; Style = 'plain'; Folder = 'repo'; State = $true; Links = $true; Taskbar = $false; Segments = @{}; Git = Get-DefaultGitConfig }
     foreach ($rec in Get-SegmentRegistry) { $cfg.Segments[$rec.Name] = $rec.Default }
     $cfg.Order = @((Get-SegmentRegistry).Name)
+    # The segments pushed against the right edge of the first line. Empty by default, which is the whole
+    # of the old behaviour: with nothing to push against, Get-FittedLine pads nothing.
+    $cfg.Right = @()
     $cfg.Rows = @((Get-SegmentOrder 'RowRank' 1), (Get-SegmentOrder 'RowRank' 2))
     $cfg.Thresholds = @{ Warn = 60; Bad = 85 }
     $cfg.Alarm = @{ Context = 90; Limits = 90 }
@@ -514,7 +529,7 @@ function Get-ConfigPreset($Name) {
         'minimal' {
             return @{ Layout = 'one'; Style = 'plain'; Segments = @{
                     model = $true; context = $true; cache = $false; cost = $false; clock = $false; lines = $false; limits = $false
-                    badges = $false; pr = $false; folder = $true; branch = $true
+                    badges = $false; pr = $false; folder = $true; branch = $true; time = $false
                 }
             }
         }
@@ -522,16 +537,19 @@ function Get-ConfigPreset($Name) {
             # The clock is on here and not in `minimal`: this preset is the line of numbers, and the
             # elapsed time is the denominator under every rate on it. `minimal` answers which model,
             # how full and where am I, and how long the session has run is none of the three.
+            # The wall clock is off here for the same reason it is off in `minimal`: a line of numbers
+            # about the session has no use for a number that is not about the session. `full` is the
+            # only preset that turns it on, because `full` means everything.
             return @{ Layout = 'one'; Style = 'plain'; Segments = @{
                     model = $true; context = $true; cache = $true; cost = $true; clock = $true; lines = $true; limits = $true
-                    badges = $false; pr = $false; folder = $false; branch = $false
+                    badges = $false; pr = $false; folder = $false; branch = $false; time = $false
                 }
             }
         }
         'full' {
             return @{ Layout = 'two'; Style = 'powerline'; Segments = @{
                     model = $true; context = $true; cache = $true; cost = $true; clock = $true; lines = $true; limits = $true
-                    badges = $true; pr = $true; folder = $true; branch = $true
+                    badges = $true; pr = $true; folder = $true; branch = $true; time = $true
                 }
             }
         }
@@ -796,6 +814,16 @@ function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Boun
             $row2 = Read-SegmentNameList $rows[1] $Cfg.Segments $seen
             if ($null -ne $row1 -and $null -ne $row2 -and ($row1.Count + $row2.Count) -gt 0) { $Cfg.Rows = @($row1, $row2) }
         }
+        # right: the segment names pushed flush against the right edge of the first line, read with the
+        # same rules order and rows are read with - lower-cased, known to the registry, first place wins,
+        # anything else skipped - and a value that is not an array leaves the group beneath it.
+        # THE EMPTY LIST IS KEPT HERE and is not a fall-back, which is the one place this key parts from
+        # `order` and `rows`. Those two fall back from an empty list because a line naming no segment is
+        # not a layout and there is nothing a file could have meant by it; an empty right group is the
+        # built-in default and a real thing to ask for, and keeping it is what lets a project file take
+        # back a group the user file asked for.
+        $right = Read-SegmentNameList $j.right $Cfg.Segments @{}
+        if ($null -ne $right) { $Cfg.Right = $right }
         # thresholds: warn and bad, whole numbers 0 to 100 with warn at or below bad, for the context
         # meter on a standard window and for the rate limits. A whole number written as 20.0 counts, the
         # way Get-PayloadNumber reads a count, since a config written by another tool can spell it so.
@@ -971,33 +999,95 @@ function Format-Line($Segments, [string] $Style) {
     return ($parts -join $sep)
 }
 
+# Two rendered groups laid out across $Target cells: the left group packed as it always was, then
+# padding, then the right group flush against the right edge. $null when the two will not fit, which is
+# the caller's signal to shed something and ask again.
+#
+# THE PADDING IS COUNTED IN CELLS, NOT CHARACTERS, and that is the whole of this function. A rendered
+# line carries an SGR colour code in front of every segment and can carry six OSC 8 hyperlink wrappers -
+# the folder and branch segments each emit one in Text and another in Short, and the pr segment emits
+# one - and none of that draws a single cell. A subtraction from .Length would come out short by the
+# length of every escape on the line, which for a linked folder and branch is over a hundred characters,
+# and the "aligned" line would be far narrower than the width it was given and would not reach the edge.
+# Get-VisibleWidth is the one measurement in this script that knows what a terminal actually draws, and
+# it is the one the fitting stages already measure with, so using it here also means the padding and the
+# fitting cannot disagree about how wide the line is.
+#
+# An empty right group is the whole of the behaviour that was here before this parameter existed: the
+# left line is returned exactly as it was built, with no padding at all. A config with no right group
+# must not start emitting a line padded out to the full width with trailing spaces.
+# The gap is at least one space, so the two groups can never touch - which in powerline style would butt
+# an arrow straight into the next block. There are only two groups to keep apart when there is something
+# on the left, so an empty left group asks only that the right group fits.
+function Join-AlignedLine([string] $Left, [string] $Right, [int] $Target) {
+    if (-not $Right) {
+        if ((Get-VisibleWidth $Left) -le $Target) { return $Left }
+        return $null
+    }
+    $pad = $Target - (Get-VisibleWidth $Left) - (Get-VisibleWidth $Right)
+    $minGap = if ($Left) { 1 } else { 0 }
+    if ($pad -lt $minGap) { return $null }
+    return $Left + (' ' * $pad) + $Right
+}
+
 # Renders a line and, when a width is given, shrinks then drops segments until it fits.
+# $Right names the segments that leave the packed line and sit flush against the right edge, in the
+# order the list gives; everything else stays where it was. A name no segment on the line carries is
+# skipped, so a right group naming a switched-off segment is a no-op rather than a layout change.
 # Stage 1 swaps segments for their Short form in $ShrinkOrder (cost, limits, cache, context, branch,
 # folder, badges, then clock by default: the cost segment's Short is the session total without its
 # per-turn delta, so the delta is the first detail on the line to go; the cache segment's Short drops
 # the word and keeps the countdown, which costs one word and loses nothing; and the clock's api share
-# is the last).
-# Stage 2 drops whole segments in $DropOrder. Either order left $null comes from the registry's ranks; an
-# empty array skips that stage. The model segment is never dropped whatever the drop order says, so it may
-# overflow on its own. Returns $null when nothing is left.
-function Get-FittedLine($Segments, [string] $Style, $Width, [string[]] $ShrinkOrder = $null, [string[]] $DropOrder = $null) {
+# is the last). It reaches into BOTH groups: a Short form is detail shed, and which side of the line a
+# segment sits on says nothing about whether that detail is worth losing.
+# Stage 2 empties the right group, LAST NAMED FIRST, because a segment pushed to the edge is decoration
+# and the whole group is worth less than one packed segment. A dropped right member is gone, not moved
+# back into the left group: re-inlining it would make the line wider, which is the opposite of what the
+# stage is for. If the gap would fall below one space the groups do not fit and the next member goes.
+# Stage 3 drops whole segments from the left group in $DropOrder. Either order left $null comes from the
+# registry's ranks; an empty array skips that stage. The model segment is never dropped whatever either
+# order says, in the right group or the left, so it may overflow on its own.
+# WHEN THE TWO GROUPS TOGETHER CANNOT FIT, that is the answer: the right group is empty before stage 3
+# begins, so the case degrades exactly into the one-group fitting that was here before, and a left group
+# that still will not fit overflows with the model on it the way it always has.
+# Returns $null when nothing is left in either group.
+function Get-FittedLine($Segments, [string] $Style, $Width, [string[]] $ShrinkOrder = $null, [string[]] $DropOrder = $null, [string[]] $Right = $null) {
     $segs = [System.Collections.Generic.List[hashtable]]::new()
     foreach ($s in $Segments) { if ($s) { $segs.Add($s.Clone()) } }
     if ($segs.Count -eq 0) { return $null }
-    $line = Format-Line $segs $Style
-    if ($null -eq $Width) { return $line }
+    # No width is no target to align to, so there is no right group either: every segment renders inline
+    # in its ordinary place, which is what the caller with COLUMNS unset has always been given.
+    if ($null -eq $Width) { return (Format-Line $segs $Style) }
     $target = [int] $Width
-    if ((Get-VisibleWidth $line) -le $target) { return $line }
+    $rights = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($name in $Right) {
+        for ($i = 0; $i -lt $segs.Count; $i++) {
+            if ($segs[$i].Name -eq $name) { $rights.Add($segs[$i]); $segs.RemoveAt($i); break }
+        }
+    }
+    $line = Join-AlignedLine (Format-Line $segs $Style) (Format-Line $rights $Style) $target
+    if ($line) { return $line }
     if ($null -eq $ShrinkOrder) { $ShrinkOrder = Get-SegmentOrder 'ShrinkRank' }
     if ($null -eq $DropOrder) { $DropOrder = Get-SegmentOrder 'DropRank' }
     foreach ($name in $ShrinkOrder) {
-        for ($i = 0; $i -lt $segs.Count; $i++) {
-            if ($segs[$i].Name -eq $name -and $segs[$i].Short) {
-                $segs[$i].Text = $segs[$i].Short
-                $line = Format-Line $segs $Style
-                if ((Get-VisibleWidth $line) -le $target) { return $line }
+        # Two lists rather than one, and a segment name is in exactly one of them, so the left-then-right
+        # order here settles nothing: it is a search, not a precedence.
+        foreach ($list in $segs, $rights) {
+            for ($i = 0; $i -lt $list.Count; $i++) {
+                if ($list[$i].Name -eq $name -and $list[$i].Short) {
+                    $list[$i].Text = $list[$i].Short
+                    $line = Join-AlignedLine (Format-Line $segs $Style) (Format-Line $rights $Style) $target
+                    if ($line) { return $line }
+                }
             }
         }
+    }
+    for ($i = $rights.Count - 1; $i -ge 0; $i--) {
+        if ($rights[$i].Name -eq 'model') { continue }
+        $rights.RemoveAt($i)
+        if ($segs.Count + $rights.Count -eq 0) { return $null }
+        $line = Join-AlignedLine (Format-Line $segs $Style) (Format-Line $rights $Style) $target
+        if ($line) { return $line }
     }
     foreach ($name in $DropOrder) {
         if ($name -eq 'model') { continue }
@@ -1005,11 +1095,19 @@ function Get-FittedLine($Segments, [string] $Style, $Width, [string[]] $ShrinkOr
         for ($i = 0; $i -lt $segs.Count; $i++) { if ($segs[$i].Name -eq $name) { $at = $i } }
         if ($at -lt 0) { continue }
         $segs.RemoveAt($at)
-        if ($segs.Count -eq 0) { return $null }
-        $line = Format-Line $segs $Style
-        if ((Get-VisibleWidth $line) -le $target) { return $line }
+        if ($segs.Count + $rights.Count -eq 0) { return $null }
+        $line = Join-AlignedLine (Format-Line $segs $Style) (Format-Line $rights $Style) $target
+        if ($line) { return $line }
     }
-    return $line
+    # Nothing fits. The right group is empty by now unless the caller pushed the model itself to the
+    # edge, which is the one member stage 2 leaves standing, so this is the over-wide line the function
+    # has always returned - joined by a single space in the one case where there is still a group to
+    # join, because there is no room left to align it into.
+    $leftLine = Format-Line $segs $Style
+    $rightLine = Format-Line $rights $Style
+    if (-not $rightLine) { return $leftLine }
+    if (-not $leftLine) { return $rightLine }
+    return "$leftLine $rightLine"
 }
 
 # Parses `git status --porcelain=v1 --branch` output. $null when the header line is missing.
@@ -1527,6 +1625,7 @@ $iconCtx = $icons.context
 $iconCache = $icons.cache
 $iconCost = $icons.cost
 $iconClock = $icons.clock
+$iconTime = $icons.time
 $iconFolder = $icons.folder
 $iconChevron = $icons.chevron
 $iconBranch = $icons.branch
@@ -2015,6 +2114,34 @@ function Get-ClockSegment($d) {
         $share = ' ' + (G 0xB7) + ' api ' + (Get-WholePercent ($api / $total * 100)) + '%'
     }
     return @{ Name = 'clock'; Text = "$text$share"; Short = $(if ($share) { $text } else { $null }); Role = 'dim'; Bold = $false }
+}
+
+# The wall clock, `14:05`: the local time of day, 24-hour, the way a shell prompt puts the time on the
+# right of the line. Dim and never bold, with no threshold band and no alarm behind it, because a clock
+# is not a state.
+#
+# THIS IS NOT THE CLOCK SEGMENT ABOVE. Get-ClockSegment prints how long this session has been running
+# and what share of that went on the API; both are times and neither is the other. A session that has
+# run 1h12m says nothing about whether it is now 09:14 or 23:47, and the figure worth having beside a
+# right edge is the one a shell prompt puts there. Two segments, two numbers, two glyphs - a stopwatch
+# for the elapsed time and a wall clock for the time of day.
+#
+# It reads no payload field, because there is none to read: Claude Code's payload carries no timestamp,
+# so the machine's own clock is the only source there is. That makes it the one segment whose value
+# moves without a new payload, which is why the README says to set statusLine.refreshInterval beside it.
+# Without one the script runs only on Claude Code's events, so an idle session shows the time of the
+# last event rather than the time now - a stale clock, and a clock that is quietly wrong is worse than
+# no clock at all, which is why the default is off and why the note is beside the segment and not in a
+# footnote.
+#
+# The colon is escaped in the format string. `:` in a .NET custom format is the culture's time separator,
+# which under fi-FI is a dot, and `14.05` is not what this segment or the README says it prints.
+# No Short form: there is nothing in five characters to shed. It takes DropRank 1 instead - the first
+# whole segment to go - because it is the one figure on the line that says nothing about the session.
+# The three parameters are what the build loop hands every builder; this one uses none of them, and
+# naming them rather than leaving them in $args is what says so.
+function Get-TimeSegment($d, $cfg, $state) {
+    return @{ Name = 'time'; Text = "$iconTime $((Get-Date).ToString('HH\:mm'))"; Short = $null; Role = 'dim'; Bold = $false }
 }
 
 # Lines added/removed this session; shown when either is non-zero. Inline colours keep the dim background intact.
@@ -2526,9 +2653,17 @@ if ([int]::TryParse([string] $env:COLUMNS, [ref] $cols) -and $cols -gt 0) { $wid
 
 # A line that fits down to nothing is not printed. With model toggled off and a very narrow terminal
 # that can mean no output at all, which is what the user asked for.
+#
+# The right group belongs to the FIRST line set and to no other: layout one has only one line, and in
+# layout two the second row renders exactly as it did before. Emptied after the first pass rather than
+# tested against an index, so a row that renders nothing still spends the group - the group is row one's
+# whether or not row one prints - and so this stays one added variable in a loop another branch is also
+# editing.
+$rightGroup = [string[]] $cfg.Right
 foreach ($names in $lineSets) {
     $onLine = foreach ($n in $names) { foreach ($s in $segments) { if ($s.Name -eq $n) { $s } } }
-    $text = Get-FittedLine @($onLine) $cfg.Style $width
+    $text = Get-FittedLine @($onLine) $cfg.Style $width -Right $rightGroup
+    $rightGroup = $null
     if ($text) { Write-Host $text }
 }
 
