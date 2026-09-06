@@ -1894,7 +1894,10 @@ foreach ($e in $defaultIcons.GetEnumerator()) {
 # text rather than a second hand-typed copy of $oscArm that could itself go stale.
 $rsRight = Get-ScriptAssignment (Join-Path $PSScriptRoot 'docs/render-screenshot.ps1') '$pattern'
 if ($null -ne $rsRight) {
-    $rsPatternValue = [scriptblock]::Create($rsRight.Extent.Text).Invoke()
+    # [string], not left as .Invoke()'s own Collection[PSObject]: a collection's .Contains checks for an
+    # exact element match, so the substring check just below it would silently ask a different question
+    # - whether $oscArm is the WHOLE pattern, never true - and fail every time regardless of the pattern.
+    $rsPatternValue = [string] [scriptblock]::Create($rsRight.Extent.Text).Invoke()
     Confirm-True ($rsPatternValue.Contains($oscArm)) 'render-screenshot: OSC-strip pattern contains this file''s current $oscArm, not a frozen copy of it'
 }
 
