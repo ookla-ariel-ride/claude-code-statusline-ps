@@ -188,7 +188,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -419,6 +419,14 @@ Confirm-Equal $c.Layout 'one' 'config bad layout value: default'
 Confirm-Equal $c.Style 'plain' 'config non-string style: default'
 Confirm-Equal $c.Segments.cost $true 'config non-bool segment: on'
 Confirm-True (-not $c.Segments.ContainsKey('bogus')) 'config unknown segment: ignored'
+
+# The third style. It is one more value in the same Enum row as plain and powerline, so it folds case
+# and refuses anything that is not one of the three exactly as they do. Everything else the ascii style
+# does hangs off this key, so a near miss has to land on plain rather than on a style with no table.
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'style-ascii.json' '{ "style": "ascii" }')).Style 'ascii' 'config style ascii'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'style-ascii-caps.json' '{ "style": "ASCII" }')).Style 'ascii' 'config style ASCII: case folded'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'style-ascii-typo.json' '{ "style": "asciii" }')).Style 'plain' 'config style: a near miss falls back to plain'
+Confirm-Equal ((Get-StatusConfigKey | Where-Object { $_.Json -eq 'style' }).Allowed -join ',') 'plain,powerline,ascii' 'config style: three allowed values'
 
 $c = Read-StatusConfig (Write-TempConfig 'segments-array.json' '{ "segments": [true] }')
 Confirm-Equal $c.Segments.model $true 'config segments not an object: all on'
@@ -5893,6 +5901,130 @@ foreach ($name in $realHash.Keys) {
     Confirm-True ((Get-ContentHash $p) -eq $realHash[$name]) "install: real $p untouched"
 }
 
+Write-Host '== unit: ascii style' -ForegroundColor Cyan
+# THE PROMISE THIS STYLE MAKES: every character a line draws is printable ASCII, U+0020 to U+007E.
+# Not "no private use area", which would be the narrow reading of "needs no Nerd Font": ASCII is the
+# only range that is both always drawable and always one cell wide, and the second half matters as much
+# as the first, because Get-VisibleWidth counts a meter block, an arrow or a middle dot as one column
+# and a terminal in an East Asian locale may draw any of them as two. So the table below covers the
+# glyphs AND the furniture - the meter, the minus, the clock's separator, the pace arrows, the tail of a
+# clipped name and the separator between segments - and the render pass at the foot of the matrix
+# asserts the promise over every sample rather than trusting this list to be complete.
+# Every character below is spelled as an ASCII literal on purpose: a test that built its expectations
+# from the script's own tables would agree with a typo in them.
+$asciiIcons = Get-IconAscii
+$defaultIconNames = @((Get-IconDefault).Keys | Sort-Object) -join ','
+Confirm-Equal $asciiIcons.Count 23 'ascii: one stand-in per built-in glyph'
+Confirm-Equal (@($asciiIcons.Keys | Sort-Object) -join ',') $defaultIconNames 'ascii: the two tables carry the same names'
+foreach ($e in $asciiIcons.GetEnumerator()) {
+    $outside = @([char[]] $e.Value | Where-Object { [int] $_ -lt 0x20 -or [int] $_ -gt 0x7E })
+    Confirm-Equal $outside.Count 0 "ascii: the $($e.Key) stand-in is printable ASCII"
+}
+# The stand-ins, by name and value. An entry is empty only where what follows it on the line names the
+# segment on its own - the model's name, a figure that starts with a dollar sign, a +156 -23 diff, a
+# 5h 24% window, an effort level, a vim mode - and an empty entry must leave no space behind it, which
+# is Format-Icon's job below. Everything else carries the shortest ASCII stand-in that says what the
+# glyph said: a conventional mark where one exists (~ for home, * for a dirty tree, ^ and v for ahead
+# and behind, ! for a conflict, / for a step down a path, @ for a person, # for a tag), otherwise a
+# short lower-case abbreviation (ctx, dir, pr, wt, fast, think), cut to a single initial where the
+# segment's own text already carries the word (b for branch, c for cache, whose short form is a bare
+# `warm` or `8m` and would otherwise reach the line with nothing saying what it is about).
+foreach ($row in @(
+        @('context', 'ctx'), @('cache', 'c'), @('folder', 'dir'), @('chevron', '/'), @('branch', 'b'),
+        @('worktree', 'wt'), @('home', '~'), @('dirty', '*'), @('ahead', '^'), @('behind', 'v'),
+        @('conflict', '!'), @('pr', 'pr'), @('fast', 'fast'), @('think', 'think'), @('agent', '@'), @('session', '#'))) {
+    Confirm-Equal $asciiIcons[$row[0]] $row[1] "ascii: $($row[0]) stands in as '$($row[1])'"
+}
+$asciiEmpty = @($asciiIcons.GetEnumerator() | Where-Object { [string]::IsNullOrEmpty($_.Value) } | ForEach-Object { $_.Key } | Sort-Object)
+Confirm-Equal ($asciiEmpty -join ',') 'clock,cost,effort,limits,lines,model,vim' 'ascii: the seven segments whose own text names them carry no stand-in'
+# The ahead and behind marks share the line with the +, ~ and ? the branch segment writes in front of
+# its staged, modified and untracked counts, so neither may be one of those three.
+foreach ($name in @('ahead', 'behind')) {
+    Confirm-True ($asciiIcons[$name] -notin @('+', '~', '?')) "ascii: the $name mark is not one of the count prefixes"
+}
+
+# Get-IconSet is where the style is read, so the whole script sees one table.
+$set = Get-IconSet @{ Style = 'ascii' }
+Confirm-Equal $set.context 'ctx' 'ascii: Get-IconSet hands back the ascii table'
+Confirm-Equal $set.model '' 'ascii: the model stand-in comes through empty'
+# An icons override is a code point, and a code point is the one thing a terminal without the font
+# cannot draw. Under ascii the overrides are therefore ignored, so "style: ascii" is a promise about
+# the whole line and not one a repository's own .claude\statusline.json can take back. The same
+# override still applies in the other two styles, which is what says this is a rule and not a bug.
+$set = Get-IconSet @{ Style = 'ascii'; Icons = @{ model = 0xF0E7; context = 0x2588 } }
+Confirm-Equal $set.model '' 'ascii: an icons override puts no glyph back in the model slot'
+Confirm-Equal $set.context 'ctx' 'ascii: an icons override puts no glyph back in the context slot'
+Confirm-Equal (Get-IconSet @{ Style = 'plain'; Icons = @{ model = 0xF0E7 } }).model ([char]::ConvertFromUtf32(0xF0E7)) 'ascii: the same override still reaches the plain style'
+Confirm-Equal (Get-IconSet (Read-StatusConfig (Write-TempConfig 'icons-ascii-bolt.json' '{ "style": "ascii", "icons": { "model": "F0E7" } }'))).model '' 'ascii: an override in a config file is ignored too'
+
+# Joining an icon to its text. This is the one place a space between the two is written, so an empty
+# stand-in leaves no stray space and no builder has to know which entries are empty.
+Confirm-Equal (Format-Icon 'ctx' '32%') 'ctx 32%' 'icon join: a stand-in and its text'
+Confirm-Equal (Format-Icon '' 'Fable 5.1') 'Fable 5.1' 'icon join: an empty icon leaves no space in front'
+Confirm-Equal (Format-Icon $null 'Fable 5.1') 'Fable 5.1' 'icon join: no icon at all leaves no space either'
+Confirm-Equal (Format-Icon $iconModel 'Fable 5.1') "$iconModel Fable 5.1" 'icon join: a glyph is joined by one space, as it always was'
+
+# The characters that are not icons: the meter's two cells, the minus in the lines segment, the clock's
+# separator, the two pace arrows and the tail of a clipped name.
+$mark = Get-MarkSet 'ascii'
+foreach ($row in @(@('BarFull', '#'), @('BarEmpty', '.'), @('Minus', '-'), @('Middot', '|'), @('Steady', '='), @('Rising', '^'), @('Ellipsis', '.'))) {
+    Confirm-Equal $mark[$row[0]] $row[1] "ascii mark: $($row[0]) is '$($row[1])'"
+}
+$plainMark = Get-MarkSet 'plain'
+Confirm-Equal $plainMark.BarFull $blockFull 'ascii mark: plain keeps the full block'
+Confirm-Equal $plainMark.BarEmpty $blockLight 'ascii mark: plain keeps the light block'
+Confirm-Equal $plainMark.Minus ([char]::ConvertFromUtf32(0x2212)) 'ascii mark: plain keeps the true minus sign'
+Confirm-Equal $plainMark.Middot $middot 'ascii mark: plain keeps the middle dot'
+Confirm-Equal $plainMark.Ellipsis $ellipsis 'ascii mark: plain keeps the ellipsis'
+Confirm-Equal (Get-MarkSet 'powerline').BarFull $blockFull 'ascii mark: powerline is the plain set too'
+Confirm-Equal (Get-MarkSet '').BarFull $blockFull 'ascii mark: an unknown style is the plain set'
+# The ascii marks are one cell each, which is what lets the fitting keep measuring the way it does.
+foreach ($e in $mark.GetEnumerator()) {
+    Confirm-Equal (Get-VisibleWidth $e.Value) 1 "ascii mark: $($e.Key) is one cell"
+}
+
+# The separator. The plain style's is U+E0B1, a Nerd Font glyph like every icon, so the ascii style
+# needs its own; the powerline style's solid block cannot be spelled in ASCII at all, which is why
+# ascii renders like plain and not like powerline.
+$segA = @{ Name = 'model'; Text = 'M'; Short = $null; Role = 'model'; Bold = $true }
+$segB = @{ Name = 'folder'; Text = 'F'; Short = $null; Role = 'folder'; Bold = $false }
+$asciiLine = Format-Line @($segA, $segB) 'ascii'
+Confirm-Equal $asciiLine "$esc[1;36mM$esc[0m $esc[90m>$esc[0m $esc[34mF$esc[0m" 'ascii: two segments joined by a dim >'
+Confirm-True (-not $asciiLine.Contains($chevron)) 'ascii: no powerline soft divider on the line'
+Confirm-True (-not $asciiLine.Contains($arrow)) 'ascii: no powerline arrow on the line'
+Confirm-Equal (Format-Line @($segA) 'ascii') "$esc[1;36mM$esc[0m" 'ascii: one segment has nothing to separate'
+# The colours are the plain style's, role for role: ascii changes what is drawn, never what colour it
+# is drawn in.
+Confirm-Equal (Format-Line @($segA, $segB) 'ascii').Replace('>', $chevron) (Format-Line @($segA, $segB) 'plain') 'ascii: the same SGR codes as plain, separator apart'
+Confirm-Equal (Format-Inline 'added' '+1' 'dim' 'ascii') (Format-Inline 'added' '+1' 'dim' 'plain') 'ascii: an inline colour run is the plain one'
+
+# The builders read their glyphs from the script-level $icon* names this file supplies, so an ascii
+# render at unit level means putting the stand-ins in those names for the length of the block and then
+# putting the glyphs back. The render pass in the matrix covers the same ground through the real script.
+$savedIconCtx = $iconCtx
+$savedIconModel = $iconModel
+try {
+    $iconCtx = $asciiIcons.context
+    $iconModel = $asciiIcons.model
+    $asciiCfg = @{ Style = 'ascii'; Thresholds = @{ Warn = 60; Bad = 85 } }
+    $seg = Get-ContextSegment (Get-ContextPayload 32) $asciiCfg
+    Confirm-Equal $seg.Short 'ctx 32% ###.......' 'ascii: the context meter is three hashes and seven dots'
+    Confirm-Equal $seg.Role 'ok' 'ascii: the meter keeps the colour band it always had'
+    $model = Get-ModelSegment ([pscustomobject]@{ model = [pscustomobject]@{ display_name = 'Fable 5.1' } }) $asciiCfg
+    Confirm-Equal $model.Text 'Fable 5.1' 'ascii: the model segment is the name alone, with nothing in front of it'
+} finally {
+    $iconCtx = $savedIconCtx
+    $iconModel = $savedIconModel
+}
+
+# The pace arrow takes the style because it is the one mark decided inside a helper rather than a
+# builder. Its meaning is unchanged: Over is what the quiet guard reads, and the character follows it.
+$paceSoon = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+Confirm-Equal (Get-PaceArrow $paceSoon 10 ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) 'ascii').Arrow '=' 'ascii: a rate inside its window draws ='
+Confirm-Equal (Get-PaceArrow $paceSoon 80 ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) 'ascii').Arrow '^' 'ascii: a rate that overruns draws ^'
+Confirm-Equal (Get-PaceArrow $paceSoon 80 ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) 'ascii').Over $true 'ascii: the overrun state is unchanged'
+Confirm-Equal (Get-PaceArrow $paceSoon 10 ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())).Arrow ([char]::ConvertFromUtf32(0x2192)) 'ascii: no style given keeps the right arrow'
+
 # ---- Render matrix: samples x configs x widths ----
 $sampleFiles = Get-ChildItem (Join-Path $PSScriptRoot 'samples') -Filter *.json | Sort-Object Name
 $sample06 = $sampleFiles | Where-Object { $_.Name -eq '06-limits-badges-lines.json' }
@@ -6564,6 +6696,168 @@ $r = Invoke-StatusLine $payload01 (Write-TempConfig 'render-icons-surrogate.json
 Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains("$iconModel Fable 5.1")) 'render icons: a surrogate falls back to the robot'
 $r = Invoke-StatusLine 'not json' (Write-TempConfig 'render-icons-bolt.json' '{ "icons": { "model": "F0E7" } }') 0
 Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) "$bolt claude" 'render icons: the bad-payload fallback line carries the override too'
+
+# ---- The ascii style through the whole script ----
+# One pass rather than a fourth column in the matrix above. Adding ascii to the generated layout-by-style
+# set would grow it from four configs to six and force every row of $sampleMarkers to become style-aware
+# for the sake of renders that differ from the plain ones only in the character table; a pass of its own
+# is fourteen renders and one table, and it can assert the thing the matrix cannot say - that nothing on
+# the line is outside printable ASCII.
+Write-Host ''
+Write-Host '== render: ascii style' -ForegroundColor Cyan
+$asciiPath = Write-TempConfig 'ascii.json' '{ "style": "ascii" }'
+# The same shape as $sampleMarkers, in ASCII. Written out rather than derived from that table by
+# substitution: a derived table would carry the same rule the script carries, and a mistake in the rule
+# would then agree with itself in both places. The folder mode is the default, repo, so 08's marker is
+# the identity form.
+$asciiMarkers = @{
+    '01-main-clean.json'                    = @{
+        model  = 'Fable 5.1'; context = 'ctx 8%'; cost = "`$$('{0:N2}' -f 0.4312)"
+        clock  = '2m'
+        folder = 'dir my-project'; branch = '~ main'
+    }
+    '02-feature-dirty-high.json'            = @{
+        model  = 'Fable 5.1 1M'; context = 'ctx 90%'; cost = "`$$('{0:N2}' -f 12.5)"
+        folder = 'dir repo'; branch = 'b feature/x ~2 ?1 *'
+    }
+    '03-main-dirty-mid.json'                = @{
+        model  = 'Opus 5'; context = 'ctx 65%'; cost = "`$$('{0:N2}' -f 3.07)"
+        folder = 'dir project'; branch = '~ main *'
+    }
+    '04-minimal.json'                       = @{
+        model = 'Fable 5.1'
+    }
+    '05-no-git.json'                        = @{
+        model = 'Sonnet 5'; context = 'ctx 25%'; folder = 'dir Downloads'
+    }
+    # The line the issue asked for, end to end: the meter in hashes and dots, the clock's middle dot as
+    # a pipe, the minus as a hyphen, four badges with two of their glyphs gone and the effort level and
+    # the vim mode standing on their own.
+    '06-limits-badges-lines.json'           = @{
+        model   = 'Fable 5.1'; cost = "`$$('{0:N2}' -f 1.07)"
+        context = "ctx 32% ###....... $(K 64000)/$(K 200000) 92% cached"
+        clock   = '1h12m | api 38%'
+        lines   = '+156 -23'; limits = '5h 24%'
+        badges  = 'fast think xhigh NORMAL'
+        folder  = 'dir my-project'; branch = '~ main'
+    }
+    '07-limits-expired-default-effort.json' = @{
+        model = 'Opus 5'; context = 'ctx 5%'; cost = "`$$('{0:N2}' -f 0.02)"
+        lines = '+0 -4'; limits = "5h 61% 7d 12% `$ 44%"
+        folder = 'dir repo'
+    }
+    '08-repo-identity.json'                 = @{
+        model = 'Fable 5.1'; context = 'ctx 12%'; cost = "`$$('{0:N2}' -f 0.88)"
+        folder = 'dir octo/demo / tools'
+    }
+    '09-1m-context.json'                    = @{
+        model  = 'Fable 5.1 1M !'; context = 'ctx 65%'; cost = "`$$('{0:N2}' -f 4.21)"
+        clock  = '15m'
+        folder = 'dir my-project'; branch = '~ main'
+    }
+    '10-pr.json'                            = @{
+        model  = 'Fable 5.1'; context = 'ctx 8%'; cost = "`$$('{0:N2}' -f 0.4312)"
+        pr     = 'pr #12'; folder = 'dir my-project'; branch = 'b feature/x'
+    }
+    '11-worktree.json'                      = @{
+        model  = 'Sonnet 5'; context = 'ctx 21%'; cost = "`$$('{0:N2}' -f 0.75)"
+        folder = 'dir wt-review'; branch = 'b review/x wt wt-review ~2 *'
+    }
+    '12-context-alarm.json'                 = @{
+        model = 'Sonnet 5'; context = 'ctx 92%'; cost = "`$$('{0:N2}' -f 2.4)"
+        folder = 'dir alarm-demo'
+    }
+    '13-agent-session.json'                 = @{
+        model  = 'Sonnet 5'; context = 'ctx 16%'; cost = "`$$('{0:N2}' -f 0.31)"
+        badges = '@ reviewer # nightly audit'
+        folder = 'dir my-project'; branch = '~ main'
+    }
+    '14-prompt-cache-warm.json'             = @{
+        model = 'Fable 5.1'; context = 'ctx 18%'; cache = 'c cache warm'
+        cost  = "`$$('{0:N2}' -f 1.24)"
+        folder = 'dir my-project'; branch = '~ main'
+    }
+}
+foreach ($sample in $sampleFiles) {
+    $label = "ascii $($sample.Name)"
+    $r = Invoke-StatusLine $samplePayloads[$sample.Name] $asciiPath 0
+    Confirm-True ($r.ExitCode -eq 0) "${label}: exit code $($r.ExitCode)"
+    Confirm-True ($r.Err.Count -eq 0) "${label}: stderr empty, got '$($r.Err -join ' | ')'"
+    Confirm-True ($r.Lines.Count -le 1) "${label}: layout one prints one line"
+    $text = ConvertTo-PlainText ($r.Lines -join "`n")
+    # The promise. The plain text is what a terminal draws, so the hyperlink wrappers and the colour
+    # codes are gone by here and what is left is the characters a font has to have. A surrogate pair
+    # fails this as its two halves, which is the answer wanted: an astral code point is not ASCII.
+    $outside = @([char[]] $text | Where-Object { [int] $_ -lt 0x20 -or [int] $_ -gt 0x7E })
+    $shownOutside = ($outside | ForEach-Object { 'U+{0:X4}' -f [int] $_ }) -join ' '
+    Confirm-Equal $outside.Count 0 "${label}: nothing on the line is outside printable ASCII (found $shownOutside)"
+    # An empty stand-in that kept its space would show up here, on whichever segment carries it, and
+    # nowhere else: no sample name and no payload text in the corpus holds a double space.
+    Confirm-True (-not $text.Contains('  ')) "${label}: no double space, so no empty stand-in left its space behind"
+    Confirm-True ($text -eq $text.Trim()) "${label}: the line neither starts nor ends with a space"
+    Confirm-True ($asciiMarkers.ContainsKey($sample.Name)) "${label}: sample has a row in the ascii marker table"
+    if (-not $asciiMarkers.ContainsKey($sample.Name)) { continue }
+    $marks = $asciiMarkers[$sample.Name]
+    $lastAt = -1
+    foreach ($name in $allSegments) {
+        if ($name -notin @($sampleSegments[$sample.Name])) { continue }
+        $marker = $marks[$name]
+        if (-not $marker) { Confirm-True $false "${label}: no ascii marker for $name"; continue }
+        # Ordinal: these are rendered lines, and a culture-sensitive IndexOf can read a marker made of
+        # punctuation as matching at any position at all.
+        $at = $text.IndexOf($marker, [System.StringComparison]::Ordinal)
+        Confirm-True ($at -ge 0) "${label}: shows $name as '$marker'"
+        if ($at -lt 0) { continue }
+        Confirm-True ($at -gt $lastAt) "${label}: $name comes after the segment listed before it"
+        $lastAt = $at
+    }
+    # @() so a one-line render does not collapse to a bare string whose first character is echoed.
+    $shown = @(if ($Raw) { $r.Lines -replace $esc, '<ESC>' } else { $r.Lines })
+    Write-Host ("{0,-40} {1,5:N0} ms  " -f $sample.Name, $r.Ms) -NoNewline
+    Write-Host $shown[0]
+}
+# The colours are the plain style's, segment for segment. The two renders differ in their text, so what
+# is compared is the sequence of SGR codes each line carries: same roles, same order, same codes.
+$asciiSix = Invoke-StatusLine $samplePayloads[$sample06.Name] $asciiPath 0
+$plainSix = Invoke-StatusLine $samplePayloads[$sample06.Name] (Write-TempConfig 'ascii-plain-oracle.json' '{ "style": "plain" }') 0
+$asciiSgr = @([regex]::Matches(($asciiSix.Lines -join "`n"), "$esc\[[0-9;]*m") | ForEach-Object { $_.Value }) -join ' '
+$plainSgr = @([regex]::Matches(($plainSix.Lines -join "`n"), "$esc\[[0-9;]*m") | ForEach-Object { $_.Value }) -join ' '
+Confirm-Equal ($asciiSgr -replace $esc, '<ESC>') ($plainSgr -replace $esc, '<ESC>') 'ascii: sample 06 carries the same SGR codes as the plain render, segment for segment'
+# Fitting under ascii. The model segment is never dropped, so it is on the line at every width, and the
+# line still fits the column count it was given.
+foreach ($cols in @(120, 60, 20)) {
+    $r = Invoke-StatusLine $samplePayloads[$sample06.Name] $asciiPath $cols
+    $label = "ascii 06 COLUMNS=$cols"
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) "${label}: exit code 0, stderr empty"
+    $text = ConvertTo-PlainText ($r.Lines -join "`n")
+    Confirm-True ((Measure-VisibleWidth ($r.Lines -join '')) -le $cols - 1) "${label}: the line fits"
+    Confirm-True ($text.Contains('Fable 5.1')) "${label}: the model segment is kept"
+    $outside = @([char[]] $text | Where-Object { [int] $_ -lt 0x20 -or [int] $_ -gt 0x7E })
+    Confirm-Equal $outside.Count 0 "${label}: still nothing outside printable ASCII"
+}
+# Layout two under ascii. The style reaches the second row through the same Format-Line the first row
+# goes through, so this is one render to say the two keys are independent and nothing on either row
+# came back in a code point.
+$r = Invoke-StatusLine $samplePayloads[$sample06.Name] (Write-TempConfig 'ascii-two.json' '{ "style": "ascii", "layout": "two" }') 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'ascii layout two: exit code 0, stderr empty'
+Confirm-Equal $r.Lines.Count 2 'ascii layout two: two lines'
+# The rows are checked joined, so the newline between them is the one character allowed through.
+$text = ConvertTo-PlainText ($r.Lines -join "`n")
+$outside = @([char[]] $text | Where-Object { [int] $_ -ne 10 -and ([int] $_ -lt 0x20 -or [int] $_ -gt 0x7E) })
+Confirm-Equal $outside.Count 0 'ascii layout two: nothing on either row is outside printable ASCII'
+Confirm-True ($text.Contains('dir my-project')) 'ascii layout two: the first row carries the folder segment'
+Confirm-True ($text.Contains('ctx 32%')) 'ascii layout two: the second row carries the context meter'
+
+# Both fallback lines under ascii: the model stand-in is empty, so each is the bare word. This is the
+# pair #42 left the raw cyan on, and it is still raw cyan - the ascii style changes what is drawn, not
+# what colour it is drawn in - so the escape codes are pinned here as well as the text.
+$r = Invoke-StatusLine 'not json' $asciiPath 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'ascii bad payload: exit code 0, stderr empty'
+Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) 'claude' 'ascii bad payload: the fallback is the bare word, with no space in front of it'
+Confirm-Equal (($r.Lines -join "`n") -replace $esc, '<ESC>') '<ESC>[36mclaude<ESC>[0m' 'ascii bad payload: the fallback keeps its cyan'
+$r = Invoke-StatusLine '{ }' $asciiPath 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'ascii zero segments: exit code 0, stderr empty'
+Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) 'claude' 'ascii zero segments: the stand-in line is the bare word too'
 
 # The zero-segment fallback through the whole script. Every enabled and listed builder returned nothing,
 # and the fallback line is the model glyph and the word claude: it stands in for the model segment, so it

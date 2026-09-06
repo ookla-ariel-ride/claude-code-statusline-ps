@@ -43,7 +43,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | `<workspace.project_dir>\.claude\statusline.json` | The project's own copy of the same keys, merged over the user file key by key so a repository can pin its layout without changing any other session. Read only when the payload names a project directory that holds it, and not at all when `-Config` names a file. Read as untrusted input: opened first and judged by the handle, at most 64 KiB, within one 250 ms budget that starts before the first filesystem call. |
 | `%TEMP%\claude-statusline-state\` | One JSON file per session (`<session_id>.json`, version 1): last cost, token totals, context and 5-hour percentages, and a ring of up to twenty cost readings. Read before the line is built, for the cost segment's per-turn delta, written after it is printed, swept of day-old files at most every six hours. The three counters (cost and the two token totals) are kept from the previous record when the payload does not carry them; the two percentages are read fresh and left absent, because a gauge carried forward describes a moment that has passed. `~/.claude/statusline-state` when `TEMP` is empty. |
 | `%TEMP%\claude-statusline\` | The git probe cache: one JSON file per repository, named by the first 16 hex characters of the SHA-256 of the lower-cased work tree path, holding the root, a stamp string (the UTC ticks of the git directory, of `index`, `HEAD`, `ORIG_HEAD`, `FETCH_HEAD`, `MERGE_HEAD`, `packed-refs`, `logs/HEAD`, `config` and `info/exclude`, and of every directory under `refs`, capped at 256; a worktree's main repository after a bar), the write time and the last `git status` record, or null when the probe failed. Read before the branch segment is built and reused for `git.cacheSeconds` while the stamp string matches; swept of day-old files with the state sweep. `TMPDIR`, then the runtime's temp path, when `TEMP` is empty. |
-| `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width, checks the git fallback in temporary repositories: clean, dirty, unborn, detached, ahead, behind, a mixed tree, a git that fails and one that hangs, the probe cache with a counting stand-in and end to end with a failing git on `PATH`, exercises the session state file end to end, runs `install.ps1` against a settings file in a temp folder, and pipes every subagent payload through `subagent-statusline.ps1`, reading the replies the way the panel does and checking the copied helpers for drift. `-Columns`, `-Config`, `-Raw`. |
+| `test.ps1` | Unit-tests the script's pure functions, renders every sample across layout × style × width and once more in the `ascii` style, where the line is checked against its own marker table and for holding nothing outside printable ASCII, checks the git fallback in temporary repositories: clean, dirty, unborn, detached, ahead, behind, a mixed tree, a git that fails and one that hangs, the probe cache with a counting stand-in and end to end with a failing git on `PATH`, exercises the session state file end to end, runs `install.ps1` against a settings file in a temp folder, and pipes every subagent payload through `subagent-statusline.ps1`, reading the replies the way the panel does and checking the copied helpers for drift. `-Columns`, `-Config`, `-Raw`. |
 | `samples/*.json` | Every payload in `samples/` goes through the render matrix. One per case: clean main, dirty feature at high context, dirty main at mid context, minimal, no git, limits with badges, lines and a session clock at 1h12m with a 38% api share, expired limits with default effort, a repository identity below its project root, a 1M window with `exceeds_200k_tokens` true, a feature branch with an approved pull request, a session in a git worktree, a context window past the alarm percentage, a named session run by a custom agent with every mode off. |
 | `samples/subagent/*.json` | Subagent panel payloads, in their own subdirectory so the render matrix, which globs `samples/` without `-Recurse`, never sees them. One per case: two running agents, a task with nothing but an id, an empty task list, hostile fields (an escape in a name, a blank and an array id, `20.0` and `2e1` token counts, a zero window, a label too long for the panel), and a 1M window with no `columns` key. |
 | `docs/render-screenshot.ps1` | Renders a payload and config through the script and captures the terminal as the README screenshot. |
@@ -89,8 +89,18 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   slow repository pays the timeout once per lifetime; a cached record is checked with the payload
   guards before it is rendered, and every failure ends in a plain probe.
 - **Segment records and one renderer.** Each segment is a small record (name, text, short text,
-  colour role, bold); one function renders a line in plain or powerline style, and width fitting
+  colour role, bold); one function renders a line in plain, powerline or ascii style, and width fitting
   shrinks then drops records in a fixed order.
+- **One style key, not a style and an icon set.** `ascii` (#27) is the whole no-Nerd-Font answer rather
+  than an axis crossed with the other two: the separator glyph and the icon table have the same single
+  cause, the font, so one word settles both and the incoherent pairing — powerline's block separators
+  on a terminal that cannot draw them — cannot be asked for. What it promises is printable ASCII, U+0020
+  to U+007E, not merely "no private use area": that range is both the one every font has and the one
+  every terminal draws a single cell wide, and the width half matters because `Get-VisibleWidth` counts
+  a meter block, an arrow or a middle dot as one column while some terminals draw them as two. So
+  `Get-IconAscii` answers for the glyphs and `Get-MarkSet` for the characters that are not glyphs, and
+  the `icons` overrides — code points, every one — are ignored in this style, so the promise holds
+  whatever a user or a repository's own config asks for. Colours are the plain palette, role for role.
 - **Width is counted per grapheme, and over-counting is the safe direction.** `Get-VisibleWidth` walks
   text elements rather than characters and is a small wcwidth approximation, not a full one. Most
   graphemes are classified by their first code point against a list of wide ranges, but two are not
@@ -407,9 +417,10 @@ twelve short functions and a drift test. The intended order for the rest:
    the folder and branch links (#13) are done, reusing `Format-Link` around the finished text of each.
 2. Config: presets, a quiet block, an alarm colour (#21 to #23). Each is one key over
    `Merge-StatusConfigFile`.
-3. Style and terminal: an ASCII style, a light palette, a right-aligned group with a clock
-   (#25, #27, #28). Taskbar progress (#24) is done and is the first writer of terminal state that
-   outlives the render.
+3. Style and terminal: a light palette, a right-aligned group with a clock (#25, #28). Taskbar
+   progress (#24) is done and is the first writer of terminal state that outlives the render, and the
+   ASCII style (#27) is done: a third `style` value, its own icon and mark tables, and the `icons`
+   overrides refused under it so the line it promises is the line it draws.
 
 ## License
 

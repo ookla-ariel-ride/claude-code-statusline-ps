@@ -1,6 +1,7 @@
 ﻿#Requires -Version 7.0
 # Claude Code status line (PowerShell 7) with Nerd Font glyphs and ANSI colour.
-# Requires a Nerd Font in the terminal (install.ps1 can set up JetBrainsMono Nerd Font).
+# Wants a Nerd Font in the terminal (install.ps1 can set up JetBrainsMono Nerd Font); where the font
+# cannot be changed, "style": "ascii" draws the same line out of printable ASCII and keeps the colours.
 # Reads the JSON Claude Code pipes on stdin and prints one or two lines, e.g.
 #   󰚩 Fable 5.1  󰍛 37% ████░░░░░░   $0.43   my-project   main
 # Layout, separator style, segment toggles and order, colour bands and glyph overrides come from
@@ -252,6 +253,87 @@ function Get-IconDefault {
     }
 }
 
+# The same names again for the ascii style, as plain characters rather than code points, because a
+# stand-in is not always one character and an empty one is not a code point at all.
+#
+# WHAT ASCII MEANS HERE, and the rule every entry below follows. The line is drawn out of printable
+# ASCII, U+0020 to U+007E, and nothing else. That is a stronger promise than "no Nerd Font glyphs", and
+# deliberately: ASCII is the only range that is both always drawable and always one cell wide, and the
+# width half matters as much as the font half, because Get-VisibleWidth counts a meter block, an arrow
+# or a middle dot as one column while a terminal in an East Asian locale may draw any of them as two.
+# So Get-MarkSet answers for the characters that are not icons, and this table answers for the icons:
+#
+#   1. An entry is EMPTY where what follows it already names the segment - the model's own name, a
+#      figure that starts with a dollar sign, a +156 -23 diff, a 5h 24% window, an effort level, a vim
+#      mode, an elapsed time. A stand-in there would be a label on something already labelled. An empty
+#      entry leaves no space behind it, which is Format-Icon's job and not each builder's.
+#   2. Otherwise a CONVENTIONAL ASCII MARK where one already exists for the thing: ~ for home, * for a
+#      dirty tree (the git prompt's own mark), ^ and v for ahead and behind, ! for a conflict, / for a
+#      step down a path, @ for a person, # for a tag.
+#   3. Otherwise the SHORTEST LOWER-CASE ABBREVIATION that names it - ctx, dir, pr, wt, fast, think -
+#      cut to a single initial where the segment's own text already carries the word: b for branch, and
+#      c for cache, whose short form is a bare `warm` or `8m` and would otherwise reach a narrow line
+#      with nothing on it saying what the figure is about.
+#
+# Three of the marks share a line with characters the branch segment writes itself - + for staged, ~ for
+# modified, ? for untracked - so ahead and behind may not be any of those three. The home mark is a ~,
+# which the modified count also uses; the two never read alike because a count is always a mark followed
+# by a digit and the home mark is always followed by a space and a branch name.
+# The chevron is a / rather than a > so it cannot be read as the separator between segments, which is
+# also a >; both sides of it are path parts, so a slash says what the chevron said.
+# A fresh table each call, like Get-IconDefault, so a caller that changes its copy cannot reach the next.
+function Get-IconAscii {
+    return @{
+        model    = ''
+        context  = 'ctx'
+        cache    = 'c'
+        cost     = ''
+        clock    = ''
+        folder   = 'dir'
+        chevron  = '/'
+        branch   = 'b'
+        worktree = 'wt'
+        home     = '~'
+        dirty    = '*'
+        ahead    = '^'
+        behind   = 'v'
+        conflict = '!'
+        pr       = 'pr'
+        lines    = ''
+        limits   = ''
+        fast     = 'fast'
+        think    = 'think'
+        effort   = ''
+        vim      = ''
+        agent    = '@'
+        session  = '#'
+    }
+}
+
+# The characters a line is drawn from that are not icons: the meter's two cells, the minus in front of
+# the removed count, the clock's separator, the two pace arrows, and the tail Get-ClippedText puts on a
+# name it cut. They are not in the icons table because they are not icons - none of them stands for a
+# segment, and none of them is a glyph a user would swap - so they are not config-overridable either.
+# Taken as a parameter rather than read from a script variable so the builders' unit tests can ask for
+# either style without the script's startup having run.
+function Get-MarkSet([string] $Style) {
+    if ($Style -eq 'ascii') {
+        return @{ BarFull = '#'; BarEmpty = '.'; Minus = '-'; Middot = '|'; Steady = '='; Rising = '^'; Ellipsis = '.' }
+    }
+    return @{ BarFull = (G 0x2588); BarEmpty = (G 0x2591); Minus = (G 0x2212); Middot = (G 0xB7); Steady = (G 0x2192); Rising = (G 0x2191); Ellipsis = (G 0x2026) }
+}
+
+# An icon and the text it introduces, joined by the one space between them. THE SPACE LIVES HERE, in one
+# function, rather than as a literal in twenty builders: the ascii table leaves seven entries empty, and
+# an empty icon has to leave no space behind it or every one of those segments starts a cell to the
+# right of where it should. Every site that puts an icon in front of text goes through this; the few
+# that use an icon on its own - the mode badges, the worktree badge with no name, the pencil, the count
+# prefixes - do not, and none of those icons is ever empty.
+function Format-Icon([string] $Icon, [string] $Text) {
+    if (-not $Icon) { return $Text }
+    return "$Icon $Text"
+}
+
 # The Unicode categories an icon code point may not have. A config is not always the user's own - a
 # repository's .claude\statusline.json reaches the icons table too - so a code point is admitted only
 # when the terminal can draw it as one glyph standing by itself. Control and Format cover a bare escape,
@@ -299,7 +381,21 @@ function Read-CodePoint($Value) {
 
 # One glyph per icon name: the built-in code point, or the config's override where its Icons table has
 # one. A plain loop over the table, because this runs before the first line is printed.
+#
+# The ascii style takes the whole table instead and IGNORES THE OVERRIDES, which is the one place this
+# function makes a decision rather than merging. An override is a code point, and a code point that is
+# not ASCII is exactly what a terminal with no Nerd Font cannot draw, so honouring one here would let a
+# config - a repository's own .claude\statusline.json included - take back the promise the style makes
+# about the whole line. `style: ascii` therefore means ascii whatever else the file says, and a user who
+# wants a glyph of their own is asking for a font. The refusal is logged rather than silent, because a
+# setting that is read and then not used is worth being able to see.
 function Get-IconSet($cfg) {
+    if ($cfg.Style -eq 'ascii') {
+        if ($script:diagOn -and $cfg.Icons -is [hashtable] -and $cfg.Icons.Count -gt 0) {
+            Write-StatusDiag "icons: $($cfg.Icons.Count) override(s) ignored under the ascii style"
+        }
+        return Get-IconAscii
+    }
     $set = @{}
     foreach ($e in (Get-IconDefault).GetEnumerator()) {
         $cp = $e.Value
@@ -374,7 +470,7 @@ function Get-VisibleWidth([string] $Text) {
     return $width
 }
 
-$ellipsis = G 0x2026   # what a clipped name ends in
+$ellipsis = G 0x2026   # what a clipped name ends in; the ascii style reassigns it once the config is read
 
 # Plain text clipped to $Width cells, with a one-cell ellipsis when anything was cut. Measured by text
 # element, so a surrogate pair or a combining sequence is never split down the middle. The result is
@@ -486,7 +582,7 @@ function Get-DefaultStatusConfig {
 function Get-StatusConfigKey {
     return @(
         @{ Json = 'layout';  Key = 'Layout';  Kind = 'Enum'; Allowed = @('one', 'two') }
-        @{ Json = 'style';   Key = 'Style';   Kind = 'Enum'; Allowed = @('plain', 'powerline') }
+        @{ Json = 'style';   Key = 'Style';   Kind = 'Enum'; Allowed = @('plain', 'powerline', 'ascii') }
         @{ Json = 'folder';  Key = 'Folder';  Kind = 'Enum'; Allowed = @('repo', 'leaf') }
         @{ Json = 'state';   Key = 'State';   Kind = 'Bool'; Allowed = $null }
         @{ Json = 'links';   Key = 'Links';   Kind = 'Bool'; Allowed = $null }
@@ -966,7 +1062,11 @@ function Format-Line($Segments, [string] $Style) {
         }
         return $sb.ToString()
     }
-    $sep = " `e[90m$([char]::ConvertFromUtf32(0xE0B1))`e[0m "
+    # Plain's soft divider is a Nerd Font glyph like every icon, so the ascii style brings its own. The
+    # powerline branch above is not offered one: its look is a solid block with a background colour
+    # behind it, which no ASCII character can stand in for, so ascii renders like plain and not like it.
+    $divider = if ($Style -eq 'ascii') { '>' } else { [char]::ConvertFromUtf32(0xE0B1) }
+    $sep = " `e[90m$divider`e[0m "
     $parts = foreach ($s in $segs) { $c = $pal.Roles[$s.Role]; "`e[$($c.Sgr)m$($s.Text)`e[0m" }
     return ($parts -join $sep)
 }
@@ -1520,7 +1620,8 @@ $configPath = if ($Config) { $Config } else { Join-Path $PSScriptRoot 'statuslin
 $projectDir = if ($Config) { $null } else { $d.workspace.project_dir }
 $cfg = Read-StatusConfig $configPath $projectDir
 
-# The glyphs the builders and the fallback line use, with the config's icons overrides applied.
+# The glyphs the builders and the fallback line use, with the config's icons overrides applied - or the
+# ascii table, which takes no overrides. Get-IconSet is the one place the style is read for them.
 $icons = Get-IconSet $cfg
 $iconModel = $icons.model
 $iconCtx = $icons.context
@@ -1545,6 +1646,14 @@ $iconEffort = $icons.effort
 $iconVim = $icons.vim
 $iconAgent = $icons.agent
 $iconSession = $icons.session
+
+# The style's non-icon characters reach their builders as an argument, Get-MarkSet $cfg.Style, except
+# this one. Get-ClippedText reads the tail it puts on a name it cut from this script variable, and that
+# function is copied verbatim into subagent-statusline.ps1 with test.ps1 comparing the two as text, so
+# it cannot grow a parameter for the ascii style without dragging the panel script along with it.
+# Reassigning what it reads is how the style reaches it. The default above stands until here, and
+# nothing between the two clips anything: the first call is inside a builder.
+$ellipsis = (Get-MarkSet $cfg.Style).Ellipsis
 
 # The names on each printed line: the config's order for layout one, the two rows for layout two. Settled
 # here, above the first thing that prints, because three readers need it - both fallback lines and the
@@ -1674,7 +1783,7 @@ function Get-ModelSegment($d, $cfg) {
     $model = $d.model.display_name
     if (-not $model) { return $null }
     $role = if (Test-AlarmState $d $cfg) { 'bad' } else { 'model' }
-    $text = "$iconModel $model"
+    $text = Format-Icon $iconModel $model
     if (Test-WideWindow $d.context_window.context_window_size) { $text += ' ' + (Format-Inline 'muted' '1M' $role $cfg.Style) }
     if ($d.exceeds_200k_tokens -is [bool] -and $d.exceeds_200k_tokens) { $text += " $iconConflict" }
     return @{ Name = 'model'; Text = $text; Short = $null; Role = $role; Bold = $true }
@@ -1776,7 +1885,8 @@ function Get-ContextSegment($d, $cfg) {
     # what it always hid.
     if ($role -eq 'ok' -and -not (Test-AlarmLevel $d.context_window.used_percentage $cfg.Alarm.Context) -and (Test-QuietValue $cfg 'context' $pct)) { return $null }
     $filled = [math]::Round($pct / 10)
-    $bar = ((G 0x2588) * $filled) + ((G 0x2591) * (10 - $filled))
+    $mark = Get-MarkSet $cfg.Style
+    $bar = ($mark.BarFull * $filled) + ($mark.BarEmpty * (10 - $filled))
     $used = [double] ($d.context_window.total_input_tokens ?? 0) + [double] ($d.context_window.total_output_tokens ?? 0)
     $counts = if ($used -gt 0 -and $size) { " $(K $used)/$(K $size)" } elseif ($used -gt 0) { " $(K $used)" } else { '' }
     # The cached share hangs off the counts, and both live in Text alone. Short is what stage 1 of the
@@ -1786,7 +1896,7 @@ function Get-ContextSegment($d, $cfg) {
     # would leave the suffix restoring an ok green on a segment the meter has since turned red.
     $share = Get-CacheShare $d.context_window.current_usage
     $tail = $counts + $(if ($null -ne $share) { ' ' + (Format-Inline 'cached' "$share% cached" $role $cfg.Style) } else { '' })
-    $short = "$iconCtx $pct% $bar"
+    $short = Format-Icon $iconCtx "$pct% $bar"
     return @{ Name = 'context'; Text = "$short$tail"; Short = $(if ($tail) { $short } else { $null }); Role = $role; Bold = $false }
 }
 
@@ -1895,18 +2005,18 @@ function Get-CacheSegment($d) {
     $left = Get-CacheSecondsLeft $pc.expires_at
     if ($null -eq $warm -and $null -eq $left) { return $null }
     if ($warm -eq $false -or ($null -ne $left -and $left -le 0)) {
-        return @{ Name = 'cache'; Text = "$iconCache cache cold"; Short = "$iconCache cold"; Role = 'bad'; Bold = $false }
+        return @{ Name = 'cache'; Text = (Format-Icon $iconCache 'cache cold'); Short = (Format-Icon $iconCache 'cold'); Role = 'bad'; Bold = $false }
     }
     $requests = Get-PayloadNumber $pc.requests
     if ($pc.caching_observed -is [bool] -and -not $pc.caching_observed -and $null -ne $requests -and $requests -ge 3) {
-        return @{ Name = 'cache'; Text = "$iconCache cache off"; Short = "$iconCache off"; Role = 'bad'; Bold = $false }
+        return @{ Name = 'cache'; Text = (Format-Icon $iconCache 'cache off'); Short = (Format-Icon $iconCache 'off'); Role = 'bad'; Bold = $false }
     }
     if ($null -eq $left) {
-        return @{ Name = 'cache'; Text = "$iconCache cache warm"; Short = "$iconCache warm"; Role = 'ok'; Bold = $false }
+        return @{ Name = 'cache'; Text = (Format-Icon $iconCache 'cache warm'); Short = (Format-Icon $iconCache 'warm'); Role = 'ok'; Bold = $false }
     }
     $value = Format-MinutesLeft $left
     $role = Get-CacheRole $left
-    return @{ Name = 'cache'; Text = "$iconCache cache $value"; Short = "$iconCache $value"; Role = $role; Bold = $false }
+    return @{ Name = 'cache'; Text = (Format-Icon $iconCache "cache $value"); Short = (Format-Icon $iconCache $value); Role = $role; Bold = $false }
 }
 
 # Session cost in dollars, two decimals, and the change since the previous render in parentheses behind
@@ -1939,7 +2049,7 @@ function Get-CostSegment($d, $cfg, $state) {
     $cost = $d.cost.total_cost_usd
     if ($null -eq $cost) { return $null }
     if (Test-QuietValue $cfg 'cost' $cost) { return $null }
-    $total = "$iconCost `$" + ('{0:N2}' -f [double] $cost)
+    $total = Format-Icon $iconCost ("`$" + ('{0:N2}' -f [double] $cost))
     # Both sides go through Get-CountedNumber, so a figure of any other shape, and a negative on either
     # side, is simply a render with no delta: this arithmetic never decides whether the segment appears
     # at all. The stored total is the side that matters - a hand-edited record holding -100 against a
@@ -2003,16 +2113,16 @@ function Format-Elapsed([object] $ms) {
 # The short form is the elapsed time without the share, and it is the last detail stage one of the
 # fitting sheds. No share means no short form, so a render with nothing to shed costs the fitting nothing,
 # the same way the cost segment's does.
-function Get-ClockSegment($d) {
+function Get-ClockSegment($d, $cfg) {
     $elapsed = Format-Elapsed $d.cost.total_duration_ms
     if (-not $elapsed) { return $null }
-    $text = "$iconClock $elapsed"
+    $text = Format-Icon $iconClock $elapsed
     # Format-Elapsed answered, so the total is a finite number above zero and the division below is safe.
     $total = Get-FiniteNumber $d.cost.total_duration_ms
     $api = Get-FiniteNumber $d.cost.total_api_duration_ms
     $share = ''
     if ($null -ne $api -and $api -gt 0 -and $api -le $total) {
-        $share = ' ' + (G 0xB7) + ' api ' + (Get-WholePercent ($api / $total * 100)) + '%'
+        $share = ' ' + (Get-MarkSet $cfg.Style).Middot + ' api ' + (Get-WholePercent ($api / $total * 100)) + '%'
     }
     return @{ Name = 'clock'; Text = "$text$share"; Short = $(if ($share) { $text } else { $null }); Role = 'dim'; Bold = $false }
 }
@@ -2022,7 +2132,8 @@ function Get-LinesSegment($d, $cfg) {
     $added = [int] ($d.cost.total_lines_added ?? 0)
     $removed = [int] ($d.cost.total_lines_removed ?? 0)
     if ($added -le 0 -and $removed -le 0) { return $null }
-    $text = "$iconLines " + (Format-Inline 'added' "+$added" 'dim' $cfg.Style) + ' ' + (Format-Inline 'removed' ((G 0x2212) + "$removed") 'dim' $cfg.Style)
+    $minus = (Get-MarkSet $cfg.Style).Minus
+    $text = Format-Icon $iconLines ((Format-Inline 'added' "+$added" 'dim' $cfg.Style) + ' ' + (Format-Inline 'removed' ($minus + "$removed") 'dim' $cfg.Style))
     return @{ Name = 'lines'; Text = $text; Short = $null; Role = 'dim'; Bold = $false }
 }
 
@@ -2050,7 +2161,7 @@ function TimeLeft([object] $epoch) {
 # $Now is the current epoch and defaults to the clock, so no caller passes one. It exists for the tests:
 # an epoch derived from an earlier reading of the clock is one second out whenever the second ticks in
 # between, which is enough to miss both of those limits by exactly the margin a regression would move.
-function Get-PaceArrow([object] $resetsAt, [object] $used, [long] $Now = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) {
+function Get-PaceArrow([object] $resetsAt, [object] $used, [long] $Now = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()), [string] $Style) {
     $reset = Get-FiniteNumber $resetsAt
     $pct = Get-FiniteNumber $used
     if ($null -eq $reset -or $null -eq $pct -or $pct -le 0) { return $null }
@@ -2059,8 +2170,10 @@ function Get-PaceArrow([object] $resetsAt, [object] $used, [long] $Now = ([DateT
     $projected = $pct * 18000 / (18000 - $left)
     # Over names the state the up arrow draws: this rate overruns the window. The quiet guard reads it
     # rather than the glyph, because it is the warning that must survive a threshold, not the character.
-    if ($projected -le 100) { return @{ Arrow = (G 0x2192); Over = $false; Red = $false } }
-    return @{ Arrow = (G 0x2191); Over = $true; Red = ($projected -ge 120) }
+    # $Style only picks the character; Over and Red are the same figures whatever is drawn for them.
+    $mark = Get-MarkSet $Style
+    if ($projected -le 100) { return @{ Arrow = $mark.Steady; Over = $false; Red = $false } }
+    return @{ Arrow = $mark.Rising; Over = $true; Red = ($projected -ge 120) }
 }
 
 # Rate limits: 5-hour and 7-day usage, plus time until the 5-hour window resets, and the spend limit when
@@ -2104,7 +2217,7 @@ function Get-LimitsSegment($d, $cfg) {
         if ($row[2]) {
             $tail = TimeLeft $row[1].resets_at
             # The raw percentage, not the rounded one: the projection is the arrow's whole point.
-            $pace = Get-PaceArrow $row[1].resets_at $row[1].used_percentage
+            $pace = Get-PaceArrow $row[1].resets_at $row[1].used_percentage -Style $cfg.Style
             if ($pace) { $paceAt = $bits.Count; $paceHead = $bit; $paceTail = $tail }
         }
         $bits.Add("$bit$tail")
@@ -2135,8 +2248,8 @@ function Get-LimitsSegment($d, $cfg) {
         $arrow = if ($pace.Red) { Format-Inline 'removed' $pace.Arrow $role $cfg.Style } else { $pace.Arrow }
         $bits[$paceAt] = "$paceHead $arrow$paceTail"
     }
-    $text = "$iconLimit $($bits -join ' ')"
-    $short = "$iconLimit " + $(if ($role -eq 'ok') { $first } else { $top })
+    $text = Format-Icon $iconLimit ($bits -join ' ')
+    $short = Format-Icon $iconLimit $(if ($role -eq 'ok') { $first } else { $top })
     if ($short -eq $text) { $short = $null }
     return @{ Name = 'limits'; Text = $text; Short = $short; Role = $role; Bold = $false }
 }
@@ -2161,16 +2274,16 @@ function Get-BadgesSegment($d) {
     if ($d.fast_mode -eq $true) { $badges.Add($iconFast) }
     if ($d.thinking.enabled -eq $true) { $badges.Add($iconThink) }
     $effort = $d.effort.level
-    if ($effort -and $effort -ne $defaultEffort) { $badges.Add("$iconEffort $effort") }
+    if ($effort -and $effort -ne $defaultEffort) { $badges.Add((Format-Icon $iconEffort $effort)) }
     $vim = $d.vim.mode
-    if ($vim) { $badges.Add("$iconVim $vim") }
+    if ($vim) { $badges.Add((Format-Icon $iconVim $vim)) }
     $modeCount = $badges.Count
     $modes = if ($modeCount -gt 0) { $badges -join ' ' } else { $null }
     if (Test-PayloadText $d.agent.name) {
-        $badges.Add("$iconAgent " + (Get-ClippedText (Format-PayloadText ([string] $d.agent.name)) $badgeNameCells))
+        $badges.Add((Format-Icon $iconAgent (Get-ClippedText (Format-PayloadText ([string] $d.agent.name)) $badgeNameCells)))
     }
     if (Test-PayloadText $d.session_name) {
-        $badges.Add("$iconSession " + (Get-ClippedText (Format-PayloadText ([string] $d.session_name)) $badgeNameCells))
+        $badges.Add((Format-Icon $iconSession (Get-ClippedText (Format-PayloadText ([string] $d.session_name)) $badgeNameCells)))
     }
     if ($badges.Count -eq 0) { return $null }
     $short = if ($modes -and $badges.Count -gt $modeCount) { $modes } else { $null }
@@ -2250,7 +2363,7 @@ function Get-PrSegment($d, $cfg) {
     $state = if (Test-PayloadText $pr.review_state) { [regex]::Replace($pr.review_state, '[_\s]+', ' ').Trim().ToLowerInvariant() } else { '' }
     $role = switch ($state) { 'approved' { 'ok' } 'changes requested' { 'bad' } default { 'dim' } }
     $url = if (Test-LinkWanted $cfg) { $pr.url } else { $null }
-    return @{ Name = 'pr'; Text = (Format-Link $url "$iconPr #$number"); Short = $null; Role = $role; Bold = $false }
+    return @{ Name = 'pr'; Text = (Format-Link $url (Format-Icon $iconPr "#$number")); Short = $null; Role = $role; Bold = $false }
 }
 
 # With workspace.repo in the payload and the folder config at repo, the text is owner/name, followed by a
@@ -2273,7 +2386,7 @@ function Get-FolderSegment($d, $cfg) {
     $owner = $d.workspace.repo.owner
     $name = $d.workspace.repo.name
     if ($cfg.Folder -eq 'leaf' -or -not (Test-PayloadText $owner) -or -not (Test-PayloadText $name)) {
-        return @{ Name = 'folder'; Text = (Format-Link $link "$iconFolder $leaf"); Short = $null; Role = 'folder'; Bold = $false }
+        return @{ Name = 'folder'; Text = (Format-Link $link (Format-Icon $iconFolder $leaf)); Short = $null; Role = 'folder'; Bold = $false }
     }
     $owner = Format-PayloadText ([string] $owner)
     $name = Format-PayloadText ([string] $name)
@@ -2281,8 +2394,8 @@ function Get-FolderSegment($d, $cfg) {
     $here = ($dir -replace '/', '\').TrimEnd('\')
     $there = ($root -replace '/', '\').TrimEnd('\')
     $text = "$owner/$name"
-    if ($root -and $here -ne $there) { $text += " $iconChevron $leaf" }
-    return @{ Name = 'folder'; Text = (Format-Link $link "$iconFolder $text"); Short = (Format-Link $link "$iconFolder $name"); Role = 'folder'; Bold = $false }
+    if ($root -and $here -ne $there) { $text += ' ' + (Format-Icon $iconChevron $leaf) }
+    return @{ Name = 'folder'; Text = (Format-Link $link (Format-Icon $iconFolder $text)); Short = (Format-Link $link (Format-Icon $iconFolder $name)); Role = 'folder'; Bold = $false }
 }
 
 # A payload value as a count, or $null when it is not one: a whole number that fits an Int32. ConvertFrom-Json
@@ -2412,13 +2525,13 @@ function Get-BranchSegment($d, $cfg) {
     $isMain = $info.Branch -in @('main', 'master')
     $icon = if ($isMain) { $iconHome } else { $iconBranch }
     $role = if ($info.Dirty) { 'warn' } else { 'branch' }
-    $name = "$icon $($info.Branch)"
+    $name = Format-Icon $icon $info.Branch
     # The worktree badge, when the session is in one: the fork glyph and the name, straight after the
     # branch name, so the two halves of "which checkout is this" read together and the counts and the
     # pencil keep their places behind them. It is not in Short, so a narrow line sheds it with the
     # counts, and it is not in the role either: a worktree is never the reason a colour changes.
     $worktree = Get-WorktreeName $d
-    $badge = if ($null -eq $worktree) { '' } elseif ($worktree) { " $iconWorktree $worktree" } else { " $iconWorktree" }
+    $badge = if ($null -eq $worktree) { '' } elseif ($worktree) { ' ' + (Format-Icon $iconWorktree $worktree) } else { " $iconWorktree" }
     $counts = ''
     # Record key, prefix and inline colour role for each count, in the order they render.
     foreach ($row in @(@('Ahead', $iconAhead, 'track'), @('Behind', $iconBehind, 'track'), @('Staged', '+', 'track'),
@@ -2481,8 +2594,15 @@ if ($taskbar) { Write-Host $taskbar -NoNewline }
 # rather than up beside $modelWanted: everything between the two is function definitions, so the move
 # costs nothing, and the two lines that have to answer the same config the same way can now be read
 # together.
+# It carries the style too, because the glyph it prints comes from the same set every builder reads: the
+# ascii style leaves the model stand-in empty, so this line is the bare word `claude` with no space in
+# front of it, which is what Format-Icon is here for.
+# THE COLOUR IS STILL A RAW 36 AND NOT A PALETTE ROLE, deliberately. The ascii style changes what is
+# drawn, never what colour it is drawn in, and the model role is a bold cyan, 1;36 - so reaching for the
+# palette here would change the bytes of this line in all three styles for a feature that is about
+# glyphs. It is a decision left where #42 left it, not one inherited by accident.
 if (-not $payloadOk) {
-    if ($modelWanted) { Write-Host (C '36' "$iconModel claude") }
+    if ($modelWanted) { Write-Host (C '36' (Format-Icon $iconModel 'claude')) }
     exit 0
 }
 
@@ -2517,7 +2637,7 @@ foreach ($rec in Get-SegmentRegistry) {
 # figures whatever the config chose to put on screen, and the state file is where the next render reads
 # them back from, so a display choice must not throw the sample away or skip the sweep. Falling through
 # is silent with no segments: Get-FittedLine returns $null for an empty line and the loop prints nothing.
-if ($segments.Count -eq 0 -and $modelWanted) { Write-Host (C '36' "$iconModel claude") }
+if ($segments.Count -eq 0 -and $modelWanted) { Write-Host (C '36' (Format-Icon $iconModel 'claude')) }
 
 # Claude Code sets COLUMNS before running the script. Leave one column free to avoid the pending-wrap glitch.
 $width = $null
