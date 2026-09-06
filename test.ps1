@@ -197,7 +197,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -3012,6 +3012,25 @@ $seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500) $quietBands
 Confirm-Equal $seg.Role 'warn' 'context cached: the role is still read from the normalised percentage'
 Confirm-True $seg.Text.EndsWith("92% cached$esc[33m") 'context cached: a warn meter hands its own colour back after the suffix'
 
+# used_percentage used to be a null check and a bare Get-WholePercent call, typed [double], which reads
+# like a guard but is not one under this script's SilentlyContinue: a string survives the failed cast
+# as that literal string and prints "abc%" with an empty bar, and a boolean survives as 1 or 0 - a
+# figure Test-AlarmState, which reads Get-FiniteNumber directly, would disagree is a percentage at all
+# (code review, the #45/#44 follow-up flagged in the guards batch report). Get-PayloadPercent now
+# guards it the same way Get-LimitsSegment guards used_percentage.
+foreach ($bad in @('"abc"', 'true', 'false', '[]', '{}')) {
+    Confirm-Equal (Get-ContextSegment (Get-JsonPayload 'context_window' ('{"used_percentage":' + $bad + '}')) $bandCfg) $null "context: used_percentage $bad omits the segment rather than printing it literally"
+}
+# The boolean case named directly: true must not coerce to 1% the way it used to, confirmed by its
+# absence from the segment (the loop above already proves no segment at all, so nothing to compare).
+Confirm-Equal (Get-ContextSegment (Get-JsonPayload 'context_window' '{"used_percentage":true}') $bandCfg) $null 'context: a boolean used_percentage does not coerce to 1%'
+# total_input_tokens and total_output_tokens had the identical [double]-cast hazard, found while fixing
+# used_percentage in the same function: a hostile value now counts as zero rather than corrupting the
+# token counts silently.
+$hostileUsage = Get-ContextSegment (Get-JsonPayload 'context_window' '{"used_percentage":40,"total_input_tokens":"abc","total_output_tokens":5000,"context_window_size":200000}') $bandCfg
+Confirm-True ($hostileUsage.Text.Contains('5.0k')) 'context: a hostile total_input_tokens counts as zero rather than corrupting the total'
+Confirm-True (-not $hostileUsage.Text.Contains('abc')) 'context: a hostile total_input_tokens never reaches the rendered line'
+
 Write-Host '== unit: cache' -ForegroundColor Cyan
 # The prompt cache warmth segment, and the two helpers under it. This is NOT Get-CacheShare, which the
 # context section above covers: that one reads context_window.current_usage and gives the share of this
@@ -3233,9 +3252,13 @@ Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload 0.02) $bandCfg)) 'cost
 # dollar figure, so an alarm that is firing elsewhere on the line leaves this cutoff exactly as it was.
 $quiet1Alarm = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 1.0; context = 0.0; limits = 0.0 }; Alarm = @{ Context = 1; Limits = 1 } }
 Confirm-Equal (Get-CostSegment (Get-CostPayload 0.4312) $quiet1Alarm) $null 'cost quiet 1: an alarm firing elsewhere does not keep a 43-cent cost'
-# A cost that is not a number cannot be compared, so the guard stands aside and the builder does what
-# it always did with it, which is to format whatever converts.
-Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload '0.50') $quiet1)) 'cost quiet 1: a string cost is not a figure the guard can read, so it is not hidden'
+# A cost that is not a number at all - a string, even a numeric-looking one - omits the whole segment
+# now (code review, the #45/#44 follow-up: total_cost_usd used to reach a bare [double] cast on
+# display with no real guard in front of it, so a numeric string like "0.50" rendered fine and a
+# non-numeric one or a boolean did too, coercing to a made-up figure). Get-FiniteNumber draws the same
+# line here that it already draws for every other payload number in the script: a JSON number is a
+# figure, a JSON string is not, whatever it contains.
+Confirm-Equal (Get-CostSegment (Get-CostPayload '0.50') $quiet1) $null 'cost: a string cost, even a numeric-looking one, omits the segment rather than being read as a figure'
 
 # The per-turn delta: the change since the total the previous render wrote into the state file, in
 # parentheses behind the total, and only when it is worth at least a cent. Every expected figure here is
@@ -3293,6 +3316,38 @@ Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState 2
 # called boring is still boring, and a segment the guard hides has no delta to show.
 Confirm-Equal (Get-CostSegment (Get-CostPayload 0.4312) $quiet1 (Get-CostState 0.1)) $null 'cost delta: the quiet guard still hides the whole segment'
 Confirm-Equal (Get-CostSegment ([pscustomobject]@{}) $quietOff (Get-CostState 0.95)) $null 'cost delta: no cost object is still no segment'
+
+# total_cost_usd used to be a null check and a bare [double] cast on display, which reads like a guard
+# but is not one under this script's SilentlyContinue: a boolean survives the failed cast as 1.0 or 0.0
+# and prints a confident "$1.00" (code review, the #45/#44 follow-up flagged in the guards batch
+# report - the same shape as Get-ContextSegment's used_percentage). Get-FiniteNumber now guards it.
+foreach ($bad in @('abc', $true, $false, @(1.5), [pscustomobject]@{ v = 1 })) {
+    Confirm-Equal (Get-CostSegment (Get-CostPayload $bad) $quietOff) $null "cost: total_cost_usd '$bad' omits the segment rather than printing a made-up figure"
+}
+
+Write-Host '== unit: lines' -ForegroundColor Cyan
+# Get-LinesSegment had no direct unit test at all before this: it was only exercised through the
+# sample render matrix. total_lines_added and total_lines_removed used to be a bare [int] cast on a
+# null-coalesce, which reads like a guard but is not one under this script's SilentlyContinue: a
+# hostile value survives the failed cast as an empty string and prints "+ " with nothing after it
+# (code review, the #45/#44 follow-up flagged in the guards batch report). Get-PayloadNumber now
+# guards both counts, treating a missing or unusable count as zero either way, the same as "??"
+# already did for a missing one. Local icon and mark copies, the same values statusline.ps1 uses and
+# the ones this file itself defines again later for the sample matrix - checked ordinally against
+# each other in the drift sense that matters here: both call the same constant.
+$iconLines = [char]::ConvertFromUtf32(0xF121)
+$minus = [char]::ConvertFromUtf32(0x2212)
+function Get-LinesPayload($Added, $Removed) { return [pscustomobject]@{ cost = [pscustomobject]@{ total_lines_added = $Added; total_lines_removed = $Removed } } }
+$linesCfg = @{ Style = 'plain' }
+$seg = Get-LinesSegment (Get-LinesPayload 156 23) $linesCfg
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconLines +156 ${minus}23" 'lines: both counts present, plain text'
+Confirm-Equal (Get-LinesSegment (Get-LinesPayload 0 0) $linesCfg) $null 'lines: both counts zero omits the segment'
+Confirm-Equal (Get-LinesSegment ([pscustomobject]@{}) $linesCfg) $null 'lines: no cost object at all omits the segment'
+foreach ($bad in @('abc', $true, $false, 1.5, @(3), [pscustomobject]@{ v = 1 })) {
+    $seg = Get-LinesSegment (Get-LinesPayload $bad 3) $linesCfg
+    Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconLines +0 ${minus}3" "lines: a hostile total_lines_added of '$bad' counts as zero rather than printing it literally"
+}
+Confirm-Equal (Get-LinesSegment (Get-LinesPayload 'abc' 0) $linesCfg) $null 'lines: a hostile added with a zero removed omits the segment (both count as zero)'
 
 Write-Host '== unit: clock' -ForegroundColor Cyan
 # Format-Elapsed alone: the three forms, and the boundaries between them. The minutes are zero-padded
@@ -3668,32 +3723,34 @@ Confirm-Equal (Get-ModelSegment ([pscustomobject]@{ model = [pscustomobject]@{ d
 # display_name is payload text, found unguarded while auditing #61's badges fix: it went straight from
 # the payload to the rendered line with only an "-not $model" check, which a number or a boolean would
 # pass and a control character or a right-to-left override would sail through unstripped. Same pair as
-# every other payload name in the script now, but with one difference from every other guarded field
-# (Codex review on #61's own PR): this segment is documented and tested as the one the alarm rides on
-# because the fitting code never drops it, and the zero-segment "claude" stand-in only fires when EVERY
-# segment is empty, so returning $null here for a hostile name would have let that one payload field
-# silence the alarm on a render where the context or limits segment still gets through. An unusable
-# name falls back to "claude" - the same word - instead, so the segment, its role and its alarm colour
-# all survive. That fallback is for a display_name that IS present but fails the guard; a payload
-# naming no model at all - no model object, or one with no display_name key - is the different case
-# the outer zero-segment stand-in exists for, and still omits this segment so that mechanism still
-# runs (covered separately below, and by the render: zero-segment fallback suite).
+# every other payload name in the script now. Unlike every other guarded field, an unusable name here
+# falls back to the word "claude" rather than omitting the segment, whatever shape "unusable" takes -
+# present but hostile, present but the wrong type, or not present at all (code review on #61's own PR:
+# the badges builder can drop a badge and lose nothing, but this is the one segment the alarm rides on,
+# so treating "no name" as a reason to drop it here would have made a payload with no model.display_name
+# at all - or a hostile one, no more or less legitimate a payload shape - the one way to silence a real
+# alarm on a render where the context or limits segment still gets through).
 foreach ($bad in @('""', '"   "', '12', 'true', '[]', '{}')) {
     Confirm-Equal (Get-ModelSegment (('{"model":{"display_name":' + $bad + '}}') | ConvertFrom-Json) $plainCfg).Text "$iconModel claude" "model: display_name $bad falls back to claude"
 }
-Confirm-Equal (Get-ModelSegment ('{"model":{"display_name":null}}' | ConvertFrom-Json) $plainCfg) $null 'model: an explicit null display_name omits the segment, same as the field being absent'
-Confirm-Equal (Get-ModelSegment ('{}' | ConvertFrom-Json) $plainCfg) $null 'model: no model object at all omits the segment'
-Confirm-Equal (Get-ModelSegment ('{"model":{}}' | ConvertFrom-Json) $plainCfg) $null 'model: a model object with no display_name key omits the segment'
+Confirm-Equal (Get-ModelSegment ('{"model":{"display_name":null}}' | ConvertFrom-Json) $plainCfg).Text "$iconModel claude" 'model: an explicit null display_name falls back to claude'
+Confirm-Equal (Get-ModelSegment ('{}' | ConvertFrom-Json) $plainCfg).Text "$iconModel claude" 'model: no model object at all falls back to claude'
+Confirm-Equal (Get-ModelSegment ('{"model":{}}' | ConvertFrom-Json) $plainCfg).Text "$iconModel claude" 'model: a model object with no display_name key falls back to claude'
 Confirm-Equal (Get-ModelSegment ('{"model":{"display_name":"\u001b[31mred"}}' | ConvertFrom-Json) $plainCfg).Text "$iconModel claude" 'model: a name carrying an escape falls back to claude'
 Confirm-Equal (Get-ModelSegment ('{"model":{"display_name":"\u202e"}}' | ConvertFrom-Json) $plainCfg).Text "$iconModel claude" 'model: a name of nothing but a format character falls back to claude'
 $seg = Get-ModelSegment ('{"model":{"display_name":"Fa\u202eble 5.1"}}' | ConvertFrom-Json) $plainCfg
-Confirm-True ([string]::Equals($seg.Text, "$iconModel Fable 5.1", [System.StringComparison]::Ordinal)) 'model: a format character is stripped out of the name rather than refusing it'
-# The alarm carrier survives a hostile name: a real 95% context alongside an unusable display_name
-# still turns the segment - now reading "claude" - red, exactly as it would with a good name.
-# Built inline rather than with Get-ModelAlarmConfig, which is not defined until further down the file.
-$hostileNameAlarm = Get-ModelSegment ('{"model":{"display_name":"\u001b[31mred"},"context_window":{"used_percentage":95}}' | ConvertFrom-Json) @{ Style = 'plain'; Alarm = @{ Context = 90; Limits = 0 } }
-Confirm-Equal $hostileNameAlarm.Text "$iconModel claude" 'model: alarm survives a hostile name: text is the claude fallback'
-Confirm-Equal $hostileNameAlarm.Role 'bad' 'model: alarm survives a hostile name: role is still bad'
+Confirm-Equal $seg.Text "$iconModel Fable 5.1" 'model: a format character is stripped out of the name rather than refusing it'
+# The alarm carrier survives every one of the "no usable name" shapes, not just a hostile one: a real
+# 95% context figure still turns the segment - reading "claude" - red, whether the payload sent a
+# hostile display_name, no display_name key, no model object, or nothing at all.
+foreach ($case in @(
+        @{ Label = 'a hostile display_name'; Json = '{"model":{"display_name":"\u001b[31mred"},"context_window":{"used_percentage":95}}' }
+        @{ Label = 'a model object with no display_name key'; Json = '{"model":{},"context_window":{"used_percentage":95}}' }
+        @{ Label = 'no model object at all'; Json = '{"context_window":{"used_percentage":95}}' })) {
+    $withAlarm = Get-ModelSegment ($case.Json | ConvertFrom-Json) @{ Style = 'plain'; Alarm = @{ Context = 90; Limits = 0 } }
+    Confirm-Equal $withAlarm.Text "$iconModel claude" "model: alarm survives $($case.Label): text is the claude fallback"
+    Confirm-Equal $withAlarm.Role 'bad' "model: alarm survives $($case.Label): role is still bad"
+}
 # The alarm changes the role and nothing else. Get-ModelPayload sits at 65%, so the alarm is decided by
 # the config here: 66 fires, 65 fires (at or above), 64 does not, and the text is the same either way.
 function Get-ModelAlarmConfig($At, [string] $Style = 'plain') { return @{ Style = $Style; Alarm = @{ Context = $At; Limits = 0 } } }
@@ -3813,34 +3870,52 @@ Confirm-True ($null -eq (Get-PaceArrow 4102444800 80)) 'pace on the default cloc
 
 Write-Host '== unit: TimeLeft' -ForegroundColor Cyan
 # TimeLeft used to cast $epoch straight to [long] and hand it to DateTimeOffset::FromUnixTimeSeconds
-# unguarded (#44): a non-numeric string threw at the cast, a numerically valid but absurd value such as
-# 1e18 threw out of FromUnixTimeSeconds, and either throw took the whole limits segment builder down
-# with it rather than just the countdown. Get-FiniteNumber and a range check ahead of the construction
-# fix both; the empty string is what every failure now answers with, so the rest of the segment survives.
-Confirm-Equal (TimeLeft $null) '' 'TimeLeft: no epoch at all is empty'
-foreach ($bad in @('soon', $true, $false, [double]::NaN, [double]::PositiveInfinity, [double]::NegativeInfinity, @(1700000000), [pscustomobject]@{ v = 1 })) {
-    Confirm-Equal (TimeLeft $bad) '' "TimeLeft: $($bad.GetType().Name) '$bad' is not a usable epoch"
+# unguarded (#44): a non-numeric string threw at the cast, and a numerically valid but absurd value
+# such as 1e18 threw out of FromUnixTimeSeconds, either taking the whole limits segment builder down
+# with it rather than just the countdown. Code review on #44's own fix: constructing a date and then
+# range-checking it bolted a second mechanism onto a hazard Get-PaceArrow and Get-CacheSecondsLeft
+# already solve with whole-seconds arithmetic against a passed-in $Now, so TimeLeft now takes the same
+# shape. $left = $sec - $Now cannot throw the way constructing a date can, the 60-second floor and the
+# 31536000-second (365-day) ceiling are the one range check bounding both a hostile epoch and the
+# countdown cap at once, and TimeSpan::FromSeconds afterwards is always given a value it can hold.
+# $timeLeftClock is fixed rather than read from the live clock, so every case below pins an exact
+# string rather than a shape: real time only moves the answer in the direction that would make a
+# borderline case fail sooner, so a case that holds here holds when the script reads its own clock too.
+$timeLeftClock = 1700000000
+Confirm-Equal (TimeLeft $null $timeLeftClock) '' 'TimeLeft: no epoch at all is empty'
+foreach ($bad in @('soon', [double]::NaN, [double]::PositiveInfinity, [double]::NegativeInfinity, @(1700000000), [pscustomobject]@{ v = 1 })) {
+    Confirm-Equal (TimeLeft $bad $timeLeftClock) '' "TimeLeft: $($bad.GetType().Name) '$bad' is not a usable epoch"
 }
-# Numerically valid, but outside a date DateTimeOffset can hold at all - what used to throw straight out
-# of FromUnixTimeSeconds and take the segment builder with it.
-Confirm-Equal (TimeLeft 1e18) '' 'TimeLeft: an epoch far outside DateTimeOffset range is empty rather than throwing'
-Confirm-Equal (TimeLeft (-1e18)) '' 'TimeLeft: a large negative epoch is empty rather than throwing'
-# Just inside and just outside DateTimeOffset's own Unix-seconds bounds, so the range check is pinned to
-# the boundary it actually reads rather than to a round number nearby.
-Confirm-Equal (TimeLeft ([DateTimeOffset]::MaxValue.ToUnixTimeSeconds() + 1)) '' 'TimeLeft: one second past the maximum representable epoch is empty'
-Confirm-Equal (TimeLeft ([DateTimeOffset]::MinValue.ToUnixTimeSeconds() - 1)) '' 'TimeLeft: one second before the minimum representable epoch is empty'
-Confirm-Equal (TimeLeft 1700000000) '' 'TimeLeft: an epoch long past is empty'
-Confirm-Equal (TimeLeft ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 30)) '' 'TimeLeft: under a minute away is empty, not a countdown to zero'
-$hoursLeft = TimeLeft ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000)
-Confirm-True ($hoursLeft -match '^ \(\d+h\d\dm\)$') 'TimeLeft: two and a half hours away is the h{mm}m form'
-# Beyond the one-year cap (#44's decision): a reset that far out is not a countdown anyone is pacing
-# against, so it renders nothing rather than a five-digit day count like sample 06 used to show.
-$farDays = TimeLeft ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + (400 * 86400))
-Confirm-Equal $farDays '' 'TimeLeft: 400 days out is beyond the one-year cap and renders nothing'
-$nearDays = TimeLeft ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + (300 * 86400))
-Confirm-True ($nearDays -match '^ \(\d+d\)$') 'TimeLeft: 300 days out is inside the cap and still renders a day countdown'
-$capDays = TimeLeft (4102444800)
-Confirm-Equal $capDays '' 'TimeLeft: sample 06''s 2100 epoch is now beyond the one-year cap and renders nothing'
+# $true and $false are pinned against a $Now of -60 rather than $timeLeftClock: at $timeLeftClock
+# either boolean is billions of seconds in the past whether or not Get-FiniteNumber's own boolean
+# exclusion is doing anything, so the same assertion against $timeLeftClock would pass even with that
+# exclusion removed and prove nothing. Against -60, a $true read as the number 1 would be 61 seconds
+# out and a $false read as 0 would be exactly the 60-second floor - both comfortably inside the window
+# this function renders a countdown for - so only the boolean exclusion keeps them empty here.
+Confirm-Equal (TimeLeft $true (-60)) '' 'TimeLeft: a boolean true is not a usable epoch, even where the number 1 would render'
+Confirm-Equal (TimeLeft $false (-60)) '' 'TimeLeft: a boolean false is not a usable epoch, even where the number 0 would render'
+# Numerically valid, but far enough outside the 365-day ceiling that the old DateTimeOffset range
+# check would have had to catch it separately; the ceiling alone now does, before any date is built.
+Confirm-Equal (TimeLeft 1e18 $timeLeftClock) '' 'TimeLeft: an epoch far outside DateTimeOffset range is empty rather than throwing'
+Confirm-Equal (TimeLeft (-1e18) $timeLeftClock) '' 'TimeLeft: a large negative epoch is empty rather than throwing'
+Confirm-Equal (TimeLeft 1700000000 $timeLeftClock) '' 'TimeLeft: an epoch at the clock itself is empty (zero seconds left)'
+Confirm-Equal (TimeLeft ($timeLeftClock - 100) $timeLeftClock) '' 'TimeLeft: an epoch in the past is empty'
+# The 60-second floor, pinned on both sides: 59 is empty, 60 is the shortest countdown this ever prints.
+Confirm-Equal (TimeLeft ($timeLeftClock + 59) $timeLeftClock) '' 'TimeLeft: 59 seconds out is empty, not a countdown to zero'
+Confirm-Equal (TimeLeft ($timeLeftClock + 60) $timeLeftClock) ' (0h01m)' 'TimeLeft: exactly 60 seconds out is the shortest h{mm}m form'
+Confirm-Equal (TimeLeft ($timeLeftClock + 9000) $timeLeftClock) ' (2h30m)' 'TimeLeft: two and a half hours out is the h{mm}m form, exactly'
+# The 48-hour edge, pinned on both sides: one second under is still hours and minutes, the boundary
+# itself and beyond it are days. A mutation that formats the day count from TotalHours instead of
+# TotalDays would print (47d) here instead of (2d) - caught by name.
+Confirm-Equal (TimeLeft ($timeLeftClock + 172799) $timeLeftClock) ' (47h59m)' 'TimeLeft: one second under 48 hours is still the h{mm}m form'
+Confirm-Equal (TimeLeft ($timeLeftClock + 172800) $timeLeftClock) ' (2d)' 'TimeLeft: exactly 48 hours out is the day form, exactly 2 days'
+Confirm-Equal (TimeLeft ($timeLeftClock + (300 * 86400)) $timeLeftClock) ' (300d)' 'TimeLeft: 300 days out is inside the cap, pinned exactly'
+# The 365-day cap (#44's decision), pinned on both sides: the boundary itself still renders - a year
+# out is still something to pace against - and one second past it renders nothing rather than a
+# five-digit day count like sample 06 used to show.
+Confirm-Equal (TimeLeft ($timeLeftClock + 31536000) $timeLeftClock) ' (365d)' 'TimeLeft: exactly 365 days out still renders, at the cap boundary'
+Confirm-Equal (TimeLeft ($timeLeftClock + 31536001) $timeLeftClock) '' 'TimeLeft: one second past the 365-day cap renders nothing'
+Confirm-Equal (TimeLeft 4102444800 $timeLeftClock) '' "TimeLeft: sample 06's 2100 epoch is far beyond the one-year cap and renders nothing"
 
 Write-Host '== unit: limits' -ForegroundColor Cyan
 # Resets in the past keep TimeLeft empty, so the text is deterministic. Every call passes a config,
@@ -4040,10 +4115,11 @@ Confirm-True ($null -eq (Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"fiv
 Confirm-True ($null -eq (Get-LimitsSegment ([pscustomobject]@{}) $bandCfg)) 'limits: missing rate_limits'
 
 # #45: used_percentage used to go through only a null check and then a cast a string throws on and a
-# boolean sails through (`$true` coerces to 1 and prints "5h 1%"). Get-FiniteNumber is the same gate
-# every other payload number in the script uses, and the decision made in #45 is that an unusable
-# figure omits THAT figure alone, not the whole segment - the same per-row `continue` a missing
-# used_percentage already took, now reached by more than just $null.
+# boolean sails through (`$true` coerces to 1 and prints "5h 1%"). Get-FiniteNumber is the shared gate
+# every payload number in the script uses now - code review turned up three more that did not
+# (Get-ContextSegment, Get-CostSegment, Get-LinesSegment; see their own unit tests) - and the decision
+# made in #45 is that an unusable figure omits THAT figure alone, not the whole segment - the same
+# per-row `continue` a missing used_percentage already took, now reached by more than just $null.
 foreach ($bad in @('"50"', 'true', 'false', 'null', '[]', '{}')) {
     $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":' + $bad + '},"seven_day":{"used_percentage":41,"resets_at":1700000000}}')) $bandCfg
     Confirm-Equal $seg.Text "$iconLimit 7d 41%" "limits: a 5h used_percentage of $bad is omitted, 7d still renders"
@@ -4202,6 +4278,15 @@ Confirm-Equal $b.Short $null 'badges: a session name alone has no short form'
 $b = Get-BadgesSegment ('{"fast_mode":true,"vim":{"mode":"INSERT"}}' | ConvertFrom-Json)
 Confirm-Equal $b.Text "$iconFast $iconVim INSERT" 'badges: modes alone render as they always did'
 Confirm-Equal $b.Short $null 'badges: with no identity badges there is nothing to shed'
+# fast_mode and thinking.enabled are booleans, checked with the same "-is [bool] -and" type test
+# exceeds_200k_tokens uses: PowerShell's own -eq is not a type check, so a plain "-eq $true" would
+# have read the string "true" or the number 1 as the mode too, and neither is what Claude Code sends
+# (code review finding on #61: README claimed all six badge fields share one guard, which these two
+# never did).
+foreach ($odd in @('"true"', '1')) {
+    Confirm-Equal (Get-BadgesSegment (('{"fast_mode":' + $odd + '}') | ConvertFrom-Json)) $null "badges: fast_mode $odd is not the boolean true"
+    Confirm-Equal (Get-BadgesSegment (('{"thinking":{"enabled":' + $odd + '}}') | ConvertFrom-Json)) $null "badges: thinking.enabled $odd is not the boolean true"
+}
 $allSix = '{"fast_mode":true,"thinking":{"enabled":true},"effort":{"level":"xhigh"},"vim":{"mode":"NORMAL"},"agent":{"name":"reviewer"},"session_name":"nightly audit"}'
 $b = Get-BadgesSegment ($allSix | ConvertFrom-Json)
 Confirm-Equal $b.Text "$iconFast $iconThink $iconEffort xhigh $iconVim NORMAL $iconAgent reviewer $iconSession nightly audit" 'badges: fast, thinking, effort, vim, agent, session in that order'
@@ -4248,12 +4333,14 @@ Confirm-True ([string]::Equals($b.Text, "$iconAgent octo $iconSession quiet", [S
 Confirm-True (-not $b.Text.Contains([string][char]0x202E)) 'badges: no right-to-left override survives into the agent badge'
 Confirm-True (-not $b.Text.Contains([string][char]0x2066)) 'badges: no directional isolate survives into the session badge'
 $b = Get-BadgesSegment ('{"vim":{"mode":"NOR\u2066MAL"},"effort":{"level":"xh\u202eigh"}}' | ConvertFrom-Json)
-Confirm-True ([string]::Equals($b.Text, "$iconEffort xhigh $iconVim NORMAL", [System.StringComparison]::Ordinal)) 'badges: the format characters are stripped out of the effort and vim badges'
-# $effort -ne $defaultEffort used to be PowerShell's own -ne, which compares by culture and is also
-# case-insensitive: "HIGH" -eq "high" is $true there, so an upper-case effort level would have been
-# read as the default and swallowed. The ordinal fix (#61) tells them apart.
-$b = Get-BadgesSegment ('{"effort":{"level":"HIGH"}}' | ConvertFrom-Json)
-Confirm-Equal $b.Text "$iconEffort HIGH" 'badges: an effort level differing only in case from the default is not the default, ordinally'
+Confirm-Equal $b.Text "$iconEffort xhigh $iconVim NORMAL" 'badges: the format characters are stripped out of the effort and vim badges'
+# The comparison is OrdinalIgnoreCase (code review on #61: the first cut used plain Ordinal, which
+# made "HIGH" a badge rather than the default it has always meant - #61 asked for a comparison a
+# culture cannot bend, not a new case-sensitivity cliff). "HIGH" and "High" still read as the default
+# and are still hidden; a genuinely different word such as "xhigh" (covered elsewhere in this file)
+# still shows.
+Confirm-Equal (Get-BadgesSegment ('{"effort":{"level":"HIGH"}}' | ConvertFrom-Json)) $null 'badges: an effort level differing only in case from the default is still the default'
+Confirm-Equal (Get-BadgesSegment ('{"effort":{"level":"High"}}' | ConvertFrom-Json)) $null 'badges: mixed-case effort is still the default too'
 # Stripping happens before measuring, so a name padded out with overrides is not cut on room it never
 # took on the line in the first place.
 $b = Get-BadgesSegment (('{"session_name":"' + ('\u202e' * 30) + 'quiet"}') | ConvertFrom-Json)
@@ -8695,7 +8782,7 @@ foreach ($bad in @('"columns": "80"', '"columns": 20.5', '"columns": true', '"co
 # The helpers the subagent script copies out of statusline.ps1. Both copies are pulled from the source
 # by the parser and compared as text, so a fix made to one and not the other fails here instead of
 # turning into two scripts that measure a line or colour a percentage differently.
-$sharedHelpers = @('G', 'C', 'Get-VisibleWidth', 'Get-ClippedText', 'Get-Palette', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText')
+$sharedHelpers = @('G', 'C', 'Get-VisibleWidth', 'Get-ClippedText', 'Get-Palette', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText')
 foreach ($name in $sharedHelpers) {
     $a = try { "$(Import-ScriptFunction $script @($name))" } catch { "not found in statusline.ps1" }
     $b = try { "$(Import-ScriptFunction $subScript @($name))" } catch { "not found in subagent-statusline.ps1" }
