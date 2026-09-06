@@ -20,41 +20,31 @@ $PSStyle.OutputRendering = 'Ansi'
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-# One payload feeds both screenshots; only -Config differs between them. It carries every field the
-# twelve segments in Get-SegmentRegistry read, so the default (one-line, no -Config) render shows the
-# eleven segments that ship Default = $true. The twelfth, `time`, ships Default = $false (issue #14
-# gave it its own registry row rather than folding it into an existing one): it is the one figure on the
-# line that moves without a payload, so turning it on for a demo image would show it as if it shipped
-# on. docs/statusline-two-line.json turns it on with "segments": { "time": true }, which is what makes
-# the two-line shot the one that shows all twelve; the one-line shot staying at eleven is the honest
-# picture of what installs out of the box, not a screenshot that forgot a segment.
-$payload = [ordered]@{
-    model          = @{ display_name = 'Fable 5.1' }
-    context_window = @{
-        total_input_tokens = 60000; total_output_tokens = 4000; context_window_size = 200000; used_percentage = 32
-        # cache_read_input_tokens carries most of the turn's input, so the context segment's dim suffix
-        # reads "92% cached" - the ordinary case Get-CacheShare's own comment uses as its example.
-        current_usage = @{ input_tokens = 2000; cache_creation_input_tokens = 3000; cache_read_input_tokens = 57500 }
-    }
-    cost           = @{
-        total_cost_usd = 1.07; total_lines_added = 156; total_lines_removed = 23
-        # 4320000ms elapsed with 1641600ms of it spent on the API is 1h12m at an api share of 38% - the
-        # same figures Get-ClockSegment's own comment uses as its example.
-        total_duration_ms = 4320000; total_api_duration_ms = 1641600
-    }
-    rate_limits    = @{ five_hour = @{ used_percentage = 23.5; resets_at = $now + 4320 }; seven_day = @{ used_percentage = 41.2; resets_at = $now + 400000 } }
-    # warm with 42 minutes left, comfortably above Get-CacheRole's five-minute warn line, so the cache
-    # segment reads "cache 42m" in its calm colour rather than the cold or off states.
-    prompt_cache   = @{ warm = $true; caching_observed = $true; expires_at = $now + 2520; ttl = 300; requests = 18 }
-    fast_mode      = $true
-    thinking       = @{ enabled = $true }
-    effort         = @{ level = 'high' }
-    agent          = @{ name = 'reviewer' }
-    session_name   = 'release prep'
-    workspace      = @{ current_dir = 'C:\Users\jim\src\my-project' }
-    git            = @{ branch = 'main'; status = @{ staged = 1; modified = 2; untracked = 1 } }
-    pr             = @{ number = 12; url = 'https://github.com/octo/my-project/pull/12'; review_state = 'approved' }
-} | ConvertTo-Json -Depth 5
+# One payload feeds both screenshots; only -Config differs between them. The default (one-line,
+# no -Config) render shows the eleven segments that ship Default = $true; docs/statusline-two-line.json
+# turns the twelfth, `time`, on with "segments": { "time": true }, so the two-line shot is the one that
+# shows all twelve.
+# The base is samples/06-limits-badges-lines.json itself, not a hand-typed copy of its fields: that
+# sample is what test.ps1 exercises a golden render against in several places, so the hero image and
+# the suite read the same numbers by construction. Only the fields the sample does not carry, or that
+# need a value relative to render time, are overlaid on top of it.
+$payload = Get-Content -Raw (Join-Path $Repo 'samples/06-limits-badges-lines.json') | ConvertFrom-Json -AsHashtable
+
+# Both reset times are nudged to the middle of a minute rather than the top of one: the render started
+# here and the child process a moment later each read their own clock, and TimeLeft's and
+# Get-CacheSecondsLeft's own comments note the same few seconds of drift always moves a countdown
+# towards a shorter reading, never a longer one - enough on its own to cross a minute boundary and print
+# a different figure than the other screenshot, started a moment apart from this one.
+$payload.rate_limits.five_hour.resets_at = $now + 4350    # 1h12m30s out -> "(1h12m)"
+$payload.rate_limits.seven_day.resets_at = $now + 400000  # never printed as a countdown; just fresh
+$payload.prompt_cache = @{ warm = $true; expires_at = $now + 2550 }  # 42m30s out -> "cache 42m"
+$payload.effort.level = 'medium'   # the sample's own 'xhigh' already clears the default; this demo
+                                    # wants a plausible value rather than the most extreme one
+$payload.agent = @{ name = 'reviewer' }
+$payload.session_name = 'release prep'
+$payload.pr = @{ number = 12; url = 'https://github.com/octo/my-project/pull/12'; review_state = 'approved' }
+$payload.git.status = @{ staged = 1; modified = 2; untracked = 1 }
+$payload = $payload | ConvertTo-Json -Depth 5
 
 $scriptArgs = @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', (Join-Path $Repo 'statusline.ps1'))
 if ($Config) { $scriptArgs += @('-Config', (Resolve-Path $Config).Path) }
@@ -76,12 +66,10 @@ function ConvertFrom-Xterm256([int] $n) {
 }
 
 # Parse each row's SGR sequences into runs of (text, fg, bg, bold). Any OSC string (either terminator,
-# ESC \ or BEL) is skipped the way Get-VisibleWidth strips them and test.ps1's $ansiPattern matches them:
-# not just an OSC 8 hyperlink wrapper, which is the only OSC form this pattern used to recognise, but
-# the OSC 9;4 taskbar sequence too. `taskbar` defaults to false, so no OSC 9;4 reaches a screenshot
-# render today, but a render with it turned on would otherwise draw the raw escape sequence into the
-# image as literal text instead of a hidden zero-width run - the fate any OSC command this pattern does
-# not recognise still meets.
+# ESC \ or BEL) is skipped the way Get-VisibleWidth strips them and test.ps1's $ansiPattern matches
+# them - an OSC 8 hyperlink wrapper or the OSC 9;4 taskbar sequence alike. `taskbar` defaults to false,
+# so no OSC 9;4 reaches a screenshot render today, but a render with it turned on would otherwise draw
+# the raw escape sequence into the image as literal text instead of a hidden zero-width run.
 $esc = [char]27
 $pattern = "$esc\[([0-9;]*)m|$esc\][^\a$esc]*(?:\a|$esc\\)"
 $rowRuns = @(foreach ($line in $rows) {
