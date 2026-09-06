@@ -136,9 +136,10 @@ function Read-UserSetting([string] $Path) {
 
 # An exclusive handle on <settings>.lock, taken with FileShare::None so a second installer blocks on it
 # rather than interleaving with this one. A lock file rather than a named mutex, because a mutex name is
-# global to a machine and would serialise installs against unrelated settings files, and because .NET
-# named mutexes are not shared between processes on Unix. The file is left behind, empty: deleting it on
-# release would race a process already waiting to open it.
+# global to a machine and would serialise installs against unrelated settings files (see
+# Invoke-StatusDiagRollover in statusline.ps1, #49, for what a machine- or session-scoped mutex name
+# actually does on Unix and Windows and why a lock file is the safer default here too). The file is
+# left behind, empty: deleting it on release would race a process already waiting to open it.
 function Get-SettingLock([string] $Path, [int] $TimeoutMs) {
     $lockPath = "$Path.lock"
     $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)

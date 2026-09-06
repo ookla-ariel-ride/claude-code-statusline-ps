@@ -78,65 +78,56 @@ function Read-StdinText() {
 # Moves a log with no room left for the next record over claude-statusline-diag.log.1, so a variable
 # left set in a profile costs two files of the cap's size at most rather than the temp volume.
 # Two renders can be printing at once and would both see the same full file, so the move is taken
-# under a named mutex and the size is read again with the mutex in hand: the second render then finds
-# the small file the first one left and does nothing, rather than moving that over the archive the
-# first one just made. The wait is zero. A render that cannot have the mutex at once skips the
-# rollover and appends, because the file it would have moved is about to shrink under it anyway, so
-# nothing here ever waits on another process - which is the point of a log that must not delay a
-# render. The append itself is not locked at all. That leaves the cap approximate: two renders that
-# overlap can leave the file a little over it, or lose a line to each other, which is the right trade
-# for a diagnostic that is off by default and read by a person. Anything that throws is
-# Write-StatusDiag's to swallow, and nothing here reaches the pipeline.
-# $TimeoutMs is what is left of the record's clock, and it covers the size read below. The mutex costs
-# nothing to bound: the wait is already zero, and taking and releasing it are kernel calls rather than
-# filesystem ones. The rename is the one call here that is not bounded; the caller decides whether the
-# budget can afford it before calling at all, and the note at that call site says what that leaves.
-# The name carries a Global\ prefix rather than a bare one (issue #49). Verified empirically with two
-# contending OS processes, on Linux under PowerShell 7.0.0 / .NET Core 3.1 (this repo's floor) and
-# PowerShell 7.4.2 / .NET 8 (current), and on Windows under an unprivileged pwsh 7 process (a named
-# mutex needs no elevation there, unlike a named file mapping): a bare name on .NET/Unix is scoped by
-# the POSIX session id, not by user, so two renders started from different terminal sessions - the
-# likely shape of the race this guard exists for - would each get the mutex at once and neither would
-# see the other. Global\ moves the name to a single, non-session-scoped table, which two same-session
-# processes, two different-session processes and (on Unix) two different users all then contend for
-# correctly: a holder sleeping while it holds the mutex reliably makes a second process's WaitOne(0)
-# return $false, and a holder that exits without releasing (a killed render) does not block the next
-# waiter - the kernel drops the lock at process exit, though on Unix that does not raise
-# AbandonedMutexException the way it does on Windows, so $held below must not depend on the catch
-# firing there. Crossing users is a bounded, accepted side effect: the diag log is off by default,
-# best-effort, and the ordinary trade is an occasional extra skipped rollover, not a wait or a
-# corruption. What Global\ widens rather than creates: the append after a skipped rollover is not
-# itself bound to the cap, and the rename this function does is the one call here with no timeout, so
-# a holder stuck inside it - anyone's render, on a stalled filesystem - already left the cap merely
-# approximate before this change, for as long as that holder does not let go. A bare name only exposed
-# that to the same session; Global\ exposes it machine-wide. Bounding the append itself is a change to
-# #43's cap design, not to this name, and is out of scope here.
-# macOS was not tested. See issue #49 for the full method.
+# under an exclusive lock on Path.lock, opened with FileShare.None, and the size is read again with
+# the lock held: the second render then finds the small file the first one left and does nothing,
+# rather than moving that over the archive the first one just made. The wait is zero. A render that
+# finds the lock file already open elsewhere skips the rollover and appends, because the file it
+# would have moved is about to shrink under it anyway, so nothing here ever waits on another process
+# - which is the point of a log that must not delay a render. The append itself is not locked at all.
+# That leaves the cap approximate: two renders that overlap can leave the file a little over it, or
+# lose a line to each other, which is the right trade for a diagnostic that is off by default and
+# read by a person. Anything that throws is Write-StatusDiag's to swallow, and nothing here reaches
+# the pipeline.
+# $TimeoutMs is what is left of the record's clock, and now covers opening the lock as well as the
+# size read: both are filesystem calls, dispatched to the pool and bounded like every other one here.
+# The rename is the one call that stays unbounded; the caller decides whether the budget can afford
+# it before calling at all, and the note at that call site says what that leaves.
+# A lock file rather than a named mutex (#49): a bare mutex name on .NET/Unix is scoped to the POSIX
+# session, so two renders in different terminals - the likely shape of this race - never contended at
+# all, and a Global\ name (tried and reverted here) traded that for two worse holes, both reproduced:
+# a second Windows user's handle to it fails the default DACL before the constructor returns, and on
+# Unix every Global\ name shares one directory whose creator can leave every other user locked out of
+# it - either way the whole record silently dropped through the catch below. A lock on Path.lock is
+# scoped by the filesystem path instead, so different users' $TEMP never collide, and the kernel
+# releases the handle on process exit the same as any other, so a killed render leaves no stale lock
+# to answer for. See #49 for the measurements.
 function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [int] $TimeoutMs) {
-    $mutex = [System.Threading.Mutex]::new($false, 'Global\claude-code-statusline-diag-rollover')
+    if ($TimeoutMs -le 0) { return }
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    if ($null -eq $script:diagLockMethod) { $script:diagLockMethod = [System.IO.File].GetMethod('OpenWrite', [type[]] @([string])) }
+    $lockCall = [System.Delegate]::CreateDelegate([Func[System.IO.FileStream]], ($Path + '.lock'), $script:diagLockMethod)
+    $open = [System.Threading.Tasks.Task]::Run($lockCall)
+    if ([System.Threading.Tasks.Task]::WaitAny(@($open), $TimeoutMs) -lt 0) { return }
+    # Held elsewhere is a faulted task here, the same as any other filesystem call that could not
+    # complete: no lock, no rollover, and the caller appends anyway - the zero-wait, skip-on-contention
+    # trade #43 chose.
+    if (-not $open.IsCompletedSuccessfully) { return }
+    $lock = $open.Result
     try {
-        $held = $false
-        # An abandoned mutex is one this process now owns: the render holding it died mid-move.
-        try { $held = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $held = $true }
-        if (-not $held) { return }
-        try {
-            # The size is read again with the mutex in hand, and it goes to the pool under the caller's
-            # remaining clock exactly as the first read did. Asking a file its size is a filesystem call
-            # wherever it appears: over SMB it is a round trip, and reading it straight from a FileInfo
-            # here would have put an unbounded call back on the render's thread, which is the whole
-            # thing this design exists to keep out. A read that does not answer in time leaves the file
-            # alone - a rollover skipped costs the log its cap for a moment, a rollover waited on costs
-            # the render.
-            if ($TimeoutMs -le 0) { return }
-            $size = [System.Threading.Tasks.Task]::Run((Get-StatusDiagDelegate $Path).Length)
-            if ([System.Threading.Tasks.Task]::WaitAny(@($size), $TimeoutMs) -lt 0) { return }
-            # A faulted size is a file that is not there, so there is nothing to move.
-            if (-not $size.IsCompletedSuccessfully) { return }
-            # Still over the cap with the mutex held, so the render that would have rolled it has not.
-            if ($size.Result + $Need -le $Cap) { return }
-            [System.IO.File]::Move($Path, $Path + '.1', $true)
-        } finally { $mutex.ReleaseMutex() }
-    } finally { $mutex.Dispose() }
+        $left = $TimeoutMs - [int] $sw.ElapsedMilliseconds
+        if ($left -le 0) { return }
+        $size = [System.Threading.Tasks.Task]::Run((Get-StatusDiagDelegate $Path).Length)
+        if ([System.Threading.Tasks.Task]::WaitAny(@($size), $left) -lt 0) { return }
+        # A faulted size is a file that is not there, so there is nothing to move.
+        if (-not $size.IsCompletedSuccessfully) { return }
+        # Still over the cap with the lock held, so the render that would have rolled it has not.
+        if ($size.Result + $Need -le $Cap) { return }
+        [System.IO.File]::Move($Path, $Path + '.1', $true)
+    } finally {
+        $left = $TimeoutMs - [int] $sw.ElapsedMilliseconds
+        $close = [System.Threading.Tasks.Task]::Run((Get-BoundedStreamDelegate $lock).Dispose)
+        if ($left -gt 0) { [void] [System.Threading.Tasks.Task]::WaitAny(@($close), $left) }
+    }
 }
 
 # What one record may cost. The log is written from the render path, and the temp folder is a filesystem

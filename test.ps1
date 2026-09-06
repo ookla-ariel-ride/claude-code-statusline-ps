@@ -5790,13 +5790,17 @@ namespace StatuslineTest {
     Confirm-True ($diagLines[0].EndsWith('over the cap')) 'diag rollover: and that line is the one just written'
     Confirm-True (Test-Path -LiteralPath $diagRolled) 'diag rollover: the full log is kept as .log.1'
     Confirm-Equal (Get-Item -LiteralPath $diagRolled).Length $diagCap 'diag rollover: the kept file is the one that was full'
-    # A second rollover replaces the first .log.1 rather than piling up a third file.
+    # A second rollover replaces the first .log.1 rather than piling up a third rotated file. The lock
+    # file the rollover takes (issue #49) is left behind beside the log the same way install.ps1 leaves
+    # its settings lock behind - deleting it on release would race a process already waiting to open it
+    # - so it is the one extra, constant file in this count: the log, one rotation, and the lock never a
+    # fourth or a growing pile of either.
     [System.IO.File]::WriteAllText($diagLog, ('z' * $diagCap))
     Write-StatusDiag 'over the cap again'
     $diagStream = [System.IO.File]::OpenRead($diagRolled)
     try { $diagFirstByte = $diagStream.ReadByte() } finally { $diagStream.Dispose() }
     Confirm-Equal $diagFirstByte 122 'diag rollover: the second rollover replaced the first .log.1'
-    Confirm-Equal @(Get-ChildItem -LiteralPath $diagTemp -File -Filter 'claude-statusline-diag.log*').Count 2 'diag rollover: two files at most, never a third'
+    Confirm-Equal @(Get-ChildItem -LiteralPath $diagTemp -File -Filter 'claude-statusline-diag.log*').Count 3 'diag rollover: the log, one rotation and the lock file - never a fourth'
 
     # Bounded through the real callers: with the log parked just under the cap, a run of cache reads and
     # state reads and writes rolls it over instead of pushing past it.
@@ -5843,40 +5847,34 @@ namespace StatuslineTest {
     Write-StatusDiag ('r' * 5000)
     Confirm-True ((Get-DiagLogSize) -le $diagCap) 'diag record cap: an enormous reason on a full log still leaves the log at or under the cap'
 
-    # The rollover is taken under a named mutex with no wait at all, so a render that finds another one
-    # already rotating appends rather than waiting on it. A mutex belongs to a thread and is reentrant,
-    # so only another process can hold it against this one: a child pwsh takes it, says so by writing a
-    # file, and keeps it until this one says to let go. The name is spelled out here rather than read
-    # from the script, so the two cannot agree with each other about the wrong one - including the
-    # Global\ prefix (issue #49): drop it from either side and the two processes stop contending for
-    # the same table, the child's "held" file still appears, but the rollover below happens when it
-    # should not, which is what pins the prefix rather than just the name.
+    # The rollover is taken under an exclusive lock on the log's .lock file with no wait at all, so a
+    # render that finds it already open elsewhere appends rather than waiting on it. That lock is scoped
+    # by the path rather than by who opened it, which a mutex - even one process could not hold against
+    # itself - could not be, so a second process is what pins it here: a child pwsh opens the .lock file
+    # exclusively, says so by writing a file, and is then killed rather than asked to let go, which is
+    # the property that matters (issue #49) - a killed holder must not leave a stale lock behind.
     Clear-DiagLog
     Clear-DiagRollover
     [System.IO.File]::WriteAllText($diagLog, ('y' * $diagCap))
     $diagReady = Join-Path $tmp 'diag-lock-ready'
-    $diagGo = Join-Path $tmp 'diag-lock-go'
-    foreach ($diagSignal in @($diagReady, $diagGo)) { if (Test-Path -LiteralPath $diagSignal) { Remove-Item -LiteralPath $diagSignal -Force } }
-    $diagHoldFile = Join-Path $tmp 'diag-hold-mutex.ps1'
+    if (Test-Path -LiteralPath $diagReady) { Remove-Item -LiteralPath $diagReady -Force }
+    $diagHoldFile = Join-Path $tmp 'diag-hold-lock.ps1'
     [System.IO.File]::WriteAllText($diagHoldFile, @'
-param([string] $Ready, [string] $Go)
-$m = [System.Threading.Mutex]::new($false, 'Global\claude-code-statusline-diag-rollover')
-[void] $m.WaitOne()
+param([string] $LockPath, [string] $Ready)
+$s = [System.IO.File]::Open($LockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
 [System.IO.File]::WriteAllText($Ready, 'held')
-$deadline = [DateTime]::UtcNow.AddSeconds(30)
-while (-not [System.IO.File]::Exists($Go) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 20 }
-$m.ReleaseMutex()
-$m.Dispose()
+Start-Sleep -Seconds 60
+$s.Dispose()
 '@)
     $diagPsi = [System.Diagnostics.ProcessStartInfo]::new($pwshExe)
-    foreach ($diagArg in @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', $diagHoldFile, $diagReady, $diagGo)) { $diagPsi.ArgumentList.Add($diagArg) }
+    foreach ($diagArg in @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', $diagHoldFile, "$diagLog.lock", $diagReady)) { $diagPsi.ArgumentList.Add($diagArg) }
     $diagPsi.UseShellExecute = $false
     $diagPsi.CreateNoWindow = $true
     $diagHolder = [System.Diagnostics.Process]::Start($diagPsi)
     try {
         $diagDeadline = [DateTime]::UtcNow.AddSeconds(30)
         while (-not [System.IO.File]::Exists($diagReady) -and [DateTime]::UtcNow -lt $diagDeadline) { Start-Sleep -Milliseconds 20 }
-        Confirm-True ([System.IO.File]::Exists($diagReady)) 'diag rollover lock: another process holds the mutex the rollover takes'
+        Confirm-True ([System.IO.File]::Exists($diagReady)) 'diag rollover lock: another process holds the lock the rollover takes'
         $diagLockThrew = $false
         $diagLockOut = @('not run')
         try { $diagLockOut = @(Write-StatusDiag 'another render is rotating') } catch { $diagLockThrew = $true }
@@ -5885,16 +5883,20 @@ $m.Dispose()
         Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover lock: the file the other render is rotating is left alone'
         Confirm-True ((Get-DiagLogSize) -gt $diagCap) 'diag rollover lock: the line is appended anyway rather than waited for, which is what makes the cap approximate'
     } finally {
-        [System.IO.File]::WriteAllText($diagGo, 'go')
+        # Killed, not asked to let go: a process that never reaches its own Dispose call is the case a
+        # stale lock would show up in, if one could.
+        if (-not $diagHolder.HasExited) { $diagHolder.Kill($true) }
         [void] $diagHolder.WaitForExit(30000)
         $diagHolder.Dispose()
     }
-    # With the mutex free again the next record rotates as it always did.
-    Write-StatusDiag 'the other render has finished'
-    Confirm-True (Test-Path -LiteralPath $diagRolled) 'diag rollover lock: once the mutex is free the rollover happens'
+    # The kernel released the lock when the process died, so the very next rollover proceeds without
+    # anyone having released anything on purpose.
+    Write-StatusDiag 'the other render was killed'
+    Confirm-True (Test-Path -LiteralPath $diagRolled) 'diag rollover lock: once the lock is free the rollover happens'
     Confirm-Equal (Get-DiagLine).Count 1 'diag rollover lock: and the fresh log holds only the new record'
     Clear-DiagLog
     Clear-DiagRollover
+    if ($env:CLAUDE_TEST_STOP_AFTER_DIAG) { Write-Host "STOP_AFTER_DIAG reached, failed=$script:failed"; exit 77 }
 
     # The whole script, run twice on one payload: the log changes nothing a terminal would show, and
     # the run with it on leaves a log behind.
