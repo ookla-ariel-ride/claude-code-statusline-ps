@@ -126,6 +126,13 @@ function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [i
 # a record that cannot be written inside it is dropped. Losing a line is the right trade against holding
 # the line up, and it is the trade #43 already made when it took a zero wait on the rollover mutex and
 # an approximate cap over guaranteed ones.
+# What that trade costs is more than the one line, and saying so here rather than leaving it to be
+# rediscovered: an open or a close that overruns leaves a writer on the log that nothing in this process
+# is waiting for any longer. A pool thread closes it a moment later, but until then the file is held. A
+# render writes one line and exits, so there it is invisible; in a long-lived process that writes many -
+# a test run, or anything that dot-sources this - the next record's open can meet that handle and be
+# dropped in turn, and a rollover's rename can throw on it, so one overrun record can cost several. It
+# heals as soon as the filesystem does.
 # RolloverMs is how much of that budget has to be left before the one call this function cannot bound -
 # the rename a rollover does - is attempted at all. Half, so that reaching it means both size reads
 # answered in well under half a record's clock. The note at the call site has the reasoning.
@@ -1427,7 +1434,14 @@ function Read-PorcelainStatus([string] $Text) {
 
 # Runs git status in $Dir with a hard timeout. Any failure, or no git on PATH, returns $null.
 # Stdout and stderr are drained on .NET threads so a long listing cannot fill the pipe and stall git.
-function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
+# $WaitForExit answers "did git finish inside the budget" and defaults to the wait itself, so no caller
+# passes one and every render takes the line below. It exists for the tests, the way Get-PaceArrow's
+# $Now does: what happens when git does not answer - the tree is killed and the probe reports nothing -
+# could otherwise only be reached by really waiting a timeout out behind a fake that really hangs, and
+# a check written that way is a check on a wall clock, which a loaded machine does not honour. Given a
+# script block, it is called with the process and the timeout and its answer stands in for the wait's,
+# so the decision can be taken deliberately in a test and the clock left out of it.
+function Get-GitBranch([string] $Dir, [int] $TimeoutMs, [scriptblock] $WaitForExit) {
     if (-not $Dir) { return $null }
     if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return $null }
     $git = (Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
@@ -1448,7 +1462,7 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
         $p = [System.Diagnostics.Process]::Start($psi)
         $outTask = $p.StandardOutput.ReadToEndAsync()
         $errTask = $p.StandardError.ReadToEndAsync()
-        $exited = $p.WaitForExit($TimeoutMs)
+        $exited = if ($WaitForExit) { [bool] (& $WaitForExit $p $TimeoutMs) } else { $p.WaitForExit($TimeoutMs) }
         if (-not $exited) {
             # Kill the whole tree, then give it a moment to actually go away before we dispose the handles.
             try { $p.Kill($true) } catch { if ($script:diagOn) { Write-StatusDiag "git probe: kill failed: $($_.Exception.Message)" } }
