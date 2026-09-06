@@ -190,17 +190,27 @@ function Test-OwnBackupFile([string] $BackupPath) {
     return [string]::Equals($recorded, $actual, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
-# Copies $SourcePath over $BackupPath and records its hash in the sidecar next to it, unless something
-# already at $BackupPath fails Test-OwnBackupFile - in which case neither file is touched and $false
-# says so, for the caller to warn about. Losing the ability to roll back is a smaller harm than
-# overwriting a file that was never this installer's, the same trade the subagent rollback copy makes.
+# Copies $SourcePath over $BackupPath and records its hash in the sidecar next to it. $false, with
+# neither file touched, in two cases: something already at $BackupPath fails Test-OwnBackupFile, or
+# $BackupPath itself is missing while its sidecar is already there - an orphan sidecar is not proof of
+# anything either, since there is no backup content left to check it against, so it is as unverifiable
+# as a foreign one and is not written over. $false also, again with neither file left in a state that
+# claims a backup that was not really taken, when the copy itself fails: a locked destination, a full
+# disk, or any other reason Copy-Item cannot complete must not be reported as success by hashing
+# whatever was already sitting at $BackupPath before the attempt. Losing the ability to roll back is a
+# smaller harm than overwriting a file that was never this installer's, or claiming a rollback exists
+# that does not, the same trade the subagent rollback copy makes.
 function Backup-OwnedFile([string] $SourcePath, [string] $BackupPath) {
+    $hashPath = Get-BackupHashPath $BackupPath
     if ((Test-Path -LiteralPath $BackupPath) -and -not (Test-OwnBackupFile $BackupPath)) { return $false }
-    Copy-Item -LiteralPath $SourcePath -Destination $BackupPath -Force -ErrorAction SilentlyContinue
-    if (Test-Path -LiteralPath $BackupPath) {
-        $hash = (Get-FileHash -LiteralPath $BackupPath -Algorithm SHA256).Hash
-        Set-Content -LiteralPath (Get-BackupHashPath $BackupPath) -Value $hash -Encoding UTF8 -NoNewline
+    if ((-not (Test-Path -LiteralPath $BackupPath)) -and (Test-Path -LiteralPath $hashPath)) { return $false }
+    try {
+        Copy-Item -LiteralPath $SourcePath -Destination $BackupPath -Force -ErrorAction Stop
+    } catch {
+        return $false
     }
+    $hash = (Get-FileHash -LiteralPath $BackupPath -Algorithm SHA256).Hash
+    Set-Content -LiteralPath $hashPath -Value $hash -Encoding UTF8 -NoNewline
     return $true
 }
 

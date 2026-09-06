@@ -9970,6 +9970,33 @@ Set-Content -LiteralPath $bmMatchedBackup -Value $bmForeignText -Encoding utf8No
 Set-Content -LiteralPath (Get-BackupHashPath $bmMatchedBackup) -Value (Get-FileHash -LiteralPath $bmMatchedBackup -Algorithm SHA256).Hash -Encoding UTF8 -NoNewline
 Confirm-True (Test-OwnBackupFile $bmMatchedBackup) 'backup mechanism: a sidecar recording the real hash of the content there counts as ours'
 Confirm-Equal (Backup-OwnedFile $bmSource $bmMatchedBackup) $true 'backup mechanism: so it is safe to overwrite'
+# An orphan sidecar: the hash file is there but the backup itself is not, so there is no backup content
+# left to check it against. As unverifiable as a foreign file, so it is left alone the same way.
+$bmOrphanBackup = Join-Path $backupTmp 'orphan.json'
+$bmOrphanHash = Get-BackupHashPath $bmOrphanBackup
+Set-Content -LiteralPath $bmOrphanHash -Value 'deadbeef' -Encoding UTF8 -NoNewline
+Confirm-Equal (Test-OwnBackupFile $bmOrphanBackup) $false 'backup mechanism: an orphan sidecar with no backup is not ours either'
+Confirm-Equal (Backup-OwnedFile $bmSource $bmOrphanBackup) $false 'backup mechanism: an orphan sidecar blocks the write, not just a foreign backup'
+Confirm-True (-not (Test-Path -LiteralPath $bmOrphanBackup)) 'backup mechanism: no backup is created over an orphan sidecar'
+Confirm-Equal (Get-Content -LiteralPath $bmOrphanHash -Raw) 'deadbeef' 'backup mechanism: the orphan sidecar itself is left exactly as it was'
+# A destination that cannot be replaced - held open against a write, the technique the subagent
+# move-failure case uses below - must not be reported as a successful backup. The content Copy-Item
+# could not update is left exactly as it was, not hashed and certified as if the copy had gone through.
+$bmLockedSource = Join-Path $backupTmp 'locked-source.json'
+Set-Content -LiteralPath $bmLockedSource -Value '{ "locked": 1 }' -Encoding utf8NoBOM
+$bmLockedBackup = Join-Path $backupTmp 'locked-backup.json'
+Set-Content -LiteralPath $bmLockedBackup -Value '{ "locked": 0 }' -Encoding utf8NoBOM
+$bmLockHandle = $null
+try {
+    $bmLockHandle = [System.IO.File]::Open($bmLockedBackup, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+} catch { $bmLockHandle = $null }
+Confirm-True ($null -ne $bmLockHandle) 'backup mechanism: the test can hold the backup destination open against a replace'
+if ($null -ne $bmLockHandle) {
+    Confirm-Equal (Backup-OwnedFile $bmLockedSource $bmLockedBackup) $false 'backup mechanism: a copy that cannot complete is reported as not backed up'
+    $bmLockHandle.Dispose()
+    Confirm-Equal (Get-Content -LiteralPath $bmLockedBackup -Raw).Trim() '{ "locked": 0 }' 'backup mechanism: the destination still holds its own content, not a half-applied or falsely certified copy'
+    Confirm-True (-not (Test-Path -LiteralPath (Get-BackupHashPath $bmLockedBackup))) 'backup mechanism: no sidecar is written for a copy that never completed'
+}
 $settingsLockTimeoutMs = 5000
 
 # A change made between the read and the write is refused, and the other writer's file survives intact.
