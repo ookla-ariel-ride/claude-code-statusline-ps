@@ -51,7 +51,11 @@ function C([string] $code, [string] $text) { "$e[${code}m$text$e[0m" }
 # overlap can leave the file a little over it, or lose a line to each other, which is the right trade
 # for a diagnostic that is off by default and read by a person. Anything that throws is
 # Write-StatusDiag's to swallow, and nothing here reaches the pipeline.
-function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap) {
+# $TimeoutMs is what is left of the record's clock, and it covers the size read below. The mutex costs
+# nothing to bound: the wait is already zero, and taking and releasing it are kernel calls rather than
+# filesystem ones. The rename is the one call here that is not bounded; the caller decides whether the
+# budget can afford it before calling at all, and the note at that call site says what that leaves.
+function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [int] $TimeoutMs) {
     $mutex = [System.Threading.Mutex]::new($false, 'claude-code-statusline-diag-rollover')
     try {
         $held = $false
@@ -59,8 +63,21 @@ function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap) {
         try { $held = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $held = $true }
         if (-not $held) { return }
         try {
-            $fi = [System.IO.FileInfo]::new($Path)
-            if ($fi.Exists -and $fi.Length + $Need -gt $Cap) { [System.IO.File]::Move($Path, $Path + '.1', $true) }
+            # The size is read again with the mutex in hand, and it goes to the pool under the caller's
+            # remaining clock exactly as the first read did. Asking a file its size is a filesystem call
+            # wherever it appears: over SMB it is a round trip, and reading it straight from a FileInfo
+            # here would have put an unbounded call back on the render's thread, which is the whole
+            # thing this design exists to keep out. A read that does not answer in time leaves the file
+            # alone - a rollover skipped costs the log its cap for a moment, a rollover waited on costs
+            # the render.
+            if ($TimeoutMs -le 0) { return }
+            $size = [System.Threading.Tasks.Task]::Run((Get-StatusDiagDelegate $Path).Length)
+            if ([System.Threading.Tasks.Task]::WaitAny(@($size), $TimeoutMs) -lt 0) { return }
+            # A faulted size is a file that is not there, so there is nothing to move.
+            if (-not $size.IsCompletedSuccessfully) { return }
+            # Still over the cap with the mutex held, so the render that would have rolled it has not.
+            if ($size.Result + $Need -le $Cap) { return }
+            [System.IO.File]::Move($Path, $Path + '.1', $true)
         } finally { $mutex.ReleaseMutex() }
     } finally { $mutex.Dispose() }
 }
@@ -73,7 +90,10 @@ function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap) {
 # a record that cannot be written inside it is dropped. Losing a line is the right trade against holding
 # the line up, and it is the trade #43 already made when it took a zero wait on the rollover mutex and
 # an approximate cap over guaranteed ones.
-function Get-StatusDiagLimit { return @{ TimeoutMs = 250 } }
+# RolloverMs is how much of that budget has to be left before the one call this function cannot bound -
+# the rename a rollover does - is attempted at all. Half, so that reaching it means both size reads
+# answered in well under half a record's clock. The note at the call site has the reasoning.
+function Get-StatusDiagLimit { return @{ TimeoutMs = 250; RolloverMs = 125 } }
 
 # The two filesystem calls a record makes, each closed over a FileInfo for the log's path so it can go
 # straight to the pool. Same rule as the bounded config read, and for the same reason: a script block
@@ -98,7 +118,8 @@ function Write-StatusDiag([string] $Reason) {
     $writer = $null
     $budget = 0
     try {
-        $budget = (Get-StatusDiagLimit).TimeoutMs
+        $limit = Get-StatusDiagLimit
+        $budget = $limit.TimeoutMs
         $base = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { [System.IO.Path]::GetTempPath() }
         $path = [System.IO.Path]::Combine($base, 'claude-statusline-diag.log')
         $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [System.Globalization.CultureInfo]::InvariantCulture)
@@ -129,13 +150,29 @@ function Write-StatusDiag([string] $Reason) {
         # A faulted Length is a file that is not there yet, which is a size of zero and not a problem.
         $have = if ($size.IsCompletedSuccessfully) { $size.Result } else { 0 }
         $left = $budget - $sw.ElapsedMilliseconds
-        # The rollover is the one part that stays on this thread: a rename has no zero-argument overload
-        # to close a delegate over, so it cannot be dispatched the way everything else here is. It is
-        # reached only with budget left and only just after the size probe answered inside that budget,
-        # so the filesystem it renames on is one that was responding a moment ago. That is a smaller
-        # promise than the rest of this function makes, and it is stated rather than glossed.
-        if ($left -gt 0 -and $have + $need -gt 4MB) { Invoke-StatusDiagRollover $path $need 4MB }
-        $left = $budget - $sw.ElapsedMilliseconds
+        if ($have + $need -gt 4MB) {
+            # A rollover is needed, and one call inside it - the rename - is the only filesystem call in
+            # this function that is not dispatched to the pool. File.Move takes two arguments and there
+            # is no zero-argument form to close a delegate over, and compiling a worker to carry them
+            # would cost every render more than the case it guards; this project has twice preferred a
+            # limit it can state to machinery that outweighs the risk, and this is a third.
+            #
+            # So the rename is attempted only with RolloverMs of the budget still unspent. That is not a
+            # bound on the rename - nothing here is - it is a test of the filesystem about to be renamed
+            # on: reaching this line means the size probe answered, and reaching it with most of the
+            # budget left means it answered briskly. Below the reserve the record is dropped instead,
+            # unrolled and unwritten, which is the same trade taken everywhere else here and the one #43
+            # took when it chose a zero wait on the mutex.
+            #
+            # What that leaves, said plainly: while a filesystem is slow enough to eat the reserve, the
+            # log stops being written rather than growing, and it sits at its cap until a render with
+            # room to spare rolls it. It heals on its own once the filesystem does. The cap was already
+            # approximate because two renders can overlap; this is a second reason, and a skipped
+            # rollover whose size read timed out can leave the file a little over it.
+            if ($left -lt $limit.RolloverMs) { return }
+            Invoke-StatusDiagRollover $path $need 4MB ([int] $left)
+            $left = $budget - $sw.ElapsedMilliseconds
+        }
         if ($left -le 0) { return }
         $open = [System.Threading.Tasks.Task]::Run($call.Append)
         if ([System.Threading.Tasks.Task]::WaitAny(@($open), [int] $left) -lt 0) { return }

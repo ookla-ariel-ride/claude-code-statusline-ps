@@ -4347,7 +4347,19 @@ namespace StatuslineTest {
     public static class DiagSink {
         public static int OpenDelayMs, LengthDelayMs, CloseDelayMs;
         public static bool Closed;
-        public static long Length() { Thread.Sleep(LengthDelayMs); return 0L; }
+        // The size the double reports, and which call it starts stalling on. Write-StatusDiag reads the
+        // size once to decide whether a rollover is due and Invoke-StatusDiagRollover reads it again
+        // with the mutex held, so SlowFromCall 2 lets the first read answer at once - entering the
+        // rollover - and the second one stall inside it. LengthCalls is how a test sees which of those
+        // two reads happened, and so whether the rollover branch was entered at all.
+        public static long LengthValue;
+        public static int SlowFromCall, LengthCalls;
+        public static void ResetLength() { LengthValue = 0L; SlowFromCall = 0; LengthCalls = 0; LengthDelayMs = 0; }
+        public static long Length() {
+            int n = Interlocked.Increment(ref LengthCalls);
+            if (SlowFromCall > 0 && n >= SlowFromCall) { Thread.Sleep(LengthDelayMs); }
+            return LengthValue;
+        }
         public static StreamWriter Open() { Thread.Sleep(OpenDelayMs); return new BlockingWriter(); }
     }
 }
@@ -4402,13 +4414,71 @@ namespace StatuslineTest {
         Confirm-True ($diagCloseMs -lt 2000) "diag sink: a close that blocks costs the record's budget, not the sink's, took $diagCloseMs ms"
         # A length probe that never answers stops the record before it opens anything.
         [StatuslineTest.DiagSink]::CloseDelayMs = 0
+        [StatuslineTest.DiagSink]::ResetLength()
         [StatuslineTest.DiagSink]::LengthDelayMs = 5000
+        [StatuslineTest.DiagSink]::SlowFromCall = 1
         Clear-DiagLog
         $diagSinkSw = [System.Diagnostics.Stopwatch]::StartNew()
         Write-StatusDiag 'into a sink whose size never answers'
         $diagLenMs = $diagSinkSw.ElapsedMilliseconds
         Confirm-True ($diagLenMs -lt 2000) "diag sink: a size probe that blocks costs the record's budget, took $diagLenMs ms"
-        [StatuslineTest.DiagSink]::LengthDelayMs = 0
+        [StatuslineTest.DiagSink]::ResetLength()
+
+        # ---- The rollover, which the checks above never reach ----
+        # Everything above reports a size of zero, so the log never looks full and the rollover branch is
+        # never entered by any of them. That is worth saying because it is exactly how the rollover came
+        # to keep an unbounded size read on the render's thread through a round of review looking for
+        # one: the double could not reach the branch, so the branch had no test. The double now reports a
+        # size past the cap, which makes the rollover due, and can stall on the second read rather than
+        # the first - Write-StatusDiag reads the size to decide, and the rollover reads it again with the
+        # mutex held, so a delay from the second call lands inside the rollover and nowhere else.
+        $diagCapBytes = 4194304
+        $diagRolloverMs = (Get-StatusDiagLimit).RolloverMs
+        Confirm-True ($diagRolloverMs -gt 0 -and $diagRolloverMs -le (Get-StatusDiagLimit).TimeoutMs) 'diag rollover: the reserve is a real part of the record budget'
+        # First, that the branch is reached at all: a size past the cap makes the rollover ask again.
+        [StatuslineTest.DiagSink]::ResetLength()
+        [StatuslineTest.DiagSink]::LengthValue = $diagCapBytes
+        Clear-DiagLog
+        Write-StatusDiag 'a record that makes the log full'
+        Confirm-Equal ([StatuslineTest.DiagSink]::LengthCalls) 2 'diag rollover: a size past the cap enters the rollover, which asks the size again through the same delegate'
+        # And that a size under the cap does not: one read, no rollover.
+        [StatuslineTest.DiagSink]::ResetLength()
+        Clear-DiagLog
+        Write-StatusDiag 'a record that leaves room'
+        Confirm-Equal ([StatuslineTest.DiagSink]::LengthCalls) 1 'diag rollover: a size under the cap is one read and no rollover'
+        # The finding this replaces: the size read inside the rollover was made straight from a FileInfo
+        # on the render's thread, so a stalled filesystem held the line open there even though every
+        # other call in the record was bounded. The second read now stalls for five seconds against a
+        # quarter-second budget, and the record has to come back anyway.
+        [StatuslineTest.DiagSink]::ResetLength()
+        [StatuslineTest.DiagSink]::LengthValue = $diagCapBytes
+        [StatuslineTest.DiagSink]::LengthDelayMs = 5000
+        [StatuslineTest.DiagSink]::SlowFromCall = 2
+        Clear-DiagLog
+        $diagSinkSw = [System.Diagnostics.Stopwatch]::StartNew()
+        Write-StatusDiag 'a record whose rollover will not answer'
+        $diagRollMs = $diagSinkSw.ElapsedMilliseconds
+        Confirm-Equal ([StatuslineTest.DiagSink]::LengthCalls) 2 'diag rollover: the stalling read is the one inside the rollover, not the one before it'
+        Confirm-True ($diagRollMs -lt 2000) "diag rollover: a size read that stalls inside the rollover costs the record's budget, not the sink's, took $diagRollMs ms"
+        [StatuslineTest.DiagSink]::ResetLength()
+        # The reserve: below it the record is dropped rather than the rename attempted. A reserve larger
+        # than the whole budget can never be met, so this pins the rule itself rather than a timing
+        # coincidence - the sink answers at once and the rollover is still not entered.
+        $diagRealDiagLimit = Get-StatusDiagLimit
+        . ([scriptblock]::Create("function Get-StatusDiagLimit { return @{ TimeoutMs = $($diagRealDiagLimit.TimeoutMs); RolloverMs = 100000 } }"))
+        [StatuslineTest.DiagSink]::ResetLength()
+        [StatuslineTest.DiagSink]::LengthValue = $diagCapBytes
+        [StatuslineTest.DiagSink]::Closed = $false
+        Clear-DiagLog
+        $diagSinkSw = [System.Diagnostics.Stopwatch]::StartNew()
+        Write-StatusDiag 'a record the reserve will not pay for'
+        $diagReserveMs = $diagSinkSw.ElapsedMilliseconds
+        Confirm-Equal ([StatuslineTest.DiagSink]::LengthCalls) 1 'diag rollover: under the reserve the rollover is not entered at all'
+        Confirm-True (-not [StatuslineTest.DiagSink]::Closed) 'diag rollover: under the reserve the record is dropped rather than appended past the cap'
+        Confirm-True ($diagReserveMs -lt 2000) "diag rollover: dropping under the reserve is prompt, took $diagReserveMs ms"
+        . ([scriptblock]::Create("function Get-StatusDiagLimit { return @{ TimeoutMs = $($diagRealDiagLimit.TimeoutMs); RolloverMs = $($diagRealDiagLimit.RolloverMs) } }"))
+        Confirm-Equal (Get-StatusDiagLimit).RolloverMs $diagRealDiagLimit.RolloverMs 'diag rollover: the real reserve is back'
+        [StatuslineTest.DiagSink]::ResetLength()
         # A sink that answers at once still writes the record, so the checks above are of a path that
         # would otherwise work rather than one that never wrote anything.
         Clear-DiagLog

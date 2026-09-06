@@ -249,11 +249,21 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   writes - go to the thread pool and are waited on for what is left of one 250 ms clock, the same shape
   the project config read uses. A record that cannot be written inside it is dropped, which is the
   trade #43 already made when it took a zero wait on the rollover mutex and an approximate cap over
-  guaranteed ones. The one part still on the calling thread is the rename a rollover does: `File.Move`
-  has no zero-argument overload to close a delegate over, so it cannot be dispatched the way the rest
-  is. It is reached only with budget left and only just after the size probe answered inside that
-  budget, so it renames on a filesystem that was responding a moment ago - a smaller promise than the
-  rest, stated rather than glossed. `Read-BoundedFileText` writes no record at all: it records the
+  guaranteed ones. That includes the rollover: it reads the size again with the mutex held, because
+  another render may have rolled the file already, and that second read goes to the pool under the same
+  clock as the first. Reading it straight from a `FileInfo` there, as it once did, put an unbounded
+  filesystem call back on the render's thread and made every other bound in the function moot.
+  **The one call still on the calling thread is the rename**, and only that: `File.Move` takes two
+  arguments and has no zero-argument form to close a delegate over, and compiling a worker to carry
+  them would cost every render more than the case it guards. It is attempted only with `RolloverMs`
+  (half the budget) still unspent, which is not a bound on it but a test of the filesystem about to be
+  renamed on - reaching that point means both size reads answered, and answered briskly. Below the
+  reserve the record is dropped, unrolled and unwritten. What that leaves, plainly: while a filesystem
+  is slow enough to eat the reserve the log stops being written rather than growing, and it sits at its
+  cap until a render with room to spare rolls it; it heals on its own once the filesystem does. The cap
+  was already approximate because two renders can overlap, and this is a second reason - a rollover
+  skipped after its size read timed out can leave the file a little over it.
+  `Read-BoundedFileText` writes no record at all: it records the
   reason and `Merge-StatusConfigFile` writes it once the read has returned and its clock has stopped,
   because a size probe, a rename, an open and a close inside that clock would be exactly the unbounded
   filesystem work the clock exists to keep out, and would delay the queued close behind them.

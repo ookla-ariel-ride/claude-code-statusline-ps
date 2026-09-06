@@ -611,7 +611,11 @@ you open to read should not be able to clear your screen. The log rolls over int
 `claude-statusline-diag.log.1` once it would pass 4 MB, so
 leaving the variable set costs two files of that size at most. Treat the 4 MB as approximate: the log
 is best-effort and never waits on anything, so two renders that overlap can leave the file a little
-over the cap, or lose one of their lines to each other. Unset the variable when you are done (`0`,
+over the cap, or lose one of their lines to each other. Rolling over means renaming, and a rename is
+the one thing here that cannot be put behind the deadline, so it is only attempted when the folder has
+just answered two size questions quickly. If it has not — a share gone slow — the record is dropped
+and the log sits at its cap until a render finds the folder responsive again, which it does on its
+own. Unset the variable when you are done (`0`,
 `false`, `no` and `off` also count as off) and delete both files.
 
 ## Contributing
