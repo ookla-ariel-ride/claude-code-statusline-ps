@@ -316,30 +316,64 @@ value beneath it rather than to the built-in default. A project with no `.claude
 changes nothing, and so does an unreadable one. `-Config <path>` is the exception: it replaces the user
 file and skips the project file, so a render with it is the same whatever directory the payload names.
 
-That file arrives with the repository rather than from you, so it is read as untrusted input. The file is
-opened first and then judged by the handle: a handle that cannot seek is a device or a pipe rather than a
-file, and the size that has to fit under 64 KiB is the one the handle reports, not one read off the path
-beforehand. A link or another reparse point is refused as well. One clock covers every step — the open,
-the size, the link check, each read and the close at the end — and it starts before the first filesystem
-call: if 250 ms goes by the attempt is abandoned and the config beneath it stands, silently, the way a
-bad value does. Silently on the line, that is — every one of those refusals names itself in the
-diagnostics log below, so a config that is being ignored can say why.
+**Both config files are read under the same budget: 64 KiB and 250 ms.** One clock covers every step of
+one file — the open, the size, each read and the close at the end — and it starts before the first
+filesystem call. The clock is per file, and the two are read one after the other, so a machine where
+both are unreachable spends up to 500 ms and not 250. If the budget goes by the attempt is abandoned and
+the config beneath it stands, silently, the way a bad value does. Silently on the line, that is — every
+one of those refusals names itself in the diagnostics log below, so a config that is being ignored can
+say why. The budget is not a judgement about who wrote the file: it is about a filesystem that does not
+answer, and a home directory on a dead network share hangs a render exactly the way a project directory
+on one does.
+
+**What a miss looks like on screen: that render draws the built-in defaults.** There is no cache of the
+last config that worked, so if your own `statusline.json` takes longer than 250 ms to read — an
+anti-virus scan of a file just saved, a cloud-sync client hydrating it, a disk spinning up — that one
+render is a plain, one-row line, and the next one is back to normal. A visible flicker is the price of
+never waiting; a render that hangs would have cost the line altogether.
+
+What separates the two files is trust, and it comes to one extra check. The project file arrives with
+the repository rather than from you, so it is opened first and then judged by the handle: a handle that
+cannot seek is a device or a pipe rather than a file, and the size that has to fit under 64 KiB is the
+one the handle reports, not one read off the path beforehand. A link or another reparse point is refused
+as well. Your own file skips only that last check, so a `statusline.json` symlinked out of a dotfiles
+repository still loads — you chose that link, and a repository did not.
+
+Your file is read as bytes rather than through `Get-Content`, and the bytes are decoded by the same
+class `Get-Content` decodes with, so the answer is the same one: UTF-8 with or without a mark, UTF-16 in
+either byte order, UTF-32 in either byte order, and no mark means UTF-8. A config saved as UTF-16 by an
+editor keeps working. This is why the file was left unbounded when the project file was bounded, and it
+is what closing that gap needed first. A file another program is holding open *for writing* — an editor
+between its truncate and its flush, a sync client — is read too, rather than being refused for the
+moment that program holds it.
+
+A relative `-Config` path means what PowerShell means by it, not what the process working directory
+means: those two part company after a `Set-Location`, so the path is resolved against your session
+before anything opens it. A path PowerShell cannot resolve at all falls back to the built-in defaults
+and says so in the log.
 
 A project directory with no `.claude\statusline.json` — the usual case if you keep no per-project
 config — costs one attempted open on the thread pool and nothing else: no attribute probe, no read and
 no close. It is not free, and cannot be: the deadline is the reason the open is dispatched rather than
 made here, and a cheaper check made first would either block on the render's own thread or cost a
-dispatch of its own and reopen the gap between asking about a name and opening it. `test.ps1` counts
-those operations rather than timing them, so the shape is pinned and the count cannot drift.
+dispatch of its own and reopen the gap between asking about a name and opening it. Your own file costs
+an open, a size and two reads on every render, which is what reading it has always cost. `test.ps1`
+counts those operations rather than timing them, so the shape is pinned and the count cannot drift.
 
-What that buys is a bound on this read, not on the machine. Abandoning is literal: a thread can stay
-stuck behind a hung open until the process exits, and a file left open that way is not closed on the way
-out, because closing it would wait on the same thing. The status line renders and exits without either.
-Two things the bound does not cover, said plainly rather than rounded off: your own `statusline.json` is
-read the ordinary way, with no deadline, so a home directory on a dead network share can still hold up a
-render; and a filesystem sick enough to hang calls this read never makes can hold one up somewhere else
-again. Your file is read that way on purpose — it is yours rather than a repository's, and it is the one
-whose text encoding the script does not get to choose.
+What that buys is a bound on these two reads, not on the machine. Abandoning is literal: a thread can
+stay stuck behind a hung open until the process exits, and a file left open that way is not closed on
+the way out, because closing it would wait on the same thing. The status line renders and exits without
+either. What the bound still does not cover, said plainly rather than rounded off: a filesystem sick
+enough to hang calls these reads never make can hold a render up somewhere else. Every other filesystem
+call a render can make is audited in a comment beside `Read-BoundedFileText` in `statusline.ps1`, with a
+decision recorded for each. The diagnostics log has a clock of its own. The probe cache entry and the
+session state file are read under the config budget, because each was one existence test and one read —
+the same shape, so the same fix. `git status` is a child process under its own timeout — which covers
+the child, and not the `Test-Path` and the walk for a `.git` directory that come before it. Those and
+the ref stamps are deliberately unbounded: they are many calls of several shapes rather than the one
+open and one read a config takes, so a budget there would cost more than the case it guards. That is a
+decision about cost and not a claim that they cannot hang — a project directory on a dead share can hold
+a render up in the walk before the git timeout applies to anything.
 
 | Key | Values | What it does |
 |---|---|---|
@@ -713,15 +747,15 @@ still records what the session spent.
 
 | Segment | Icon | Data | Rendering |
 |---|---|---|---|
-| model | <img src="docs/icons/robot.svg" height="18" alt="robot"> `nf-md-robot` | `model.display_name`, `context_window.context_window_size`, `exceeds_200k_tokens`, `context_window.used_percentage`, `rate_limits.five_hour`, `seven_day` | Bold cyan. On a 1M window `1M` follows the name in a brighter cyan, then a warning triangle when Claude Code reports `exceeds_200k_tokens` as true. The whole segment turns red once the context window or a rate limit reaches the `alarm` percentage, 90 unless the config moves it. The text does not change. This is the one segment that is never shortened and never dropped, which is why the alarm rides on it: at any width, and on either row of layout two, a full context window is still visible as a red line |
+| model | <img src="docs/icons/robot.svg" height="18" alt="robot"> `nf-md-robot` | `model.display_name`, `context_window.context_window_size`, `exceeds_200k_tokens`, `context_window.used_percentage`, `rate_limits.five_hour`, `seven_day` | Bold cyan. `display_name` goes through the same guard as the branch and repository names, so a right-to-left override or other invisible reordering character in it costs the character rather than the line - but unlike every other guarded field, an unusable name here (a number, a boolean, a blank string, or none at all) falls back to the word `claude` rather than dropping the segment: this is the one segment that is never shortened and never dropped, because the alarm rides on it, and a payload field is not allowed to be the reason a real alarm goes unseen. On a 1M window `1M` follows the name in a brighter cyan, then a warning triangle when Claude Code reports `exceeds_200k_tokens` as true. The whole segment turns red once the context window or a rate limit reaches the `alarm` percentage, 90 unless the config moves it. The text does not change otherwise: at any width, and on either row of layout two, a full context window is still visible as a red line |
 | context | <img src="docs/icons/memory.svg" height="18" alt="memory"> `nf-md-memory` | `context_window.*` | Percent, ten-block bar, used/total tokens, then a quieter `92% cached`. Green below 60%, yellow below 85%, red above, or the `thresholds` from the config. On a 1M window the cut-offs are 70% and 90% whatever the config says, so red still means about 100k tokens left. The cached share is `cache_read_input_tokens` over the whole of `current_usage`, absent on older Claude Code versions and before the first API response, and it goes when the token counts go. A block with a negative count is refused rather than repaired, so a malformed payload shows no share instead of a made-up one |
 | cache | <img src="docs/icons/fire.svg" height="18" alt="fire"> `nf-md-fire` | `prompt_cache.warm`, `expires_at`, `caching_observed`, `requests` | `cache 42m` in green while the prompt cache has time on it, `cache 4m` in yellow inside the last five minutes, `cache <1m` under a minute. Red `cache cold` when `warm` is false or the expiry has already passed — the timestamp wins over a `warm` beside it that disagrees. Red `cache off` when `caching_observed` is false with at least three requests behind it, which is the client saying it has asked for caching and never seen it work; that is checked before the countdown, since a cache that is not working still carries an expiry and printing it would be the most reassuring thing on the line at the moment it is least true. `cache warm` with no figure when the cache is alive but the expiry is missing or is not one this script will believe: `expires_at` is treated as epoch seconds, divided by 1000 first when it is past 1e12, and a value of zero or less, or more than a day out, is refused rather than clamped, so a nonsense field costs the countdown and not the truth. The whole segment is absent on Claude Code before 2.1.251 and in the first turns of a session, before the block arrives. The countdown is a snapshot of when the payload arrived and only ticks on its own with `statusLine.refreshInterval` set |
 | cost | <img src="docs/icons/cash.svg" height="18" alt="cash"> `nf-md-cash` | `cost.total_cost_usd`, `cost_usd` from the session state file | Dimmed, two decimals, with the change since the previous render in parentheses: `$1.07 (+$0.12)`. The suffix is there only when the total rose by at least a cent, so most renders show the total alone, and so does the first render of a session, one with no state file, and one where `state` is off. With `statusLine.refreshInterval` set the command re-runs on a timer, and a render with no turn behind it has nothing to add. The delta is the first detail the width fitting sheds |
 | clock | <img src="docs/icons/timer-outline.svg" height="18" alt="stopwatch"> `nf-md-timer_outline` | `cost.total_duration_ms`, `cost.total_api_duration_ms` | `1h12m · api 38%`: how long the session has been running, and how much of that went on waiting for the model. Dimmed, with no colour bands — a long session is not an error. Under a minute reads `<1m`, under an hour `12m`, and an hour or more `1h12m` with the minutes zero-padded. The separator is a middle dot rather than a dash, because a dash beside a percentage reads as a range. The api share is the last detail the width fitting sheds and the segment is the third whole one it drops, behind the wall clock and lines. Both fields are optional and older Claude Code versions send neither: no `total_duration_ms` means no segment, and no `total_api_duration_ms` means the elapsed time on its own, with no dot and no `api` part. A duration that could not be true is refused rather than repaired — a negative or absurd total leaves the segment out, and an api time longer than the session has existed leaves the elapsed time standing alone rather than printing a confident `api 100%` |
 | time | <img src="docs/icons/clock-outline.svg" height="18" alt="clock"> `nf-md-clock_outline` | none — the machine clock | `14:05`: the local time of day, 24 hour, the way a shell prompt puts the time on the right. Dimmed, with no colour bands. **Off by default**, and the only segment that is: it is the one figure on the line that says nothing about the session, so it is also the first whole segment the width fitting drops. Set `"segments": {"time": true}` to turn it on and `"right": ["time"]` to push it to the edge. **It needs `statusLine.refreshInterval`.** The payload carries no timestamp, so this reads the machine clock at the moment the script runs; without a refresh interval the script only runs on Claude Code's events, and an idle session shows the time of the last one. Not to be confused with the clock segment above it, which is how long the session has run: two times, two glyphs, and a session that has run `1h12m` says nothing about whether it is now 09:14 or 23:47 |
 | lines | <img src="docs/icons/code.svg" height="18" alt="code"> `nf-fa-code` | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` in the `removed` colour. Hidden when both are zero |
-| limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day`, `spend_limit` | `5h 24% → (1h12m) 7d 41% $ 62%`. Coloured by the worst of the figures, with the 60% and 85% bands, or the config's `thresholds`, whatever the window size. The countdown is omitted once the reset time has passed. The arrow after the 5-hour figure paces it against how much of the five-hour window has gone: `→` while carrying on at this rate still lands inside the window, `↑` once it would overrun, and a red `↑` once the projection reaches 120%. There is no arrow in the first half hour of a window, where the projection swings on a single busy minute, nor after the reset time, nor before anything has been used. Only the 5-hour figure gets one; a week is too long to pace from one payload. The `$` figure is the spend limit. Claude Code sends it only behind a Claude apps gateway with a spend limit, and only from 2.1.251 on |
-| badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim, <img src="docs/icons/user.svg" height="18" alt="user"> agent, <img src="docs/icons/tag.svg" height="18" alt="tag"> session | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode`, `agent.name`, `session_name` | Dimmed glyphs. The four mode badges come first, then the custom agent driving the main thread and the name given to the session, which change far less often. Effort is hidden at `high`. A name wider than 20 cells is cut and ends in `…`, measured in cells so a name in wide characters is cut where it draws rather than where it counts. The short form is the mode badges alone, so a narrow line sheds the agent and the session before the whole segment goes. The segment is hidden when none of the six is there, which now includes a plain unnamed session with every mode off. `session_id` is not shown: it is a UUID and says nothing at a glance |
+| limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day`, `spend_limit` | `5h 24% → (1h12m) 7d 41% $ 62%`. Coloured by the worst of the figures, with the 60% and 85% bands, or the config's `thresholds`, whatever the window size. The countdown is omitted once the reset time has passed, once it is more than a year out, or when the reset value itself is not a usable date at all — a numerically absurd `resets_at` used to throw and take the whole segment down with it, and a five-digit day count is not a countdown anyone reads either way, so both now render nothing rather than either. A `used_percentage` that is not a real number — a string, a boolean, `null` — leaves that one figure off the line rather than the whole segment: a payload with a bad 5-hour figure and a good 7-day one still shows the 7-day figure, and a payload with nothing usable at all shows nothing. The arrow after the 5-hour figure paces it against how much of the five-hour window has gone: `→` while carrying on at this rate still lands inside the window, `↑` once it would overrun, and a red `↑` once the projection reaches 120%. There is no arrow in the first half hour of a window, where the projection swings on a single busy minute, nor after the reset time, nor before anything has been used. Only the 5-hour figure gets one; a week is too long to pace from one payload. The `$` figure is the spend limit. Claude Code sends it only behind a Claude apps gateway with a spend limit, and only from 2.1.251 on |
+| badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim, <img src="docs/icons/user.svg" height="18" alt="user"> agent, <img src="docs/icons/tag.svg" height="18" alt="tag"> session | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode`, `agent.name`, `session_name` | Dimmed glyphs. The four mode badges come first, then the custom agent driving the main thread and the name given to the session, which change far less often. Effort is hidden at `high`, compared case-insensitively but not by culture, so `HIGH` is still the default and `xhigh` is still a badge. `fast_mode` and `thinking.enabled` are read with a strict boolean type check, the same one `exceeds_200k_tokens` uses, so the string `"true"` or the number `1` is not a mode either - only PowerShell's own `$true`/`$false`, which is what a real payload sends. The other four fields go through the same text guard as the branch and repository names: anything that is not real, visible text is not a badge at all, and a right-to-left override or other invisible reordering character costs the character rather than the badge or the segment. A name wider than 20 cells is cut and ends in `…`, measured in cells so a name in wide characters is cut where it draws rather than where it counts. The short form is the mode badges alone, so a narrow line sheds the agent and the session before the whole segment goes. The segment is hidden when none of the six is there, which now includes a plain unnamed session with every mode off. `session_id` is not shown: it is a UUID and says nothing at a glance |
 | pr | <img src="docs/icons/pull-request.svg" height="18" alt="pull request"> `nf-oct-git_pull_request` | `pr.number`, `pr.url`, `pr.review_state` | `#12`, wrapped in an [OSC 8 hyperlink](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda) to `pr.url` so ctrl-click in Windows Terminal opens it. Green when the review state is `approved`, red on `changes_requested`, dim otherwise. Hidden when the payload has no `pr` object or no whole, positive number in it; a `url` that is not `http` or `https` leaves the text unlinked, and so does `"links": false` |
 | folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.repo`, `workspace.project_dir`, `workspace.current_dir` | Blue. `owner/name` when the payload names the repository, then `›` and the directory name when it differs from the project root. Without a repository, the directory name alone. The short form is the repository name. The whole text is wrapped in an OSC 8 hyperlink to `current_dir` as a `file:` URL, so ctrl-click opens the directory; a relative or UNC `current_dir` is left unlinked, and `"links": false` turns the link off |
 | branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/fork.svg" height="18" alt="fork"> `nf-md-source_fork` in a worktree, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git status --porcelain=v1 --branch` run in `workspace.current_dir`, `worktree.name`, `worktree.path`, `workspace.git_worktree` | Magenta when clean, yellow with the pencil when the tree has changes. The worktree name follows the branch name, then the counts described below, then the pencil. Shows `detached` on a detached HEAD. The whole text is wrapped in an OSC 8 hyperlink when the payload names the repository: on `github.com` the branch page, `https://github.com/<owner>/<name>/tree/<branch>`, and on any other host the repository home, since GitLab, Bitbucket and the rest each spell a branch path differently and a wrong guess is a 404. No `workspace.repo`, a detached HEAD, or `"links": false` leaves the text unlinked |
@@ -965,10 +999,11 @@ appends a line to `claude-statusline-diag.log` in your temp folder:
 2026-09-03T09:14:02.415Z 24880 state: written (C:\Users\jim\AppData\Local\Temp\claude-statusline-state\abc.json)
 ```
 
-A project `.claude\statusline.json` that is not applied says which of the refusals it hit — it could
-not be opened, the handle is not an ordinary file, it is a link or a reparse point, it is over the
-byte cap, the deadline was spent, the file is empty, or it would not parse — so "why is my project
-config being ignored?" has an answer in the log rather than needing the script edited.
+A `statusline.json` that is not applied says which of the refusals it hit — it could not be opened,
+the handle is not an ordinary file, it is a link or a reparse point (the project's file only), it is
+over the byte cap, the deadline was spent, the file is empty, or it would not parse — so "why is my
+config being ignored?" has an answer in the log rather than needing the script edited. Both files
+report this way; the path in the line says which one it was.
 
 The printed line is the same either way, and a log that cannot be written is as silent as the failure
 it records. Writing a record is itself bounded: your temp folder is a filesystem like any other and
@@ -1004,7 +1039,7 @@ positionally. If you add a segment or a sample, add a payload to `samples/` and 
 and value to look for). A sample without those rows fails the run by name. A sample with a segment
 that has a short form, such as a branch with counts or a folder with a repository, also needs an
 entry in `$sampleShortForms`, the full and shortened text the matrix accepts at a set width, unless
-its full text carries a live countdown or cannot fit at 120 columns, as sample 06's limits line does.
+its full text cannot fit at 120 columns, as sample 06's limits line does with every badge on.
 A sample whose percentages reach the `alarm` level needs its name in `$alarmSamples` as well: the
 markers are plain text and cannot see a colour, so that list is what tells the matrix whether the
 model segment should be red or cyan, and it checks both.

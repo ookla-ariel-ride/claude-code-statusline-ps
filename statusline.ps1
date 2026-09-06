@@ -720,12 +720,18 @@ function Get-ConfigPreset($Name) {
     return $null
 }
 
-# What a project config may cost to read. A config a person wrote is a few hundred bytes, so 64 KiB is
-# far past any real one and still reads in under a millisecond from a disk; the deadline is what a read
-# that never finishes may cost, and the status line is redrawn on every event, so a quarter of a second
-# is already longer than a render. Both are constants rather than config keys: they guard the file the
-# config itself comes from.
-function Get-ProjectConfigLimit { return @{ MaxBytes = 65536; TimeoutMs = 250 } }
+# What a config file may cost to read - either of them, the user's own and the project's. A config a
+# person wrote is a few hundred bytes, so 64 KiB is far past any real one and still reads in under a
+# millisecond from a disk; the deadline is what a read that never finishes may cost, and the status line
+# is redrawn on every event, so a quarter of a second is already longer than a render. Both are
+# constants rather than config keys: they guard the file the config itself comes from.
+# One pair of numbers for both files, because the thing being bounded is the same thing in both cases -
+# a filesystem that does not answer - and it is not a trust judgement, so there is nothing about the
+# user's file that would earn it a different budget. Measured before choosing that: the shipped 550-byte
+# config takes about two milliseconds to read this way on a warm local disk, a fraction of a millisecond
+# more than Get-Content took for the same file, and both are two orders of magnitude inside the deadline.
+# So a second budget would have been two numbers to keep in step for no case either of them separates.
+function Get-BoundedReadLimit { return @{ MaxBytes = 65536; TimeoutMs = 250 } }
 
 # The two calls the bounded read makes, each closed over the path so it can go straight to the thread
 # pool. Nothing here can be a script block: converted to a delegate one needs a runspace, and a thread
@@ -760,19 +766,132 @@ function Get-BoundedStreamDelegate($Stream) {
     }
 }
 
-# The text of a file a repository controls, or $null when it is anything but a small, ordinary, promptly
-# readable one. Test-Path and Get-Content are not enough for this file: they follow a link wherever it
-# leads and read whatever comes back, for as long as it takes, so a repository could point the path at a
-# device, a FIFO or a dead network share and hold up every render, or hand over a file large enough to
-# matter. So one clock covers the whole thing, started before the first filesystem call of any kind, and
-# every call runs on the thread pool and is waited on for what is left of it: the open, the file's length,
-# the attribute probe, each read, and the close at the end. When the budget runs out the attempt is
-# abandoned and the caller keeps the config it had, exactly like any other refusal. Abandoning means what
-# it says: a thread may stay blocked in the kernel until the process exits, a handle opened after that is
-# never closed, and a stream is left open rather than closed on the way out, since closing it would wait
-# on whatever is already stuck. That is the price of not waiting, and this process renders one line and
-# exits. What the clock does not cover is what the caller does with the text afterwards, or a filesystem
+# The user's own config re-opened sharing with a writer, or $null when that is not what went wrong.
+#
+# File.OpenRead asks for FileShare.Read, which is .NET's default and means "other handles may read this
+# while I do". A process that has the file open FOR WRITING - an editor between its truncate and its
+# flush, a sync client, a script that forgot to dispose a StreamWriter - is therefore refused, with
+# ERROR_SHARING_VIOLATION. Get-Content asks for FileShare.ReadWrite and reads it fine, so #48 would have
+# turned a config that always loaded into one that silently fell back to the defaults for as long as the
+# other process held it. This puts that back.
+#
+# It is not a delegate on the pool like the first open, because there is no way to make one cheaply:
+# Delegate.CreateDelegate binds one argument, and the four-argument File.Open cannot be closed down to
+# the parameterless delegate a pool dispatch needs. Building one at run time can be done - an expression
+# tree compiles to exactly that - and it was measured at 61 ms per process, which is thirty times what a
+# whole config read costs and more than this script spends on everything else put together. So the
+# re-open happens on this thread, and what makes that acceptable is WHICH failure gets here: a sharing
+# violation is a completed round trip to the filesystem, inside the budget, saying the file is there and
+# in use. It is the same reasoning the diagnostics rollover uses for its rename - not a bound on the
+# call, but a test of the filesystem about to be called. A share that hangs never answers at all, so it
+# cannot reach this line, and the reads that follow are back under the clock either way.
+#
+# The user's file only. For the project file a sharing violation stays a refusal: it is a repository's
+# path, and an unbounded open on one is the thing #19 exists to refuse.
+function Open-SharedConfigFile([string] $Path, $Fault, [bool] $Trusted, [long] $Left) {
+    if (-not $Trusted -or $Left -le 0 -or $null -eq $Fault) { return $null }
+    $base = $Fault.GetBaseException()
+    # 0x80070020 is ERROR_SHARING_VIOLATION as an HResult. Tested by number rather than by type, because
+    # the type is the plain IOException that every other filesystem failure also lands on.
+    if ($base -isnot [System.IO.IOException] -or $base.HResult -ne 0x80070020) { return $null }
+    $shared = try { [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite) } catch { $null }
+    return $shared
+}
+
+# ---- EVERY FILESYSTEM CALL A RENDER CAN MAKE, AND WHAT BOUNDS IT ----
+# The audit #48 asked for, kept here beside the reader it is mostly about. A status line runs on every
+# event, so any call here that does not answer is a line that does not draw. Each row is a decision, not
+# a description: bounded (and how), deliberately unbounded (and why), or unreachable in practice.
+#
+#   BOUNDED, by the clock in Read-BoundedFileText (250 ms per file, 64 KiB cap). The clock is PER READ,
+#   so two files that both hang cost two budgets, not one:
+#     - the user's own statusline.json, beside this script or named by -Config. Bounded since #48,
+#       because a home directory can sit on a network share too. Read as trusted: the link refusal below
+#       is skipped, so a config symlinked out of a dotfiles repository still loads, which is how it
+#       always worked.
+#     - the project's .claude\statusline.json. Bounded since #19, and read as untrusted: it arrives with
+#       the repository, so a handle that cannot seek, a reparse point and a directory are all refused.
+#     - the git cache entry, in Get-CachedGitBranch, and the session state file, in Read-SessionState.
+#       Both were one File.Exists and one ReadAllText on the render's thread, which is the same shape
+#       the config read has and therefore cost one bounded read to fix rather than any new machinery.
+#       Both files are written by this script, so both are read as trusted.
+#   BOUNDED, by their own clock:
+#     - the diagnostics log's size probe, rollover and append, in Write-StatusDiag: 250 ms for a whole
+#       record, every call on the pool, with the rename attempted only above a reserve. Off entirely
+#       unless CLAUDE_STATUSLINE_DEBUG is set, so the common render makes none of them.
+#   BOUNDED, but not by a filesystem clock:
+#     - git status itself, in Get-GitBranch: a child process under config git.timeoutMs, killed if it
+#       overruns. The process is what waits on the filesystem, so git reaching into a dead share costs
+#       that timeout and not a render. The timeout covers the CHILD and nothing this script does before
+#       starting it - see the next group. Its timing mechanics belong to #63 and were left alone here.
+#   DELIBERATELY UNBOUNDED, and stated by where each one really is rather than by where it is convenient
+#   to say it is:
+#     - the git probe's own precondition, in Get-GitBranch: one Test-Path on the directory the payload
+#       named, on this thread, before the child process starts and so outside its timeout.
+#     - the git cache's repository work, all of it before git runs and none of it under TEMP:
+#       Get-GitRepoRoot walking up from the payload's directory looking for a .git, Get-GitStamp
+#       stat-ing that git directory, enumerating the directories under refs and reading .git/commondir,
+#       a file the repository itself writes.
+#     - the writes, which are all after the line has been printed: the cache entry, the state file, and
+#       the sweep of either directory. Nothing waits on them but the process exit.
+#     - Get-SessionStateDir and Get-SessionStatePath, one Directory.Exists on the way to the state read.
+#     Where those directories are is worth writing down, because the two are not the same rule.
+#     Write-StatusDiag and Get-GitCacheDir go TEMP, then TMPDIR, then Path.GetTempPath();
+#     Get-SessionStateDir goes TEMP, then $HOME/.claude/statusline-state. TEMP is normally set on
+#     Windows and normally NOT set on Unix, so on Linux and macOS the log and the cache land in /tmp
+#     while the state file lands under the home directory - which is the one of the three that can be a
+#     network mount. Recorded rather than changed: moving the state file would strand every state file
+#     already written, and the read of it is bounded now anyway.
+#     - Get-Command git, a PATH scan on the render thread. One lookup, on directories the shell already
+#       resolves for every command a user types.
+#     So the honest version is that a project directory on a filesystem that hangs can hold a render up
+#     in the walk or the stamps BEFORE the git timeout has anything to apply to. What holds THOSE back
+#     from a budget is not that they cannot hang, it is what a budget would cost: the walk and the stamps
+#     are many calls of several shapes where a config read is one open and one read, so a budget there
+#     means a delegate per call and one clock threaded through four functions, and the probe's timing
+#     mechanics are #63's. That reason was checked against each row rather than waved at all of them:
+#     it did not hold for the cache entry or the state file, which are one existence test and one read
+#     each, so those two are bounded above instead. Recorded rather than fixed, which is what #48 asked
+#     for, and it is a decision about cost and not a claim that they are safe. What
+#     stands today is a whole-render test in test.ps1 that points a payload at an unroutable UNC path
+#     and bounds the render loosely, which catches a stack that hangs outright and not a slow one. The
+#     stamp walk's cap of 256 ref directories and the sweep's cap of 200 deletions are about cost, not
+#     about hanging, and neither is a deadline. The shape to copy, if any of this ever earns one, is
+#     the reader below.
+#   UNREACHABLE IN PRACTICE:
+#     - install.ps1, docs/render-*.ps1 and tools/capture-stdin.ps1 make filesystem calls of their own
+#       and none of them runs during a render.
+#     - subagent-statusline.ps1 opens no file at all. It reads stdin, renders and exits.
+#
+# ABANDONMENT IS LITERAL, and anything that copies this pattern copies that too. When the budget is
+# gone the reader does not cancel anything, because there is nothing here that can cancel a blocking
+# filesystem call: it stops waiting and returns. A pool thread can stay stuck in the kernel until the
+# process exits, a handle opened after the deadline passed is never closed, and a stream still open is
+# left open rather than closed on the way out, because closing it would wait on the same thing that is
+# already stuck. That is harmless in a process that draws one line and exits, and it is the right trade
+# there. It is not "nothing happened", and it would not be the right trade in something long-lived.
+
+# The text of a config file, or $null when it is anything but a small, promptly readable one - and, for
+# the project's file, an ordinary one. Test-Path and Get-Content are not enough here: they follow a link
+# wherever it leads and read whatever comes back, for as long as it takes, so a repository could point
+# the path at a device, a FIFO or a dead network share and hold up every render, or hand over a file
+# large enough to matter, and a home directory can sit on that same dead share without any repository
+# being involved. So one clock covers the whole thing, started before the first filesystem call of any
+# kind, and every call runs on the thread pool and is waited on for what is left of it: the open, the
+# file's length, the attribute probe, each read, and the close at the end. When the budget runs out the
+# attempt is abandoned and the caller keeps the config it had, exactly like any other refusal.
+# Abandonment is literal; the block above says what that means and why it is the right trade here.
+# What the clock does not cover is what the caller does with the text afterwards, or a filesystem
 # degraded enough to hang calls this function never makes.
+#
+# -Trusted is the user's own file, and it changes exactly one thing: the attribute probe is skipped.
+# THE CLOCK AND THE CAP ARE NOT A TRUST JUDGEMENT - they are about a filesystem that does not answer,
+# which is no respecter of whose file it is - so they apply either way. The probe is the trust
+# judgement: it refuses a link, and a config symlinked out of a dotfiles repository is a normal thing to
+# have and read fine before this function was pointed at it. Refusing one would be a config that
+# vanished for no reason a user could see. The project's file gets the probe because a repository chose
+# that path and this script did not. Skipping it also spends one filesystem call fewer on the file that
+# is read on every single render, whether or not a project directory was named.
 #
 # Every refusal also names itself. A project config that is silently ignored is correct behaviour and an
 # unanswerable support question at the same time, so each way out sets $why and the one call at the end
@@ -790,8 +909,8 @@ function Get-BoundedStreamDelegate($Stream) {
 # arriving as one caught exception. File.OpenRead still throws on the pool thread - a file that is not
 # there is the only answer that API has - but the fault is now read off the task rather than rethrown
 # into a PowerShell catch, and the catch was where the cost was.
-function Read-BoundedFileText([string] $Path) {
-    $limit = Get-ProjectConfigLimit
+function Read-BoundedFileText([string] $Path, [switch] $Trusted) {
+    $limit = Get-BoundedReadLimit
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $stream = $null
     $why = $null
@@ -810,8 +929,20 @@ function Read-BoundedFileText([string] $Path) {
         if ($left -le 0) { $why = 'the deadline was spent before the open'; return $null }
         $open = [System.Threading.Tasks.Task]::Run($call.Open)
         if ([System.Threading.Tasks.Task]::WaitAny(@($open), [int] $left) -lt 0) { $why = "the open did not answer inside $($limit.TimeoutMs) ms"; return $null }
-        if (-not $open.IsCompletedSuccessfully) { $why = 'it could not be opened'; $err = $open.Exception; return $null }
-        $fs = $open.Result
+        $fs = if ($open.IsCompletedSuccessfully) { $open.Result } else { Open-SharedConfigFile $Path $open.Exception $Trusted ($limit.TimeoutMs - $sw.ElapsedMilliseconds) }
+        if ($null -eq $fs) {
+            # A file that is not there is not a refusal for the user's own config: an install without one
+            # is a supported state (install.ps1 warns and carries on), and every render would otherwise
+            # write the same line to the log for the life of that install. Get-Content said nothing about
+            # it either. For the project file it stays a refusal, because "there is no project config" is
+            # exactly the question the log was added to answer.
+            $err = $open.Exception
+            $base = $err.GetBaseException()
+            if (-not ($Trusted -and ($base -is [System.IO.FileNotFoundException] -or $base -is [System.IO.DirectoryNotFoundException]))) {
+                $why = 'it could not be opened'
+            }
+            return $null
+        }
         $stream = Get-BoundedStreamDelegate $fs
         # From the handle: a stream that cannot seek is not an ordinary file - a FIFO, a pipe, a
         # character device. CanSeek is settled when the handle is made and costs nothing to read back;
@@ -828,14 +959,20 @@ function Read-BoundedFileText([string] $Path) {
         # APIs that name a handle's own target arrived in .NET 6, past the floor. So the name is asked
         # once more, and a reparse point or a directory is refused even though the handle looked ordinary.
         # The two are asked separately only so that the log can say which one it was; refusing both is
-        # the one rule, and an ordinary file answers no to both tests either way.
-        $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
-        if ($left -le 0) { $why = 'the deadline was spent before the attribute probe'; return $null }
-        $attr = [System.Threading.Tasks.Task]::Run($call.Attributes)
-        if ([System.Threading.Tasks.Task]::WaitAny(@($attr), [int] $left) -lt 0) { $why = "the attribute probe did not answer inside $($limit.TimeoutMs) ms"; return $null }
-        if (-not $attr.IsCompletedSuccessfully) { $why = 'its attributes could not be read'; $err = $attr.Exception; return $null }
-        if (($attr.Result -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { $why = 'it is a link or a reparse point'; return $null }
-        if (($attr.Result -band [System.IO.FileAttributes]::Directory) -ne 0) { $why = 'it is a directory'; return $null }
+        # the one rule, and an ordinary file answers no to both tests either way. This is the trust
+        # judgement and the only thing -Trusted skips; the clock is not skipped for anyone. Nothing is
+        # lost by skipping it for the user's file: a directory never reaches this line, because the open
+        # above refuses one with UnauthorizedAccessException (measured, and pinned by a test), and the
+        # link it would refuse is a link the user made, which is a thing to follow rather than refuse.
+        if (-not $Trusted) {
+            $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
+            if ($left -le 0) { $why = 'the deadline was spent before the attribute probe'; return $null }
+            $attr = [System.Threading.Tasks.Task]::Run($call.Attributes)
+            if ([System.Threading.Tasks.Task]::WaitAny(@($attr), [int] $left) -lt 0) { $why = "the attribute probe did not answer inside $($limit.TimeoutMs) ms"; return $null }
+            if (-not $attr.IsCompletedSuccessfully) { $why = 'its attributes could not be read'; $err = $attr.Exception; return $null }
+            if (($attr.Result -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { $why = 'it is a link or a reparse point'; return $null }
+            if (($attr.Result -band [System.IO.FileAttributes]::Directory) -ne 0) { $why = 'it is a directory'; return $null }
+        }
         $buf = [byte[]]::new($limit.MaxBytes + 1)
         $read = 0
         while ($read -lt $buf.Length) {
@@ -850,10 +987,22 @@ function Read-BoundedFileText([string] $Path) {
         }
         # The cap once more, in case the file grew past the length the handle reported.
         if ($read -gt $limit.MaxBytes) { $why = "it grew past the $($limit.MaxBytes) byte cap while it was being read"; return $null }
-        $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
-        # UTF8.GetString keeps a byte order mark as U+FEFF, which ConvertFrom-Json will not parse past.
-        if ($text.Length -gt 0 -and $text[0] -eq [char] 0xFEFF) { $text = $text.Substring(1) }
-        return $text
+        # The bytes decoded as whatever they say they are, by the same reader Get-Content decodes with.
+        # A file's encoding is the one thing about a config this script does not choose: the installer
+        # writes UTF-8, but the file is the user's to edit afterwards and an editor on Windows still
+        # offers UTF-16, whose bytes read as UTF-8 are a string of NULs no JSON parser will take. So a
+        # config that was working has to keep working, which means following Get-Content's rule rather
+        # than a rule of this script's own - and the way to be sure of that is to use the same class.
+        # StreamReader over a MemoryStream is the whole of it: detectEncodingFromByteOrderMarks reads
+        # the mark, switches encoding, and drops the mark from the text (nothing else does - every
+        # decoder here would hand back a U+FEFF that ConvertFrom-Json will not parse past). UTF-8
+        # without a mark is the fallback, which is what PowerShell 7 defaults to. Read-StdinText
+        # already leans on this same detection, so the two paths into this script agree by construction.
+        # No filesystem call and no copy: the MemoryStream is a window onto the buffer already read, and
+        # its length is $read, so the zero padding past it cannot finish a mark that the file started.
+        $ms = [System.IO.MemoryStream]::new($buf, 0, $read)
+        $reader = [System.IO.StreamReader]::new($ms, [System.Text.UTF8Encoding]::new($false), $true)
+        try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
     } catch {
         $why = 'the read failed'
         $err = $_.Exception
@@ -885,7 +1034,7 @@ function Read-BoundedFileText([string] $Path) {
 # Read-BoundedFileText immediately after it returns: see the note in that function's finally for why
 # the read does not write its own record. Clearing the slot as it goes means a read that refused
 # nothing cannot be reported twice, and a caller that never asks cannot leave a record for the next one.
-function Write-BoundedReadDiag {
+function Write-BoundedReadDiag([string] $Label = 'config read') {
     $record = $script:diagBoundedRead
     if (-not $record) { return }
     $script:diagBoundedRead = $null
@@ -894,36 +1043,31 @@ function Write-BoundedReadDiag {
     # A rule that holds everywhere is worth more than three lines of nesting saved here.
     if ($script:diagOn -and $record.Why) {
         $detail = if ($record.Err) { " ($($record.Err.GetBaseException().Message))" } else { '' }
-        Write-StatusDiag "config read: $($record.Path) was not read: $($record.Why)$detail"
+        Write-StatusDiag "${Label}: $($record.Path) was not read: $($record.Why)$detail"
     }
-    if ($script:diagOn -and $record.Abandoned) { Write-StatusDiag "config read: the handle on $($record.Path) was left open, the deadline was spent" }
-    if ($script:diagOn -and $record.CloseErr) { Write-StatusDiag "config read: the close of $($record.Path) could not be queued: $($record.CloseErr.Message)" }
+    if ($script:diagOn -and $record.Abandoned) { Write-StatusDiag "${Label}: the handle on $($record.Path) was left open, the deadline was spent" }
+    if ($script:diagOn -and $record.CloseErr) { Write-StatusDiag "${Label}: the close of $($record.Path) could not be queued: $($record.CloseErr.Message)" }
 }
 
 # Applies one config file over a table and returns it. Anything missing or invalid silently falls back to
 # the value already there, and each key falls back on its own: a valid order beside a broken thresholds
 # keeps the order. Files are applied lowest precedence first, so what an invalid value in the project
-# file falls back to is the user file's value rather than the built-in default. -Bounded reads the file
-# as untrusted input, which is what the project file is; the user's own file, written by the installer
-# or by the user, is read as it always was, so an encoding Get-Content works out still loads.
+# file falls back to is the user file's value rather than the built-in default. Both files are read
+# through Read-BoundedFileText, so both are under the same deadline and the same cap; -Trusted says
+# which of them is the user's own, and the reader turns that into one skipped check rather than into a
+# different budget.
 # A file that does not apply says so in the diagnostics log, for the same reason the bounded read does:
 # falling back quietly is right, and being unable to find out why is not. The read itself already named
 # the files it refused, so what is added here is what it cannot see - a file that is there and empty,
 # and one whose contents are not JSON this can merge.
-function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Bounded) {
+function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Trusted) {
     try {
         if (-not $Path) { return $Cfg }
-        $text = $null
-        if ($Bounded) {
-            $text = Read-BoundedFileText $Path
-            # The read records why it refused rather than writing it, because writing is filesystem work
-            # and the read is under a clock that must not carry any. Out here that clock has stopped, so
-            # the record goes to the log now.
-            if ($script:diagOn) { Write-BoundedReadDiag }
-        } else {
-            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $Cfg }
-            $text = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
-        }
+        $text = Read-BoundedFileText $Path -Trusted:$Trusted
+        # The read records why it refused rather than writing it, because writing is filesystem work
+        # and the read is under a clock that must not carry any. Out here that clock has stopped, so
+        # the record goes to the log now.
+        if ($script:diagOn) { Write-BoundedReadDiag }
         # $null is a refusal the read has already logged; an empty string is a file that is there and
         # says nothing, which nothing else would ever report.
         if (-not $text) {
@@ -1055,23 +1199,53 @@ function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Boun
     return $Cfg
 }
 
+# What -Config names, as a filesystem path, or $null when it does not name one.
+#
+# This is the one place a path a person typed is turned into a path a filesystem call can take, and it
+# exists because those are not the same thing in PowerShell. Get-Content reads a relative name against
+# the SESSION's location; every call in the bounded read reads it against the PROCESS's working
+# directory, and Set-Location moves the first and leaves the second where the process started. The
+# difference is not only relative names: `C:statusline.json` is drive-relative and `IsPathRooted` calls
+# it rooted, so a test on that would let exactly the confusing cases through. So the name is resolved
+# unconditionally, here, once, at the edge - not inside the read, where it would make -Trusted mean two
+# things at once.
+#
+# GetUnresolvedProviderPathFromPSPath resolves rather than probes: it maps a PowerShell path to a
+# provider path with no filesystem call at all, which is what lets it sit in front of the clock. A name
+# it will not map - `nodrive:statusline.json`, a drive that does not exist - is REFUSED here rather than
+# handed on as it stands. Handing it on was worse than it looks: on Windows, File.OpenRead of a name
+# with a colon in it opens an alternate data stream of a file in the working directory, which Test-Path
+# on the old path would never have found. A refusal falls back to the built-in defaults and says so in
+# the log, which is what every other unusable config does.
+function Resolve-ConfigPath([string] $Path) {
+    if (-not $Path) { return $null }
+    $resolved = try { $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path) } catch { $null }
+    if (-not $resolved) { return $null }
+    return $resolved
+}
+
 # The config a render runs on: the built-in defaults, the user file, then the project file when the
 # payload named a project directory holding .claude\statusline.json. The merge is per key, so a project
 # file of {"layout": "two"} keeps every user toggle. A project directory that is missing, holds no
 # .claude\statusline.json, or holds an unreadable one leaves the config below it exactly as it was. That
 # file arrives with the repository rather than from the user, so it is read as bounded untrusted input.
+# The user's file is bounded too, and read as trusted: a home directory can be on a dead share as easily
+# as a project directory can, but nobody chose that path for the user. Either file falling back is the
+# same fall-back it always was - the values beneath it stand, and nothing is said on the line - so a
+# user config that is missing, empty, oversized, too slow or invalid all land where an invalid one
+# always landed, on the built-in defaults.
 # $ProjectDir is untyped and gated here rather than declared [string]: a payload spells project_dir
 # however it likes, and a [string] parameter would join an array into a path instead of rejecting it.
 # The caller passes it only when -Config named no file, so an explicit config renders the same whatever
 # directory the payload names.
 function Read-StatusConfig([string] $Path, $ProjectDir) {
-    $cfg = Merge-StatusConfigFile (Get-DefaultStatusConfig) $Path
+    $cfg = Merge-StatusConfigFile (Get-DefaultStatusConfig) $Path -Trusted
     if ($ProjectDir -isnot [string] -or -not $ProjectDir) { return $cfg }
     # No Test-Path on the project directory on the way in. It would be a filesystem call on a path the
     # repository chose, outside the one budget below, which is the whole thing that budget is for; a
     # directory that is not there is refused by the bounded read like anything else it cannot open.
     # Join-Path only joins strings, so the first call to touch a disk is inside Read-BoundedFileText.
-    try { return Merge-StatusConfigFile $cfg (Join-Path $ProjectDir '.claude' 'statusline.json') -Bounded } catch {
+    try { return Merge-StatusConfigFile $cfg (Join-Path $ProjectDir '.claude' 'statusline.json') } catch {
         if ($script:diagOn) { Write-StatusDiag "project config: nothing was read under $ProjectDir - $($_.Exception.Message)" }
         return $cfg
     }
@@ -1601,12 +1775,13 @@ function Get-GitStamp([string] $GitDir, [switch] $NoCommon) {
 # record keeps any other key the probe may grow later, as it was stored.
 function Read-CachedRecord($r) {
     if ($r -isnot [System.Management.Automation.PSCustomObject]) { return $null }
-    if (-not (Test-PayloadText $r.Branch) -or $r.Dirty -isnot [bool]) { return $null }
-    $info = @{}
-    foreach ($prop in $r.PSObject.Properties) { $info[$prop.Name] = $prop.Value }
     # Stripped again on the way out of the file. A cache entry written by this script is already clean,
     # but the file is on disk and this is the path an edited one comes back through.
-    $info.Branch = Format-PayloadText ([string] $r.Branch)
+    $branch = Get-PayloadText $r.Branch
+    if ($null -eq $branch -or $r.Dirty -isnot [bool]) { return $null }
+    $info = @{}
+    foreach ($prop in $r.PSObject.Properties) { $info[$prop.Name] = $prop.Value }
+    $info.Branch = $branch
     foreach ($key in @('Ahead', 'Behind', 'Staged', 'Modified', 'Untracked', 'Conflicts')) {
         $n = Get-PayloadNumber $r.$key
         if ($null -eq $n -or $n -lt 0) { return $null }
@@ -1656,8 +1831,15 @@ function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir
     $path = [System.IO.Path]::Combine($CacheDir, (Get-ShortHash $root.ToLowerInvariant()) + '.json')
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     try {
-        if ([System.IO.File]::Exists($path)) {
-            $j = [System.IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop
+        # The entry is read the way the user's own config is: one clock over the open, the length, the
+        # reads and the close, on a file this process wrote itself. It is exactly the shape #48 gave the
+        # config read - one existence test and one whole-file read - so it costs one bounded read rather
+        # than the machinery a walk would need, and a temp directory gone slow can no longer hold the
+        # line while an entry that is not there is looked for.
+        $entry = Read-BoundedFileText $path -Trusted
+        if ($script:diagOn) { Write-BoundedReadDiag 'cache read' }
+        if ($entry) {
+            $j = $entry | ConvertFrom-Json -ErrorAction Stop
             if ($j -is [System.Management.Automation.PSCustomObject] -and [long] $j.v -eq 1 -and
                 $j.root -is [string] -and $j.root -eq $root -and
                 $j.stamps -is [string] -and $j.stamps -ceq $stamps -and
@@ -1670,6 +1852,8 @@ function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir
                 if ($script:diagOn) { Write-StatusDiag 'git cache: miss (the entry is stale or does not match)' }
             }
         } else {
+            # Nothing came back. Almost always that is the first render for a repository; anything else -
+            # over the cap, past the deadline - has already named itself on the line above.
             if ($script:diagOn) { Write-StatusDiag 'git cache: miss (no entry yet)' }
         }
     } catch { if ($script:diagOn) { Write-StatusDiag "git cache: read failed: $($_.Exception.Message)" } }
@@ -1777,8 +1961,15 @@ function Get-CountedNumber($v, [switch] $Whole) {
 function Read-SessionState([string] $SessionId) {
     try {
         $path = Get-SessionStatePath $SessionId $false
-        if (-not $path -or -not [System.IO.File]::Exists($path)) { if ($script:diagOn) { Write-StatusDiag 'state: no file yet' }; return $null }
-        $j = [System.IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop
+        if (-not $path) { if ($script:diagOn) { Write-StatusDiag 'state: no file yet' }; return $null }
+        # Bounded, for the same reason and in the same shape as the cache entry above: one existence
+        # test and one whole-file read of a file this process wrote, on the render's own thread, before
+        # the segments are built. The write at the foot of the script is after the line is printed and
+        # stays as it was.
+        $text = Read-BoundedFileText $path -Trusted
+        if ($script:diagOn) { Write-BoundedReadDiag 'state read' }
+        if (-not $text) { if ($script:diagOn) { Write-StatusDiag 'state: no file yet' }; return $null }
+        $j = $text | ConvertFrom-Json -ErrorAction Stop
         if ($j -isnot [System.Management.Automation.PSCustomObject] -or (Get-StateNumber $j.v) -ne 1) { if ($script:diagOn) { Write-StatusDiag 'state: the file is not a version 1 record' }; return $null }
         $history = [System.Collections.Generic.List[hashtable]]::new()
         foreach ($h in @($j.history)) {
@@ -1898,7 +2089,8 @@ try { $d = $raw | ConvertFrom-Json } catch { $payloadOk = $false }
 # .claude\statusline.json is merged over the user file, and still before anything is printed. -Config
 # replaces the user file and leaves the project file unread: it is the explicit override the tests and
 # the screenshot script use, and both need a render that no directory a sample payload names can change.
-$configPath = if ($Config) { $Config } else { Join-Path $PSScriptRoot 'statusline.json' }
+$configPath = if ($Config) { Resolve-ConfigPath $Config } else { Join-Path $PSScriptRoot 'statusline.json' }
+if ($script:diagOn -and $Config -and -not $configPath) { Write-StatusDiag "config path: -Config $Config is not a filesystem path; the built-in defaults stand" }
 $projectDir = if ($Config) { $null } else { $d.workspace.project_dir }
 $cfg = Read-StatusConfig $configPath $projectDir
 
@@ -1975,6 +2167,26 @@ function Get-WholePercent([double] $n) {
     if ($r -ge [int]::MaxValue) { return [int]::MaxValue }
     if ($r -le [int]::MinValue) { return [int]::MinValue }
     return [int] $r
+}
+
+# A payload percentage as a whole number, or $null when it is not a number at all - the two-step every
+# percentage in the script needs, folded into one call so it cannot be reached with only the second
+# step. Get-WholePercent's own parameter is typed [double], which reads like a guard but is not one:
+# handed a string or a boolean, PowerShell's parameter binding fails, and under this script's
+# $ErrorActionPreference of SilentlyContinue that failure is not an error the caller sees, it is a
+# statement that quietly does nothing - the variable being assigned keeps whatever it already held
+# rather than becoming $null. A used_percentage of "abc" then survives as the literal string "abc" and
+# prints "abc%"; a used_percentage of $true survives the same way as a boolean, and since a boolean
+# does satisfy [double]'s conversion (as 1 or 0) it reaches Get-WholePercent and prints "1%" - a figure
+# Test-AlarmState disagrees about, because it reads the same field through Get-FiniteNumber first and
+# calls a boolean no percentage at all. (Code review, following up the #45/#44 batch's own note that
+# Get-ContextSegment has the identical unguarded shape: Get-CostSegment and Get-LinesSegment turned out
+# to have it too, on total_cost_usd and the two line counts, none of them percentages, which is why
+# those two call Get-FiniteNumber directly instead of through this wrapper.)
+function Get-PayloadPercent($v) {
+    $n = Get-FiniteNumber $v
+    if ($null -eq $n) { return $null }
+    return Get-WholePercent $n
 }
 
 # The one window size that gets the 1M marker and the wider bands. Claude Code reports it as exactly 1000000.
@@ -2062,9 +2274,26 @@ function K([double] $n) { if ($n -ge 1000000) { '{0:N1}M' -f ($n / 1000000) } el
 # the "1M" marker goes through Format-Inline, which hands the segment's own foreground back after the
 # muted run - a role changed after the text was built would leave that marker restoring cyan on a red
 # segment. The segment is never dropped and has no short form, which is what makes it the carrier.
+# model.display_name is payload text, so it goes through the same pair every other name in this script
+# does: Test-PayloadText decides whether there is anything there at all - found while auditing #61,
+# where vim.mode and effort.level had been left out of the same pair in the badges builder - and
+# Format-PayloadText strips the format characters out of what is left, so a right-to-left override or a
+# zero-width joiner in a model name cannot reorder or hide the rest of the line it leads.
+# An unusable name - absent, blank, a control character, a number, an object - falls back to the same
+# "claude" word the zero-segment stand-in below prints, rather than omitting the segment: this is the
+# one segment the loop above never drops, because the alarm rides on it, and dropping it for a bad name
+# would have let one payload field silence the alarm on a render where the context or limits segment
+# still gets through (the zero-segment stand-in below only fires when EVERY segment is empty, which a
+# real context or limits figure alongside a bad model name does not give it). So the segment is built
+# here whatever the name is, and the stand-in below is left to cover the one case that is actually
+# outside this function: model turned off, or left out of the order, where this builder is never
+# called at all. (Finding from code review on #61's own fix: the first cut here returned $null for an
+# absent name too, on the theory that the zero-segment stand-in would cover it - it does not, at least
+# not reliably, since that stand-in is keyed on every segment being empty rather than on model
+# specifically, and there is no reason to route a plain "no name" payload through a different, less
+# direct path than a hostile one takes.)
 function Get-ModelSegment($d, $cfg) {
-    $model = $d.model.display_name
-    if (-not $model) { return $null }
+    $model = (Get-PayloadText $d.model.display_name) ?? 'claude'
     $role = if (Test-AlarmState $d $cfg) { 'bad' } else { 'model' }
     $text = Format-Icon $iconModel $model
     if (Test-WideWindow $d.context_window.context_window_size) { $text += ' ' + (Format-Inline 'muted' '1M' $role $cfg.Style $cfg.Palette) }
@@ -2141,11 +2370,14 @@ function Get-CacheShare($usage) {
 }
 
 function Get-ContextSegment($d, $cfg) {
-    $pct = $d.context_window.used_percentage
+    # Get-PayloadPercent is Get-FiniteNumber and Get-WholePercent together (code review: a null check
+    # plus a bare Get-WholePercent call, typed [double], reads like a guard but is not one under this
+    # script's SilentlyContinue - a string used_percentage would survive as that literal string and
+    # print "abc%", and a boolean would survive as 1 or 0 and print a figure Test-AlarmState, which
+    # reads the same field through Get-FiniteNumber below, disagrees is a percentage at all). The 0..100
+    # clamp is this segment's own: the bar has ten blocks.
+    $pct = Get-PayloadPercent $d.context_window.used_percentage
     if ($null -eq $pct) { return $null }
-    # Get-WholePercent is the shared rule, so this figure, the band it is read against and the model's
-    # alarm are all the same number. The 0..100 clamp is this segment's own: the bar has ten blocks.
-    $pct = Get-WholePercent $pct
     $pct = [math]::Max(0, [math]::Min(100, $pct))
     $size = $d.context_window.context_window_size
     # ORDER MATTERS, and these three lines are why. $pct is normalised first - by Get-WholePercent,
@@ -2170,7 +2402,10 @@ function Get-ContextSegment($d, $cfg) {
     $filled = [math]::Round($pct / 10)
     $mark = Get-MarkSet $cfg.Style
     $bar = ($mark.BarFull * $filled) + ($mark.BarEmpty * (10 - $filled))
-    $used = [double] ($d.context_window.total_input_tokens ?? 0) + [double] ($d.context_window.total_output_tokens ?? 0)
+    # The same [double]-cast hazard as used_percentage above, found while fixing that one: a bare
+    # [double] cast is not a function parameter, but it fails exactly the same way under
+    # SilentlyContinue, so a hostile total_input_tokens or total_output_tokens is guarded the same way.
+    $used = ((Get-FiniteNumber $d.context_window.total_input_tokens) ?? 0) + ((Get-FiniteNumber $d.context_window.total_output_tokens) ?? 0)
     $counts = if ($used -gt 0 -and $size) { " $(K $used)/$(K $size)" } elseif ($used -gt 0) { " $(K $used)" } else { '' }
     # The cached share hangs off the counts, and both live in Text alone. Short is what stage 1 of the
     # fitting swaps in, so leaving them out of it sheds the counts and the suffix together and keeps the
@@ -2329,10 +2564,14 @@ function Get-CacheSegment($d) {
 # asks only the context window and the two rate limits - so a spend the user called boring is only ever
 # boring and the quiet guard stands alone.
 function Get-CostSegment($d, $cfg, $state) {
-    $cost = $d.cost.total_cost_usd
+    # Get-FiniteNumber rather than a null check and a bare [double] cast on display: the cast is typed
+    # but is not a guard, and under this script's SilentlyContinue a hostile total_cost_usd survives the
+    # failed cast rather than becoming an error - a boolean $true satisfies [double] as 1.0 and prints a
+    # confident "$1.00" (code review, the same shape as the used_percentage finding on Get-ContextSegment).
+    $cost = Get-FiniteNumber $d.cost.total_cost_usd
     if ($null -eq $cost) { return $null }
     if (Test-QuietValue $cfg 'cost' $cost) { return $null }
-    $total = Format-Icon $iconCost ("`$" + ('{0:N2}' -f [double] $cost))
+    $total = Format-Icon $iconCost ("`$" + ('{0:N2}' -f $cost))
     # Both sides go through Get-CountedNumber, so a figure of any other shape, and a negative on either
     # side, is simply a render with no delta: this arithmetic never decides whether the segment appears
     # at all. The stored total is the side that matters - a hand-edited record holding -100 against a
@@ -2440,21 +2679,42 @@ function Get-TimeSegment($d, $cfg, $state) {
 
 # Lines added/removed this session; shown when either is non-zero. Inline colours keep the dim background intact.
 function Get-LinesSegment($d, $cfg) {
-    $added = [int] ($d.cost.total_lines_added ?? 0)
-    $removed = [int] ($d.cost.total_lines_removed ?? 0)
+    # Get-PayloadNumber rather than a bare [int] cast: the cast is typed but is not a guard, and under
+    # this script's SilentlyContinue a hostile total_lines_added or total_lines_removed survives the
+    # failed cast as an empty string rather than becoming an error, printing "+ " with nothing after it
+    # (code review, the same shape as the used_percentage finding on Get-ContextSegment). A count that is
+    # missing or unusable is treated as zero either way, which is what "??" already did for missing.
+    $added = (Get-PayloadNumber $d.cost.total_lines_added) ?? 0
+    $removed = (Get-PayloadNumber $d.cost.total_lines_removed) ?? 0
     if ($added -le 0 -and $removed -le 0) { return $null }
     $minus = (Get-MarkSet $cfg.Style).Minus
     $text = Format-Icon $iconLines ((Format-Inline 'added' "+$added" 'dim' $cfg.Style $cfg.Palette) + ' ' + (Format-Inline 'removed' ($minus + "$removed") 'dim' $cfg.Style $cfg.Palette))
     return @{ Name = 'lines'; Text = $text; Short = $null; Role = 'dim'; Bold = $false }
 }
 
-# " (1h12m)" or " (3d)" until the given epoch; empty when absent or already past.
-function TimeLeft([object] $epoch) {
-    if ($null -eq $epoch) { return '' }
-    $left = [DateTimeOffset]::FromUnixTimeSeconds([long] $epoch) - [DateTimeOffset]::UtcNow
-    if ($left.TotalMinutes -lt 1) { return '' }
-    if ($left.TotalHours -ge 48) { return ' ({0}d)' -f [int] [math]::Floor($left.TotalDays) }
-    return ' ({0}h{1:00}m)' -f [int] [math]::Floor($left.TotalHours), $left.Minutes
+# " (1h12m)" or " (3d)" until the given epoch; empty when absent, already past, not a number at all
+# (a hostile string, a boolean, NaN, infinity - the same Get-FiniteNumber gate every other payload
+# number in this script goes through), under a minute out, or more than a year out - a reset that far
+# away is not a countdown anyone is pacing against, and the honest answer is silence rather than a
+# five-digit day count nobody asked for.
+# The arithmetic stays in whole seconds against $Now, the same shape Get-PaceArrow and
+# Get-CacheSecondsLeft already use for the identical hazard: a numerically valid but absurd epoch such
+# as 1e18 used to throw straight out of DateTimeOffset::FromUnixTimeSeconds and take the whole limits
+# segment down with it, and subtracting two numbers cannot throw the way constructing a date from one
+# of them can. The 60-second floor and the 31536000-second (365-day) ceiling are what used to be a
+# separate DateTimeOffset range check plus a TotalMinutes/TotalDays test on the result; bounding $left
+# first means TimeSpan::FromSeconds below is always given a value it can hold, so it is formatting, not
+# guarding. $Now defaults to the clock and exists for the tests, the same reason Get-PaceArrow takes
+# it: a $Now read once and reused stays put while a boundary is checked, where the script's own call
+# reads the clock fresh and only ever drifts towards a shorter countdown.
+function TimeLeft([object] $epoch, [long] $Now = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) {
+    $sec = Get-FiniteNumber $epoch
+    if ($null -eq $sec) { return '' }
+    $left = $sec - $Now
+    if ($left -lt 60 -or $left -gt 31536000) { return '' }
+    $span = [TimeSpan]::FromSeconds($left)
+    if ($span.TotalHours -ge 48) { return ' ({0}d)' -f [int] [math]::Floor($span.TotalDays) }
+    return ' ({0}h{1:00}m)' -f [int] [math]::Floor($span.TotalHours), $span.Minutes
 }
 
 # How the 5-hour window is being spent, as one plain arrow: U+2192 when carrying on at this rate lands
@@ -2513,7 +2773,17 @@ function Get-LimitsSegment($d, $cfg) {
     # Label, source object, whether the pace arrow and the countdown follow, and whether the figure is a
     # rate-limit window rather than the spend limit, in render order.
     foreach ($row in @(@('5h', $rl.five_hour, $true, $true), @('7d', $rl.seven_day, $false, $true), @('$', $rl.spend_limit, $false, $false))) {
-        $pct = $row[1].used_percentage
+        # Get-FiniteNumber is the same gate every other payload number in the script goes through - true
+        # when this was written only of the numbers that already used it; code review found
+        # Get-ContextSegment, Get-CostSegment and Get-LinesSegment reading theirs with a null check and
+        # a typed cast instead, which is not a guard under this script's SilentlyContinue (a hostile
+        # value survives the failed cast rather than raising an error), and they now go through it too
+        # (via Get-PayloadPercent for the one percentage among them, Get-PayloadNumber for the two line
+        # counts). A string, a boolean ($true would otherwise coerce to 1 and print "5h 1%"), an array
+        # or a null all come back $null here and this figure alone is left off the line, the way a
+        # missing used_percentage always has been - the loop's own worst-of and countdown logic never
+        # sees it, so one bad figure never takes the other two, or the segment, down with it.
+        $pct = Get-FiniteNumber $row[1].used_percentage
         if ($null -eq $pct) { continue }
         $pct = Get-WholePercent $pct
         $bit = "$($row[0]) $pct%"
@@ -2577,25 +2847,39 @@ function Get-LimitsSegment($d, $cfg) {
 # Format-PayloadText strips the format characters out of what is left, so neither badge can reorder or
 # hide the rest of the line. Then Get-ClippedText cuts each one to $badgeNameCells cells, measured the
 # way the fitting code measures, so a name in wide characters cannot take twice the room it was given.
+# effort.level and vim.mode are payload text too, from Claude Code itself rather than from anything an
+# attacker authors, but the guards exist so that no payload field is trusted individually - the same
+# two-call shape, applied here so it is not the one left for someone to copy without it. The effort
+# comparison against $defaultEffort is OrdinalIgnoreCase rather than PowerShell's own -eq: #61 asked
+# for a comparison a culture cannot bend, not a new case-sensitivity cliff where "HIGH" stops meaning
+# the default it always meant. -eq's actual defect is the one -ceq shares and OrdinalIgnoreCase does
+# not: giving a Unicode Format character zero collation weight, the trap documented at the top of
+# test.ps1, so "high<U+200D>" would read as the plain word under either -eq or -ceq. That trap cannot
+# reach this comparison at all, format characters or not, because Format-PayloadText already stripped
+# them out of $effort above; OrdinalIgnoreCase is what is left once culture and case both stop
+# mattering, and it is what keeps this call the ordinary "which word is this" question the default was
+# always answering.
 # Short is the modes alone, so a narrow line sheds the two identities before the whole segment goes;
 # it is $null when there is nothing to shed - no modes, or no identities - the way Get-LimitsSegment
 # leaves its Short $null rather than repeating the full text.
+# fast_mode and thinking.enabled are read with the same "-is [bool] -and" test exceeds_200k_tokens
+# already used below: PowerShell's own -eq is not a type check, so a plain -eq $true reads the string
+# "true" or the number 1 as true too, and neither is the boolean Claude Code actually sends (code
+# review: found while checking whether all six badge fields go through the same guard).
 function Get-BadgesSegment($d) {
     $badges = [System.Collections.Generic.List[string]]::new()
-    if ($d.fast_mode -eq $true) { $badges.Add($iconFast) }
-    if ($d.thinking.enabled -eq $true) { $badges.Add($iconThink) }
-    $effort = $d.effort.level
-    if ($effort -and $effort -ne $defaultEffort) { $badges.Add((Format-Icon $iconEffort $effort)) }
-    $vim = $d.vim.mode
-    if ($vim) { $badges.Add((Format-Icon $iconVim $vim)) }
+    if ($d.fast_mode -is [bool] -and $d.fast_mode) { $badges.Add($iconFast) }
+    if ($d.thinking.enabled -is [bool] -and $d.thinking.enabled) { $badges.Add($iconThink) }
+    $effort = Get-PayloadText $d.effort.level
+    if ($null -ne $effort -and -not [string]::Equals($effort, $defaultEffort, [System.StringComparison]::OrdinalIgnoreCase)) { $badges.Add((Format-Icon $iconEffort $effort)) }
+    $vim = Get-PayloadText $d.vim.mode
+    if ($null -ne $vim) { $badges.Add((Format-Icon $iconVim $vim)) }
     $modeCount = $badges.Count
     $modes = if ($modeCount -gt 0) { $badges -join ' ' } else { $null }
-    if (Test-PayloadText $d.agent.name) {
-        $badges.Add((Format-Icon $iconAgent (Get-ClippedText (Format-PayloadText ([string] $d.agent.name)) $badgeNameCells)))
-    }
-    if (Test-PayloadText $d.session_name) {
-        $badges.Add((Format-Icon $iconSession (Get-ClippedText (Format-PayloadText ([string] $d.session_name)) $badgeNameCells)))
-    }
+    $agentName = Get-PayloadText $d.agent.name
+    if ($null -ne $agentName) { $badges.Add((Format-Icon $iconAgent (Get-ClippedText $agentName $badgeNameCells))) }
+    $sessionName = Get-PayloadText $d.session_name
+    if ($null -ne $sessionName) { $badges.Add((Format-Icon $iconSession (Get-ClippedText $sessionName $badgeNameCells))) }
     if ($badges.Count -eq 0) { return $null }
     $short = if ($modes -and $badges.Count -gt $modeCount) { $modes } else { $null }
     return @{ Name = 'badges'; Text = ($badges -join ' '); Short = $short; Role = 'dim'; Bold = $false }
@@ -2647,11 +2931,13 @@ function Get-FolderUrl($Dir) {
 function Get-BranchUrl($d, [string] $Branch) {
     if (-not $Branch -or $Branch -eq 'detached') { return $null }
     $repo = $d.workspace.repo
-    if (-not (Test-PayloadText $repo.host) -or -not (Test-PayloadText $repo.owner) -or -not (Test-PayloadText $repo.name)) { return $null }
-    $repoHost = Format-PayloadText ([string] $repo.host)
+    $repoHost = Get-PayloadText $repo.host
+    $repoOwner = Get-PayloadText $repo.owner
+    $repoName = Get-PayloadText $repo.name
+    if ($null -eq $repoHost -or $null -eq $repoOwner -or $null -eq $repoName) { return $null }
     if ($repoHost -notmatch '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$') { return $null }
-    $owner = [uri]::EscapeDataString((Format-PayloadText ([string] $repo.owner)))
-    $name = [uri]::EscapeDataString((Format-PayloadText ([string] $repo.name)))
+    $owner = [uri]::EscapeDataString($repoOwner)
+    $name = [uri]::EscapeDataString($repoName)
     $url = "https://$repoHost/$owner/$name"
     if (-not [string]::Equals($repoHost, 'github.com', [System.StringComparison]::OrdinalIgnoreCase)) { return $url }
     $parts = $Branch -split '/'
@@ -2694,13 +2980,11 @@ function Get-FolderSegment($d, $cfg) {
     # a path with no URL and a config with links off both give, leaves Format-Link returning its text
     # unchanged: the segment is then byte for byte what it was before this existed.
     $link = if (Test-LinkWanted $cfg) { Get-FolderUrl $dir } else { $null }
-    $owner = $d.workspace.repo.owner
-    $name = $d.workspace.repo.name
-    if ($cfg.Folder -eq 'leaf' -or -not (Test-PayloadText $owner) -or -not (Test-PayloadText $name)) {
+    $owner = Get-PayloadText $d.workspace.repo.owner
+    $name = Get-PayloadText $d.workspace.repo.name
+    if ($cfg.Folder -eq 'leaf' -or $null -eq $owner -or $null -eq $name) {
         return @{ Name = 'folder'; Text = (Format-Link $link (Format-Icon $iconFolder $leaf)); Short = $null; Role = 'folder'; Bold = $false }
     }
-    $owner = Format-PayloadText ([string] $owner)
-    $name = Format-PayloadText ([string] $name)
     $root = [string] $d.workspace.project_dir
     $here = ($dir -replace '/', '\').TrimEnd('\')
     $there = ($root -replace '/', '\').TrimEnd('\')
@@ -2740,6 +3024,19 @@ function Format-PayloadText([string] $Text) {
 function Test-PayloadText($v) {
     return ($v -is [string] -and -not [string]::IsNullOrWhiteSpace($v) -and $v -notmatch '\p{Cc}' -and
             -not [string]::IsNullOrWhiteSpace((Format-PayloadText $v)))
+}
+
+# Test-PayloadText then Format-PayloadText, folded into the one call every caller that wants "the text,
+# or nothing" was already writing by hand: the pair is retyped at every payload name in this script -
+# the branch name, the repo owner and name, the worktree name and path leaf, the four badge fields, the
+# model name, a cached branch record - and a caller that wrote the pair with two different values by
+# mistake (guard one field, format another) would not be caught by anything. One call cannot make that
+# mistake. Returns the stripped text, or $null for anything Test-PayloadText refuses - a caller that
+# wants a fallback other than omitting the field writes `(Get-PayloadText $v) ?? $fallback`, the same
+# shape Get-FiniteNumber's callers already use for a numeric fallback.
+function Get-PayloadText($v) {
+    if (-not (Test-PayloadText $v)) { return $null }
+    return Format-PayloadText ([string] $v)
 }
 
 # Dirty flag from a payload git.status value: "clean"/other string, or an object of counts/booleans.
@@ -2805,9 +3102,13 @@ function Read-PayloadStatus($git) {
 # starts a process or touches the disk - the payload is the only source, so a render costs no more.
 function Get-WorktreeName($d) {
     $wt = $d.worktree
-    if (Test-PayloadText $wt.name) { return (Format-PayloadText "$($wt.name)").Trim() }
+    $name = Get-PayloadText $wt.name
+    if ($null -ne $name) { return $name.Trim() }
     if ($d.workspace.git_worktree -isnot [bool] -or -not $d.workspace.git_worktree) { return $null }
-    if (Test-PayloadText $wt.path) {
+    # Test-PayloadText gates $wt.path itself, but the text formatted below is the leaf substring of it,
+    # not the path - Get-PayloadText's own return value is not what is wanted here, only its answer to
+    # "is there anything usable in $wt.path at all".
+    if ($null -ne (Get-PayloadText $wt.path)) {
         # The leaf is taken from the path as it arrived and stripped afterwards, not the other way
         # round: stripping first would turn C:\src\<override> into C:\src\ and then call the worktree
         # "src", naming the parent of a directory whose own name is invisible.
@@ -2943,11 +3244,14 @@ foreach ($rec in Get-SegmentRegistry) {
     if ($seg) { $segments.Add($seg) }
 }
 # Every enabled and listed builder returned nothing. The stand-in line goes out under $modelWanted, the
-# same rule the bad-payload line above uses: the payload that carries no model.display_name is the case
-# this was written for, so it is the model segment with no name in it and belongs on screen only where a
-# model segment was allowed. A config that turns model off, or whose order leaves it out, asked for a
-# line with no model on it; nothing printed is that answer, the same answer the loop below already gives
-# when every line shrinks away to nothing.
+# same rule the bad-payload line above uses, and belongs on screen only where a model segment was
+# allowed. Get-ModelSegment itself never returns $null any more (an unusable or absent
+# model.display_name falls back to the "claude" word this line also prints), so the case this is
+# actually for is narrower than it once was: model turned off, or left out of the order or every row,
+# where the builder above is never called at all and $segments can still come back empty. A config
+# that turns model off, or whose order leaves it out, asked for a line with no model on it; nothing
+# printed is that answer, the same answer the loop below already gives when every line shrinks away to
+# nothing.
 #
 # No exit here, deliberately. A payload that parsed carries a session id and its cost, token and rate
 # figures whatever the config chose to put on screen, and the state file is where the next render reads

@@ -290,7 +290,7 @@ function Get-SubagentReply([string[]] $Lines) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Open-SharedConfigFile', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -1176,10 +1176,20 @@ Confirm-Equal $c.Layout 'two' 'project config: it still applies when the user fi
 Confirm-Equal $c.Style 'plain' 'project config: the broken user file falls back to the defaults'
 
 # ---- The project file as bounded untrusted input ----
+# Before any of it: this file is about to park pool threads on purpose - opens left blocked on a dead
+# share, a stand-in whose Length and Dispose sleep for five seconds - and every bounded read that has to
+# SUCCEED needs the pool to run a work item promptly. The pool starts at one thread per processor and
+# adds more at about one every 500 ms, so on a small host the parked threads of one group can push the
+# next group's reads past a 250 ms deadline and fail a test about something else entirely. The groups
+# below are ordered so that the reads that must succeed come first, and this raises the floor as well,
+# because the render-cost group further down counts real reads and runs after the parking. It changes
+# nothing the script does: the script dispatches one call at a time and never parks anything itself.
+try { $null = [System.Threading.ThreadPool]::SetMinThreads(32, 32) } catch { $null = $_ }
+
 # The project file comes with the repository, not from the user, so it is read through Read-BoundedFileText
 # rather than Get-Content: an ordinary file, no bigger than the cap, read under a deadline. Everything
 # else is refused silently, the same as a value of the wrong type.
-$limit = Get-ProjectConfigLimit
+$limit = Get-BoundedReadLimit
 Confirm-True ($limit.MaxBytes -ge 4096 -and $limit.MaxBytes -le 262144) 'bounded read: the cap is tens of kilobytes, far past a hand-written config'
 Confirm-True ($limit.TimeoutMs -gt 0 -and $limit.TimeoutMs -le 1000) 'bounded read: the deadline is shorter than a render'
 $smallProject = Write-TempConfig 'bounded-small.json' '{ "layout": "two" }'
@@ -1198,6 +1208,43 @@ Confirm-Equal (Read-BoundedFileText $overCap) $null 'bounded read: a file over t
 $bomPath = Join-Path $tmp 'bounded-bom.json'
 [System.IO.File]::WriteAllText($bomPath, '{ "layout": "two" }', [System.Text.UTF8Encoding]::new($true))
 Confirm-Equal (Read-BoundedFileText $bomPath) '{ "layout": "two" }' 'bounded read: a byte order mark is dropped'
+
+# ---- Encoding: the one thing about a config file this script does not choose ----
+# The read is bytes rather than Get-Content, so the mark at the front of the file is all there is to say
+# how to decode them, and the answer has to be the one Get-Content already gave or a config that was
+# working would stop working: an editor on Windows still offers to save as UTF-16, and those bytes read
+# as UTF-8 are a string of NULs that no JSON parser will take. The script does not restate the rule, it
+# uses StreamReader's own detection, so what is checked here is behaviour rather than a table: each file
+# is written by .NET in the encoding named, comes back as the text that went in, AND comes back as what
+# Get-Content makes of the very same bytes. The second of those is the one that would catch a rule that
+# drifted from the reference; the first says what the answer is meant to be.
+$encJson = '{ "layout": "two" }'
+foreach ($encCase in @(
+        @{ Name = 'utf-8 with no mark'; File = 'enc-utf8.json'; Enc = [System.Text.UTF8Encoding]::new($false) }
+        @{ Name = 'utf-8 with a mark'; File = 'enc-utf8-bom.json'; Enc = [System.Text.UTF8Encoding]::new($true) }
+        @{ Name = 'utf-16 little-endian'; File = 'enc-utf16le.json'; Enc = [System.Text.UnicodeEncoding]::new($false, $true) }
+        @{ Name = 'utf-16 big-endian'; File = 'enc-utf16be.json'; Enc = [System.Text.UnicodeEncoding]::new($true, $true) }
+        @{ Name = 'utf-32 little-endian'; File = 'enc-utf32le.json'; Enc = [System.Text.UTF32Encoding]::new($false, $true) }
+        @{ Name = 'utf-32 big-endian'; File = 'enc-utf32be.json'; Enc = [System.Text.UTF32Encoding]::new($true, $true) })) {
+    $encPath = Join-Path $tmp $encCase.File
+    [System.IO.File]::WriteAllText($encPath, $encJson, $encCase.Enc)
+    Confirm-Equal (Read-BoundedFileText $encPath) $encJson "config encoding: $($encCase.Name) reads back as the text that went in"
+    Confirm-Equal (Read-BoundedFileText $encPath) (Get-Content -LiteralPath $encPath -Raw) "config encoding: $($encCase.Name) reads back what Get-Content makes of the same bytes"
+}
+# Only the bytes that were READ are decoded. The buffer is always one byte longer than the cap and the
+# rest of it is zeroes, so a file that is nothing but a UTF-16 mark would read as UTF-32 - a different
+# encoding entirely - if the padding were allowed to finish the mark. Get-Content sees no text in it,
+# and so must this.
+$encMark = Join-Path $tmp 'enc-mark-only.json'
+[System.IO.File]::WriteAllBytes($encMark, [byte[]] @(0xFF, 0xFE))
+Confirm-Equal (Read-BoundedFileText $encMark).Length 0 'config encoding: a file that is nothing but a mark has no text in it'
+Confirm-Equal (Read-BoundedFileText $encMark) "$(Get-Content -LiteralPath $encMark -Raw)" 'config encoding: and Get-Content finds no text in it either'
+# A file whose text really starts with U+FEFF: in UTF-8 those are the same three bytes as the mark, and
+# StreamReader eats them, so this reader does too rather than inventing a difference.
+$encReal = Join-Path $tmp 'enc-real-feff.json'
+[System.IO.File]::WriteAllText($encReal, ([char] 0xFEFF + $encJson), [System.Text.UTF8Encoding]::new($false))
+Confirm-Equal (Read-BoundedFileText $encReal) (Get-Content -LiteralPath $encReal -Raw) 'config encoding: a leading U+FEFF in utf-8 text is read the way Get-Content reads it'
+
 # The same rules through Read-StatusConfig: an oversized project config, and one that is not an ordinary
 # file, both leave the user config standing. A file symbolic link needs Developer Mode or an elevated
 # shell on Windows; where one cannot be made a directory stands in its place, which is the same rule
@@ -1224,14 +1271,14 @@ Confirm-Equal $c.Style 'powerline' 'project config: the user file stands over th
 # where it starts: a file that read back whole a few lines ago is refused, because the budget is spent
 # before anything is looked up. The real limit is rebuilt from the values captured here rather than
 # retyped, so this cannot drift from the script's own numbers.
-$realLimit = Get-ProjectConfigLimit
-. ([scriptblock]::Create("function Get-ProjectConfigLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = 0 } }"))
+$realLimit = Get-BoundedReadLimit
+. ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = 0 } }"))
 $zeroSw = [System.Diagnostics.Stopwatch]::StartNew()
 Confirm-Equal (Read-BoundedFileText $smallProject) $null 'bounded read: a spent budget refuses a file that is otherwise fine'
 Confirm-True ($zeroSw.ElapsedMilliseconds -lt 1000) 'bounded read: a spent budget gives up at once'
-. ([scriptblock]::Create("function Get-ProjectConfigLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = $($realLimit.TimeoutMs) } }"))
-Confirm-Equal (Get-ProjectConfigLimit).TimeoutMs $realLimit.TimeoutMs 'bounded read: the real deadline is back'
-Confirm-Equal (Get-ProjectConfigLimit).MaxBytes $realLimit.MaxBytes 'bounded read: the real cap is back'
+. ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = $($realLimit.TimeoutMs) } }"))
+Confirm-Equal (Get-BoundedReadLimit).TimeoutMs $realLimit.TimeoutMs 'bounded read: the real deadline is back'
+Confirm-Equal (Get-BoundedReadLimit).MaxBytes $realLimit.MaxBytes 'bounded read: the real cap is back'
 Confirm-Equal (Read-BoundedFileText $smallProject) '{ "layout": "two" }' 'bounded read: the same file reads again with the deadline back'
 
 # What the handle says, not what the name said. The null device opens like a file on Windows and has the
@@ -1243,6 +1290,121 @@ Write-Host "  device handle case: $(if ($null -eq $deviceSeek) { 'the null devic
 Confirm-True ($null -eq $deviceSeek -or -not $deviceSeek) 'bounded read: a device handle cannot seek'
 Confirm-Equal (Read-BoundedFileText 'NUL') $null 'bounded read: a handle that cannot seek is refused'
 
+# ---- The user's own config, under the same clock ----
+# #19 bounded the project file and left this one on Get-Content, for a reason that was true then: this is
+# the file whose encoding the script does not choose, and the reader was UTF-8 only. The encoding cases
+# above close that, so this file is bounded now too - not because it is untrusted, it is not, but because
+# a home directory on a dead network share hangs a render exactly the way a project directory on one
+# does, and the clock is about a filesystem that does not answer rather than about whose file it is.
+# What being trusted buys it is one skipped check: the link probe, so a config symlinked out of a
+# dotfiles repository still loads. Everything else - the cap, the deadline, the fall-back - is shared.
+#
+# ORDER MATTERS IN THIS SECTION, and this group is deliberately in front of the unreachable-path cases
+# below. Every read here is of an ordinary local file and has to finish inside 250 ms, which means the
+# thread pool has to run a work item promptly. The cases below abandon pool threads on purpose - three
+# opens left blocked on a dead share, and a stand-in whose Length and Dispose sleep for five seconds -
+# and the pool only grows past its minimum (the processor count) at about one thread every 500 ms. On a
+# host with four cores, five parked threads mean the next Task.Run waits for injection and an ordinary
+# file misses the deadline: reproduced with MinThreads set to 4, where the open answered at 243, 260 and
+# 264 ms against a 250 ms budget. Anything added here that must succeed goes above the parking, and
+# anything that measures a refusal goes below it.
+$userEnc = Join-Path $tmp 'user-utf16.json'
+[System.IO.File]::WriteAllText($userEnc, '{ "style": "powerline", "layout": "two" }', [System.Text.UnicodeEncoding]::new($false, $true))
+$c = Read-StatusConfig $userEnc
+Confirm-Equal $c.Style 'powerline' 'user config: a utf-16 user file still applies'
+Confirm-Equal $c.Layout 'two' 'user config: every key of the utf-16 user file applies, so it was decoded and not half read'
+# Over the cap falls back to the built-in defaults, which is where a user file that will not parse has
+# always landed. The project file then merges over those defaults rather than over the refused file,
+# which is the same precedence a broken user file already had.
+$userOver = Write-TempConfig 'user-over-cap.json' ('{ "style": "powerline", "pad": "' + ('x' * $limit.MaxBytes) + '" }')
+$c = Read-StatusConfig $userOver
+Confirm-Equal $c.Style 'plain' 'user config: a file over the byte cap falls back to the defaults'
+Confirm-Equal $c.Layout 'one' 'user config: nothing of the oversized user file is applied'
+$c = Read-StatusConfig $userOver (Write-TempProjectDir 'proj-over-user-huge' '{ "layout": "two" }')
+Confirm-Equal $c.Layout 'two' 'user config: the project file still applies over an oversized user file'
+Confirm-Equal $c.Style 'plain' 'user config: the oversized user file falls back exactly where a broken one does'
+# The deadline covers it too, shown without depending on a network: with the budget set to zero the file
+# that applied a few lines ago is refused, and the render is left with the defaults.
+. ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = 0 } }"))
+Confirm-Equal (Read-BoundedFileText $smallProject -Trusted) $null 'user config: a spent budget refuses a trusted file too'
+Confirm-Equal (Read-StatusConfig $userPath).Style 'plain' 'user config: a spent budget takes the user file down to the defaults'
+. ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = $($realLimit.TimeoutMs) } }"))
+Confirm-Equal (Read-StatusConfig $userPath).Style 'powerline' 'user config: the same user file applies again with the deadline back'
+# Trusted is one skipped check and not a way past the others: the open still decides, and a handle that
+# is not an ordinary file is still refused. The directory case is also what makes the skipped probe safe
+# to skip - a directory never reaches it, because the open refuses one first.
+Confirm-Equal (Read-BoundedFileText $tmp -Trusted) $null 'user config: a directory is refused as a trusted read too, because the open refuses it'
+Confirm-Equal (Read-BoundedFileText 'NUL' -Trusted) $null 'user config: a handle that cannot seek is refused as a trusted read too'
+Confirm-Equal (Read-BoundedFileText $overCap -Trusted) $null 'user config: the cap is not skipped for a trusted read'
+Confirm-Equal (Read-BoundedFileText $smallProject -Trusted) '{ "layout": "two" }' 'user config: a trusted read of an ordinary file reads it back whole'
+# A config another process holds open FOR WRITING - an editor between its truncate and its flush, a sync
+# client, a script that did not dispose a StreamWriter. File.OpenRead asks to share with readers only and
+# is refused with a sharing violation; Get-Content asked to share with writers too and read it, so this
+# is what the file did before it was bounded and what it has to keep doing. The user's file re-opens
+# sharing with the writer; the project's file, whose path a repository chose, stays refused.
+$userShared = Write-TempConfig 'user-shared.json' '{ "style": "powerline", "layout": "two" }'
+$userWriter = [System.IO.File]::Open($userShared, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+try {
+    $userSharedRefused = $null -eq (Read-BoundedFileText $userShared)
+    Write-Host "  writer-held case: $(if ($userSharedRefused) { 'the plain open is refused, so the shared re-open is what answers' } else { 'this filesystem shares a written file anyway, so both reads answer' })" -ForegroundColor DarkGray
+    Confirm-Equal (Read-BoundedFileText $userShared -Trusted) '{ "style": "powerline", "layout": "two" }' 'user config: a file another process holds open for writing is still read'
+    Confirm-Equal (Read-StatusConfig $userShared).Style 'powerline' 'user config: and it still applies, rather than falling back to the defaults'
+    Confirm-Equal "$(Get-Content -LiteralPath $userShared -Raw)" '{ "style": "powerline", "layout": "two" }' 'user config: Get-Content reads it too, which is what the bounded read has to match'
+} finally { $userWriter.Dispose() }
+Confirm-Equal (Read-BoundedFileText $userShared -Trusted) '{ "style": "powerline", "layout": "two" }' 'user config: and the same file reads the ordinary way once the writer has gone'
+# A user config that is not there at all is a supported state - install.ps1 warns and carries on - so it
+# is not a refusal and leaves no record for the log. The project file keeps its refusal, because "there
+# is no project config" is the question that log line was added to answer.
+$script:diagBoundedRead = $null
+$userMissing = Join-Path $tmp 'user-not-here.json'
+$diagWasOn = $script:diagOn
+$script:diagOn = $true
+Confirm-Equal (Read-BoundedFileText $userMissing -Trusted) $null 'user config: a file that is not there reads as nothing'
+Confirm-True ($null -eq $script:diagBoundedRead) 'user config: a user file that is not there leaves no record to log, the way Get-Content left none'
+Confirm-Equal (Read-BoundedFileText $userMissing) $null 'user config: the same path untrusted is refused'
+Confirm-Equal $script:diagBoundedRead.Why 'it could not be opened' 'user config: and the untrusted refusal still records why, which is what the project file needs'
+$script:diagBoundedRead = $null
+$script:diagOn = $diagWasOn
+Confirm-Equal (Read-StatusConfig $userMissing).Style 'plain' 'user config: a user file that is not there leaves the built-in defaults'
+# ---- What -Config names, turned into a path a filesystem call can take ----
+# Get-Content read a relative name against the SESSION's location; every call in the bounded read reads
+# it against the PROCESS's working directory, and Set-Location moves the first and leaves the second
+# where the process started. So the name is resolved once, at the edge, before any of it reaches a read.
+# The two directories are made to differ here on purpose, and the first line says so, because on a
+# machine where they happened to agree the rest would pass without testing anything.
+Push-Location $tmp
+try {
+    Confirm-True (-not [string]::Equals((Get-Location).Path, [Environment]::CurrentDirectory, [System.StringComparison]::Ordinal)) 'config path: the session location and the process working directory really differ, so the cases below are the cases they say they are'
+    Confirm-Equal (Resolve-ConfigPath 'project-user.json') (Join-Path $tmp 'project-user.json') 'config path: a relative name resolves against the session location, the way Get-Content resolved it'
+    Confirm-Equal (Read-StatusConfig (Resolve-ConfigPath 'project-user.json')).Style 'powerline' 'config path: and the file it names is the one that gets read'
+    # Drive-relative. IsPathRooted says this one is rooted, which is why the resolution cannot be gated
+    # on that test: `C:name` means "name in the current directory of drive C:", and the session and the
+    # process disagree about what that directory is exactly as they do for a bare relative name.
+    Confirm-Equal (Resolve-ConfigPath "$((Get-Location).Drive.Name):project-user.json") (Join-Path $tmp 'project-user.json') 'config path: a drive-relative name resolves against the session location too, though IsPathRooted calls it rooted'
+    # A name that names no provider is refused rather than passed through. Passing it through was worse
+    # than it looks: on Windows a name with a colon in it opens an alternate data stream of a file in the
+    # working directory, which the Test-Path this replaced would never have found.
+    Confirm-Equal (Resolve-ConfigPath 'nodrive:project-user.json') $null 'config path: a name whose drive does not exist is refused rather than handed to the open'
+    Confirm-Equal (Resolve-ConfigPath '') $null 'config path: an empty name names nothing'
+    Confirm-Equal (Resolve-ConfigPath $userPath) $userPath 'config path: a path that is already absolute is left as it is'
+    Confirm-Equal (Resolve-ConfigPath '\\192.0.2.1\share\statusline.json') '\\192.0.2.1\share\statusline.json' 'config path: a UNC path is left as it is, and nothing goes near the network to find that out'
+} finally { Pop-Location }
+
+# A link where the user config should be. The project file's link is refused because a repository chose
+# that path; this one is followed, because the user did and Get-Content followed it before #48. A file
+# symbolic link needs Developer Mode or an elevated shell on Windows, so say which case ran.
+$userLinkTarget = Write-TempConfig 'user-link-target.json' '{ "style": "powerline" }'
+$userLinkPath = Join-Path $tmp 'user-link.json'
+$madeUserLink = $true
+try { New-Item -ItemType SymbolicLink -Path $userLinkPath -Target $userLinkTarget -ErrorAction Stop | Out-Null } catch { $madeUserLink = $false }
+Write-Host "  user link case: $(if ($madeUserLink) { 'a symbolic link stands in for a dotfiles config' } else { 'symbolic links need Developer Mode here, so the link case is not checked' })" -ForegroundColor DarkGray
+if ($madeUserLink) {
+    Confirm-Equal (Read-StatusConfig $userLinkPath).Style 'powerline' 'user config: a linked user file is followed rather than refused'
+    Confirm-Equal (Read-BoundedFileText $userLinkPath -Trusted) '{ "style": "powerline" }' 'user config: -Trusted is what follows the link'
+    Confirm-Equal (Read-BoundedFileText $userLinkPath) $null 'user config: the same link without -Trusted is refused, which is the only difference between the two reads'
+}
+
+# ---- Everything below this line parks pool threads. See the note above. ----
 # A filesystem that does not answer. The open blocks inside the call, which is the case the budget exists
 # for and the one that tells this design from the last: a check made before the clock started could only
 # wait on the network stack. Where a machine's stack refuses at once this proves the refusal and nothing
@@ -1259,6 +1421,23 @@ $c = Read-StatusConfig $userPath '\\192.0.2.1\statusline-test'
 Confirm-True ($deadSw.ElapsedMilliseconds -lt 2000) 'project config: an unreachable project directory costs the budget'
 Confirm-Equal $c.Style 'powerline' 'project config: an unreachable project directory leaves the user file in force'
 Confirm-Equal $c.Layout 'one' 'project config: an unreachable project directory changes nothing'
+# The user's file on the same unreachable filesystem, which is the case #48 was opened about.
+$userDeadSw = [System.Diagnostics.Stopwatch]::StartNew()
+$c = Read-StatusConfig $deadPath
+$userDeadMs = $userDeadSw.ElapsedMilliseconds
+Write-Host "  unreachable user config case: $userDeadMs ms ($(if ($userDeadMs -ge $realLimit.TimeoutMs) { 'the open blocked and the budget ended it' } else { 'the network stack refused before the budget mattered' }))" -ForegroundColor DarkGray
+Confirm-Equal $c.Style 'plain' 'user config: a user file on an unreachable filesystem falls back to the defaults'
+Confirm-True ($userDeadMs -lt 2000) 'user config: an unreachable user file costs the budget, not the network timeout'
+# BOTH files unreachable at once. The clock is per read and the two reads are serial, so this is two
+# budgets and not one - which is the honest number to hold the script to, and the one the README states.
+# The slack over 2 x TimeoutMs is for the process, not for the reads: a PowerShell call frame, the JSON
+# parse of nothing and a stopwatch read all sit inside the figure this line measures.
+$bothDeadSw = [System.Diagnostics.Stopwatch]::StartNew()
+$c = Read-StatusConfig $deadPath '\\192.0.2.1\statusline-test'
+$bothDeadMs = $bothDeadSw.ElapsedMilliseconds
+Write-Host "  both-unreachable case: $bothDeadMs ms against a $(2 * $realLimit.TimeoutMs) ms pair of budgets" -ForegroundColor DarkGray
+Confirm-Equal $c.Style 'plain' 'user config: with both files unreachable the built-in defaults stand'
+Confirm-True ($bothDeadMs -lt (2 * $realLimit.TimeoutMs) + 1500) "user config: two unreachable config files cost two budgets and not the network timeout, took $bothDeadMs ms"
 # The swap this ordering defeats - a name that becomes a link, a device or a larger file between the
 # check and the read - cannot be staged from here, because there is no hook between the open and the
 # checks that follow it. What is shown instead is the property that closes the window: the two refusals
@@ -1309,7 +1488,7 @@ if ($null -eq $blockingType) {
     # The length, asked for the way the bounded read asks for it.
     $blockSw = [System.Diagnostics.Stopwatch]::StartNew()
     $blockTask = [System.Threading.Tasks.Task]::Run($blockingCall.Length)
-    $blockDone = $blockTask.Wait((Get-ProjectConfigLimit).TimeoutMs)
+    $blockDone = $blockTask.Wait((Get-BoundedReadLimit).TimeoutMs)
     $blockMs = $blockSw.ElapsedMilliseconds
     Confirm-True (-not $blockDone) 'bounded read: a length that blocks does not answer inside the budget'
     Confirm-True ($blockMs -lt 2000) 'bounded read: a blocking length is abandoned at the budget, not waited out'
@@ -1433,31 +1612,40 @@ if ($null -eq $costType) {
     # reopens the gap between asking about a name and opening it. So the dispatch stays and the caught
     # exception goes, and what is pinned here is the shape rather than a number of microseconds: one
     # open is attempted, and nothing else on the disk is touched at all.
+    # Every count here is now of two files rather than one: #48 put the user's own config under the same
+    # reader, so a render pays for that read whether or not a project directory was named. The baseline
+    # is therefore what a payload with no project_dir costs, and every claim below about the project file
+    # is the difference from it. The user file is read as trusted, which is why the attribute probe stays
+    # at zero here and is the one call the project file adds that this one does not.
     $costNone = Measure-ConfigRead $null
-    Confirm-Equal $costNone.Opens 0 "render cost: a payload with no project_dir opens nothing, got '$($costNone.Text)'"
-    Confirm-Equal $costNone.Attributes 0 'render cost: a payload with no project_dir probes no attributes'
+    Confirm-Equal $costNone.Opens 1 "render cost: a payload with no project_dir opens the user file and nothing else, got '$($costNone.Text)'"
+    Confirm-Equal $costNone.Attributes 0 'render cost: the user file is trusted, so nothing probes its attributes'
+    Confirm-Equal $costNone.Lengths 1 'render cost: the user file is measured once, from its handle'
+    Confirm-Equal $costNone.Reads 2 'render cost: the user file takes one read of bytes and one that ends it'
     Confirm-Equal $costNone.Cfg.Style 'powerline' 'render cost: a payload with no project_dir still reads the user file'
     $costPlain = Measure-ConfigRead $costNoClaude
-    Confirm-Equal $costPlain.Opens 1 "render cost: a project directory with no .claude attempts one open, got '$($costPlain.Text)'"
+    Confirm-Equal ($costPlain.Opens - $costNone.Opens) 1 "render cost: a project directory with no .claude attempts one open beyond the user file, got '$($costPlain.Text)'"
     Confirm-Equal $costPlain.Attributes 0 'render cost: a project directory with no .claude probes no attributes'
-    Confirm-Equal $costPlain.Lengths 0 'render cost: a project directory with no .claude asks for no length'
-    Confirm-Equal $costPlain.Reads 0 'render cost: a project directory with no .claude reads nothing'
-    Confirm-Equal $costPlain.Closes 0 'render cost: a project directory with no .claude closes nothing, because it opened nothing'
+    Confirm-Equal ($costPlain.Lengths - $costNone.Lengths) 0 'render cost: a project directory with no .claude asks for no length of its own'
+    Confirm-Equal ($costPlain.Reads - $costNone.Reads) 0 'render cost: a project directory with no .claude reads nothing of its own'
+    # The close is queued on the pool and never waited on, so what is pinned is a ceiling rather than a
+    # number: the user file opened one handle, and the project directory opened none to close.
+    Confirm-True ($costPlain.Closes -le 1) 'render cost: a project directory with no .claude closes nothing of its own, because it opened nothing'
     Confirm-Equal $costPlain.Cfg.Style 'powerline' 'render cost: a project directory with no .claude leaves the user file in force'
     # A .claude directory with no statusline.json in it costs exactly the same.
     $costEmpty = Measure-ConfigRead $costEmptyClaude
-    Confirm-Equal $costEmpty.Opens 1 "render cost: an empty .claude attempts one open, got '$($costEmpty.Text)'"
-    Confirm-Equal ($costEmpty.Attributes + $costEmpty.Lengths + $costEmpty.Reads + $costEmpty.Closes) 0 'render cost: an empty .claude touches nothing else'
+    Confirm-Equal ($costEmpty.Opens - $costNone.Opens) 1 "render cost: an empty .claude attempts one open beyond the user file, got '$($costEmpty.Text)'"
+    Confirm-Equal (($costEmpty.Attributes + $costEmpty.Lengths + $costEmpty.Reads) - ($costNone.Attributes + $costNone.Lengths + $costNone.Reads)) 0 'render cost: an empty .claude touches nothing else'
     # And the shape that does have a config pays for what it uses and no more: the open, the length, the
     # attribute probe, one read that returns the bytes and one that returns nothing. The close is queued
     # on the pool and never waited on, so how many have finished by this line is not deterministic and is
     # bounded rather than pinned; that it is queued at all is checked in the bounded read group above.
     $costReal = Measure-ConfigRead $costWithFile
-    Confirm-Equal $costReal.Opens 1 "render cost: a real project config opens the file once, got '$($costReal.Text)'"
-    Confirm-Equal $costReal.Attributes 1 'render cost: a real project config probes the attributes once'
-    Confirm-Equal $costReal.Lengths 1 'render cost: a real project config asks the handle its length once'
-    Confirm-Equal $costReal.Reads 2 'render cost: a real project config takes one read of bytes and one that ends it'
-    Confirm-True ($costReal.Closes -le 1) 'render cost: a real project config closes the handle at most once'
+    Confirm-Equal ($costReal.Opens - $costNone.Opens) 1 "render cost: a real project config opens the file once, got '$($costReal.Text)'"
+    Confirm-Equal $costReal.Attributes 1 'render cost: a real project config probes the attributes once, and it is the only file that is probed at all'
+    Confirm-Equal ($costReal.Lengths - $costNone.Lengths) 1 'render cost: a real project config asks the handle its length once'
+    Confirm-Equal ($costReal.Reads - $costNone.Reads) 2 'render cost: a real project config takes one read of bytes and one that ends it'
+    Confirm-True ($costReal.Closes -le 2) 'render cost: a real project config closes the handle at most once, beside the user file'
     Confirm-Equal $costReal.Cfg.Layout 'two' 'render cost: a real project config is still applied'
 
     # ---- #21: presets, "no measurable render cost" ----
@@ -1877,6 +2065,24 @@ Confirm-Equal $back.five_hour_percentage 23.5 'state round trip: five-hour perce
 Confirm-Equal @($back.history).Count 1 'state round trip: history count'
 Confirm-Equal $back.history[0].t 1767225600 'state round trip: history time'
 Confirm-Equal $back.history[0].cost_usd 1.07 'state round trip: history cost'
+
+# The state file is read under the same budget the config files are. It was one File.Exists and one
+# ReadAllText on the render's own thread, in front of every segment - the same shape #48 bounded, and on
+# a machine with no TEMP this file lives under the home directory, which is the one of the three places
+# this script writes that can be a network mount. Shown with the budget set to zero rather than with a
+# dead share, so the claim is about the clock and not about a network: the file that read back a line
+# ago reads as no state, and the render is left with what it would have had before deltas existed.
+$stateRealLimit = Get-BoundedReadLimit
+. ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($stateRealLimit.MaxBytes); TimeoutMs = 0 } }"))
+Confirm-Equal (Read-SessionState 'abc') $null 'state read: a spent budget reads as no state, so the read is under the clock'
+. ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($stateRealLimit.MaxBytes); TimeoutMs = $($stateRealLimit.TimeoutMs) } }"))
+Confirm-Equal (Read-SessionState 'abc').cost_usd 1.07 'state read: and the same file reads again with the deadline back'
+# The cap applies too. A state file cannot honestly grow this large - the ring is twenty entries - so
+# one this size is a file something else wrote, and refusing it costs one delta rather than a render.
+$stateHuge = Join-Path $stateDir 'huge.json'
+[System.IO.File]::WriteAllText($stateHuge, ('{ "v": 1, "cost_usd": 1.07, "pad": "' + ('x' * $stateRealLimit.MaxBytes) + '" }'))
+Confirm-Equal (Read-SessionState 'huge') $null 'state read: a file over the byte cap reads as no state'
+Remove-Item -LiteralPath $stateHuge -Force
 
 # The history ring gains an entry only when the cost moved.
 $same = Merge-SessionState $back (Get-StatePayload 1.07) 1767225660
@@ -3290,6 +3496,25 @@ $seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500) $quietBands
 Confirm-Equal $seg.Role 'warn' 'context cached: the role is still read from the normalised percentage'
 Confirm-True $seg.Text.EndsWith("92% cached$esc[33m") 'context cached: a warn meter hands its own colour back after the suffix'
 
+# used_percentage used to be a null check and a bare Get-WholePercent call, typed [double], which reads
+# like a guard but is not one under this script's SilentlyContinue: a string survives the failed cast
+# as that literal string and prints "abc%" with an empty bar, and a boolean survives as 1 or 0 - a
+# figure Test-AlarmState, which reads Get-FiniteNumber directly, would disagree is a percentage at all
+# (code review, the #45/#44 follow-up flagged in the guards batch report). Get-PayloadPercent now
+# guards it the same way Get-LimitsSegment guards used_percentage.
+foreach ($bad in @('"abc"', 'true', 'false', '[]', '{}')) {
+    Confirm-Equal (Get-ContextSegment (Get-JsonPayload 'context_window' ('{"used_percentage":' + $bad + '}')) $bandCfg) $null "context: used_percentage $bad omits the segment rather than printing it literally"
+}
+# The boolean case named directly: true must not coerce to 1% the way it used to, confirmed by its
+# absence from the segment (the loop above already proves no segment at all, so nothing to compare).
+Confirm-Equal (Get-ContextSegment (Get-JsonPayload 'context_window' '{"used_percentage":true}') $bandCfg) $null 'context: a boolean used_percentage does not coerce to 1%'
+# total_input_tokens and total_output_tokens had the identical [double]-cast hazard, found while fixing
+# used_percentage in the same function: a hostile value now counts as zero rather than corrupting the
+# token counts silently.
+$hostileUsage = Get-ContextSegment (Get-JsonPayload 'context_window' '{"used_percentage":40,"total_input_tokens":"abc","total_output_tokens":5000,"context_window_size":200000}') $bandCfg
+Confirm-True ($hostileUsage.Text.Contains('5.0k')) 'context: a hostile total_input_tokens counts as zero rather than corrupting the total'
+Confirm-True (-not $hostileUsage.Text.Contains('abc')) 'context: a hostile total_input_tokens never reaches the rendered line'
+
 Write-Host '== unit: cache' -ForegroundColor Cyan
 # The prompt cache warmth segment, and the two helpers under it. This is NOT Get-CacheShare, which the
 # context section above covers: that one reads context_window.current_usage and gives the share of this
@@ -3510,9 +3735,13 @@ Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload 0.02) $bandCfg)) 'cost
 # dollar figure, so an alarm that is firing elsewhere on the line leaves this cutoff exactly as it was.
 $quiet1Alarm = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 1.0; context = 0.0; limits = 0.0 }; Alarm = @{ Context = 1; Limits = 1 } }
 Confirm-Equal (Get-CostSegment (Get-CostPayload 0.4312) $quiet1Alarm) $null 'cost quiet 1: an alarm firing elsewhere does not keep a 43-cent cost'
-# A cost that is not a number cannot be compared, so the guard stands aside and the builder does what
-# it always did with it, which is to format whatever converts.
-Confirm-True ($null -ne (Get-CostSegment (Get-CostPayload '0.50') $quiet1)) 'cost quiet 1: a string cost is not a figure the guard can read, so it is not hidden'
+# A cost that is not a number at all - a string, even a numeric-looking one - omits the whole segment
+# now (code review, the #45/#44 follow-up: total_cost_usd used to reach a bare [double] cast on
+# display with no real guard in front of it, so a numeric string like "0.50" rendered fine and a
+# non-numeric one or a boolean did too, coercing to a made-up figure). Get-FiniteNumber draws the same
+# line here that it already draws for every other payload number in the script: a JSON number is a
+# figure, a JSON string is not, whatever it contains.
+Confirm-Equal (Get-CostSegment (Get-CostPayload '0.50') $quiet1) $null 'cost: a string cost, even a numeric-looking one, omits the segment rather than being read as a figure'
 
 # The per-turn delta: the change since the total the previous render wrote into the state file, in
 # parentheses behind the total, and only when it is worth at least a cent. Every expected figure here is
@@ -3570,6 +3799,38 @@ Confirm-Equal (Get-CostSegment (Get-CostPayload 1.07) $quietOff (Get-CostState 2
 # called boring is still boring, and a segment the guard hides has no delta to show.
 Confirm-Equal (Get-CostSegment (Get-CostPayload 0.4312) $quiet1 (Get-CostState 0.1)) $null 'cost delta: the quiet guard still hides the whole segment'
 Confirm-Equal (Get-CostSegment ([pscustomobject]@{}) $quietOff (Get-CostState 0.95)) $null 'cost delta: no cost object is still no segment'
+
+# total_cost_usd used to be a null check and a bare [double] cast on display, which reads like a guard
+# but is not one under this script's SilentlyContinue: a boolean survives the failed cast as 1.0 or 0.0
+# and prints a confident "$1.00" (code review, the #45/#44 follow-up flagged in the guards batch
+# report - the same shape as Get-ContextSegment's used_percentage). Get-FiniteNumber now guards it.
+foreach ($bad in @('abc', $true, $false, @(1.5), [pscustomobject]@{ v = 1 })) {
+    Confirm-Equal (Get-CostSegment (Get-CostPayload $bad) $quietOff) $null "cost: total_cost_usd '$bad' omits the segment rather than printing a made-up figure"
+}
+
+Write-Host '== unit: lines' -ForegroundColor Cyan
+# Get-LinesSegment had no direct unit test at all before this: it was only exercised through the
+# sample render matrix. total_lines_added and total_lines_removed used to be a bare [int] cast on a
+# null-coalesce, which reads like a guard but is not one under this script's SilentlyContinue: a
+# hostile value survives the failed cast as an empty string and prints "+ " with nothing after it
+# (code review, the #45/#44 follow-up flagged in the guards batch report). Get-PayloadNumber now
+# guards both counts, treating a missing or unusable count as zero either way, the same as "??"
+# already did for a missing one. Local icon and mark copies, the same values statusline.ps1 uses and
+# the ones this file itself defines again later for the sample matrix - checked ordinally against
+# each other in the drift sense that matters here: both call the same constant.
+$iconLines = [char]::ConvertFromUtf32(0xF121)
+$minus = [char]::ConvertFromUtf32(0x2212)
+function Get-LinesPayload($Added, $Removed) { return [pscustomobject]@{ cost = [pscustomobject]@{ total_lines_added = $Added; total_lines_removed = $Removed } } }
+$linesCfg = @{ Style = 'plain' }
+$seg = Get-LinesSegment (Get-LinesPayload 156 23) $linesCfg
+Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconLines +156 ${minus}23" 'lines: both counts present, plain text'
+Confirm-Equal (Get-LinesSegment (Get-LinesPayload 0 0) $linesCfg) $null 'lines: both counts zero omits the segment'
+Confirm-Equal (Get-LinesSegment ([pscustomobject]@{}) $linesCfg) $null 'lines: no cost object at all omits the segment'
+foreach ($bad in @('abc', $true, $false, 1.5, @(3), [pscustomobject]@{ v = 1 })) {
+    $seg = Get-LinesSegment (Get-LinesPayload $bad 3) $linesCfg
+    Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconLines +0 ${minus}3" "lines: a hostile total_lines_added of '$bad' counts as zero rather than printing it literally"
+}
+Confirm-Equal (Get-LinesSegment (Get-LinesPayload 'abc' 0) $linesCfg) $null 'lines: a hostile added with a zero removed omits the segment (both count as zero)'
 
 Write-Host '== unit: clock' -ForegroundColor Cyan
 # Format-Elapsed alone: the three forms, and the boundaries between them. The minutes are zero-padded
@@ -3941,7 +4202,38 @@ foreach ($odd in @(@{ Label = 'string true'; Value = 'true' }, @{ Label = 'numbe
     $p | Add-Member -NotePropertyName exceeds_200k_tokens -NotePropertyValue $odd.Value
     Confirm-Equal (Get-ModelSegment $p $plainCfg).Text "$iconModel Fable 5.1" "model exceeds as $($odd.Label): no glyph"
 }
-Confirm-Equal (Get-ModelSegment ([pscustomobject]@{ model = [pscustomobject]@{ display_name = '' } }) $plainCfg) $null 'model: empty name omits the segment'
+Confirm-Equal (Get-ModelSegment ([pscustomobject]@{ model = [pscustomobject]@{ display_name = '' } }) $plainCfg).Text "$iconModel claude" 'model: empty name falls back to claude rather than omitting the segment'
+# display_name is payload text, found unguarded while auditing #61's badges fix: it went straight from
+# the payload to the rendered line with only an "-not $model" check, which a number or a boolean would
+# pass and a control character or a right-to-left override would sail through unstripped. Same pair as
+# every other payload name in the script now. Unlike every other guarded field, an unusable name here
+# falls back to the word "claude" rather than omitting the segment, whatever shape "unusable" takes -
+# present but hostile, present but the wrong type, or not present at all (code review on #61's own PR:
+# the badges builder can drop a badge and lose nothing, but this is the one segment the alarm rides on,
+# so treating "no name" as a reason to drop it here would have made a payload with no model.display_name
+# at all - or a hostile one, no more or less legitimate a payload shape - the one way to silence a real
+# alarm on a render where the context or limits segment still gets through).
+foreach ($bad in @('""', '"   "', '12', 'true', '[]', '{}')) {
+    Confirm-Equal (Get-ModelSegment (('{"model":{"display_name":' + $bad + '}}') | ConvertFrom-Json) $plainCfg).Text "$iconModel claude" "model: display_name $bad falls back to claude"
+}
+Confirm-Equal (Get-ModelSegment ('{"model":{"display_name":null}}' | ConvertFrom-Json) $plainCfg).Text "$iconModel claude" 'model: an explicit null display_name falls back to claude'
+Confirm-Equal (Get-ModelSegment ('{}' | ConvertFrom-Json) $plainCfg).Text "$iconModel claude" 'model: no model object at all falls back to claude'
+Confirm-Equal (Get-ModelSegment ('{"model":{}}' | ConvertFrom-Json) $plainCfg).Text "$iconModel claude" 'model: a model object with no display_name key falls back to claude'
+Confirm-Equal (Get-ModelSegment ('{"model":{"display_name":"\u001b[31mred"}}' | ConvertFrom-Json) $plainCfg).Text "$iconModel claude" 'model: a name carrying an escape falls back to claude'
+Confirm-Equal (Get-ModelSegment ('{"model":{"display_name":"\u202e"}}' | ConvertFrom-Json) $plainCfg).Text "$iconModel claude" 'model: a name of nothing but a format character falls back to claude'
+$seg = Get-ModelSegment ('{"model":{"display_name":"Fa\u202eble 5.1"}}' | ConvertFrom-Json) $plainCfg
+Confirm-Equal $seg.Text "$iconModel Fable 5.1" 'model: a format character is stripped out of the name rather than refusing it'
+# The alarm carrier survives every one of the "no usable name" shapes, not just a hostile one: a real
+# 95% context figure still turns the segment - reading "claude" - red, whether the payload sent a
+# hostile display_name, no display_name key, no model object, or nothing at all.
+foreach ($case in @(
+        @{ Label = 'a hostile display_name'; Json = '{"model":{"display_name":"\u001b[31mred"},"context_window":{"used_percentage":95}}' }
+        @{ Label = 'a model object with no display_name key'; Json = '{"model":{},"context_window":{"used_percentage":95}}' }
+        @{ Label = 'no model object at all'; Json = '{"context_window":{"used_percentage":95}}' })) {
+    $withAlarm = Get-ModelSegment ($case.Json | ConvertFrom-Json) @{ Style = 'plain'; Alarm = @{ Context = 90; Limits = 0 } }
+    Confirm-Equal $withAlarm.Text "$iconModel claude" "model: alarm survives $($case.Label): text is the claude fallback"
+    Confirm-Equal $withAlarm.Role 'bad' "model: alarm survives $($case.Label): role is still bad"
+}
 # The alarm changes the role and nothing else. Get-ModelPayload sits at 65%, so the alarm is decided by
 # the config here: 66 fires, 65 fires (at or above), 64 does not, and the text is the same either way.
 function Get-ModelAlarmConfig($At, [string] $Style = 'plain') { return @{ Style = $Style; Alarm = @{ Context = $At; Limits = 0 } } }
@@ -4059,6 +4351,55 @@ Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSecon
 Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 16400) 90)) 'pace on the default clock: the first half hour gives no arrow'
 Confirm-True ($null -eq (Get-PaceArrow 4102444800 80)) 'pace on the default clock: a far-future reset gives no arrow'
 
+Write-Host '== unit: TimeLeft' -ForegroundColor Cyan
+# TimeLeft used to cast $epoch straight to [long] and hand it to DateTimeOffset::FromUnixTimeSeconds
+# unguarded (#44): a non-numeric string threw at the cast, and a numerically valid but absurd value
+# such as 1e18 threw out of FromUnixTimeSeconds, either taking the whole limits segment builder down
+# with it rather than just the countdown. Code review on #44's own fix: constructing a date and then
+# range-checking it bolted a second mechanism onto a hazard Get-PaceArrow and Get-CacheSecondsLeft
+# already solve with whole-seconds arithmetic against a passed-in $Now, so TimeLeft now takes the same
+# shape. $left = $sec - $Now cannot throw the way constructing a date can, the 60-second floor and the
+# 31536000-second (365-day) ceiling are the one range check bounding both a hostile epoch and the
+# countdown cap at once, and TimeSpan::FromSeconds afterwards is always given a value it can hold.
+# $timeLeftClock is fixed rather than read from the live clock, so every case below pins an exact
+# string rather than a shape: real time only moves the answer in the direction that would make a
+# borderline case fail sooner, so a case that holds here holds when the script reads its own clock too.
+$timeLeftClock = 1700000000
+Confirm-Equal (TimeLeft $null $timeLeftClock) '' 'TimeLeft: no epoch at all is empty'
+foreach ($bad in @('soon', [double]::NaN, [double]::PositiveInfinity, [double]::NegativeInfinity, @(1700000000), [pscustomobject]@{ v = 1 })) {
+    Confirm-Equal (TimeLeft $bad $timeLeftClock) '' "TimeLeft: $($bad.GetType().Name) '$bad' is not a usable epoch"
+}
+# $true and $false are pinned against a $Now of -60 rather than $timeLeftClock: at $timeLeftClock
+# either boolean is billions of seconds in the past whether or not Get-FiniteNumber's own boolean
+# exclusion is doing anything, so the same assertion against $timeLeftClock would pass even with that
+# exclusion removed and prove nothing. Against -60, a $true read as the number 1 would be 61 seconds
+# out and a $false read as 0 would be exactly the 60-second floor - both comfortably inside the window
+# this function renders a countdown for - so only the boolean exclusion keeps them empty here.
+Confirm-Equal (TimeLeft $true (-60)) '' 'TimeLeft: a boolean true is not a usable epoch, even where the number 1 would render'
+Confirm-Equal (TimeLeft $false (-60)) '' 'TimeLeft: a boolean false is not a usable epoch, even where the number 0 would render'
+# Numerically valid, but far enough outside the 365-day ceiling that the old DateTimeOffset range
+# check would have had to catch it separately; the ceiling alone now does, before any date is built.
+Confirm-Equal (TimeLeft 1e18 $timeLeftClock) '' 'TimeLeft: an epoch far outside DateTimeOffset range is empty rather than throwing'
+Confirm-Equal (TimeLeft (-1e18) $timeLeftClock) '' 'TimeLeft: a large negative epoch is empty rather than throwing'
+Confirm-Equal (TimeLeft 1700000000 $timeLeftClock) '' 'TimeLeft: an epoch at the clock itself is empty (zero seconds left)'
+Confirm-Equal (TimeLeft ($timeLeftClock - 100) $timeLeftClock) '' 'TimeLeft: an epoch in the past is empty'
+# The 60-second floor, pinned on both sides: 59 is empty, 60 is the shortest countdown this ever prints.
+Confirm-Equal (TimeLeft ($timeLeftClock + 59) $timeLeftClock) '' 'TimeLeft: 59 seconds out is empty, not a countdown to zero'
+Confirm-Equal (TimeLeft ($timeLeftClock + 60) $timeLeftClock) ' (0h01m)' 'TimeLeft: exactly 60 seconds out is the shortest h{mm}m form'
+Confirm-Equal (TimeLeft ($timeLeftClock + 9000) $timeLeftClock) ' (2h30m)' 'TimeLeft: two and a half hours out is the h{mm}m form, exactly'
+# The 48-hour edge, pinned on both sides: one second under is still hours and minutes, the boundary
+# itself and beyond it are days. A mutation that formats the day count from TotalHours instead of
+# TotalDays would print (47d) here instead of (2d) - caught by name.
+Confirm-Equal (TimeLeft ($timeLeftClock + 172799) $timeLeftClock) ' (47h59m)' 'TimeLeft: one second under 48 hours is still the h{mm}m form'
+Confirm-Equal (TimeLeft ($timeLeftClock + 172800) $timeLeftClock) ' (2d)' 'TimeLeft: exactly 48 hours out is the day form, exactly 2 days'
+Confirm-Equal (TimeLeft ($timeLeftClock + (300 * 86400)) $timeLeftClock) ' (300d)' 'TimeLeft: 300 days out is inside the cap, pinned exactly'
+# The 365-day cap (#44's decision), pinned on both sides: the boundary itself still renders - a year
+# out is still something to pace against - and one second past it renders nothing rather than a
+# five-digit day count like sample 06 used to show.
+Confirm-Equal (TimeLeft ($timeLeftClock + 31536000) $timeLeftClock) ' (365d)' 'TimeLeft: exactly 365 days out still renders, at the cap boundary'
+Confirm-Equal (TimeLeft ($timeLeftClock + 31536001) $timeLeftClock) '' 'TimeLeft: one second past the 365-day cap renders nothing'
+Confirm-Equal (TimeLeft 4102444800 $timeLeftClock) '' "TimeLeft: sample 06's 2100 epoch is far beyond the one-year cap and renders nothing"
+
 Write-Host '== unit: limits' -ForegroundColor Cyan
 # Resets in the past keep TimeLeft empty, so the text is deterministic. Every call passes a config,
 # because the builder reads its colour bands from it.
@@ -4120,7 +4461,11 @@ $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"seven_day":{"used_per
 Confirm-Equal $seg.Text "$iconLimit 7d 92%" 'limits 7d alone: text'
 Confirm-True ($null -eq $seg.Short) 'limits 7d alone: short would equal text, so none'
 
-$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":70,"resets_at":4102444800},"seven_day":{"used_percentage":12,"resets_at":4102444800}}') $bandCfg
+# 200 days out rather than sample 06's fixed 2100 epoch: since #44 capped TimeLeft's countdown at a
+# year, a reset built from the live clock is what keeps this a "definitely still live, definitely
+# still countable" case rather than one the cap now empties out from under it.
+$liveReset = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + (200 * 86400)
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":70,"resets_at":' + $liveReset + '},"seven_day":{"used_percentage":12,"resets_at":' + $liveReset + '}}')) $bandCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 70% (") -and $seg.Text.EndsWith(') 7d 12%')) 'limits 5h worst with a live reset: text carries the countdown'
 Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits 5h worst with a live reset: short drops the countdown'
 
@@ -4251,6 +4596,26 @@ Confirm-Equal $seg.Text "$iconLimit 5h 61% 7d 12%" 'limits spend_limit null perc
 
 Confirm-True ($null -eq (Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":null},"seven_day":{"used_percentage":null},"spend_limit":{"used_percentage":null}}') $bandCfg)) 'limits all null: segment omitted'
 Confirm-True ($null -eq (Get-LimitsSegment ([pscustomobject]@{}) $bandCfg)) 'limits: missing rate_limits'
+
+# #45: used_percentage used to go through only a null check and then a cast a string throws on and a
+# boolean sails through (`$true` coerces to 1 and prints "5h 1%"). Get-FiniteNumber is the shared gate
+# every payload number in the script uses now - code review turned up three more that did not
+# (Get-ContextSegment, Get-CostSegment, Get-LinesSegment; see their own unit tests) - and the decision
+# made in #45 is that an unusable figure omits THAT figure alone, not the whole segment - the same
+# per-row `continue` a missing used_percentage already took, now reached by more than just $null.
+foreach ($bad in @('"50"', 'true', 'false', 'null', '[]', '{}')) {
+    $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":' + $bad + '},"seven_day":{"used_percentage":41,"resets_at":1700000000}}')) $bandCfg
+    Confirm-Equal $seg.Text "$iconLimit 7d 41%" "limits: a 5h used_percentage of $bad is omitted, 7d still renders"
+    Confirm-Equal $seg.Role 'ok' "limits: a 5h used_percentage of $bad does not drive the colour"
+}
+# The same shapes, but as the only figure in the payload: nothing to fall back on, so the whole segment
+# is omitted rather than an empty parenthesis or a bare icon.
+foreach ($bad in @('"50"', 'true', 'false', 'null', '[]', '{}')) {
+    Confirm-True ($null -eq (Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":' + $bad + '}}')) $bandCfg)) "limits: a used_percentage of $bad with nothing else present omits the whole segment"
+}
+# A boolean used_percentage used to coerce to 1 and print "5h 1%"; confirmed directly by the absence of
+# any 5h figure at all, since "1%" alone as a substring would also be found inside an unrelated "41%".
+Confirm-True (-not (Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":true},"seven_day":{"used_percentage":41,"resets_at":1700000000}}') $bandCfg).Text.Contains('5h')) 'limits: a boolean used_percentage does not coerce to 1% and print a 5h figure'
 
 # The config's thresholds colour the rate limits too, whatever the window size, and the Short form
 # follows the colour they give: 24 is the worst figure and above a warn of 20, so it stays.
@@ -4396,6 +4761,15 @@ Confirm-Equal $b.Short $null 'badges: a session name alone has no short form'
 $b = Get-BadgesSegment ('{"fast_mode":true,"vim":{"mode":"INSERT"}}' | ConvertFrom-Json)
 Confirm-Equal $b.Text "$iconFast $iconVim INSERT" 'badges: modes alone render as they always did'
 Confirm-Equal $b.Short $null 'badges: with no identity badges there is nothing to shed'
+# fast_mode and thinking.enabled are booleans, checked with the same "-is [bool] -and" type test
+# exceeds_200k_tokens uses: PowerShell's own -eq is not a type check, so a plain "-eq $true" would
+# have read the string "true" or the number 1 as the mode too, and neither is what Claude Code sends
+# (code review finding on #61: README claimed all six badge fields share one guard, which these two
+# never did).
+foreach ($odd in @('"true"', '1')) {
+    Confirm-Equal (Get-BadgesSegment (('{"fast_mode":' + $odd + '}') | ConvertFrom-Json)) $null "badges: fast_mode $odd is not the boolean true"
+    Confirm-Equal (Get-BadgesSegment (('{"thinking":{"enabled":' + $odd + '}}') | ConvertFrom-Json)) $null "badges: thinking.enabled $odd is not the boolean true"
+}
 $allSix = '{"fast_mode":true,"thinking":{"enabled":true},"effort":{"level":"xhigh"},"vim":{"mode":"NORMAL"},"agent":{"name":"reviewer"},"session_name":"nightly audit"}'
 $b = Get-BadgesSegment ($allSix | ConvertFrom-Json)
 Confirm-Equal $b.Text "$iconFast $iconThink $iconEffort xhigh $iconVim NORMAL $iconAgent reviewer $iconSession nightly audit" 'badges: fast, thinking, effort, vim, agent, session in that order'
@@ -4419,12 +4793,20 @@ Confirm-Equal $b.Text.Length 12 'badges: the CJK session badge is the glyph, a s
 foreach ($bad in @('""', '"   "', '12', 'true', 'null', '[]', '{}')) {
     Confirm-Equal (Get-BadgesSegment (('{"session_name":' + $bad + '}') | ConvertFrom-Json)) $null "badges: session_name $bad is not a name"
     Confirm-Equal (Get-BadgesSegment (('{"agent":{"name":' + $bad + '}}') | ConvertFrom-Json)) $null "badges: agent.name $bad is not a name"
+    # #61: vim.mode and effort.level went straight to the rendered line with no guard at all. Same
+    # pair, same bad-value table as the two names above.
+    Confirm-Equal (Get-BadgesSegment (('{"vim":{"mode":' + $bad + '}}') | ConvertFrom-Json)) $null "badges: vim.mode $bad is not text"
+    Confirm-Equal (Get-BadgesSegment (('{"effort":{"level":' + $bad + '}}') | ConvertFrom-Json)) $null "badges: effort.level $bad is not text"
 }
 Confirm-Equal (Get-BadgesSegment ('{"agent":"reviewer"}' | ConvertFrom-Json)) $null 'badges: an agent that is a bare string has no name'
 Confirm-Equal (Get-BadgesSegment ('{"session_name":"\u001b[31mred"}' | ConvertFrom-Json)) $null 'badges: a session name carrying an escape is refused outright'
 Confirm-Equal (Get-BadgesSegment ('{"agent":{"name":"\u001b[31mred"}}' | ConvertFrom-Json)) $null 'badges: an agent name carrying an escape is refused outright'
+Confirm-Equal (Get-BadgesSegment ('{"vim":{"mode":"\u001b[31mNORMAL"}}' | ConvertFrom-Json)) $null 'badges: a vim mode carrying an escape is refused outright'
+Confirm-Equal (Get-BadgesSegment ('{"effort":{"level":"\u001b[31mhigh"}}' | ConvertFrom-Json)) $null 'badges: an effort level carrying an escape is refused outright'
 Confirm-Equal (Get-BadgesSegment ('{"session_name":"\u202e\u2066"}' | ConvertFrom-Json)) $null 'badges: a session name of nothing but format characters is not a name'
 Confirm-Equal (Get-BadgesSegment ('{"agent":{"name":"\u202e"}}' | ConvertFrom-Json)) $null 'badges: an agent name of nothing but an override is not a name'
+Confirm-Equal (Get-BadgesSegment ('{"vim":{"mode":"\u202e"}}' | ConvertFrom-Json)) $null 'badges: a vim mode of nothing but an override is not text'
+Confirm-Equal (Get-BadgesSegment ('{"effort":{"level":"\u202e"}}' | ConvertFrom-Json)) $null 'badges: an effort level of nothing but an override is not text'
 # Format characters are stripped rather than refused, so one stray override costs the character and not
 # the badge. Compared ordinally on purpose: PowerShell's own string operators compare by culture, which
 # gives a format character no collation weight at all, so "oc<U+202E>to" -eq "octo" is $true and an
@@ -4433,6 +4815,15 @@ $b = Get-BadgesSegment ('{"agent":{"name":"oc\u202eto"},"session_name":"qu\u2066
 Confirm-True ([string]::Equals($b.Text, "$iconAgent octo $iconSession quiet", [System.StringComparison]::Ordinal)) 'badges: the format characters are stripped out of both names'
 Confirm-True (-not $b.Text.Contains([string][char]0x202E)) 'badges: no right-to-left override survives into the agent badge'
 Confirm-True (-not $b.Text.Contains([string][char]0x2066)) 'badges: no directional isolate survives into the session badge'
+$b = Get-BadgesSegment ('{"vim":{"mode":"NOR\u2066MAL"},"effort":{"level":"xh\u202eigh"}}' | ConvertFrom-Json)
+Confirm-Equal $b.Text "$iconEffort xhigh $iconVim NORMAL" 'badges: the format characters are stripped out of the effort and vim badges'
+# The comparison is OrdinalIgnoreCase (code review on #61: the first cut used plain Ordinal, which
+# made "HIGH" a badge rather than the default it has always meant - #61 asked for a comparison a
+# culture cannot bend, not a new case-sensitivity cliff). "HIGH" and "High" still read as the default
+# and are still hidden; a genuinely different word such as "xhigh" (covered elsewhere in this file)
+# still shows.
+Confirm-Equal (Get-BadgesSegment ('{"effort":{"level":"HIGH"}}' | ConvertFrom-Json)) $null 'badges: an effort level differing only in case from the default is still the default'
+Confirm-Equal (Get-BadgesSegment ('{"effort":{"level":"High"}}' | ConvertFrom-Json)) $null 'badges: mixed-case effort is still the default too'
 # Stripping happens before measuring, so a name padded out with overrides is not cut on room it never
 # took on the line in the first place.
 $b = Get-BadgesSegment (('{"session_name":"' + ('\u202e' * 30) + 'quiet"}') | ConvertFrom-Json)
@@ -5214,6 +5605,11 @@ $badEntries = @(
     @{ Name = 'stamps with an extra field'; Change = { param($j) $j.stamps = $j.stamps + ',0' } }
     @{ Name = 'string writtenAt';     Change = { param($j) $j.writtenAt = 'now' } }
     @{ Name = 'writtenAt missing';    Change = { param($j) $j.PSObject.Properties.Remove('writtenAt') } }
+    # Over the byte cap of the bounded read. Everything else about this entry is right - the root, the
+    # stamps, the time, the record - so it would HIT if the cap were not there, which is what makes it a
+    # test of the cap rather than of the guards. An entry this script wrote is a few hundred bytes, so
+    # one this size is a file something else put there.
+    @{ Name = 'over the byte cap';    Change = { param($j) $j | Add-Member -NotePropertyName pad -NotePropertyValue ('x' * (Get-BoundedReadLimit).MaxBytes) -Force } }
 )
 foreach ($case in $badEntries) {
     $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
@@ -5225,6 +5621,22 @@ foreach ($case in $badEntries) {
     $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
     Confirm-Equal $script:probeCalls ($before + 1) "bad entry, $($case.Name): replaced by a good one"
 }
+# The entry is read under the same clock the config files are read under. It was one File.Exists and one
+# ReadAllText on the render's own thread, which is the shape #48 bounded everywhere else; a temp folder
+# gone slow now costs a probe rather than a render. Shown with the budget set to zero rather than with a
+# dead filesystem, so what is pinned is the clock: an entry that hits a line above becomes a miss.
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+$before = $script:probeCalls
+$cacheRealLimit = Get-BoundedReadLimit
+. ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($cacheRealLimit.MaxBytes); TimeoutMs = 0 } }"))
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls ($before + 1) 'cache read: a spent budget makes a hit into a miss, so the entry read is under the clock'
+Confirm-Equal $g.Branch 'main' 'cache read: and the probe still answers'
+. ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($cacheRealLimit.MaxBytes); TimeoutMs = $($cacheRealLimit.TimeoutMs) } }"))
+$before = $script:probeCalls
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
+Confirm-Equal $script:probeCalls $before 'cache read: with the deadline back the entry hits again'
+
 # The guards on a hit record, and the record's shape after them.
 $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
 $before = $script:probeCalls
@@ -5535,7 +5947,7 @@ try {
     # says which refusal it was rather than that something went wrong. The reasons are asked for by the
     # words a person would search the log for.
     Sync-DiagFlag '1'
-    $diagLimit = Get-ProjectConfigLimit
+    $diagLimit = Get-BoundedReadLimit
     function Test-DiagConfigCase([string] $Name, $ProjectDir, [string] $Pattern, [string] $Label) {
         Clear-DiagLog
         $cfg = Read-StatusConfig $userPath $ProjectDir
@@ -5563,15 +5975,15 @@ try {
     # The three cases below call the reader directly rather than through a config merge, so they also
     # play the caller's part: the read records why it refused and the caller writes the record, which is
     # what keeps every filesystem call the log makes off the reader's own clock.
-    $diagRealLimit = Get-ProjectConfigLimit
-    . ([scriptblock]::Create("function Get-ProjectConfigLimit { return @{ MaxBytes = $($diagRealLimit.MaxBytes); TimeoutMs = 0 } }"))
+    $diagRealLimit = Get-BoundedReadLimit
+    . ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($diagRealLimit.MaxBytes); TimeoutMs = 0 } }"))
     Clear-DiagLog
     Confirm-Equal (Read-BoundedFileText $smallProject) $null 'diag config: a spent budget still refuses a file that is otherwise fine'
     Confirm-Equal (Measure-DiagMatch 'was not read') 0 'diag config: the read itself writes nothing, so a refusal is silent until the caller asks'
     Write-BoundedReadDiag
     Confirm-Equal (Measure-DiagMatch 'config read: .* was not read: the deadline was spent before the open') 1 "diag config: a spent budget says the deadline was spent, got '$((Get-DiagLine) -join ' | ')'"
-    . ([scriptblock]::Create("function Get-ProjectConfigLimit { return @{ MaxBytes = $($diagRealLimit.MaxBytes); TimeoutMs = $($diagRealLimit.TimeoutMs) } }"))
-    Confirm-Equal (Get-ProjectConfigLimit).TimeoutMs $diagRealLimit.TimeoutMs 'diag config: the real deadline is back'
+    . ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($diagRealLimit.MaxBytes); TimeoutMs = $($diagRealLimit.TimeoutMs) } }"))
+    Confirm-Equal (Get-BoundedReadLimit).TimeoutMs $diagRealLimit.TimeoutMs 'diag config: the real deadline is back'
     # A handle that is not an ordinary file: the null device, the one this machine can produce without a
     # privilege. Where it will not open at all the refusal is still logged, under the other reason.
     Clear-DiagLog
@@ -7727,17 +8139,20 @@ $sampleSegments = @{
 # the way it reaches the line once the escapes are stripped. Every visible segment has to put its marker
 # on its own row, so a segment that stops rendering fails by name rather than slipping past the absence
 # table, which only names a few glyphs per sample. Money is formatted the way the script formats it so
-# the check survives a culture that writes 12,50. Markers stop short of anything that moves: 06's limits
-# segment carries a countdown to a 2100 reset, so its marker ends at the percentage. Badges and branch
-# have no single glyph of their own, so their markers are the whole segment text. A marker that depends
-# on the config's folder mode is a hashtable keyed by mode, repo and leaf.
+# the check survives a culture that writes 12,50. Markers stop short of anything that moves; 06's
+# limits marker ends at the 5h percentage rather than reaching for the 7d figure that drives its
+# colour, which the one-off check further down covers instead. Badges and branch have no single glyph
+# of their own, so their markers are the whole segment text. A marker that depends on the config's
+# folder mode is a hashtable keyed by mode, repo and leaf.
 # Samples with a segment whose Short form differs from its Text, with the icon that proves the segment
 # is on the line at all. Checked at every set width in the matrix. A folder entry is checked in repo
 # mode only, because the segment has no Short form in leaf mode. The limits Short form keeps the figure
 # that drives the colour, the 5h one in 07. 06 would show its 7d figure, but its line with every badge
-# on runs past 120 columns, and its five_hour resets in 2100, which puts a drifting countdown in the
-# full text (the $sampleMarkers note above stops its marker short of it), so it cannot meet the two-form
-# rule below and stays out of this table. The one-off check after that rule covers it instead.
+# on is long enough that it cannot reliably show the full form at every set width the matrix tries, so
+# it cannot meet the two-form rule below and stays out of this table. The one-off check after that rule
+# covers it instead. (Before #44 capped TimeLeft's countdown at a year, 06's five_hour resets_at also
+# put a drifting countdown in the full text; that reset is now far enough out that TimeLeft renders
+# nothing for it at all, so the full text is deterministic and this is no longer why 06 is excluded.)
 $sampleShortForms = @{
     '02-feature-dirty-high.json'            = @{
         branch = @{ Icon = $iconBranch; Full = "$iconBranch feature/x ~2 ?1 $iconDirty"; Short = "$iconBranch feature/x $iconDirty" }
@@ -7821,12 +8236,14 @@ $sampleMarkers = @{
         folder = "$iconFolder my-project"; branch = "$iconHome main"
     }
     # 14's cache marker is the whole segment text and nothing in it moves, which is the point of the
-    # sample. Its expires_at is 4102444800, the 1 January 2100 epoch sample 06 uses for its rate-limit
-    # resets, and where 06's limits segment renders that as a drifting countdown this one refuses it:
-    # a prompt cache does not expire in seventy-five years, so Get-CacheSecondsLeft hands back nothing
-    # and the builder prints the part it can stand behind, "warm", with no number after it. That is the
-    # far-future case pinned in the corpus rather than only in the unit table, and it is what lets this
-    # marker be the full text instead of stopping short of a figure that changes every minute.
+    # sample. Its expires_at is 4102444800, the same 1 January 2100 epoch sample 06 uses for its
+    # rate-limit resets, and both now refuse to print anything for it, for two different reasons: a
+    # prompt cache does not expire in seventy-five years, so Get-CacheSecondsLeft hands back nothing
+    # and the builder prints the part it can stand behind, "warm", with no number after it; a rate
+    # limit resetting that far out is not a countdown either, so #44 capped TimeLeft at a year and it
+    # renders nothing for 06's five_hour figure now. That is the far-future case pinned in the corpus
+    # rather than only in the unit table, and it is what lets this marker be the full text instead of
+    # stopping short of a figure that changes every minute.
     '14-prompt-cache-warm.json'             = @{
         model = "$iconModel Fable 5.1"; context = "$iconCtx 18%"; cache = "$iconCache cache warm"
         cost  = "$iconCost `$$('{0:N2}' -f 1.24)"
@@ -9067,7 +9484,7 @@ Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains($iconCost)) '
 # refuses all leave the user file in force and say nothing on stderr. The oversized case is the one that
 # matters most: it is a whole render, so a config a repository grew to megabytes would show up here as a
 # slow or hanging child rather than as a quiet fallback.
-$overSized = '{ "segments": { "cost": false }, "pad": "' + ('x' * (Get-ProjectConfigLimit).MaxBytes) + '" }'
+$overSized = '{ "segments": { "cost": false }, "pad": "' + ('x' * (Get-BoundedReadLimit).MaxBytes) + '" }'
 foreach ($case in @(
         @{ Name = 'render-project-broken'; Json = '{ "segments": '; Label = 'a malformed project file' }
         @{ Name = 'render-project-none'; Json = $null; Label = 'an empty .claude directory' }
@@ -9425,7 +9842,7 @@ foreach ($case in @(
 # The helpers the subagent script copies out of statusline.ps1. Both copies are pulled from the source
 # by the parser and compared as text, so a fix made to one and not the other fails here instead of
 # turning into two scripts that measure a line or colour a percentage differently.
-$sharedHelpers = @('G', 'C', 'Read-StdinText', 'Get-VisibleWidth', 'Get-ClippedText', 'Get-Palette', 'Get-MarkSet', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText')
+$sharedHelpers = @('G', 'C', 'Read-StdinText', 'Get-VisibleWidth', 'Get-ClippedText', 'Get-Palette', 'Get-MarkSet', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText')
 foreach ($name in $sharedHelpers) {
     $a = try { "$(Import-ScriptFunction $script @($name))" } catch { "not found in statusline.ps1" }
     $b = try { "$(Import-ScriptFunction $subScript @($name))" } catch { "not found in subagent-statusline.ps1" }
@@ -9438,7 +9855,7 @@ $subHeader = ((Get-Content -LiteralPath $subScript -TotalCount 60) -join "`n")
 foreach ($name in @($sharedHelpers | Where-Object { $_.Length -gt 2 })) {
     Confirm-True ($subHeader.Contains($name)) "subagent header: the copied-helper list names $name"
 }
-Confirm-True ($subHeader.Contains('fourteen of them')) 'subagent header: the copied-helper list says how many there are'
+Confirm-True ($subHeader.Contains('fifteen of them')) 'subagent header: the copied-helper list says how many there are'
 
 
 # ---- Review findings: bounded capture, atomic settings write, ownership, quoting, explicit zero ----

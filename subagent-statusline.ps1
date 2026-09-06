@@ -37,10 +37,11 @@
 #
 # The helpers below - G, C, Read-StdinText, Get-VisibleWidth, Get-ClippedText, Get-Palette,
 # Get-MarkSet, Get-ThresholdRole, Test-WideWindow, K, Get-FiniteNumber, Get-PayloadNumber,
-# Format-PayloadText and Test-PayloadText, fourteen of them - are copied verbatim from statusline.ps1,
-# and test.ps1 checks the same fourteen names for drift, so this list and that one cannot disagree
-# without one of them failing. They cannot be shared by dot-sourcing: statusline.ps1 reads stdin to the
-# end and prints as it loads, so loading it here would eat this script's payload and print a status line.
+# Format-PayloadText, Test-PayloadText and Get-PayloadText, fifteen of them - are copied verbatim from
+# statusline.ps1, and test.ps1 checks the same fifteen names for drift, so this list and that one
+# cannot disagree without one of them failing. They cannot be shared by dot-sourcing: statusline.ps1
+# reads stdin to the end and prints as it loads, so loading it here would eat this script's payload
+# and print a status line.
 [CmdletBinding()]
 param(
     [string] $Style = 'plain',
@@ -273,6 +274,14 @@ function Test-PayloadText($v) {
             -not [string]::IsNullOrWhiteSpace((Format-PayloadText $v)))
 }
 
+# Test-PayloadText then Format-PayloadText, folded into the one call both Get-RowIdentity and
+# Get-RowProgress were already writing by hand. Copied verbatim from statusline.ps1, one more of the
+# helpers this file mirrors rather than shares - see the note at the top of the file.
+function Get-PayloadText($v) {
+    if (-not (Test-PayloadText $v)) { return $null }
+    return Format-PayloadText ([string] $v)
+}
+
 # ---- Row parts ----
 
 # The two arguments, read once, here rather than at the top of the file: this is where the only three
@@ -294,7 +303,8 @@ $ellipsis = (Get-MarkSet $styleName).Ellipsis
 # none of them is usable text, which leaves the row as the glyph and its progress.
 function Get-RowIdentity($task) {
     foreach ($v in @($task.name, $task.label, $task.description, $task.type)) {
-        if (Test-PayloadText $v) { return (Format-PayloadText ([string] $v)).Trim() }
+        $text = Get-PayloadText $v
+        if ($null -ne $text) { return $text.Trim() }
     }
     return $null
 }
@@ -316,10 +326,11 @@ function Get-RowProgress($task) {
         $bad = if (Test-WideWindow $size) { 90 } else { 85 }
         $parts += @{ Role = (Get-ThresholdRole $pct $warn $bad); Text = "$pct%" }
     }
+    $status = Get-PayloadText $task.status
     if ($null -ne $tokens -and $tokens -ge 1000) {
         $parts += @{ Role = 'dim'; Text = (K $tokens) }
-    } elseif ($parts.Count -eq 0 -and (Test-PayloadText $task.status)) {
-        $parts += @{ Role = 'dim'; Text = (Format-PayloadText ([string] $task.status)).Trim() }
+    } elseif ($parts.Count -eq 0 -and $null -ne $status) {
+        $parts += @{ Role = 'dim'; Text = $status.Trim() }
     }
     return $parts
 }
