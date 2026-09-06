@@ -310,9 +310,13 @@ the way out, because closing it would wait on the same thing. The status line re
 either. What the bound still does not cover, said plainly rather than rounded off: a filesystem sick
 enough to hang calls these reads never make can hold a render up somewhere else. Every other filesystem
 call a render can make is audited in a comment beside `Read-BoundedFileText` in `statusline.ps1`, with a
-decision recorded for each — the diagnostics log has a clock of its own, the git probe is a child process
-under its own timeout, and the git cache and the session state file are deliberately unbounded because
-both live in your temp directory, which no repository and no network chose.
+decision recorded for each. The diagnostics log has a clock of its own. `git status` is a child process
+under its own timeout — which covers the child, and not the `Test-Path` and the walk for a `.git`
+directory that come before it. Those, the ref stamps, the probe cache and the session state file are
+deliberately unbounded: they are many calls each rather than the five a config read makes, so a budget
+would cost more than the case it guards. That is a decision and not a claim that they cannot hang — a
+project directory on a dead share can hold a render up in the walk, and a machine with no `TEMP` keeps
+its state file under `$HOME`.
 
 | Key | Values | What it does |
 |---|---|---|

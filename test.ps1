@@ -1400,6 +1400,17 @@ Confirm-Equal (Read-BoundedFileText $tmp -Trusted) $null 'user config: a directo
 Confirm-Equal (Read-BoundedFileText 'NUL' -Trusted) $null 'user config: a handle that cannot seek is refused as a trusted read too'
 Confirm-Equal (Read-BoundedFileText $overCap -Trusted) $null 'user config: the cap is not skipped for a trusted read'
 Confirm-Equal (Read-BoundedFileText $smallProject -Trusted) '{ "layout": "two" }' 'user config: a trusted read of an ordinary file reads it back whole'
+# A relative path still means what PowerShell means by it. Get-Content resolved one against the
+# session's own location; File.OpenRead resolves it against the process working directory, and
+# Set-Location moves only the first, so a bounded read that took the name as it stood would look
+# somewhere else entirely. The two are made to differ here on purpose, and the first line says so, since
+# a machine where they happened to agree would pass this without testing anything.
+Push-Location $tmp
+try {
+    Confirm-True (-not [string]::Equals((Get-Location).Path, [Environment]::CurrentDirectory, [System.StringComparison]::Ordinal)) 'user config: the session location and the process working directory really differ, so the case below is the case it says it is'
+    Confirm-Equal (Read-StatusConfig 'project-user.json').Style 'powerline' 'user config: a relative path is resolved against the session location, the way Get-Content resolved it'
+} finally { Pop-Location }
+
 # A link where the user config should be. The project file's link is refused because a repository chose
 # that path; this one is followed, because the user did and Get-Content followed it before #48. A file
 # symbolic link needs Developer Mode or an elevated shell on Windows, so say which case ran.

@@ -817,23 +817,35 @@ function Get-BoundedTextEncoding([byte[]] $Bytes, [int] $Count) {
 #       record, every call on the pool, with the rename attempted only above a reserve. Off entirely
 #       unless CLAUDE_STATUSLINE_DEBUG is set, so the common render makes none of them.
 #   BOUNDED, but not by a filesystem clock:
-#     - git status, in Get-GitBranch: a child process under config git.timeoutMs, killed if it overruns.
-#       The process is what waits on the filesystem, so a repository on a dead share costs that timeout
-#       and not a render. Its timing mechanics belong to #63 and were left alone here.
-#   DELIBERATELY UNBOUNDED, all in the temp directory:
-#     - the git cache: Get-GitRepoRoot walking up for .git, Get-GitStamp stat-ing the git directory and
-#       enumerating refs, the entry read, the atomic write, the sweep.
+#     - git status itself, in Get-GitBranch: a child process under config git.timeoutMs, killed if it
+#       overruns. The process is what waits on the filesystem, so git reaching into a dead share costs
+#       that timeout and not a render. The timeout covers the CHILD and nothing this script does before
+#       starting it - see the next group. Its timing mechanics belong to #63 and were left alone here.
+#   DELIBERATELY UNBOUNDED, and stated by where each one really is rather than by where it is convenient
+#   to say it is:
+#     - the git probe's own precondition, in Get-GitBranch: one Test-Path on the directory the payload
+#       named, on this thread, before the child process starts and so outside its timeout.
+#     - the git cache's repository work, all of it before git runs and none of it under TEMP:
+#       Get-GitRepoRoot walking up from the payload's directory looking for a .git, Get-GitStamp
+#       stat-ing that git directory, enumerating the directories under refs and reading .git/commondir,
+#       a file the repository itself writes. The entry read, the atomic write and the sweep after them
+#       are under TEMP.
 #     - the session state file: the read before the segments are built, the write after the line is
-#       printed, and the same sweep.
-#     None of these is on a path anyone else chooses. The cache and state directories are under TEMP,
-#     which is local on every machine this runs on; the git directory is where git already is, and the
-#     git probe would have to be answering from it for these to matter. Bounding them would mean a
-#     delegate per call and a clock per function for a case that begins with a temp directory on a dead
-#     share, in which case pwsh itself did not start. The stamp walk has a cap of its own (256 ref
-#     directories) for cost rather than for hanging, and the sweep has a cap of 200 deletions. Recorded
-#     rather than fixed: if any of these ever wants a budget it is the same shape as the reader above.
+#       printed, and the same sweep. Under TEMP - or under $HOME/.claude/statusline-state when TEMP is
+#       empty, which on a machine with a roaming or networked home directory is not local either.
 #     - Get-Command git, a PATH scan on the render thread. One lookup, on directories the shell already
 #       resolves for every command a user types.
+#     So the honest version is that a project directory on a filesystem that hangs can hold a render up
+#     in the walk or the stamps BEFORE the git timeout has anything to apply to, and a machine with no
+#     TEMP and a networked home can do it in the state file. What holds these back from a budget is not
+#     that they cannot hang, it is what a budget would cost: each is many calls where the reader above
+#     is five, so it means a delegate per call and one clock threaded through four functions, and the
+#     probe's timing mechanics are #63's. Recorded rather than fixed, which is what #48 asked for. What
+#     stands today is a whole-render test in test.ps1 that points a payload at an unroutable UNC path
+#     and bounds the render loosely, which catches a stack that hangs outright and not a slow one. The
+#     stamp walk's cap of 256 ref directories and the sweep's cap of 200 deletions are about cost, not
+#     about hanging, and neither is a deadline. The shape to copy, if any of this ever earns one, is
+#     the reader below.
 #   UNREACHABLE IN PRACTICE:
 #     - install.ps1, docs/render-*.ps1 and tools/capture-stdin.ps1 make filesystem calls of their own
 #       and none of them runs during a render.
@@ -1016,6 +1028,19 @@ function Write-BoundedReadDiag {
 function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Trusted) {
     try {
         if (-not $Path) { return $Cfg }
+        # A relative path has to keep meaning what PowerShell means by it. Get-Content resolved one
+        # against the session's own location; File.OpenRead resolves it against the process working
+        # directory, and PowerShell does not keep those in step - Set-Location moves the first and
+        # leaves the second where the process started. So -Config with a relative path would have
+        # quietly found a different file, or none, and fallen back to the defaults. Resolving it here
+        # puts no filesystem call in front of the clock: GetUnresolvedProviderPathFromPSPath resolves
+        # a name rather than probing for it, and a name it will not parse leaves the path as it was for
+        # the read to refuse in the ordinary way. Only the trusted path is resolved. The project file's
+        # path is built from what a payload said, has been read this way since #19 with no complaint,
+        # and a string a repository chose is not something to start running provider parsing over.
+        if ($Trusted -and -not [System.IO.Path]::IsPathRooted($Path)) {
+            $Path = try { $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path) } catch { $Path }
+        }
         $text = Read-BoundedFileText $Path -Trusted:$Trusted
         # The read records why it refused rather than writing it, because writing is filesystem work
         # and the read is under a clock that must not carry any. Out here that clock has stopped, so

@@ -207,13 +207,21 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   one or two cells wide by the script's own width rule, so a repository cannot reorder, hide or
   mis-measure the line through the `icons` table.
 - **Every other filesystem call a render can make is audited, in a comment beside `Read-BoundedFileText`.**
-  #48 asked for a decision per call rather than a list, and the block records one: the diagnostics log
-  bounds itself on its own 250 ms clock and is off unless `CLAUDE_STATUSLINE_DEBUG` is set; the git probe
-  is a child process under `git.timeoutMs`, so the process is what waits on a sick filesystem; and the git
-  cache (the repository walk, the stamps, the entry, the atomic write, the sweep) and the session state
-  file are deliberately unbounded, because all of them live under `TEMP` or in the git directory the probe
-  is already answering from — no repository and no payload chooses those paths, and a temp directory too
-  sick to answer is one `pwsh` did not start on. `subagent-statusline.ps1` opens no file at all.
+  #48 asked for a decision per call rather than a list, and the block records one. The diagnostics log
+  bounds itself on its own 250 ms clock and is off unless `CLAUDE_STATUSLINE_DEBUG` is set.
+  `git status` is a child process under `git.timeoutMs`, and that timeout covers the child and nothing
+  the script does before starting it — which is where the audit corrected itself under review. Left
+  deliberately unbounded, and said by where they really are: `Get-GitBranch`'s `Test-Path` on the
+  payload's directory; the cache's repository work, all of it before git runs and none of it under
+  `TEMP` (`Get-GitRepoRoot` walking up from the payload's directory, `Get-GitStamp` stat-ing the git
+  directory, enumerating `refs` and reading `.git/commondir`, a file the repository writes); the entry
+  read, atomic write and sweep, which are under `TEMP`; and the session state file, under `TEMP` or
+  under `$HOME/.claude` when `TEMP` is empty, which on a networked home directory is not local. So a
+  project directory on a filesystem that hangs can hold a render up before the git timeout applies to
+  anything. What keeps these from a budget is its cost — each is many calls where the reader is five,
+  so it means a delegate per call and one clock through four functions, and the probe's timing
+  mechanics belong to #63 — not a claim that they cannot hang.
+  `subagent-statusline.ps1` opens no file at all.
 - **One segment table, and the config moves what it can.** `Get-SegmentRegistry` is the single list of
   segments: its array order is the default `order`, its row keys the default `rows`, its ranks the
   shrink and drop order, and the build loop dispatches through it. The `order` and `rows` keys pick
