@@ -6064,7 +6064,7 @@ $hangBody = "echo ran > `"%~dp0fake.ran`"`r`nping -n 11 -w $pingTag 127.0.0.1 > 
 $fakeHang = Write-FakeGit 'fake-hang' $hangBody
 $gitCases.Add(@{ Name = 'git fails'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; Marker = (Join-Path $fakeFail 'fake.ran')
                  PathPrefix = $fakeFail })
-$gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 1500; Marker = (Join-Path $fakeHang 'fake.ran'); NoPing = $true
+$gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 1500; Marker = (Join-Path $fakeHang 'fake.ran')
                  NoFinish = (Join-Path $fakeHang 'fake.done'); PathPrefix = $fakeHang })
 # git.timeoutMs moves the wait, and the floor is what says so: a render that waited at least the
 # configured number of milliseconds can only have read that number. Each gets its own copy of the fake.
@@ -6079,13 +6079,17 @@ $gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; NoStderr 
 # that the probe stops waiting at all, by NoFinish below, which is the marker the fake writes on its way
 # out and no hang case may find. The 100 ms case keeps no clock: a floor of 100 is met by any render
 # that starts a pwsh whatever the timeout is, so it never said anything.
+# What these cases deliberately do not ask any more is whether the ping child is gone. A render that
+# killed nothing does not return early - the child's redirected pipes hold it open until the whole tree
+# closes them - so after any render that has finished, the ping is gone whatever the probe did. The kill
+# is asserted in process instead, where the probe returns while the fake is still running.
 $fakeHang3000 = Write-FakeGit 'fake-hang-3000' $hangBody
 $fakeHang100 = Write-FakeGit 'fake-hang-100' $hangBody
 $gitTimeout3000 = Write-TempConfig 'git-timeout-3000.json' '{ "git": { "timeoutMs": 3000 } }'
 $gitTimeout100 = Write-TempConfig 'git-timeout-100.json' '{ "git": { "timeoutMs": 100 } }'
-$gitCases.Add(@{ Name = 'git hangs, timeoutMs 3000'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 3000; Marker = (Join-Path $fakeHang3000 'fake.ran'); NoPing = $true
+$gitCases.Add(@{ Name = 'git hangs, timeoutMs 3000'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 3000; Marker = (Join-Path $fakeHang3000 'fake.ran')
                  NoFinish = (Join-Path $fakeHang3000 'fake.done'); PathPrefix = $fakeHang3000; Config = $gitTimeout3000 })
-$gitCases.Add(@{ Name = 'git hangs, timeoutMs 100'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; NoPing = $true
+$gitCases.Add(@{ Name = 'git hangs, timeoutMs 100'; Dir = $notRepo; NoBranch = $true; NoStderr = $true
                  Marker = (Join-Path $fakeHang100 'fake.ran'); NoFinish = (Join-Path $fakeHang100 'fake.done')
                  PathPrefix = $fakeHang100; Config = $gitTimeout100 })
 
@@ -6095,8 +6099,13 @@ function Get-FakePingCount([string] $Tag) {
 
 # The kill takes the tree down at once; the operating system reaps it a moment later, and on a machine
 # running four test suites that moment is longer than any fixed sleep worth writing. So wait for the
-# ping to go rather than sleeping a guessed interval and looking once. Waiting longer cannot make a
-# failing check pass: a ping nobody killed runs for ten seconds, which is longer than this window.
+# ping to go rather than sleeping a guessed interval and looking once.
+# Where this can be asked matters, and it took a mutation to see it. A render whose probe killed nothing
+# does not return early: its child's redirected pipes stay open until the whole tree closes them, so the
+# render outlives the ping either way and every look taken after a render has finished finds no ping
+# whether the kill worked or not. Measured: with Kill($true) made a no-op, the hang render took 11.9
+# seconds instead of 3.5 and the ping was gone by the time it returned. So this is only ever asked where
+# the answer can still be no - in process, where the probe returns while the fake is still running.
 function Wait-FakePingGone([string] $Tag, [int] $TimeoutMs = 6000) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     while ((Get-FakePingCount $Tag) -gt 0 -and $sw.ElapsedMilliseconds -lt $TimeoutMs) { Start-Sleep -Milliseconds 100 }
@@ -6259,7 +6268,6 @@ foreach ($case in $gitCases) {
     if ($case.NoStderr) { Confirm-True ($r.Err.Count -eq 0) "${label}: nothing on stderr, got '$($r.Err -join ' | ')'" }
     if ($case.Marker) { Confirm-True (Test-Path $case.Marker) "${label}: fake git was actually launched" }
     if ($case.MinMs) { Confirm-True ($r.Ms -ge $case.MinMs) "${label}: waited the full timeout ($($r.Ms) ms, expected at least $($case.MinMs))" }
-    if ($case.NoPing) { Confirm-True (Wait-FakePingGone $pingTag) "${label}: ping child killed with the tree" }
     # The fake writes this on its last line, so it exists only if the fake was allowed to finish. The
     # render has already returned, and a probe that waited for the fake could only have returned after
     # that line ran, so there is no race here to lose: the file is there or the probe stopped first.
@@ -6455,18 +6463,19 @@ foreach ($case in @(
     Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f $label, $r.Ms, $text)
 }
 
-# Positive control for the hang case's "no ping is left behind": that assertion would also pass if the
-# fake had never started a ping. Run the same fake once more without waiting for the render, and watch
-# the ping from outside - it has to be running while the render is still blocked, and gone once the
-# render has exited.
-# Two windows have to fit inside the fake's ten seconds of ping, and the render's timeout sets both.
-# The first is the one this looks in: with the shipped 1500 ms a pwsh that takes four seconds to start
-# on a loaded machine can be past the probe before the first look, and the check would fail for want of
-# a window rather than for want of a ping. The second is what is left of the ping after the render has
-# gone: the check below says the ping is gone, and it can only mean the kill did it while a ping that
-# nobody killed would still be running. At 3000 ms that leaves about seven seconds of ping against a six
-# second wait, so the two answers are different ones. A longer render timeout - 8000, say - would leave
-# under two, and the check would pass on a kill that did nothing at all.
+# Positive control for the hanging fake: it really does start a ping child, and that child really is
+# running while the render is blocked on the probe. The in-process check further up is what says the
+# probe kills it; this is what says there was something there to kill, from outside, through a whole
+# render rather than through a call.
+# The window this looks in is the render's own timeout: with the shipped 1500 ms a pwsh that takes four
+# seconds to start on a loaded machine can be past the probe before the first look, and the check would
+# fail for want of a window rather than for want of a ping. 3000 is enough of a window and keeps the
+# case short.
+# What is deliberately NOT asked here is whether the ping is gone afterwards. A render whose probe
+# killed nothing does not come back early - its child's redirected pipes hold it open until the whole
+# tree closes them - so the ping is always gone by the time the render has exited, and the question has
+# only one answer whatever the kill did. It used to be asked, and a mutation that made Kill($true) a
+# no-op left it green while four other checks caught the change.
 $hang = Invoke-StatusLineAsync (Get-GitPayload $notRepo) $fakeHang $gitTimeout3000
 $midPings = 0
 $midMs = 0
@@ -6487,7 +6496,9 @@ try {
     $hang.Process.Dispose()
 }
 $hangSw.Stop()
-Confirm-True (Wait-FakePingGone $pingTag) 'git hangs control: ping child gone once the render exited'
+# Not an assertion, only hygiene: the next group counts pings with the same tag, so wait for this one's
+# to go rather than leaving it to overlap. Whether it goes is not in question here, for the reason above.
+$null = Wait-FakePingGone $pingTag
 Write-Host ("{0,-40} {1,5:N0} ms  {2} ping(s) at {3} ms, 0 after" -f 'git hangs control', $hangSw.ElapsedMilliseconds, $midPings, $midMs)
 } finally {
     if ($null -ne $oldGitConfigGlobal) { $env:GIT_CONFIG_GLOBAL = $oldGitConfigGlobal } else { Remove-Item Env:GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue }
