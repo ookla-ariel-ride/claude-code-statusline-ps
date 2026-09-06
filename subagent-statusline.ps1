@@ -1,4 +1,4 @@
-﻿#Requires -Version 7.0
+#Requires -Version 7.0
 # claude-code-statusline-ps:subagent-statusline
 # The line above is a provenance marker, not decoration: install.ps1 -Uninstall looks for it before it
 # deletes ~/.claude/subagent-statusline.ps1, so a file of that name this project did not install is
