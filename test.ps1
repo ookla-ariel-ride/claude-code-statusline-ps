@@ -3793,6 +3793,37 @@ Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSecon
 Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 16400) 90)) 'pace on the default clock: the first half hour gives no arrow'
 Confirm-True ($null -eq (Get-PaceArrow 4102444800 80)) 'pace on the default clock: a far-future reset gives no arrow'
 
+Write-Host '== unit: TimeLeft' -ForegroundColor Cyan
+# TimeLeft used to cast $epoch straight to [long] and hand it to DateTimeOffset::FromUnixTimeSeconds
+# unguarded (#44): a non-numeric string threw at the cast, a numerically valid but absurd value such as
+# 1e18 threw out of FromUnixTimeSeconds, and either throw took the whole limits segment builder down
+# with it rather than just the countdown. Get-FiniteNumber and a range check ahead of the construction
+# fix both; the empty string is what every failure now answers with, so the rest of the segment survives.
+Confirm-Equal (TimeLeft $null) '' 'TimeLeft: no epoch at all is empty'
+foreach ($bad in @('soon', $true, $false, [double]::NaN, [double]::PositiveInfinity, [double]::NegativeInfinity, @(1700000000), [pscustomobject]@{ v = 1 })) {
+    Confirm-Equal (TimeLeft $bad) '' "TimeLeft: $($bad.GetType().Name) '$bad' is not a usable epoch"
+}
+# Numerically valid, but outside a date DateTimeOffset can hold at all - what used to throw straight out
+# of FromUnixTimeSeconds and take the segment builder with it.
+Confirm-Equal (TimeLeft 1e18) '' 'TimeLeft: an epoch far outside DateTimeOffset range is empty rather than throwing'
+Confirm-Equal (TimeLeft (-1e18)) '' 'TimeLeft: a large negative epoch is empty rather than throwing'
+# Just inside and just outside DateTimeOffset's own Unix-seconds bounds, so the range check is pinned to
+# the boundary it actually reads rather than to a round number nearby.
+Confirm-Equal (TimeLeft ([DateTimeOffset]::MaxValue.ToUnixTimeSeconds() + 1)) '' 'TimeLeft: one second past the maximum representable epoch is empty'
+Confirm-Equal (TimeLeft ([DateTimeOffset]::MinValue.ToUnixTimeSeconds() - 1)) '' 'TimeLeft: one second before the minimum representable epoch is empty'
+Confirm-Equal (TimeLeft 1700000000) '' 'TimeLeft: an epoch long past is empty'
+Confirm-Equal (TimeLeft ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 30)) '' 'TimeLeft: under a minute away is empty, not a countdown to zero'
+$hoursLeft = TimeLeft ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000)
+Confirm-True ($hoursLeft -match '^ \(\d+h\d\dm\)$') 'TimeLeft: two and a half hours away is the h{mm}m form'
+# Beyond the one-year cap (#44's decision): a reset that far out is not a countdown anyone is pacing
+# against, so it renders nothing rather than a five-digit day count like sample 06 used to show.
+$farDays = TimeLeft ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + (400 * 86400))
+Confirm-Equal $farDays '' 'TimeLeft: 400 days out is beyond the one-year cap and renders nothing'
+$nearDays = TimeLeft ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + (300 * 86400))
+Confirm-True ($nearDays -match '^ \(\d+d\)$') 'TimeLeft: 300 days out is inside the cap and still renders a day countdown'
+$capDays = TimeLeft (4102444800)
+Confirm-Equal $capDays '' 'TimeLeft: sample 06''s 2100 epoch is now beyond the one-year cap and renders nothing'
+
 Write-Host '== unit: limits' -ForegroundColor Cyan
 # Resets in the past keep TimeLeft empty, so the text is deterministic. Every call passes a config,
 # because the builder reads its colour bands from it.
@@ -3854,7 +3885,11 @@ $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"seven_day":{"used_per
 Confirm-Equal $seg.Text "$iconLimit 7d 92%" 'limits 7d alone: text'
 Confirm-True ($null -eq $seg.Short) 'limits 7d alone: short would equal text, so none'
 
-$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' '{"five_hour":{"used_percentage":70,"resets_at":4102444800},"seven_day":{"used_percentage":12,"resets_at":4102444800}}') $bandCfg
+# 200 days out rather than sample 06's fixed 2100 epoch: since #44 capped TimeLeft's countdown at a
+# year, a reset built from the live clock is what keeps this a "definitely still live, definitely
+# still countable" case rather than one the cap now empties out from under it.
+$liveReset = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + (200 * 86400)
+$seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":70,"resets_at":' + $liveReset + '},"seven_day":{"used_percentage":12,"resets_at":' + $liveReset + '}}')) $bandCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 70% (") -and $seg.Text.EndsWith(') 7d 12%')) 'limits 5h worst with a live reset: text carries the countdown'
 Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits 5h worst with a live reset: short drops the countdown'
 
@@ -7060,17 +7095,20 @@ $sampleSegments = @{
 # the way it reaches the line once the escapes are stripped. Every visible segment has to put its marker
 # on its own row, so a segment that stops rendering fails by name rather than slipping past the absence
 # table, which only names a few glyphs per sample. Money is formatted the way the script formats it so
-# the check survives a culture that writes 12,50. Markers stop short of anything that moves: 06's limits
-# segment carries a countdown to a 2100 reset, so its marker ends at the percentage. Badges and branch
-# have no single glyph of their own, so their markers are the whole segment text. A marker that depends
-# on the config's folder mode is a hashtable keyed by mode, repo and leaf.
+# the check survives a culture that writes 12,50. Markers stop short of anything that moves; 06's
+# limits marker ends at the 5h percentage rather than reaching for the 7d figure that drives its
+# colour, which the one-off check further down covers instead. Badges and branch have no single glyph
+# of their own, so their markers are the whole segment text. A marker that depends on the config's
+# folder mode is a hashtable keyed by mode, repo and leaf.
 # Samples with a segment whose Short form differs from its Text, with the icon that proves the segment
 # is on the line at all. Checked at every set width in the matrix. A folder entry is checked in repo
 # mode only, because the segment has no Short form in leaf mode. The limits Short form keeps the figure
 # that drives the colour, the 5h one in 07. 06 would show its 7d figure, but its line with every badge
-# on runs past 120 columns, and its five_hour resets in 2100, which puts a drifting countdown in the
-# full text (the $sampleMarkers note above stops its marker short of it), so it cannot meet the two-form
-# rule below and stays out of this table. The one-off check after that rule covers it instead.
+# on is long enough that it cannot reliably show the full form at every set width the matrix tries, so
+# it cannot meet the two-form rule below and stays out of this table. The one-off check after that rule
+# covers it instead. (Before #44 capped TimeLeft's countdown at a year, 06's five_hour resets_at also
+# put a drifting countdown in the full text; that reset is now far enough out that TimeLeft renders
+# nothing for it at all, so the full text is deterministic and this is no longer why 06 is excluded.)
 $sampleShortForms = @{
     '02-feature-dirty-high.json'            = @{
         branch = @{ Icon = $iconBranch; Full = "$iconBranch feature/x ~2 ?1 $iconDirty"; Short = "$iconBranch feature/x $iconDirty" }
@@ -7154,12 +7192,14 @@ $sampleMarkers = @{
         folder = "$iconFolder my-project"; branch = "$iconHome main"
     }
     # 14's cache marker is the whole segment text and nothing in it moves, which is the point of the
-    # sample. Its expires_at is 4102444800, the 1 January 2100 epoch sample 06 uses for its rate-limit
-    # resets, and where 06's limits segment renders that as a drifting countdown this one refuses it:
-    # a prompt cache does not expire in seventy-five years, so Get-CacheSecondsLeft hands back nothing
-    # and the builder prints the part it can stand behind, "warm", with no number after it. That is the
-    # far-future case pinned in the corpus rather than only in the unit table, and it is what lets this
-    # marker be the full text instead of stopping short of a figure that changes every minute.
+    # sample. Its expires_at is 4102444800, the same 1 January 2100 epoch sample 06 uses for its
+    # rate-limit resets, and both now refuse to print anything for it, for two different reasons: a
+    # prompt cache does not expire in seventy-five years, so Get-CacheSecondsLeft hands back nothing
+    # and the builder prints the part it can stand behind, "warm", with no number after it; a rate
+    # limit resetting that far out is not a countdown either, so #44 capped TimeLeft at a year and it
+    # renders nothing for 06's five_hour figure now. That is the far-future case pinned in the corpus
+    # rather than only in the unit table, and it is what lets this marker be the full text instead of
+    # stopping short of a figure that changes every minute.
     '14-prompt-cache-warm.json'             = @{
         model = "$iconModel Fable 5.1"; context = "$iconCtx 18%"; cache = "$iconCache cache warm"
         cost  = "$iconCost `$$('{0:N2}' -f 1.24)"

@@ -2363,11 +2363,20 @@ function Get-LinesSegment($d, $cfg) {
     return @{ Name = 'lines'; Text = $text; Short = $null; Role = 'dim'; Bold = $false }
 }
 
-# " (1h12m)" or " (3d)" until the given epoch; empty when absent or already past.
+# " (1h12m)" or " (3d)" until the given epoch; empty when absent, already past, not a number at all
+# (a hostile string, a boolean, NaN, infinity - the same Get-FiniteNumber gate every other payload
+# number in this script goes through), too far out for DateTimeOffset to hold as a date at all (a
+# numerically valid but absurd value such as 1e18 used to throw straight out of FromUnixTimeSeconds
+# and take the whole limits segment down with it), or further out than a year: a reset that far away
+# is not a countdown anyone is pacing against, and the honest answer is silence rather than a
+# five-digit day count nobody asked for.
 function TimeLeft([object] $epoch) {
-    if ($null -eq $epoch) { return '' }
-    $left = [DateTimeOffset]::FromUnixTimeSeconds([long] $epoch) - [DateTimeOffset]::UtcNow
+    $sec = Get-FiniteNumber $epoch
+    if ($null -eq $sec) { return '' }
+    if ($sec -lt [DateTimeOffset]::MinValue.ToUnixTimeSeconds() -or $sec -gt [DateTimeOffset]::MaxValue.ToUnixTimeSeconds()) { return '' }
+    $left = [DateTimeOffset]::FromUnixTimeSeconds([long] $sec) - [DateTimeOffset]::UtcNow
     if ($left.TotalMinutes -lt 1) { return '' }
+    if ($left.TotalDays -gt 365) { return '' }
     if ($left.TotalHours -ge 48) { return ' ({0}d)' -f [int] [math]::Floor($left.TotalDays) }
     return ' ({0}h{1:00}m)' -f [int] [math]::Floor($left.TotalHours), $left.Minutes
 }
