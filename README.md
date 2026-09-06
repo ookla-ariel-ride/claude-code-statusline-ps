@@ -275,12 +275,21 @@ file, and every settings write overwrites it without being asked. It is kept ins
 `settings.json.claude-code-statusline-ps-rollback`, and JSON has no comment syntax to carry a marker
 line the way a `.ps1` file does, so the marker lives beside it — a small `.sha256` sidecar recording the
 hash of the backup this installer last wrote. Before that backup is ever overwritten, the sidecar is
-checked against the backup file's actual content; a mismatch, a missing sidecar, or nothing to check at
-all means the file at that name is not this installer's, and it is left alone with a warning rather than
-replaced. The settings write itself is unaffected either way — losing the ability to roll back is a
-smaller harm than overwriting a file that was never this installer's. `-ConfigureWindowsTerminal` backs
-up Windows Terminal's `settings.json` the same way, at `settings.json.claude-code-statusline-ps-rollback`
-beside it, in place of the old `settings.json.bak-before-nerdfont`.
+checked against the backup file's actual content; a mismatch or a missing sidecar means the file at that
+name is not this installer's, and it is left alone with a warning naming why, rather than replaced. (A
+sidecar with no backup beside it is not the same thing: nothing else ever writes that exact name, so a
+leftover one — from a backup deleted by hand, say — does not block the next write.) The backup itself is
+written to a temporary sibling and hashed before it ever takes the real name, and a write that fails
+partway leaves the previous backup exactly as it was rather than a half-replaced one. `-Uninstall`'s own
+settings write leaves a backup the same way, and names it in the output alongside the kept
+`statusline.json`.
+
+The settings write itself goes ahead either way — losing the ability to roll back is a smaller harm than
+overwriting a file that was never this installer's. `-ConfigureWindowsTerminal` backs up Windows
+Terminal's `settings.json` the same way, at `settings.json.claude-code-statusline-ps-rollback` beside it,
+in place of the old `settings.json.bak-before-nerdfont` — but there the font change itself is refused,
+not merely warned about, when that backup cannot be taken: a font with no way back is not something this
+installer offers silently.
 
 What that gets you, stated no more strongly than it holds. An interrupted or failed write leaves the
 previous settings intact rather than a truncated file. The lock serialises this installer against
