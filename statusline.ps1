@@ -1,7 +1,8 @@
 ﻿#Requires -Version 7.0
 # Claude Code status line (PowerShell 7) with Nerd Font glyphs and ANSI colour.
 # Wants a Nerd Font in the terminal (install.ps1 can set up JetBrainsMono Nerd Font); where the font
-# cannot be changed, "style": "ascii" draws the same line out of printable ASCII and keeps the colours.
+# cannot be changed, "style": "ascii" draws every glyph the script chooses in printable ASCII instead,
+# and keeps the colours. Payload text - a branch, a folder, a name - is drawn as it arrived in any style.
 # Reads the JSON Claude Code pipes on stdin and prints one or two lines, e.g.
 #   󰚩 Fable 5.1  󰍛 37% ████░░░░░░   $0.43   my-project   main
 # Layout, separator style, segment toggles and order, colour bands and glyph overrides come from
@@ -256,11 +257,23 @@ function Get-IconDefault {
 # The same names again for the ascii style, as plain characters rather than code points, because a
 # stand-in is not always one character and an empty one is not a code point at all.
 #
-# WHAT ASCII MEANS HERE, and the rule every entry below follows. The line is drawn out of printable
-# ASCII, U+0020 to U+007E, and nothing else. That is a stronger promise than "no Nerd Font glyphs", and
-# deliberately: ASCII is the only range that is both always drawable and always one cell wide, and the
-# width half matters as much as the font half, because Get-VisibleWidth counts a meter block, an arrow
-# or a middle dot as one column while a terminal in an East Asian locale may draw any of them as two.
+# WHAT ASCII MEANS HERE, and the rule every entry below follows. EVERY CHARACTER THIS SCRIPT CHOOSES is
+# printable ASCII, U+0020 to U+007E: the stand-ins below, the marks in Get-MarkSet, the separator in
+# Format-Line. That is a stronger promise than "no Nerd Font glyphs", and deliberately: ASCII is the only
+# range that is both always drawable and always one cell wide, and the width half matters as much as the
+# font half, because Get-VisibleWidth counts a meter block, an arrow or a middle dot as one column while
+# a terminal in an East Asian locale may draw any of them as two.
+#
+# WHAT IT DOES NOT COVER, and must not: TEXT THAT CAME FROM THE PAYLOAD. A branch, a folder, a repo
+# owner, a model name, an agent or session name reaches the line as the payload supplied it, in this
+# style exactly as in the other two. The style exists for the glyphs the SCRIPT picked, which live in
+# the private use area and need a font a terminal may not have; a name in Japanese needs a Japanese
+# font, which most terminals do have, and it is the user's own data either way. Transliterating it would
+# be lossy and silent, and it would make this style worse than no style for the very people most likely
+# to be on a terminal they cannot configure - a branch drawn as boxes at least says "this font is
+# missing", where one rewritten to `????` says nothing and cannot be read back. So: the script's own
+# characters are ASCII here, the payload's are the payload's, and test.ps1 pins exactly that.
+#
 # So Get-MarkSet answers for the characters that are not icons, and this table answers for the icons:
 #
 #   1. An entry is EMPTY where what follows it already names the segment - the model's own name, a
@@ -391,6 +404,9 @@ function Read-CodePoint($Value) {
 # setting that is read and then not used is worth being able to see.
 function Get-IconSet($cfg) {
     if ($cfg.Style -eq 'ascii') {
+        # The overrides are refused here rather than filtered: Read-CodePoint has already admitted any
+        # code point that draws as one glyph, and "is it ASCII" is not a question the icons key was ever
+        # asked. This is about the glyphs the script picks, and nothing here reaches payload text.
         if ($script:diagOn -and $cfg.Icons -is [hashtable] -and $cfg.Icons.Count -gt 0) {
             Write-StatusDiag "icons: $($cfg.Icons.Count) override(s) ignored under the ascii style"
         }

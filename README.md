@@ -307,7 +307,7 @@ whose text encoding the script does not get to choose.
 | `thresholds` | `{ "warn": 20, "bad": 40 }` | Where the context meter and the rate limits turn yellow and red: whole numbers from 0 to 100 (`20` or `20.0`, not `20.5`), `warn` no higher than `bad`. Either value wrong keeps 60 and 85 for both. A 1M window keeps its own 70 and 90. |
 | `alarm` | `{ "context": 90, "limits": 90 }` | Where the model segment itself turns red: `context` is read against `context_window.used_percentage` and `limits` against the higher of the 5-hour and 7-day figures. Whole numbers, each read on its own, so a file naming one leaves the other at 90. `0` turns that alarm off, a negative counts as `0`, and a number above 100 is kept as written and fires only if the payload reports a figure that high — which a context window never does, since the meter clamps to 100, and a rate limit can, since a limit really at 105% is left unclamped to say so. The spend limit is a billing ceiling rather than a rate and raises no alarm; neither does a percentage that is missing or null, which is what a session sends before its first API response. What is compared is the whole number the segments print, rounded half to even, so the meter and the model can never disagree about whether 90% has been reached: at 89.6 the meter reads 90% and the alarm fires. The alarm reads the percentage whatever the window size, so on a 1M window it fires at the same figure as the window's own fixed 90 band. |
 | `quiet` | `{ "cost": 1.00, "context": 30, "limits": 50 }` | The smallest value a segment is worth showing at: dollars for `cost`, percent for `context`, and percent for `limits` against the larger of the 5-hour and 7-day figures (the spend limit is not one of them, and a payload carrying only a spend limit is never hidden here). Below it the segment is not built at all, so it takes no room and has nothing to shed at a narrow width. **Quiet never hides a segment that is carrying a warning, an error or an alarm**: a context meter or a limits segment already yellow or red stays whatever the threshold says, so does a 5-hour figure whose pace arrow projects an overrun — which is the case that matters most, because a low percentage early in a window is exactly the one that projects red — and so does a figure at or above its `alarm` level, since `alarm` may be set below `thresholds.warn` and a red model segment with no number under it explains nothing. `cost` has no warning state of its own and no alarm is read against a dollar figure, so there its threshold is the whole story. Fractions are allowed, a negative counts as zero, and the test is on the raw figure rather than the printed one, so `"cost": 1.00` hides a cost of 0.996 even though it would have printed `$1.00`. The default is `0` everywhere, which hides nothing; a value that is not a number leaves that one name at `0` and the other two alone. There is deliberately no `quiet.cache`: three of that segment's four states are the warning, and the fourth is a countdown whose whole value is being on the line before it turns yellow, so there is no boring number there for a threshold to hide. |
-| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cache`, `cost`, `clock`, `folder`, `chevron`, `branch`, `worktree`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `pr`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`, `agent`, `session`. A name the list does not have, or a value that is not a single printable glyph, keeps the built-in one. To count as a glyph a code point has to be inside Unicode, not a surrogate half and not a noncharacter, one or two cells wide, and none of: a control (`A` is a newline, `1B` a bare escape), a format character (`202E` is a right-to-left override, `200D` a zero-width joiner), a line or paragraph separator, a space, or a combining mark. Private use is where the Nerd Font glyphs live, so it is allowed. Ignored entirely under `"style": "ascii"`, which promises a line drawn from printable ASCII and a code point is the one thing that cannot keep it. |
+| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cache`, `cost`, `clock`, `folder`, `chevron`, `branch`, `worktree`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `pr`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`, `agent`, `session`. A name the list does not have, or a value that is not a single printable glyph, keeps the built-in one. To count as a glyph a code point has to be inside Unicode, not a surrogate half and not a noncharacter, one or two cells wide, and none of: a control (`A` is a newline, `1B` a bare escape), a format character (`202E` is a right-to-left override, `200D` a zero-width joiner), a line or paragraph separator, a space, or a combining mark. Private use is where the Nerd Font glyphs live, so it is allowed. Ignored entirely under `"style": "ascii"`, which promises that every glyph the script chooses is printable ASCII and a code point is the one thing that cannot keep it. |
 | `git.timeoutMs` | `100` to `10000` | How long the branch segment waits for `git status`, in milliseconds, before it gives up and leaves the segment out. A value outside the range is clamped to it. |
 | `git.cacheSeconds` | `0` to `300` | How long a `git status` result is reused for, in seconds, before git is asked again. `0` asks git on every render. Clamped like `timeoutMs`. |
 | `git.cache` | `true`, `false` | `false` asks git on every render, whatever `cacheSeconds` says. |
@@ -337,8 +337,9 @@ is a base for the project file to change.
 ### ASCII style
 
 Every icon on the line is a Nerd Font code point, so on a terminal without one the line is a row of
-boxes. `{"style": "ascii"}` draws the same line out of printable ASCII and keeps every colour, for the
-VS Code terminal, a session over SSH, or anywhere the font is not yours to change.
+boxes. `{"style": "ascii"}` draws every glyph the script chooses in printable ASCII instead and keeps
+every colour, for the VS Code terminal, a session over SSH, or anywhere the font is not yours to
+change.
 
 ```
 Fable 5.1 > ctx 32% ###....... 64k/200k 92% cached > $1.07 > 1h12m | api 38%
@@ -372,12 +373,20 @@ abbreviation, cut to a single letter where the segment's own text carries the wo
 | clipped name | `…` | `.` |
 | between segments | dim chevron in `plain`, solid arrow in `powerline` | `>` |
 
-Two things follow from ASCII being the promise rather than "no Nerd Font". The line is drawn only from
-U+0020 to U+007E, which is both the range every font has and the range every terminal draws one cell
-wide — the second half matters, because the width fitting counts a meter block or an arrow as one
-column and some terminals draw them as two. And an `icons` override is a code point, so it is ignored
-in this style; set the style back to `plain` if you want your own glyph. Colours, thresholds, layout,
-segment order and fitting are exactly as they are in `plain`.
+Two things follow from ASCII being the promise rather than "no Nerd Font". Everything the script
+chooses is drawn from U+0020 to U+007E, which is both the range every font has and the range every
+terminal draws one cell wide — the second half matters, because the width fitting counts a meter block
+or an arrow as one column and some terminals draw them as two. And an `icons` override is a code point,
+so it is ignored in this style; set the style back to `plain` if you want your own glyph. Colours,
+thresholds, layout, segment order and fitting are exactly as they are in `plain`.
+
+**Your own text is left alone.** The branch, the folder, the repo owner, the model name and the agent
+and session names come from the payload and are drawn as they arrived, in this style as in the other
+two — so a branch called `機能/x` renders `b 機能/x`, not `b ????`. This style replaces the glyphs
+*the script picked*, which live in the private use area and need a font your terminal may not have. A
+Japanese branch name needs a Japanese font, which most terminals do have, and it is your data either
+way: a name shown as boxes at least tells you a font is missing, where one silently transliterated
+tells you nothing and cannot be read back.
 
 ### Taskbar progress
 
@@ -634,8 +643,11 @@ content: each segment the sample and config enable must appear on its row, in th
 with its glyph and value, disabled segments must not, and the separators must match the style. Those
 content checks only run when `-Columns` includes `0`, which the default does. The `ascii` style gets a
 pass of its own rather than an eighth config: every sample once at the unset width, against its own
-marker table, plus the assertion the matrix cannot make — that no character on the line is outside
-printable ASCII, and that no stand-in left an empty space behind it. A few renders after the
+marker table, plus the assertion the matrix cannot make — that every non-ASCII character on the line
+came from the payload, and that no stand-in left an empty space behind it. One more render puts a
+non-English name in every text field the line can draw from and pins the set exactly: the only
+characters outside ASCII are the ones the payload supplied, which is what says the style replaced the
+script's glyphs and nothing of the user's. A few renders after the
 matrix run with no `-Config` at all: they point a payload at a temp project directory and check that
 its `.claude\statusline.json` reaches the line, that a broken one does not, and that `-Config` ignores
 it. The taskbar sequence is checked by rendering each payload twice, once with `"taskbar": true` and

@@ -89,6 +89,15 @@ function Confirm-True([bool] $Condition, [string] $Label) {
 # terminal would show and a URL can never satisfy or spoil one.
 function ConvertTo-PlainText([string] $Text) { $Text -replace $ansiPattern, '' }
 
+# The characters in $Text outside printable ASCII, distinct, named as U+XXXX so a failure says which
+# ones and two sets compare as text. A surrogate pair is reported as its two halves, which is the answer
+# wanted: an astral code point is not ASCII whichever half is looked at. Used by the ascii style's
+# checks, where the question is never "is this line ASCII" but "which of these characters did the
+# script choose and which did the payload supply".
+function Get-NonAsciiName([string] $Text) {
+    return @([char[]] $Text | Where-Object { [int] $_ -lt 0x20 -or [int] $_ -gt 0x7E } | ForEach-Object { 'U+{0:X4}' -f [int] $_ } | Sort-Object -Unique)
+}
+
 # Pulls named function definitions out of a script by parsing it, so pure functions can be tested
 # without running the script (which reads stdin and prints).
 function Import-ScriptFunction([string] $Path, [string[]] $Name) {
@@ -5902,14 +5911,22 @@ foreach ($name in $realHash.Keys) {
 }
 
 Write-Host '== unit: ascii style' -ForegroundColor Cyan
-# THE PROMISE THIS STYLE MAKES: every character a line draws is printable ASCII, U+0020 to U+007E.
+# THE PROMISE THIS STYLE MAKES: every character THE SCRIPT CHOOSES is printable ASCII, U+0020 to U+007E.
 # Not "no private use area", which would be the narrow reading of "needs no Nerd Font": ASCII is the
 # only range that is both always drawable and always one cell wide, and the second half matters as much
 # as the first, because Get-VisibleWidth counts a meter block, an arrow or a middle dot as one column
 # and a terminal in an East Asian locale may draw any of them as two. So the table below covers the
 # glyphs AND the furniture - the meter, the minus, the clock's separator, the pace arrows, the tail of a
-# clipped name and the separator between segments - and the render pass at the foot of the matrix
-# asserts the promise over every sample rather than trusting this list to be complete.
+# clipped name and the separator between segments.
+#
+# AND THE PROMISE STOPS THERE. Payload text - a branch, a folder, a repo owner, a model, agent or
+# session name - reaches the line as the payload supplied it, in this style as in the other two, so a
+# line CAN hold characters outside ASCII and be exactly right. A test that asserted otherwise would be
+# pinning a guarantee the script does not make and should not make: a branch drawn as boxes says "this
+# font is missing", where one transliterated to `????` says nothing and cannot be read back. The render
+# pass at the foot of the matrix is where the two halves are told apart - every non-ASCII character on
+# the line has to have come from the payload - and a render with deliberately non-English names is what
+# makes that assertion do work rather than pass by there being nothing to find.
 # Every character below is spelled as an ASCII literal on purpose: a test that built its expectations
 # from the script's own tables would agree with a typo in them.
 $asciiIcons = Get-IconAscii
@@ -6001,20 +6018,84 @@ Confirm-Equal (Format-Inline 'added' '+1' 'dim' 'ascii') (Format-Inline 'added' 
 # The builders read their glyphs from the script-level $icon* names this file supplies, so an ascii
 # render at unit level means putting the stand-ins in those names for the length of the block and then
 # putting the glyphs back. The render pass in the matrix covers the same ground through the real script.
-$savedIconCtx = $iconCtx
-$savedIconModel = $iconModel
+# Every $icon* name the builders called below read. All of them are set at the head of this file, so
+# each is saved and put back; the matrix further down keeps copies of its own and is not touched by this.
+$savedIcons = @{}
+foreach ($name in @('Ctx', 'Model', 'Folder', 'Chevron', 'Branch', 'Worktree', 'Home', 'Dirty', 'Conflict',
+        'Ahead', 'Behind', 'Agent', 'Session', 'Fast', 'Think', 'Effort', 'Vim')) {
+    $savedIcons[$name] = Get-Variable -Name "icon$name" -ValueOnly
+}
+# The icon table's key for a variable whose name is not simply the lower-cased one.
+$asciiByVar = @{ Ctx = 'context' }
 try {
-    $iconCtx = $asciiIcons.context
-    $iconModel = $asciiIcons.model
+    foreach ($name in @($savedIcons.Keys)) {
+        $key = if ($asciiByVar.ContainsKey($name)) { $asciiByVar[$name] } else { $name.ToLowerInvariant() }
+        Set-Variable -Name "icon$name" -Value $asciiIcons[$key]
+    }
     $asciiCfg = @{ Style = 'ascii'; Thresholds = @{ Warn = 60; Bad = 85 } }
     $seg = Get-ContextSegment (Get-ContextPayload 32) $asciiCfg
     Confirm-Equal $seg.Short 'ctx 32% ###.......' 'ascii: the context meter is three hashes and seven dots'
     Confirm-Equal $seg.Role 'ok' 'ascii: the meter keeps the colour band it always had'
     $model = Get-ModelSegment ([pscustomobject]@{ model = [pscustomobject]@{ display_name = 'Fable 5.1' } }) $asciiCfg
     Confirm-Equal $model.Text 'Fable 5.1' 'ascii: the model segment is the name alone, with nothing in front of it'
+
+    # ---- THE PROMISE'S EDGE: names that are not English ----
+    # The builders are called directly here rather than through a child render, and the reason is worth
+    # writing down. statusline.ps1 reads its payload with [Console]::In, which decodes with the console's
+    # INPUT code page - 437 on an ordinary Windows console - while the payload arrives as UTF-8 bytes, so
+    # a Japanese branch name piped to a child is already mojibake before any style has been chosen. That
+    # is a defect of the read path, in every style, and not of this one; every other payload this suite
+    # pipes is ASCII, which is why nothing here has ever met it. Calling the builders puts the payload
+    # this test wrote in front of them with no encoding boundary in between, which is what makes the
+    # checks below about the style rather than about the transport.
+    #
+    # WHAT THEY ASSERT: for each segment that draws payload text, the characters outside ASCII in what it
+    # built are EXACTLY the ones the name carried. A meter block, a middle dot, a minus sign, a pace
+    # arrow, a chevron or a Nerd Font glyph left in by mistake is a character no name can account for, so
+    # it fails here by name. This is the check that says the style replaced the glyphs the SCRIPT picked
+    # and nothing of the user's - and equally that it did not transliterate a name into `????`, which
+    # would be lossy, silent, and worse than the boxes it was trying to avoid.
+    # The names are built from code points, so this file stays ASCII the way the rest of it does.
+    $nameModel = [char]::ConvertFromUtf32(0xD3) + 'pus 5'                                                # O with acute
+    $nameBranch = [char]::ConvertFromUtf32(0x6A5F) + [char]::ConvertFromUtf32(0x80FD) + '/x'             # two CJK ideographs
+    $nameLeaf = -join (0x30D7, 0x30ED, 0x30B8, 0x30A7 | ForEach-Object { [char]::ConvertFromUtf32($_) }) # katakana
+    $nameOwner = 'o' + [char]::ConvertFromUtf32(0xF1) + 'ate'                                            # n with tilde
+    $nameRepo = 'd' + [char]::ConvertFromUtf32(0xE9) + 'mo'                                              # e with acute
+    $nameAgent = [char]::ConvertFromUtf32(0x5BE9) + [char]::ConvertFromUtf32(0x67FB)
+    $nameSession = [char]::ConvertFromUtf32(0x591C) + [char]::ConvertFromUtf32(0x9593)
+    $nameWorktree = -join (0x30EC, 0x30D3, 0x30E5 | ForEach-Object { [char]::ConvertFromUtf32($_) })
+    # Through ConvertFrom-Json, so every field behaves the way a real payload's does; links off, so what
+    # is measured is the text and not a percent-encoded URL beside it.
+    $nameCfg = @{ Style = 'ascii'; Thresholds = @{ Warn = 60; Bad = 85 }; Links = $false; Folder = 'repo' }
+    $namePayload = ('{ "model": { "display_name": "' + $nameModel + '" },' +
+        ' "agent": { "name": "' + $nameAgent + '" }, "session_name": "' + $nameSession + '",' +
+        ' "effort": { "level": "xhigh" }, "vim": { "mode": "NORMAL" }, "fast_mode": true, "thinking": { "enabled": true },' +
+        ' "workspace": { "current_dir": "C:\\src\\' + $nameLeaf + '", "project_dir": "C:\\src", "git_worktree": true,' +
+        ' "repo": { "owner": "' + $nameOwner + '", "name": "' + $nameRepo + '" } },' +
+        ' "worktree": { "name": "' + $nameWorktree + '" },' +
+        ' "git": { "branch": "' + $nameBranch + '", "status": { "modified": 2, "conflicts": 1 } } }') | ConvertFrom-Json
+    foreach ($row in @(
+            @{ Segment = 'model'; Built = (Get-ModelSegment $namePayload $nameCfg)
+               Want = $nameModel; From = $nameModel; What = 'the model name, with nothing in front of it' }
+            @{ Segment = 'branch'; Built = (Get-BranchSegment $namePayload $nameCfg)
+               Want = "b $nameBranch wt $nameWorktree"; From = $nameBranch + $nameWorktree; What = 'the branch and worktree names behind b and wt' }
+            @{ Segment = 'folder'; Built = (Get-FolderSegment $namePayload $nameCfg)
+               Want = "dir $nameOwner/$nameRepo / $nameLeaf"; From = $nameOwner + $nameRepo + $nameLeaf; What = 'the repo identity and the leaf, behind dir and a slash' }
+            @{ Segment = 'badges'; Built = (Get-BadgesSegment $namePayload $nameCfg)
+               Want = "@ $nameAgent # $nameSession"; From = $nameAgent + $nameSession; What = 'the agent and session names behind their at-sign and hash' })) {
+        $built = ConvertTo-PlainText ([string] $row.Built.Text)
+        Confirm-True ($built.IndexOf($row.Want, [System.StringComparison]::Ordinal) -ge 0) "ascii names: the $($row.Segment) segment carries $($row.What)"
+        Confirm-Equal ((Get-NonAsciiName $built) -join ' ') ((Get-NonAsciiName $row.From) -join ' ') "ascii names: the only non-ASCII characters the $($row.Segment) segment drew are the ones the payload supplied"
+    }
+    # The stand-ins and marks the same payload puts on those segments, so the equality above cannot be
+    # met by a segment quietly leaving its ASCII furniture out.
+    $branchText = ConvertTo-PlainText ([string] (Get-BranchSegment $namePayload $nameCfg).Text)
+    foreach ($row in @(@('~2', 'the modified count'), @('!1', 'the conflict count'), @('*', 'the dirty mark'))) {
+        Confirm-True ($branchText.IndexOf($row[0], [System.StringComparison]::Ordinal) -ge 0) "ascii names: $($row[1]) is on the branch segment, in ASCII"
+    }
+    Confirm-True ((ConvertTo-PlainText ([string] (Get-BadgesSegment $namePayload $nameCfg).Text)).StartsWith('fast think xhigh NORMAL', [System.StringComparison]::Ordinal)) 'ascii names: the four mode badges are ASCII in front of the two names'
 } finally {
-    $iconCtx = $savedIconCtx
-    $iconModel = $savedIconModel
+    foreach ($name in @($savedIcons.Keys)) { Set-Variable -Name "icon$name" -Value $savedIcons[$name] }
 }
 
 # The pace arrow takes the style because it is the one mark decided inside a helper rather than a
@@ -6780,17 +6861,23 @@ $asciiMarkers = @{
 }
 foreach ($sample in $sampleFiles) {
     $label = "ascii $($sample.Name)"
-    $r = Invoke-StatusLine $samplePayloads[$sample.Name] $asciiPath 0
+    $payload = $samplePayloads[$sample.Name]
+    $r = Invoke-StatusLine $payload $asciiPath 0
     Confirm-True ($r.ExitCode -eq 0) "${label}: exit code $($r.ExitCode)"
     Confirm-True ($r.Err.Count -eq 0) "${label}: stderr empty, got '$($r.Err -join ' | ')'"
     Confirm-True ($r.Lines.Count -le 1) "${label}: layout one prints one line"
     $text = ConvertTo-PlainText ($r.Lines -join "`n")
-    # The promise. The plain text is what a terminal draws, so the hyperlink wrappers and the colour
-    # codes are gone by here and what is left is the characters a font has to have. A surrogate pair
-    # fails this as its two halves, which is the answer wanted: an astral code point is not ASCII.
-    $outside = @([char[]] $text | Where-Object { [int] $_ -lt 0x20 -or [int] $_ -gt 0x7E })
-    $shownOutside = ($outside | ForEach-Object { 'U+{0:X4}' -f [int] $_ }) -join ' '
-    Confirm-Equal $outside.Count 0 "${label}: nothing on the line is outside printable ASCII (found $shownOutside)"
+    # THE PROMISE, and it is about what the script chose rather than about the whole line: every
+    # non-ASCII character on the line has to have come from the payload. The plain text is what a
+    # terminal draws, so the hyperlink wrappers and the colour codes are gone by here and what is left
+    # is the characters a font has to have. Every sample in this corpus carries English text, so the
+    # payload's side of it is empty and this reads as "nothing but ASCII" for all fourteen - but it is
+    # the subset rule that is asserted, so a sample given a Japanese branch name later still says the
+    # right thing instead of failing for being honest. The render after this loop is where a payload
+    # with a non-empty side is pinned exactly.
+    $fromPayload = @(Get-NonAsciiName $payload)
+    $strayed = @((Get-NonAsciiName $text) | Where-Object { $_ -notin $fromPayload })
+    Confirm-Equal ($strayed -join ' ') '' "${label}: every non-ASCII character on the line came from the payload"
     # An empty stand-in that kept its space would show up here, on whichever segment carries it, and
     # nowhere else: no sample name and no payload text in the corpus holds a double space.
     Confirm-True (-not $text.Contains('  ')) "${label}: no double space, so no empty stand-in left its space behind"
@@ -6832,8 +6919,10 @@ foreach ($cols in @(120, 60, 20)) {
     $text = ConvertTo-PlainText ($r.Lines -join "`n")
     Confirm-True ((Measure-VisibleWidth ($r.Lines -join '')) -le $cols - 1) "${label}: the line fits"
     Confirm-True ($text.Contains('Fable 5.1')) "${label}: the model segment is kept"
-    $outside = @([char[]] $text | Where-Object { [int] $_ -lt 0x20 -or [int] $_ -gt 0x7E })
-    Confirm-Equal $outside.Count 0 "${label}: still nothing outside printable ASCII"
+    # The subset rule again: fitting swaps a segment for its Short form, and a Short form is built by
+    # the same builders, so this is where a stand-in that only the short path uses would show up.
+    $strayed = @((Get-NonAsciiName $text) | Where-Object { $_ -notin @(Get-NonAsciiName $samplePayloads[$sample06.Name]) })
+    Confirm-Equal ($strayed -join ' ') '' "${label}: every non-ASCII character on the line still came from the payload"
 }
 # Layout two under ascii. The style reaches the second row through the same Format-Line the first row
 # goes through, so this is one render to say the two keys are independent and nothing on either row
@@ -6841,10 +6930,13 @@ foreach ($cols in @(120, 60, 20)) {
 $r = Invoke-StatusLine $samplePayloads[$sample06.Name] (Write-TempConfig 'ascii-two.json' '{ "style": "ascii", "layout": "two" }') 0
 Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'ascii layout two: exit code 0, stderr empty'
 Confirm-Equal $r.Lines.Count 2 'ascii layout two: two lines'
-# The rows are checked joined, so the newline between them is the one character allowed through.
+# The same subset rule as the loop above, row by row so the newline between them is not a character
+# either row drew. Sample 06's names are all English, so the payload's side is empty here.
+foreach ($row in $r.Lines) {
+    $strayed = @((Get-NonAsciiName (ConvertTo-PlainText $row)) | Where-Object { $_ -notin @(Get-NonAsciiName $samplePayloads[$sample06.Name]) })
+    Confirm-Equal ($strayed -join ' ') '' 'ascii layout two: every non-ASCII character on the row came from the payload'
+}
 $text = ConvertTo-PlainText ($r.Lines -join "`n")
-$outside = @([char[]] $text | Where-Object { [int] $_ -ne 10 -and ([int] $_ -lt 0x20 -or [int] $_ -gt 0x7E) })
-Confirm-Equal $outside.Count 0 'ascii layout two: nothing on either row is outside printable ASCII'
 Confirm-True ($text.Contains('dir my-project')) 'ascii layout two: the first row carries the folder segment'
 Confirm-True ($text.Contains('ctx 32%')) 'ascii layout two: the second row carries the context meter'
 
