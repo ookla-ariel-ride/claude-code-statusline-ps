@@ -39,8 +39,12 @@ $esc = [char]27
 # terminator (ESC \ or BEL), or an SGR colour code. One OSC rule and not one per command - the 8
 # hyperlink wrappers and the 9;4 taskbar progress sequence are both "ESC ] anything terminator", which
 # is exactly what a terminal that does not know the command swallows. The one pattern behind
-# ConvertTo-PlainText and Measure-VisibleWidth, so the two cannot drift apart.
-$ansiPattern = "$esc\][^\a$esc]*(?:\a|$esc\\)|$esc\[[0-9;]*m"
+# ConvertTo-PlainText and Measure-VisibleWidth, so the two cannot drift apart. $oscArm is named
+# separately from $ansiPattern, rather than folded straight into it, so the render-screenshot pin
+# further down can check against this file's actual current OSC rule instead of a second copy of it
+# that would keep passing after this rule changed and the copy did not.
+$oscArm = "$esc\][^\a$esc]*(?:\a|$esc\\)"
+$ansiPattern = "$oscArm|$esc\[[0-9;]*m"
 # The closing half of an OSC 8 hyperlink, the same bytes whatever the url was. Up here rather than in
 # the pr section because the folder and branch segments are wrapped in one too.
 $linkClose = "$esc]8;;$esc\"
@@ -122,6 +126,26 @@ function Import-ScriptFunction([string] $Path, [string[]] $Name) {
     $missing = @($Name | Where-Object { $_ -notin @($defs.Name) })
     if ($missing.Count -gt 0) { throw "functions not found in ${Path}: $($missing -join ', ')" }
     return [scriptblock]::Create((@($defs.Extent.Text) -join "`n"))
+}
+
+# Parses a script and returns the right-hand side of its assignment to $Variable (e.g. '$icons'), so a
+# docs script's own literal table or pattern can be read without dot-sourcing it - not every docs script
+# is safe to run without a font installed or without writing to a terminal. Both the parse and the
+# lookup are asserted here, as named, non-fatal checks, rather than left to throw: a rename of the
+# variable a caller looks for would otherwise dereference a $null Right straight into whatever the
+# caller does next and abort the whole suite under this file's own $ErrorActionPreference = 'Stop',
+# instead of failing the one assertion that noticed. Returns $null when the assignment is not found, so
+# a caller that goes on to read the result has to guard it - the same shape a missing sample or a bad
+# payload already gets everywhere else in this file.
+function Get-ScriptAssignment([string] $Path, [string] $Variable) {
+    $tokens = $null; $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref] $tokens, [ref] $errors)
+    $leaf = Split-Path $Path -Leaf
+    Confirm-Equal $errors.Count 0 "$leaf parses, so a check built on its $Variable assignment means something"
+    $assign = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq $Variable }, $true)
+    Confirm-True ($null -ne $assign) "$leaf still assigns $Variable"
+    if ($null -eq $assign) { return $null }
+    return $assign.Right
 }
 
 # The test's own copy of the cell-width rule from the spec, kept separate from the script's so a bug
@@ -1837,14 +1861,12 @@ Confirm-Equal $defaultIcons.think 0xF09D1 'icons: think is nf-md-brain, not nf-m
 # Get-IconDefault entries at all, and Get-IconDefault's OWN chevron (U+203A) is the folder segment's
 # owner/name separator - a different glyph that happens to answer to the same name. Both are left out
 # of the map, and checked separately below, so a name collision cannot pass as a match.
-$riTokens = $null
-$riErrors = $null
-$riAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'docs/render-icons.ps1'), [ref] $riTokens, [ref] $riErrors)
-Confirm-Equal $riErrors.Count 0 'render-icons: docs/render-icons.ps1 parses, so the table check below means something'
-$riAssign = $riAst.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$icons' }, $true)
+$riRight = Get-ScriptAssignment (Join-Path $PSScriptRoot 'docs/render-icons.ps1') '$icons'
 $riIcons = @{}
-foreach ($pair in $riAssign.Right.Expression.Child.KeyValuePairs) {
-    $riIcons[$pair.Item1.Value] = $pair.Item2.PipelineElements[0].Expression.Value
+if ($null -ne $riRight) {
+    foreach ($pair in $riRight.Expression.Child.KeyValuePairs) {
+        $riIcons[$pair.Item1.Value] = $pair.Item2.PipelineElements[0].Expression.Value
+    }
 }
 Confirm-Equal $riIcons.Count 22 'render-icons: the table has twenty built-in glyphs plus the two separators'
 $riToDefaultName = [ordered]@{
@@ -1865,6 +1887,20 @@ Confirm-True ($riIcons.chevron -ne $defaultIcons.chevron) 'render-icons: its che
 foreach ($e in $defaultIcons.GetEnumerator()) {
     Confirm-Equal (Read-CodePoint ('{0:X}' -f $e.Value)) $e.Value "icons: the built-in $($e.Key) code point passes the guards"
 }
+
+# render-screenshot.ps1 keeps a fourth, private copy of the OSC-strip pattern (drift gate below
+# extracts a named function from the two rendering scripts and does not reach a bare variable in a
+# third). Evaluated with this file's own $esc bound, so this compares the two patterns' actual runtime
+# text rather than a second hand-typed copy of $oscArm that could itself go stale.
+$rsRight = Get-ScriptAssignment (Join-Path $PSScriptRoot 'docs/render-screenshot.ps1') '$pattern'
+if ($null -ne $rsRight) {
+    # [string], not left as .Invoke()'s own Collection[PSObject]: a collection's .Contains checks for an
+    # exact element match, so the substring check just below it would silently ask a different question
+    # - whether $oscArm is the WHOLE pattern, never true - and fail every time regardless of the pattern.
+    $rsPatternValue = [string] [scriptblock]::Create($rsRight.Extent.Text).Invoke()
+    Confirm-True ($rsPatternValue.Contains($oscArm)) 'render-screenshot: OSC-strip pattern contains this file''s current $oscArm, not a frozen copy of it'
+}
+
 $set = Get-IconSet @{ Icons = @{} }
 Confirm-Equal $set.Count 24 'icons: one glyph per name'
 Confirm-Equal $set.pr $iconPr 'icons: no override gives the built-in pr glyph'
