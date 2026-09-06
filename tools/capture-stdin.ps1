@@ -109,6 +109,13 @@ function Get-BoundedRecord([string] $Record, [long] $Cap) {
     if ($room -lt 1) { $suffix = ''; $room = $budget }
     $take = [Math]::Min($Record.Length, [int] $room)
     while ($take -gt 0 -and $enc.GetByteCount($Record.Substring(0, $take)) -gt $room) { $take-- }
+    # The cut is by UTF-16 units and a code point outside the BMP is two of them, so it can land between
+    # the halves of a surrogate pair. UTF-8 encodes the lone half left behind as U+FFFD, which would put
+    # a character into the capture that the payload never sent - the one thing a file kept in order to
+    # find out what a payload actually contains must not do. The loop above cannot catch it: a lone high
+    # surrogate encodes to three bytes and the whole pair to four, so both prefixes fit the same budget.
+    # One character of an already truncated record is the whole cost.
+    if ($take -gt 0 -and [char]::IsHighSurrogate($Record[$take - 1])) { $take-- }
     return $Record.Substring(0, $take) + $suffix
 }
 

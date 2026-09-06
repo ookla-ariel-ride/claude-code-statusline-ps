@@ -819,9 +819,11 @@ in the status line itself and is fixed. Claude Code sends the payload as UTF-8, 
 decode stdin as UTF-8 explicitly, whatever the console's input code page happens to be — 437 on an
 ordinary Windows console, or the machine's OEM code page in a console the host makes fresh for the
 render. Nothing needs setting: no `chcp`, no `[Console]::InputEncoding`, no beta UTF-8 option in
-Windows. If you still see it, you are running an older copy of `statusline.ps1` — reinstall with
-`.\install.ps1`. A name whose characters your terminal font has no glyph for is the other symptom and
-a different problem; see the boxes-and-question-marks entry above.
+Windows. If you still see it, you are running an older copy — reinstall with `.\install.ps1`, and with
+`.\install.ps1 -Subagents` as well if you use the agent panel, since the panel's script is only
+installed under that switch and carries the same read path. A name whose characters your terminal font
+has no glyph for is the other symptom and a different problem; see the boxes-and-question-marks entry
+above.
 
 The status line is blank: run `.\test.ps1` to confirm the script works, then check that `pwsh` is on
 your `PATH` and that the `command` path in `settings.json` exists.
