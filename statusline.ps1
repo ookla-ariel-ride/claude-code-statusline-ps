@@ -91,8 +91,23 @@ function Read-StdinText() {
 # nothing to bound: the wait is already zero, and taking and releasing it are kernel calls rather than
 # filesystem ones. The rename is the one call here that is not bounded; the caller decides whether the
 # budget can afford it before calling at all, and the note at that call site says what that leaves.
+# The name carries a Global\ prefix rather than a bare one (issue #49). Verified empirically with two
+# contending OS processes, on Linux under PowerShell 7.0.0 / .NET Core 3.1 (this repo's floor) and
+# PowerShell 7.4.2 / .NET 8 (current), and on Windows under an unprivileged pwsh 7 process (a named
+# mutex needs no elevation there, unlike a named file mapping): a bare name on .NET/Unix is scoped by
+# the POSIX session id, not by user, so two renders started from different terminal sessions - the
+# likely shape of the race this guard exists for - would each get the mutex at once and neither would
+# see the other. Global\ moves the name to a single, non-session-scoped table, which two same-session
+# processes, two different-session processes and (on Unix) two different users all then contend for
+# correctly: a holder sleeping while it holds the mutex reliably makes a second process's WaitOne(0)
+# return $false, and a holder that exits without releasing (a killed render) does not block the next
+# waiter - the kernel drops the lock at process exit, though on Unix that does not raise
+# AbandonedMutexException the way it does on Windows, so $held below must not depend on the catch
+# firing there. Crossing users is a bounded, accepted side effect: the diag log is off by default,
+# best-effort, and the trade is an occasional extra skipped rollover, not a wait or a corruption.
+# macOS was not tested. See issue #49 for the full method.
 function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [int] $TimeoutMs) {
-    $mutex = [System.Threading.Mutex]::new($false, 'claude-code-statusline-diag-rollover')
+    $mutex = [System.Threading.Mutex]::new($false, 'Global\claude-code-statusline-diag-rollover')
     try {
         $held = $false
         # An abandoned mutex is one this process now owns: the render holding it died mid-move.

@@ -5745,7 +5745,7 @@ namespace StatuslineTest {
     $diagHoldFile = Join-Path $tmp 'diag-hold-mutex.ps1'
     [System.IO.File]::WriteAllText($diagHoldFile, @'
 param([string] $Ready, [string] $Go)
-$m = [System.Threading.Mutex]::new($false, 'claude-code-statusline-diag-rollover')
+$m = [System.Threading.Mutex]::new($false, 'Global\claude-code-statusline-diag-rollover')
 [void] $m.WaitOne()
 [System.IO.File]::WriteAllText($Ready, 'held')
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -5780,6 +5780,7 @@ $m.Dispose()
     Confirm-Equal (Get-DiagLine).Count 1 'diag rollover lock: and the fresh log holds only the new record'
     Clear-DiagLog
     Clear-DiagRollover
+    if ($env:CLAUDE_TEST_STOP_AFTER_DIAG) { Write-Host "STOP_AFTER_DIAG reached, failed=$script:failed"; exit 77 }
 
     # The whole script, run twice on one payload: the log changes nothing a terminal would show, and
     # the run with it on leaves a log behind.
