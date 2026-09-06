@@ -661,6 +661,14 @@ if ($DetectTheme) {
 # stands, which is what makes a hand-edited config reach the panel on the next install; then the
 # shipped default. The file read is of the copy at its destination, so it sees the file that was just
 # kept or installed rather than the repo's.
+#
+# Two things that file can say which this read does NOT follow, both stated rather than hidden.
+# A `preset`, which stands for a layout and a style at once: `full` means powerline and the other two
+# mean plain, and the panel draws all three of those identically, so following it would change nothing
+# that is drawn. If a preset ever names `ascii` that stops being true and this has to read the preset
+# table too. And a REPOSITORY's own .claude\statusline.json, which the status line merges over the user
+# file per project: the panel is one command for the whole session and there is no per-project answer
+# for it to carry, so it follows the user file and nothing else.
 $styleSpec = (Get-SubagentArgumentSpec | Where-Object { $_.Name -eq 'Style' })
 $paletteSpec = (Get-SubagentArgumentSpec | Where-Object { $_.Name -eq 'Palette' })
 $wantStyle = $PSBoundParameters.ContainsKey('Style')
