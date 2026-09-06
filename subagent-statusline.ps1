@@ -26,9 +26,8 @@
 # The helpers below, G, C, Read-StdinText, Get-VisibleWidth, Get-Palette, Get-ThresholdRole,
 # Test-WideWindow, K, Get-FiniteNumber, Get-PayloadNumber and Test-PayloadText, are copied verbatim
 # from statusline.ps1 and test.ps1 checks that the two copies stay byte-identical. They cannot be
-# shared by dot-sourcing:
-# statusline.ps1 reads stdin to the end and prints as it loads, so loading it here would eat this
-# script's payload and print a status line.
+# shared by dot-sourcing: statusline.ps1 reads stdin to the end and prints as it loads, so loading it
+# here would eat this script's payload and print a status line.
 [CmdletBinding()]
 param()
 $ErrorActionPreference = 'SilentlyContinue'
