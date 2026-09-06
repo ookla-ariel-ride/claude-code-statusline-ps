@@ -1677,6 +1677,35 @@ Confirm-True ($riIcons.chevron -ne $defaultIcons.chevron) 'render-icons: its che
 foreach ($e in $defaultIcons.GetEnumerator()) {
     Confirm-Equal (Read-CodePoint ('{0:X}' -f $e.Value)) $e.Value "icons: the built-in $($e.Key) code point passes the guards"
 }
+
+# docs/render-screenshot.ps1 keeps a fourth, private copy of the OSC-strip pattern above ($ansiPattern),
+# to parse the colour codes out of a rendered line for its PNG. #24 widened the strip to any OSC string
+# in statusline.ps1, subagent-statusline.ps1 and this file's own $ansiPattern, but missed this copy,
+# which stayed narrowed to the ESC]8; hyperlink wrapper alone - harmless while `taskbar` defaults to
+# false, and wrong the moment a screenshot is rendered with it on: the OSC 9;4 sequence would draw into
+# the image as literal text instead of vanishing the way Get-VisibleWidth vanishes it everywhere else.
+# Not folded into the sharedHelpers drift gate above: that gate extracts a named FUNCTION from each of
+# the two rendering scripts and compares its extent, and this is a bare script variable, in a script
+# with no function at all, that the gate does not otherwise visit - reaching a third file that cheaply
+# would mean building a second gate mechanism for one pattern. Pinned by direct string comparison
+# instead. Parsed rather than dot-sourced, the same way the render-icons check above avoids running a
+# script that needs a font installed to render: the source text is all this check wants.
+$rsTokens = $null
+$rsErrors = $null
+$rsAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'docs/render-screenshot.ps1'), [ref] $rsTokens, [ref] $rsErrors)
+Confirm-Equal $rsErrors.Count 0 'render-screenshot: docs/render-screenshot.ps1 parses, so the pattern check below means something'
+$rsAssign = $rsAst.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$pattern' }, $true)
+$rsPatternSource = $rsAssign.Right.Extent.Text
+# The OSC alternative of $ansiPattern above (line ~43), written out here rather than derived from it:
+# $ansiPattern strips without capturing, and render-screenshot.ps1's pattern captures the SGR codes
+# around its own CSI arm to read colour with, so the two can never be equal as whole strings - this
+# substring is the part they still have to agree on, the part that decides what counts as an OSC command
+# to strip in the first place. A change to $ansiPattern's own OSC arm has to update this literal too, the
+# same way a change to a pinned code point elsewhere in this file has to update its own literal.
+# .Contains is ordinal, not -like or -match, so a look-alike character could not slip past it (the trap
+# documented at the top of this file).
+Confirm-True ($rsPatternSource.Contains('$esc\][^\a$esc]*(?:\a|$esc\\)')) 'render-screenshot: OSC-strip pattern matches the widened $ansiPattern form, not the narrow ESC]8; form #24 missed'
+
 $set = Get-IconSet @{ Icons = @{} }
 Confirm-Equal $set.Count 24 'icons: one glyph per name'
 Confirm-Equal $set.pr $iconPr 'icons: no override gives the built-in pr glyph'

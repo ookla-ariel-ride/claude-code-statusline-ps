@@ -1,4 +1,5 @@
 {
   "layout": "two",
-  "style": "powerline"
+  "style": "powerline",
+  "segments": { "time": true }
 }
