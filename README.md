@@ -71,12 +71,12 @@ Restart Claude Code, or wait for its next status refresh.
 
 - Copies `statusline.ps1` to `~/.claude/statusline.ps1`.
 - Copies `statusline.json` to `~/.claude/statusline.json` unless one is already there. If the repo copy is missing it warns and carries on. The script has the same defaults built in.
-- Adds a `statusLine` entry to your user-level `~/.claude/settings.json`. It keeps every other key and writes a `.bak` copy first.
+- Adds a `statusLine` entry to your user-level `~/.claude/settings.json`. It keeps every other key and keeps a copy of the previous version first, at a project-owned backup name rather than the generic `settings.json.bak` (see [Uninstall](#uninstall)).
 - Sets `hideVimModeIndicator` inside that entry. The badges segment already shows the vim mode, so Claude Code's own indicator would be the same word twice on one bar.
 - With `-RefreshInterval <seconds>`, sets `refreshInterval` inside that entry so Claude Code re-renders the line on a timer as well as on events. Without the switch the key is not written. A value below 1 is refused and nothing is written.
 - With `-Subagents`, also copies `subagent-statusline.ps1` to `~/.claude/` and adds a `subagentStatusLine` entry. See [Subagent status line](#subagent-status-line).
 - With `-InstallFont`, installs JetBrainsMono Nerd Font through winget. Expect one elevation prompt.
-- With `-ConfigureWindowsTerminal`, sets Windows Terminal's default font to `JetBrainsMono NF` and backs up its settings.
+- With `-ConfigureWindowsTerminal`, sets Windows Terminal's default font to `JetBrainsMono NF` and keeps a copy of its settings first, the same project-owned backup treatment as `settings.json` gets.
 - With `-DetectTheme`, reads Windows Terminal's default colour scheme and writes `"palette": "dark"` or `"palette": "light"` into `~/.claude/statusline.json`, keeping every other key. It prints the scheme it found, that scheme's background and the palette it chose. When it cannot tell — no Windows Terminal, no default profile, a scheme it has no background for, or a profile set to follow the OS light/dark theme — **it writes nothing and says why**, because the palette already defaults to `dark` and a wrong guess of `light` would leave the line unreadable. Without the switch `statusline.json` is not touched. See [Light palette](#light-palette).
 
 The settings entry it writes after `.\install.ps1 -RefreshInterval 10`:
@@ -206,9 +206,22 @@ own tooling might already be using and this file is written and deleted without 
 that name the marker is checked before it is overwritten or removed, so a file there that is not ours
 survives both a reinstall and an uninstall.
 
-Both entries leave in one write, so `settings.json.bak` still holds them as they were. Every settings
+Both entries leave in one write, so the backup below still holds them as they were. Every settings
 write runs under an exclusive lock on `settings.json.lock`, goes to a uniquely named file beside the
 real one, and is then moved over it.
+
+That backup is not `settings.json.bak` either, for the same reason the subagent rollback copy is not
+`subagent-statusline.ps1.bak`: that name is one your own tooling might already be using for the same
+file, and every settings write overwrites it without being asked. It is kept instead at
+`settings.json.claude-code-statusline-ps-rollback`, and JSON has no comment syntax to carry a marker
+line the way a `.ps1` file does, so the marker lives beside it — a small `.sha256` sidecar recording the
+hash of the backup this installer last wrote. Before that backup is ever overwritten, the sidecar is
+checked against the backup file's actual content; a mismatch, a missing sidecar, or nothing to check at
+all means the file at that name is not this installer's, and it is left alone with a warning rather than
+replaced. The settings write itself is unaffected either way — losing the ability to roll back is a
+smaller harm than overwriting a file that was never this installer's. `-ConfigureWindowsTerminal` backs
+up Windows Terminal's `settings.json` the same way, at `settings.json.claude-code-statusline-ps-rollback`
+beside it, in place of the old `settings.json.bak-before-nerdfont`.
 
 What that gets you, stated no more strongly than it holds. An interrupted or failed write leaves the
 previous settings intact rather than a truncated file. The lock serialises this installer against
@@ -216,9 +229,14 @@ anything else that takes the same lock, and does nothing about a writer that doe
 a cooperative lock cannot exclude a process that ignores it. The file is compared with what the
 installer read twice — when the lock is taken, and again immediately before the rename — so a change
 that lands before that second check is refused. A change that lands in the gap between that check and
-the rename, which only a writer ignoring the lock can manage, is replaced; the content it replaced is
-in `settings.json.bak`. Closing that gap would need a compare-and-swap the filesystem does not offer,
-or a lock every writer honours.
+the rename, which only a writer ignoring the lock can manage, is replaced; the content it replaced is in
+that backup, when there was one to take and the backup name was this installer's to write. Closing that
+gap would need a compare-and-swap the filesystem does not offer, or a lock every writer honours.
+
+An installer from before this backup name changed may have left a `settings.json.bak` or a
+`settings.json.bak-before-nerdfont` behind. Neither is read, written or deleted by this version — they
+are not part of any restore path, only ever a copy for you to look at by hand — so they are simply left
+where they are; delete them yourself once you no longer need them.
 
 ## Configuration
 
@@ -804,8 +822,10 @@ not ours is refused and changes nothing, a profile whose path holds a space and 
 command that really runs under cmd, a settings write that cannot complete leaves the old file intact
 and no temporary file behind, a file changed between the read and the write is refused, a second
 installer holding the lock makes this one write nothing, a `subagent-statusline.ps1.bak` and a file at
-the rollback name that this project did not write both survive a reinstall and an uninstall, and the
-capture helper bounds a single payload larger than its own cap. The render matrix pipes every payload in
+the rollback name that this project did not write both survive a reinstall and an uninstall, a foreign
+file at `settings.json`'s own backup name or Windows Terminal's survives an install and an uninstall the
+same way, the settings write it would have backed up still goes through, and the capture helper bounds a
+single payload larger than its own cap. The render matrix pipes every payload in
 `samples/` through the script for each of seven configs (both layouts and styles, model only, a
 reversed `order`, swapped `rows`) at each width:
 

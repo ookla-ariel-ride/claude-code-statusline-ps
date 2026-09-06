@@ -15,7 +15,8 @@
   Install JetBrainsMono Nerd Font with winget (asks for elevation once).
 
 .PARAMETER ConfigureWindowsTerminal
-  Set Windows Terminal's default font face to "JetBrainsMono NF" (a backup of settings.json is kept).
+  Set Windows Terminal's default font face to "JetBrainsMono NF" (the previous settings.json is kept at
+  a project-owned backup name beside it, not a generic ".bak").
 
 .PARAMETER Subagents
   Also install subagent-statusline.ps1 and add a "subagentStatusLine" entry, the per-subagent line
@@ -154,6 +155,55 @@ function Get-SettingLock([string] $Path, [int] $TimeoutMs) {
     }
 }
 
+# Where a JSON settings file this installer writes keeps the version it replaced: settings.json here,
+# and Windows Terminal's settings.json under -ConfigureWindowsTerminal. Not "$Path.bak": that is exactly
+# the name a user's own tooling might already be using for the same file, and this installer overwrites
+# it on every write without being asked. A name carrying this project's id instead is not one anyone
+# else's tooling is likely to have picked already - the same reasoning behind $subagentRollback above -
+# but a name alone is still not proof of ownership. JSON has no comment syntax to carry a marker line the
+# way a .ps1 file does, and writing one into the JSON itself would mean the "backup" was no longer a
+# faithful copy of what it replaced. So the marker lives beside the backup instead of inside it: a small
+# sidecar file holding the SHA-256 of the backup's own content, written every time this installer writes
+# the backup. Before the backup is ever overwritten, the sidecar is read back and compared against the
+# backup file's actual hash; a match means this installer's own last write is still sitting there, and
+# anything else - no sidecar, a sidecar that does not match, a file with no sidecar at all - is left
+# alone.
+function Get-JsonBackupPath([string] $Path) { return "$Path.claude-code-statusline-ps-rollback" }
+function Get-BackupHashPath([string] $BackupPath) { return "$BackupPath.sha256" }
+
+# Whether the file at $BackupPath is a backup this installer wrote and that has not been replaced since:
+# its sidecar hash file has to exist and its content has to equal the SHA-256 of $BackupPath as it
+# stands right now. A file that cannot be read, a sidecar that cannot be read, or a hash that does not
+# match are all "not ours" - the same "a name alone is not proof" rule Test-OwnSubagentScript applies to
+# the .ps1 rollback file, carried over to a shape JSON can actually hold.
+function Test-OwnBackupFile([string] $BackupPath) {
+    if (-not (Test-Path -LiteralPath $BackupPath)) { return $false }
+    $hashPath = Get-BackupHashPath $BackupPath
+    if (-not (Test-Path -LiteralPath $hashPath)) { return $false }
+    $recorded = $null
+    try { $recorded = Get-Content -LiteralPath $hashPath -Raw -ErrorAction Stop } catch { return $false }
+    if ($null -eq $recorded) { return $false }
+    $recorded = $recorded.Trim()
+    if (-not $recorded) { return $false }
+    $actual = $null
+    try { $actual = (Get-FileHash -LiteralPath $BackupPath -Algorithm SHA256).Hash } catch { return $false }
+    return [string]::Equals($recorded, $actual, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+# Copies $SourcePath over $BackupPath and records its hash in the sidecar next to it, unless something
+# already at $BackupPath fails Test-OwnBackupFile - in which case neither file is touched and $false
+# says so, for the caller to warn about. Losing the ability to roll back is a smaller harm than
+# overwriting a file that was never this installer's, the same trade the subagent rollback copy makes.
+function Backup-OwnedFile([string] $SourcePath, [string] $BackupPath) {
+    if ((Test-Path -LiteralPath $BackupPath) -and -not (Test-OwnBackupFile $BackupPath)) { return $false }
+    Copy-Item -LiteralPath $SourcePath -Destination $BackupPath -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $BackupPath) {
+        $hash = (Get-FileHash -LiteralPath $BackupPath -Algorithm SHA256).Hash
+        Set-Content -LiteralPath (Get-BackupHashPath $BackupPath) -Value $hash -Encoding UTF8 -NoNewline
+    }
+    return $true
+}
+
 # Replaces the settings file in one step. The same shape as Write-AtomicJson in statusline.ps1: serialize
 # to a uniquely named sibling, then move it over the destination, which is atomic on Windows and on Linux,
 # so a reader never sees a half-written file and a crash, a full disk or a failed encode leaves the old
@@ -167,11 +217,13 @@ function Get-SettingLock([string] $Path, [int] $TimeoutMs) {
 #   - the file is compared with what Read-UserSetting saw twice, when the lock is taken and again
 #     immediately before the rename. A change that lands before that second comparison is refused;
 #   - the serialized text is parsed back before anything is replaced, so a broken document never lands;
-#   - the .bak is taken from the file as it stands, before the replace.
+#   - the backup is taken from the file as it stands, before the replace, at the project-owned name
+#     Get-JsonBackupPath names rather than "$Path.bak", and only when Backup-OwnedFile says it may be.
 # What this does not do, stated plainly rather than implied away: a writer that does not take the lock
 # can still save in the gap between that second comparison and the rename, and the rename replaces it.
 # The gap is one filesystem operation wide and closing it would need a compare-and-swap the filesystem
-# does not offer, or a lock every writer honours. The content that was replaced is in the .bak.
+# does not offer, or a lock every writer honours. The content that was replaced is in that backup, when
+# there was one at $Path to replace and the backup name was this installer's to write.
 function Write-UserSetting($obj, [string] $Path) {
     $dir = Split-Path $Path -Parent
     if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
@@ -192,7 +244,12 @@ function Write-UserSetting($obj, [string] $Path) {
         if ($null -eq $check -or $check -isnot [System.Management.Automation.PSCustomObject]) {
             throw "Refusing to write $Path : the serialized settings did not read back as an object."
         }
-        Copy-Item -LiteralPath $Path -Destination "$Path.bak" -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $Path) {
+            $backupPath = Get-JsonBackupPath $Path
+            if (-not (Backup-OwnedFile $Path $backupPath)) {
+                Write-Warning "Kept: $backupPath does not carry this project's hash record, so the previous version of $Path was not backed up."
+            }
+        }
         Confirm-SettingUnchanged $Path
         [System.IO.File]::Move($tmp, $Path, $true)
         # Re-read rather than remembering $json: Set-Content ends the file with a newline that the
@@ -633,13 +690,25 @@ if ($ConfigureWindowsTerminal) {
     $wt = Get-WindowsTerminalSettingPath
     if (-not $wt) { Write-Warning 'Windows Terminal settings.json not found; set the font manually.' }
     else {
-        Copy-Item $wt "$wt.bak-before-nerdfont" -Force
+        # Same treatment as settings.json: a project-owned backup name, not "$wt.bak-before-nerdfont" -
+        # a name distinctive enough that a collision is unlikely, but the shape of the risk is the same
+        # one Write-UserSetting guards against, so it gets the same guard. A foreign file at the backup
+        # name does not block the font change itself; it only means this run has nothing to roll back to.
+        $wtBackupPath = Get-JsonBackupPath $wt
+        $wtBackedUp = Backup-OwnedFile $wt $wtBackupPath
+        if (-not $wtBackedUp) {
+            Write-Warning "Kept: $wtBackupPath does not carry this project's hash record, so $wt was not backed up before this change."
+        }
         $j = Get-Content $wt -Raw | ConvertFrom-Json
         if (-not $j.profiles.defaults) { $j.profiles | Add-Member -NotePropertyName defaults -NotePropertyValue ([pscustomobject]@{}) }
         if (-not $j.profiles.defaults.font) { $j.profiles.defaults | Add-Member -NotePropertyName font -NotePropertyValue ([pscustomobject]@{}) -Force }
         $j.profiles.defaults.font | Add-Member -NotePropertyName face -NotePropertyValue $fontFace -Force
         $j | ConvertTo-Json -Depth 32 | Set-Content $wt -Encoding UTF8
-        Write-Host "Windows Terminal default font set to '$fontFace' (backup kept next to settings.json)"
+        if ($wtBackedUp) {
+            Write-Host "Windows Terminal default font set to '$fontFace' (backup kept at $wtBackupPath)"
+        } else {
+            Write-Host "Windows Terminal default font set to '$fontFace' (no backup written; see warning above)"
+        }
     }
 }
 
