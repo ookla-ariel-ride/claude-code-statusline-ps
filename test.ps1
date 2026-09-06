@@ -71,6 +71,13 @@ $script:failed = 0
 # Ordinal, not -ceq, for the reason above: every check in this file that pins a rendered string would
 # otherwise have said nothing about a right-to-left override sitting in the middle of it, which is
 # exactly the thing those checks exist to catch.
+#
+# A third trap in the same family, not about comparison but about what gets compared: a bare negative
+# literal in COMMAND argument position is a String, not a number - PowerShell parses `Get-Foo -5` as
+# `Get-Foo '-5'`, indistinguishable from a flag. A parameter typed `[int]`/`[double]` coerces it back
+# silently, so the call still works; an untyped guard like Get-FiniteNumber does not, and refuses the
+# string outright, so a check meaning "a negative number" quietly becomes a duplicate of whatever row
+# already covers "this field is text" - and passes, for the wrong reason. Write `(Get-Foo (-5))`.
 function Confirm-Equal($Actual, $Expected, [string] $Label) {
     if ([string]::Equals("$Actual", "$Expected", [System.StringComparison]::Ordinal)) { $script:passed++; return }
     $script:failed++
@@ -2790,7 +2797,7 @@ Confirm-True $seg.Text.StartsWith("$iconCtx 100% ") 'context 110: clamped text p
 Confirm-True $seg.Text.Contains($bar100) 'context 110: bar is 10 full blocks'
 Confirm-Equal $seg.Role 'bad' 'context 110: role'
 
-$seg = Get-ContextSegment (Get-ContextPayload -5) $bandCfg
+$seg = Get-ContextSegment (Get-ContextPayload (-5)) $bandCfg
 $bar0 = $blockLight * 10
 Confirm-True $seg.Text.StartsWith("$iconCtx 0% ") 'context -5: clamped text prefix'
 Confirm-True $seg.Text.Contains($bar0) 'context -5: bar is 10 light blocks'
@@ -2828,8 +2835,8 @@ Confirm-Equal (Get-ContextSegment (Get-ContextPayload 8) $quiet30) $null 'contex
 Confirm-Equal (Get-ContextSegment (Get-ContextPayload 29) $quiet30) $null 'context quiet 30: 29% is still below the line'
 Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload 30) $quiet30)) 'context quiet 30: 30% is on the line and stays'
 # A payload at -5 clamps to 0 and is compared as 0, so a quiet of 0 keeps it and any threshold hides it.
-Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload -5) $quietOff)) 'context quiet 0: a clamped 0% meter is still built'
-Confirm-Equal (Get-ContextSegment (Get-ContextPayload -5) $quiet30) $null 'context quiet 30: a clamped 0% meter is hidden'
+Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload (-5)) $quietOff)) 'context quiet 0: a clamped 0% meter is still built'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload (-5)) $quiet30) $null 'context quiet 30: a clamped 0% meter is hidden'
 # $bandCfg carries no Quiet table at all, which is what an older config object looks like to the guard.
 Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload 0) $bandCfg)) 'context quiet: a config with no Quiet table hides nothing'
 
@@ -3226,7 +3233,7 @@ Confirm-Equal (ConvertTo-PlainText (Get-FittedLine @($fitModel, $fitCache) 'plai
 Confirm-Equal (ConvertTo-PlainText (Get-FittedLine @($fitModel, $fitCache) 'plain' 15)) "$iconModel Fable 5.1" 'cache fitting: 15 columns drops the segment and keeps the model'
 
 Write-Host '== unit: cost' -ForegroundColor Cyan
-$iconCost = [char]::ConvertFromUtf32(0xF0155)
+$iconCost = [char]::ConvertFromUtf32(0xF0114)
 function Get-CostPayload($Usd) { return [pscustomobject]@{ cost = [pscustomobject]@{ total_cost_usd = $Usd } } }
 $quiet1 = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 1.0; context = 0.0; limits = 0.0 } }
 Confirm-Equal (Get-CostSegment (Get-CostPayload 0.4312) $quietOff).Text ("$iconCost `$" + ('{0:N2}' -f 0.4312)) 'cost quiet 0: the figure is built'
@@ -3475,9 +3482,9 @@ Confirm-Equal (Get-WholePercent 90.4) 90 'whole percent: 90.4 rounds down'
 Confirm-Equal (Get-WholePercent 90.5) 90 'whole percent: 90.5 stays at the even 90, it does not go to 91'
 Confirm-Equal (Get-WholePercent 91.5) 92 'whole percent: 91.5 goes up to the even 92'
 Confirm-Equal (Get-WholePercent 0.5) 0 'whole percent: 0.5 goes to the even 0'
-Confirm-Equal (Get-WholePercent -0.6) -1 'whole percent: a negative rounds away from zero the same way'
+Confirm-Equal (Get-WholePercent (-0.6)) -1 'whole percent: a negative rounds away from zero the same way'
 Confirm-Equal (Get-WholePercent 1e300) ([int]::MaxValue) 'whole percent: a figure past Int32 clamps instead of throwing'
-Confirm-Equal (Get-WholePercent -1e300) ([int]::MinValue) 'whole percent: and the same at the bottom'
+Confirm-Equal (Get-WholePercent (-1e300)) ([int]::MinValue) 'whole percent: and the same at the bottom'
 # The two segments that print a percentage go through it, so the rule cannot drift apart between them.
 $roundCfg = @{ Style = 'plain'; Thresholds = @{ Warn = 60; Bad = 85 } }
 Confirm-True ((Get-ContextSegment (Get-JsonPayload 'context_window' '{"used_percentage":89.6}') $roundCfg).Text.StartsWith("$iconCtx 90%")) 'whole percent: the context meter prints 89.6 as 90%'
@@ -3521,7 +3528,7 @@ Confirm-True (-not (Test-AlarmLevel 90.5 91)) 'alarm level: 90.5 prints as 90% a
 Confirm-True (Test-AlarmLevel 90.5 90.4) 'alarm level: a fractional level is rounded the same way, so 90.4 is a 90 alarm'
 Confirm-True (-not (Test-AlarmLevel 0 0)) 'alarm level: a level of 0 is off, even at 0%'
 Confirm-True (-not (Test-AlarmLevel 100 0)) 'alarm level: a level of 0 is off at 100%'
-Confirm-True (-not (Test-AlarmLevel 100 -1)) 'alarm level: a negative level is off'
+Confirm-True (-not (Test-AlarmLevel 100 (-1))) 'alarm level: a negative level is off'
 Confirm-True (-not (Test-AlarmLevel 100 $null)) 'alarm level: a missing level is off'
 Confirm-True (-not (Test-AlarmLevel 100 '90')) 'alarm level: a level that is a string is off'
 Confirm-True (-not (Test-AlarmLevel $null 90)) 'alarm level: a null percentage does not fire'
@@ -4865,7 +4872,7 @@ $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 0
 Confirm-Equal $script:probeCalls ($before + 2) 'lifetime 0: every call probes'
 Confirm-Equal $g.Branch 'main' 'lifetime 0: the probe result comes back'
 Confirm-Equal (Get-Item -LiteralPath $cacheEntry).LastWriteTimeUtc $stamp 'lifetime 0: the entry is not rewritten'
-$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir -1
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir (-1)
 Confirm-Equal $script:probeCalls ($before + 3) 'lifetime below 0: probes'
 $g = Get-CachedGitBranch $cacheRepo 1500 '' 5
 Confirm-Equal $script:probeCalls ($before + 4) 'no cache directory given: probes'
