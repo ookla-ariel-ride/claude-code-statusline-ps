@@ -26,22 +26,33 @@ $PSNativeCommandUseErrorActionPreference = $false
 $PSStyle.OutputRendering = 'Ansi'
 $script = Join-Path $PSScriptRoot 'statusline.ps1'
 $esc = [char]27
-# The escapes a rendered line can carry and a terminal does not show: an OSC 8 hyperlink wrapper with
-# either terminator (ESC \ or BEL), or an SGR colour code. The one pattern behind ConvertTo-PlainText
-# and Measure-VisibleWidth, so the two cannot drift apart.
-$ansiPattern = "$esc\]8;[^\a$esc]*(?:\a|$esc\\)|$esc\[[0-9;]*m"
+# The escapes a rendered line can carry and a terminal does not show: an OSC string with either
+# terminator (ESC \ or BEL), or an SGR colour code. One OSC rule and not one per command - the 8
+# hyperlink wrappers and the 9;4 taskbar progress sequence are both "ESC ] anything terminator", which
+# is exactly what a terminal that does not know the command swallows. The one pattern behind
+# ConvertTo-PlainText and Measure-VisibleWidth, so the two cannot drift apart.
+$ansiPattern = "$esc\][^\a$esc]*(?:\a|$esc\\)|$esc\[[0-9;]*m"
 # The closing half of an OSC 8 hyperlink, the same bytes whatever the url was. Up here rather than in
 # the pr section because the folder and branch segments are wrapped in one too.
 $linkClose = "$esc]8;;$esc\"
 $script:passed = 0
 $script:failed = 0
 
-# A note about string comparison, because this file learned it twice.
+# A note about string comparison, because this file learned it three times.
 #
 # PowerShell's string operators compare by CULTURE, and a culture comparison gives the Unicode Format
 # characters no collation weight at all. "oc<U+202E>to" -ceq "octo" is $true; so is a comparison against
 # a string carrying a zero-width joiner or a byte order mark. -ceq and -cne are case-sensitive, which is
 # not the same thing as ordinal, and the c is easy to read as "exact".
+#
+# .NET's own methods are the third way in, and they do not agree with each other: String.Contains(string)
+# and String.IndexOf(char) are ORDINAL, while String.StartsWith(string), String.EndsWith(string) and
+# String.IndexOf(string) are CURRENT CULTURE unless a StringComparison is passed. So a check written as
+# $line.StartsWith($expected) has exactly the hole -ceq has, on the same rendered text, while the
+# .Contains($expected) beside it does not - which is why the taskbar render checks pass
+# [System.StringComparison]::Ordinal explicitly at every StartsWith and the Contains calls are left
+# bare. Prefer Confirm-Equal, which is ordinal for every caller; where the shape of the check really is
+# a prefix, name the comparison.
 #
 # So every comparison in this file falls into one of two categories, and a new one has to be put in the
 # right one deliberately:
@@ -177,7 +188,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -244,6 +255,15 @@ $widthTable = @(
     @{ Text = "$esc]8;;https://example.com$esc\$esc[32mab$esc[0m$esc]8;;$esc\"; Width = 2 }  # link around coloured text
     @{ Text = "$esc]8;;$esc\"; Width = 0 }                                              # a bare link terminator
     @{ Text = "$esc]8;;https://example.com`aabcd$esc]8;;`a"; Width = 4 }               # BEL-terminated link
+    # OSC 9;4, the taskbar progress sequence. It is written in front of the first line the script
+    # prints, so if it were measured as text the fitting would think every line was nine or ten cells
+    # wider than it draws and would clip a segment off the end of a line that fitted. The strip is one
+    # OSC rule and not one per command, which is what these rows are here to hold: a rule keyed on
+    # "]8;" would count every one of them.
+    @{ Text = "$esc]9;4;1;32`a"; Width = 0 }                                           # the sequence alone
+    @{ Text = "$esc]9;4;1;32`aabc"; Width = 3 }                                        # sequence then text
+    @{ Text = "$esc]9;4;0;0$esc\abc"; Width = 3 }                                      # ST terminator instead of BEL
+    @{ Text = "$esc]9;4;2;100`a$esc[31mab$esc[0m"; Width = 2 }                         # sequence in front of colour
     @{ Text = [string][char]0x202E; Width = 0 }                                        # right-to-left override
     @{ Text = 'ab' + [string][char]0x2066 + 'cd'; Width = 4 }                          # directional isolate
     @{ Text = [string][char]0xFEFF + 'ab'; Width = 2 }                                 # byte order mark
@@ -433,6 +453,27 @@ $linksRows = @(Get-StatusConfigKey | Where-Object { $_.Json -eq 'links' })
 Confirm-Equal $linksRows.Count 1 'config links: exactly one row in the key table'
 Confirm-Equal $linksRows[0].Key 'Links' 'config links: the row lands in the Links key'
 Confirm-Equal $linksRows[0].Kind 'Bool' 'config links: the row is read as a boolean'
+# The taskbar key: the same boolean rule, off out of the box. Off is the default because Claude Code's
+# own terminalProgressBarEnabled writes the same OSC 9;4 sequence and one taskbar button cannot hold
+# two writers, so turning this on has to be a decision rather than something that happens to a user who
+# upgrades. A missing key must read as $false and not as $null: Get-TaskbarSequence refuses both, but
+# the default table is what documents the answer, and Confirm-Equal tells the two apart.
+Confirm-Equal (Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')).Taskbar $false 'config missing: taskbar off'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'taskbar-true.json' '{ "taskbar": true }')).Taskbar $true 'config taskbar true'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'taskbar-false.json' '{ "taskbar": false }')).Taskbar $false 'config taskbar false'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'taskbar-absent.json' '{ "layout": "two" }')).Taskbar $false 'config taskbar absent: off'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'taskbar-string.json' '{ "taskbar": "true" }')).Taskbar $false 'config taskbar string: off'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'taskbar-number.json' '{ "taskbar": 1 }')).Taskbar $false 'config taskbar number: off'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'taskbar-null.json' '{ "taskbar": null }')).Taskbar $false 'config taskbar null: off'
+# A value of the wrong shape in the second file falls back to the first file's value and not to the
+# built-in default, which is the rule every one-value key follows.
+Confirm-Equal (Merge-StatusConfigFile (Read-StatusConfig (Write-TempConfig 'taskbar-user-on.json' '{ "taskbar": true }')) (Write-TempConfig 'taskbar-proj-bad.json' '{ "taskbar": "no" }')).Taskbar $true 'config taskbar: a bad project value keeps the user value'
+Confirm-Equal (Merge-StatusConfigFile (Read-StatusConfig (Write-TempConfig 'taskbar-user-on2.json' '{ "taskbar": true }')) (Write-TempConfig 'taskbar-proj-off.json' '{ "taskbar": false }')).Taskbar $false 'config taskbar: a project file can turn it back off'
+# One row in the key table and nothing else, the same shape the links key above is pinned by.
+$taskbarRows = @(Get-StatusConfigKey | Where-Object { $_.Json -eq 'taskbar' })
+Confirm-Equal $taskbarRows.Count 1 'config taskbar: exactly one row in the key table'
+Confirm-Equal $taskbarRows[0].Key 'Taskbar' 'config taskbar: the row lands in the Taskbar key'
+Confirm-Equal $taskbarRows[0].Kind 'Bool' 'config taskbar: the row is read as a boolean'
 
 # The git object: timeoutMs and cacheSeconds are whole numbers clamped to their ranges, cache is a
 # boolean. A key of the wrong type falls back on its own; a git value that is not an object falls
@@ -787,6 +828,7 @@ Confirm-Equal $defaultCfg.Layout 'one' 'default config: layout one'
 Confirm-Equal $defaultCfg.Style 'plain' 'default config: style plain'
 Confirm-Equal $defaultCfg.Folder 'repo' 'default config: folder repo'
 Confirm-Equal $defaultCfg.State $true 'default config: state on'
+Confirm-Equal $defaultCfg.Taskbar $false 'default config: taskbar off'
 Confirm-Equal ($defaultCfg.Order -join ',') $registryOrder 'default config: order is the registry order'
 Confirm-Equal (Get-RowText $defaultCfg) $registryRows 'default config: rows are the registry rows'
 Confirm-Equal (Get-ThresholdText $defaultCfg) '60/85' 'default config: thresholds 60 and 85'
@@ -1296,6 +1338,10 @@ Confirm-Equal $c.State $true 'shipped config: state on'
 Confirm-True ($shippedJson.state -is [bool] -and $shippedJson.state) 'shipped config: the file itself sets state to the boolean true'
 Confirm-Equal $c.Links $true 'shipped config: links on'
 Confirm-True ($shippedJson.links -is [bool] -and $shippedJson.links) 'shipped config: the file itself sets links to the boolean true'
+# taskbar ships spelled out at its default of false, so the key is there to flip rather than something
+# to find in the README. Off is the default because Claude Code writes the same OSC 9;4 sequence itself.
+Confirm-Equal $c.Taskbar $false 'shipped config: taskbar off'
+Confirm-True ($shippedJson.taskbar -is [bool] -and -not $shippedJson.taskbar) 'shipped config: the file itself sets taskbar to the boolean false'
 Confirm-Equal $c.Git.TimeoutMs 1500 'shipped config: git timeout 1500'
 Confirm-Equal $c.Git.CacheSeconds 5 'shipped config: git cache 5 seconds'
 Confirm-Equal $c.Git.Cache $true 'shipped config: git cache on'
@@ -3054,6 +3100,68 @@ foreach ($row in @(
         # model, or the other way round, cannot happen at the line the alarm sits on.
         Confirm-Equal ($seg.Role -eq 'bad') $row.Alarm "${agreeLabel}: the meter's own colour and the alarm reach 90 together"
     }
+}
+
+Write-Host '== unit: taskbar' -ForegroundColor Cyan
+# OSC 9;4: ESC ] 9 ; 4 ; state ; percent BEL. The sequences are spelled out here literally rather than
+# built from the same pieces the script builds them from, so a change to the format is a change to this
+# table too. Written with $esc and `a because those are the bytes on the wire; nothing else in the
+# string is an escape.
+$taskbarOn = @{ Taskbar = $true; Alarm = @{ Context = 90; Limits = 90 } }
+$taskbarOff = @{ Taskbar = $false; Alarm = @{ Context = 90; Limits = 90 } }
+$clearSeq = "$esc]9;4;0;0`a"
+# Off is off: not a clear, not anything. A render that emitted a clear while the feature was off would
+# fight Claude Code's own progress bar on every refresh for every user who never asked for this.
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 32) $taskbarOff) '' 'taskbar off: nothing at all, not even a clear'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload $null) $taskbarOff) '' 'taskbar off: nothing for a missing percentage either'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 32) @{}) '' 'taskbar: a config with no Taskbar key is off'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 32) $null) '' 'taskbar: a null config is off'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 32) @{ Taskbar = 'true' }) '' 'taskbar: a string value is not on'
+# The two live states, and the number is the one Get-WholePercent gives.
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 32) $taskbarOn) "$esc]9;4;1;32`a" 'taskbar 32%: state 1'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 95) $taskbarOn) "$esc]9;4;2;95`a" 'taskbar 95%: state 2 above the alarm'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 90) $taskbarOn) "$esc]9;4;2;90`a" 'taskbar 90%: state 2 at the alarm'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 89) $taskbarOn) "$esc]9;4;1;89`a" 'taskbar 89%: state 1 below the alarm'
+# The rounding is Get-WholePercent's and not a second rule: 89.6 prints 90 on the line, so the bar says
+# 90 and turns red with it. A truncating cast would write 89 here and disagree with the meter beside it.
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 89.6) $taskbarOn) "$esc]9;4;2;90`a" 'taskbar 89.6%: rounds to 90 and alarms, the way the meter does'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 89.4) $taskbarOn) "$esc]9;4;1;89`a" 'taskbar 89.4%: rounds to 89 and does not alarm'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 90.5) $taskbarOn) "$esc]9;4;2;90`a" 'taskbar 90.5%: round half to even gives 90'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 91.5) $taskbarOn) "$esc]9;4;2;92`a" 'taskbar 91.5%: round half to even gives 92'
+# A real zero is a known number and gets state 1. State 0 means "no figure", and conflating the two
+# would make a fresh session's empty bar indistinguishable from a payload that carried nothing.
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 0) $taskbarOn) "$esc]9;4;1;0`a" 'taskbar 0%: a known zero is state 1, not a clear'
+# 0..100, because that is the range the taskbar takes. The context meter clamps the same way; a rate
+# limit is allowed past 100 but this bar is the context window's and nothing else's.
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 105) $taskbarOn) "$esc]9;4;2;100`a" 'taskbar 105%: clamped to 100'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload (-5)) $taskbarOn) "$esc]9;4;1;0`a" 'taskbar -5%: clamped to 0'
+# Every way there is no number ends as the clear form, because the sequence is terminal state that
+# outlives this process: writing nothing would leave the last render's bar lit over a session that no
+# longer has a percentage to show.
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload $null) $taskbarOn) $clearSeq 'taskbar: a null percentage clears'
+Confirm-Equal (Get-TaskbarSequence ([pscustomobject]@{}) $taskbarOn) $clearSeq 'taskbar: a payload with no context_window clears'
+Confirm-Equal (Get-TaskbarSequence $null $taskbarOn) $clearSeq 'taskbar: a null payload clears'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload '32') $taskbarOn) $clearSeq 'taskbar: a string percentage clears'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload $true) $taskbarOn) $clearSeq 'taskbar: a boolean percentage clears'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload @(32)) $taskbarOn) $clearSeq 'taskbar: an array percentage clears'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload ([double]::NaN)) $taskbarOn) $clearSeq 'taskbar: NaN clears'
+# The colour is Test-AlarmState's answer and nothing narrower, so the bar and the model segment can
+# never disagree: a rate limit at its level turns both red while the number stays the context window's.
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 12 95 10) $taskbarOn) "$esc]9;4;2;12`a" 'taskbar: the 5-hour limit turns the bar red at 12% context'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 12 10 95) $taskbarOn) "$esc]9;4;2;12`a" 'taskbar: the 7-day limit turns the bar red at 12% context'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 12 10 10) $taskbarOn) "$esc]9;4;1;12`a" 'taskbar: quiet limits leave the bar normal'
+# alarm.context 0 turns that alarm off, and the bar follows it rather than keeping a rule of its own.
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 99) @{ Taskbar = $true; Alarm = @{ Context = 0; Limits = 0 } }) "$esc]9;4;1;99`a" 'taskbar: with the alarms off, 99% is still state 1'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 99) @{ Taskbar = $true }) "$esc]9;4;1;99`a" 'taskbar: a config with no Alarm table is state 1'
+# The default config renders the issue's two worked examples exactly.
+$taskbarDefaults = Get-DefaultStatusConfig
+$taskbarDefaults.Taskbar = $true
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 32) $taskbarDefaults) "$esc]9;4;1;32`a" 'taskbar: 32% under the shipped alarm is 1;32'
+Confirm-Equal (Get-TaskbarSequence (Get-AlarmPayload 95) $taskbarDefaults) "$esc]9;4;2;95`a" 'taskbar: 95% under the shipped alarm is 2;95'
+# And the sequence measures nothing, in both copies of the width rule, whatever it carries.
+foreach ($seq in @("$esc]9;4;1;32`a", $clearSeq, "$esc]9;4;2;100`a")) {
+    Confirm-Equal (Get-VisibleWidth $seq) 0 "taskbar width: the script measures '$($seq -replace $esc, '<ESC>')' as 0 cells"
+    Confirm-Equal (Measure-VisibleWidth $seq) 0 "taskbar width: the test measures '$($seq -replace $esc, '<ESC>')' as 0 cells"
 }
 
 Write-Host '== unit: model' -ForegroundColor Cyan
@@ -6224,7 +6332,10 @@ foreach ($cfg in $configSet) {
             # and not a fault, so it is asserted from the other side instead of failing the empty check.
             # None of the built-in configs reach it - every one of them lists model and leaves it on.
             $couldShow = @($allSegments | Where-Object { $cfg.Enabled[$_] -and $_ -in @($sampleSegments[$sample.Name]) })
-            $blank = [string]::IsNullOrWhiteSpace(($lines -join ''))
+            # Through ConvertTo-PlainText, so "nothing on screen" is decided by what a terminal would
+            # show. A -Config with taskbar on writes an escape sequence in front of a render that has
+            # no line in it, and a raw test would read that as output where the user sees none.
+            $blank = [string]::IsNullOrWhiteSpace((ConvertTo-PlainText ($lines -join '')))
             if (-not $cfg.Enabled['model'] -and $couldShow.Count -eq 0) {
                 Confirm-True $blank "${label}: model off with nothing else buildable prints nothing"
                 continue
@@ -6813,6 +6924,140 @@ Confirm-Equal ((Get-PresetRender 'number' '{ "preset": 5 }').Lines -join "`n") $
 $r = Invoke-StatusLine $payload06 (Join-Path $PSScriptRoot 'statusline.json') 0
 Confirm-Equal ($r.Lines -join "`n") $plainRender 'render preset: the shipped statusline.json still renders the default line'
 
+# The taskbar sequence through the whole script. Every check here is against a second render of the
+# same payload with the key off, so what is pinned is "the sequence and nothing else changed" rather
+# than one expected line that would have to be rewritten every time a segment moves.
+Write-Host ''
+Write-Host '== render: taskbar' -ForegroundColor Cyan
+$taskbarOnPath = Write-TempConfig 'render-taskbar-on.json' '{ "taskbar": true }'
+$taskbarOffPath = Write-TempConfig 'render-taskbar-off.json' '{ "taskbar": false }'
+$taskbarClear = "$esc]9;4;0;0`a"
+# Ordinal everywhere below, through Confirm-Equal: these are rendered lines carrying escapes, and a
+# culture comparison would wave a stray format character through as "the same output".
+function Confirm-TaskbarRender([string] $Payload, [string] $Expected, [int] $Width, [string] $Label, [string] $OnPath, [string] $OffPath) {
+    $on = Invoke-StatusLine $Payload ($OnPath ? $OnPath : $taskbarOnPath) $Width
+    $off = Invoke-StatusLine $Payload ($OffPath ? $OffPath : $taskbarOffPath) $Width
+    $at = "$Label COLUMNS=$(if ($Width -gt 0) { $Width } else { 'unset' })"
+    Confirm-True ($on.ExitCode -eq 0 -and $off.ExitCode -eq 0) "render taskbar ${at}: exit code 0 both ways"
+    Confirm-True ($on.Err.Count -eq 0) "render taskbar ${at}: stderr empty with the key on"
+    Confirm-True ($off.Err.Count -eq 0) "render taskbar ${at}: stderr empty with the key off"
+    $onRaw = $on.Lines -join "`n"
+    $offRaw = $off.Lines -join "`n"
+    # The key off writes no sequence at all, so a user who never asked for this sees the bytes they
+    # always saw. The key on writes exactly one, at the very front, with the whole render behind it
+    # unchanged - which is the prefix rule, the line count and the fitting all in one comparison.
+    Confirm-True (-not $offRaw.Contains("$esc]9;4")) "render taskbar ${at}: the key off writes no sequence"
+    Confirm-Equal $onRaw ($Expected + $offRaw) "render taskbar ${at}: the sequence is the only difference"
+    Confirm-Equal $on.Lines.Count $off.Lines.Count "render taskbar ${at}: the line count is unchanged"
+    Confirm-Equal ([regex]::Matches($onRaw, "$esc\]9;4").Count) 1 "render taskbar ${at}: one sequence per render"
+    # And the fitting cannot see it: every line measures what it measured without the sequence.
+    for ($i = 0; $i -lt $off.Lines.Count; $i++) {
+        Confirm-Equal (Measure-VisibleWidth $on.Lines[$i]) (Measure-VisibleWidth $off.Lines[$i]) "render taskbar ${at}: line $i measures the same width"
+    }
+}
+$payload04 = $samplePayloads['04-minimal.json']
+$payload02 = $samplePayloads['02-feature-dirty-high.json']
+# 06 is 32% with both rate limits below their level, and 12 is 92% against the shipped alarm of 90:
+# the two worked examples in the issue, at every width so the fitting is exercised with the prefix on
+# the line. 02 sits exactly on the alarm at 90, and 04 carries no context_window at all.
+foreach ($c in @(0, 60, 20)) {
+    Confirm-TaskbarRender $payload06 "$esc]9;4;1;32`a" $c '06'
+    Confirm-TaskbarRender $payload12 "$esc]9;4;2;92`a" $c '12'
+}
+Confirm-TaskbarRender $payload02 "$esc]9;4;2;90`a" 0 '02 (90%, on the alarm)'
+Confirm-TaskbarRender $payload04 $taskbarClear 0 '04 (no context_window)'
+# A payload that will not parse knows no percentage, so the clear form goes out in front of the
+# fallback line rather than leaving whatever the last render lit.
+Confirm-TaskbarRender 'not json {' $taskbarClear 0 'a payload that will not parse'
+# The zero-segment fallback, the other of the two stand-in lines: valid JSON with no model name, and
+# the one segment its figures could have built turned off, so every builder returns nothing and the
+# stand-in prints. The percentage is known on that path and the bar says so rather than clearing.
+$zeroOn = Write-TempConfig 'render-taskbar-zero-on.json' '{ "taskbar": true, "segments": { "context": false } }'
+$zeroOff = Write-TempConfig 'render-taskbar-zero-off.json' '{ "segments": { "context": false } }'
+Confirm-TaskbarRender '{ "context_window": { "used_percentage": 77 } }' "$esc]9;4;1;77`a" 0 'the zero-segment fallback' $zeroOn $zeroOff
+# and that it really is the stand-in line under it, not a segment that happened to build.
+Confirm-Equal (ConvertTo-PlainText ((Invoke-StatusLine '{ "context_window": { "used_percentage": 77 } }' $zeroOn 0).Lines -join "`n")) "$iconModel claude" 'render taskbar: the zero-segment stand-in is what printed under the sequence'
+# THE RENDER WITH NO LINE AT ALL. A config that leaves nothing to print still writes the sequence: it
+# is terminal state that outlives the process, and a taskbar frozen at the last render's figure with no
+# status line under it to explain it is worse than an honest bar over an empty line. The output is the
+# sequence and nothing else - no newline, so the line count is still zero as far as a terminal is
+# concerned, which is what -NoNewline buys over a Write-Host of its own.
+$emptyOn = Write-TempConfig 'render-taskbar-empty-on.json' '{ "taskbar": true, "order": ["model"], "segments": { "model": false } }'
+$emptyOff = Write-TempConfig 'render-taskbar-empty-off.json' '{ "order": ["model"], "segments": { "model": false } }'
+$emptyPayload = '{ "model": { "display_name": "Fable 5.1" }, "context_window": { "used_percentage": 77 } }'
+$r = Invoke-StatusLine $emptyPayload $emptyOff 0
+Confirm-Equal ($r.Lines -join "`n") '' 'render taskbar: with the key off a render with no segments prints nothing at all'
+$r = Invoke-StatusLine $emptyPayload $emptyOn 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render taskbar empty: exit code 0, stderr empty'
+Confirm-Equal ($r.Lines -join "`n") "$esc]9;4;1;77`a" 'render taskbar: a render with no line still writes the sequence'
+Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) '' 'render taskbar: and that render still shows nothing at all'
+# The same with a payload that will not parse and no model segment allowed: the clear, and nothing else.
+$r = Invoke-StatusLine 'not json {' $emptyOn 0
+Confirm-Equal ($r.Lines -join "`n") $taskbarClear 'render taskbar: a bad payload with no model line writes the clear on its own'
+# Nothing a terminal that does not know OSC 9;4 could show. The whole sequence is ESC ] then digits,
+# semicolons and the BEL that ends it, so a terminal consuming an unknown OSC string to its terminator
+# swallows all of it; there is no printable character in it to be left on the line, and no second
+# escape inside it to end the string early and spill the rest onto the screen.
+foreach ($seq in @("$esc]9;4;1;32`a", $taskbarClear, "$esc]9;4;2;100`a")) {
+    $shown = $seq -replace $esc, '<ESC>'
+    Confirm-True ($seq -match "^$esc\]9;4;[0-2];(0|[1-9][0-9]?|100)`a$") "render taskbar: '$shown' is OSC 9;4, one state, one percentage, one BEL"
+    Confirm-Equal ($seq.Substring(1, $seq.Length - 2) -replace '[0-9;\]]', '') '' "render taskbar: '$shown' carries nothing but digits, semicolons and the bracket between its ends"
+}
+
+# WHERE THE KEY IS ENABLED CHANGES WHAT A MALFORMED PAYLOAD CAN DO, and this is the one corner where
+# the taskbar is not self-repairing. A payload that will not parse names no project directory, so the
+# PROJECT file is not read on that path - a rule that predates this key and that every project-only
+# value has always been subject to. For every other key that is invisible: a colour or a toggle that
+# did not reach a line which is replaced on the next render anyway. This key writes state that outlives
+# the render, so a project-only "taskbar": true leaves the last good render's bar lit with no clear
+# behind it. The USER file has no such gap: it is read whatever the payload is. Both halves are pinned
+# here so the difference is a fact of the suite and not only a paragraph in the README.
+Write-Host ''
+Write-Host '== render: taskbar config location' -ForegroundColor Cyan
+$tbProjDir = Join-Path $tmp 'render-taskbar-project'
+New-Item -ItemType Directory -Force (Join-Path $tbProjDir '.claude') | Out-Null
+[System.IO.File]::WriteAllText((Join-Path (Join-Path $tbProjDir '.claude') 'statusline.json'), '{ "taskbar": true }', [System.Text.UTF8Encoding]::new($false))
+$tbProjPayload = (@{
+        model          = @{ display_name = 'Sonnet 5' }
+        context_window = @{ used_percentage = 95 }
+        workspace      = @{ project_dir = $tbProjDir; current_dir = $tbProjDir }
+    } | ConvertTo-Json -Depth 20 -Compress)
+# Ordinal on the StartsWith calls below for the usual reason: these are rendered lines carrying escapes.
+# 1. The project key really does reach a good render, so what follows is about the malformed payload and
+#    not about the key never having arrived. Run with no -Config at all, the way a real session runs.
+$r = Invoke-StatusLine $tbProjPayload $null 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render taskbar project: exit code 0, stderr empty'
+Confirm-True (($r.Lines -join "`n").StartsWith("$esc]9;4;2;95`a", [System.StringComparison]::Ordinal)) 'render taskbar project: a project-only key lights the bar red at 95%'
+# 2. THE GAP, pinned rather than described. Same session, next render, and this payload will not parse:
+#    there is no project directory to read the key from, so no sequence goes out at all and the red bar
+#    from the render above stays lit until the next payload that parses. If this check ever starts
+#    failing, the malformed path has gained a way to reach the project file and the limitation
+#    documented under Taskbar progress can go with it.
+$r = Invoke-StatusLine 'not json {' $null 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render taskbar project: bad payload exit code 0, stderr empty'
+Confirm-True (-not ($r.Lines -join "`n").Contains("$esc]9;4")) 'render taskbar project: KNOWN LIMIT - a project-only key writes no clear for a payload that will not parse'
+# 3. The other half, and the reason the README says to enable this in the user file: that file is read
+#    on every path, so the same malformed payload does get its clear. A copy of the script beside a
+#    statusline.json of our own, run with no -Config, so the child reads that file from its own
+#    $PSScriptRoot - the same technique the zero-segment user-file cases above use.
+$tbHome = Join-Path $tmp 'taskbar-user-config'
+New-Item -ItemType Directory -Force $tbHome | Out-Null
+$tbScript = Join-Path $tbHome 'statusline.ps1'
+Copy-Item -LiteralPath $script -Destination $tbScript -Force
+[System.IO.File]::WriteAllText((Join-Path $tbHome 'statusline.json'), '{ "taskbar": true }', [System.Text.UTF8Encoding]::new($false))
+foreach ($case in @(
+        @{ Name = 'good'; Payload = $tbProjPayload; Want = "$esc]9;4;2;95`a"; Label = 'a user-level key lights the bar red at 95%' }
+        @{ Name = 'bad'; Payload = 'not json {'; Want = "$esc]9;4;0;0`a"; Label = 'and clears it for a payload that will not parse' })) {
+    $tbOldCols = $env:COLUMNS
+    try {
+        Remove-Item Env:COLUMNS -ErrorAction SilentlyContinue
+        $r = Invoke-ChildPwsh $tbScript @() $case.Payload
+    } finally {
+        if ($null -ne $tbOldCols) { $env:COLUMNS = $tbOldCols } else { Remove-Item Env:COLUMNS -ErrorAction SilentlyContinue }
+    }
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) "render taskbar user-file $($case.Name): exit code 0, stderr empty"
+    Confirm-True (($r.Lines -join "`n").StartsWith($case.Want, [System.StringComparison]::Ordinal)) "render taskbar user-file $($case.Name): $($case.Label)"
+}
 Write-Host ''
 Write-Host '== render: links' -ForegroundColor Cyan
 # The links key through the whole script, on the two segments it was added for. This payload names a

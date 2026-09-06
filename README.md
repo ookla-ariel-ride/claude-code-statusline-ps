@@ -38,6 +38,7 @@ how close you are to a rate limit, and which modes are on.
 - Counts beside the branch name: `↑N` `↓N` commits ahead of or behind the upstream, `+N` staged, `~N` changed, `?N` untracked, and a red triangle with a count when files are in conflict. See [Branch counts](#branch-counts).
 - A fork glyph and the worktree name beside the branch when the session is in a git worktree, so a window on `wt-review` is not mistaken for the main checkout. See [Worktree name](#worktree-name).
 - One line or two, plain separators or powerline blocks, and any segment switched off, all from `statusline.json`.
+- Optionally, the context percentage on the window's taskbar button in Windows Terminal, so a full window is visible while Claude Code is minimised. Off by default; see [Taskbar progress](#taskbar-progress).
 - A matching line for each running subagent in the agent panel, with `.\install.ps1 -Subagents`. See [Subagent status line](#subagent-status-line).
 - Fits the terminal width. A line that is too long first loses detail from the cost, limits, cache, context, branch, folder, badges and clock segments, then loses whole segments from the right, so lines stop wrapping in normal use.
 - If a field is missing from the payload, the script drops that segment. If the payload will not parse, it still prints the model glyph.
@@ -91,8 +92,9 @@ such as `C:/Users/Jane Doe`, would otherwise end the `-File` argument at the spa
 [Subagent status line](#subagent-status-line) for the one case the quoting cannot cover.
 
 `refreshInterval` is what keeps a clock, or a taskbar bar driven by the context percentage, moving
-between events. Nothing in the line needs it today, so the installer only writes it when asked. A
-reinstall without the switch writes an entry without the key. Pass the switch again to keep it.
+between events. Nothing that is drawn on the line itself needs it, so the installer only writes it when
+asked; the one feature that does want it is [Taskbar progress](#taskbar-progress). A reinstall without
+the switch writes an entry without the key. Pass the switch again to keep it.
 
 `-SettingsPath <file>` changes only which settings file is edited. The `statusline.ps1` and
 `statusline.json` copies, and the delete on `-Uninstall`, still use `~/.claude`. It exists for the
@@ -225,6 +227,7 @@ The script reads `statusline.json` from its own folder, so after installing that
   "folder": "repo",
   "state": true,
   "links": true,
+  "taskbar": false,
   "thresholds": { "warn": 60, "bad": 85 },
   "alarm": { "context": 90, "limits": 90 },
   "icons": {},
@@ -297,6 +300,7 @@ whose text encoding the script does not get to choose.
 | `segments.<name>` | `true`, `false` | `false` hides that segment. The names are the ones in the file above; `segments.pr` is the pull-request link. |
 | `state` | `true`, `false` | `false` stops the script writing a state file for the session. |
 | `links` | `true`, `false` | `false` turns off the OSC 8 hyperlinks on the folder, branch and pull-request segments. One key covers all three, because the reason to turn them off is never a segment: it is a terminal that prints the escape as text instead of rendering or swallowing it. The links add no width, so the line fits the same either way. |
+| `taskbar` | `true`, `false` | `true` draws the context percentage on the window's taskbar button, so how full the window is stays readable while Claude Code is minimised. Green below the `alarm` level and red at or above it, using the same alarm the model segment uses, so a rate limit at its level colours the bar too while the number stays the context window's. A render with no percentage to show — a session before its first API response, or a payload the script could not read — clears the bar rather than leaving the last one lit. Set it in your own `statusline.json` rather than a project's: a payload that will not parse names no project directory, so a project-only value is not read on the one render that most needs to clear the bar. Off by default, and see [Taskbar progress](#taskbar-progress) below before turning it on: Claude Code writes to the same taskbar button. |
 | `order` | `["model", "branch", "context"]` | The segments of layout `one`, left to right. A segment left out is not shown, an unknown name is skipped, a repeat keeps its first place. Left out altogether, as the installed file leaves it, the segments come in the script's order, new ones included. An empty list, a list naming no segment, or anything that is not a list does the same. |
 | `rows` | `[["model", "branch"], ["context", "cost"]]` | The two lines of layout `two`, with the same rules per row. A segment named on the first row is not repeated on the second, and a row may be empty. Left out, the script's own two rows apply, new segments included. Anything but exactly two lists, or two lists naming no segment, does the same. |
 | `thresholds` | `{ "warn": 20, "bad": 40 }` | Where the context meter and the rate limits turn yellow and red: whole numbers from 0 to 100 (`20` or `20.0`, not `20.5`), `warn` no higher than `bad`. Either value wrong keeps 60 and 85 for both. A 1M window keeps its own 70 and 90. |
@@ -328,6 +332,63 @@ the branch put back. It sets nothing but the layout, the style and the toggles �
 `thresholds`, `icons`, `state` and the `git` block are untouched. A preset in a project file sits
 where any other project key sits, so it is written over the user file whole; a preset in the user file
 is a base for the project file to change.
+
+### Taskbar progress
+
+Windows Terminal draws a progress bar on the window's taskbar button when a program writes the OSC 9;4
+escape sequence. With `"taskbar": true` the status line writes the context percentage there on every
+refresh, so how full the window is stays readable with Claude Code minimised — green below the `alarm`
+level, red at or above it.
+
+It is off by default because Claude Code writes the same sequence itself. There is one bar per window,
+so with both writers on they overwrite each other: Claude Code fills it while a turn runs, the status
+line puts the context percentage back on its next refresh, and Claude Code's clear at the end of a turn
+wipes the context bar until the refresh after that. Pick one. To pick this one, in `settings.json`:
+
+```json
+{
+  "terminalProgressBarEnabled": false,
+  "statusLine": {
+    "type": "command",
+    "command": "pwsh -NoProfile -NoLogo -NonInteractive -File \"C:/Users/<you>/.claude/statusline.ps1\"",
+    "padding": 0,
+    "hideVimModeIndicator": true,
+    "refreshInterval": 10
+  }
+}
+```
+
+and `"taskbar": true` in `statusline.json`. `.\install.ps1 -RefreshInterval 10` writes the
+`statusLine` entry above; `terminalProgressBarEnabled` is Claude Code's own key and the installer does
+not touch it. The refresh interval — seconds — is what keeps the bar current while the session sits
+idle; without it the bar only moves when something else redraws the line. Anyone who prefers Claude
+Code's turn-progress bar leaves `taskbar` at `false` and changes nothing.
+
+A bar the status line has drawn stays on the taskbar until something draws over it — that is how the
+sequence works, and it is why a render with no percentage to show writes a clear rather than nothing.
+And for the same reason, turning the key back off does not put the taskbar back: the last bar drawn is
+still there. Closing the window clears it, and so does one line in the same terminal:
+
+```powershell
+Write-Host "`e]9;4;0;0`a" -NoNewline
+```
+
+Turn it on in your own `~/.claude/statusline.json` rather than in a project's
+`.claude/statusline.json`. The taskbar belongs to the window, not to the repository, so a project
+deciding what your taskbar does is a stranger arrangement than a project pinning its own layout. There
+is a concrete difference too. When Claude Code hands the script something that is not JSON, the payload
+names no project directory, so the project file is not read on that render — a rule older than this key
+that every project-only value has always been subject to. Enabled only in a project file, that render
+writes no clear and the last bar drawn stays lit until the next payload that parses, which is the next
+event or the next `refreshInterval` tick. It lasts longer than that only if every payload after it also
+fails to parse, and by then the line itself has been reduced to the model glyph and the word `claude`,
+which is the visible half of the same fault. Enabled in the user file, that render clears the bar like
+any other, because the user file is read whatever the payload turns out to be.
+
+A terminal that does not know OSC 9;4 — Windows Terminal is the one that does; most others ignore it —
+shows nothing at all rather than stray characters, because an unknown OSC string is swallowed up to its
+terminator. The sequence is never counted as visible width, so the line is fitted and clipped exactly
+as it is with the key off.
 
 A config only needs the keys it changes. This one puts the branch beside the model, colours the
 meter early and uses a house glyph on `main`:
@@ -528,8 +589,12 @@ with its glyph and value, disabled segments must not, and the separators must ma
 content checks only run when `-Columns` includes `0`, which the default does. A few renders after the
 matrix run with no `-Config` at all: they point a payload at a temp project directory and check that
 its `.claude\statusline.json` reaches the line, that a broken one does not, and that `-Config` ignores
-it. The script exits non-zero if any check fails. Each render takes about 400 ms, nearly all of it
-`pwsh` start-up.
+it. The taskbar sequence is checked by rendering each payload twice, once with `"taskbar": true` and
+once with it off, and comparing the two: the key off must write no sequence at all, the key on must
+write exactly one, at the very front, with every byte behind it and every line's measured width
+unchanged. A payload that will not parse, a render with no line in it and a render at 92% each get a
+case of their own. The script exits non-zero if any check fails. Each render takes about 400 ms,
+nearly all of it `pwsh` start-up.
 
 The tests never touch your own repositories. They point `GIT_CEILING_DIRECTORIES` at the temp
 folder and pass an empty global git config, so the results do not depend on the machine.
@@ -597,6 +662,18 @@ Ctrl-click on the branch opens the wrong page: the link goes to the branch page 
 Every other host gets the repository home instead, because GitLab, Bitbucket, Gitea and Azure DevOps
 each spell a branch path differently and a wrong guess is a 404. The folder link opens the session's
 current directory; a relative or UNC `current_dir` is left unlinked rather than guessed at.
+
+The taskbar bar flickers, or keeps going back to Claude Code's turn progress: both writers are on.
+Set `"terminalProgressBarEnabled": false` in `settings.json`, or `"taskbar": false` in
+`statusline.json`; see [Taskbar progress](#taskbar-progress). A bar that is stuck after turning
+`taskbar` off is the last one the status line drew — close the window, or run
+``Write-Host "`e]9;4;0;0`a" -NoNewline`` in that terminal.
+
+The bar is stuck on an old percentage: it clears itself on the next render whose payload parses, so
+this means every render since has been given something that is not JSON — the line beside it will have
+been reduced to the model glyph and the word `claude`. If the bar is stale and the line is not, the key
+is set in a project's `.claude/statusline.json` rather than in your own; move it, and see
+[Taskbar progress](#taskbar-progress) for why that matters.
 
 Nothing to go on: the git probe, the probe cache, the project config read and the state file swallow
 every failure, so a missing branch segment, a project config that never seems to apply, or a cache
@@ -692,6 +769,7 @@ Done so far:
 - [x] Prompt cache warmth and the time left on it
 - [x] Session clock with the share of it spent waiting on the API
 - [x] Ctrl-clickable folder and branch, under a `links` key
+- [x] Context percentage on the taskbar button, behind a `taskbar` key
 
 [Issues #2 to #43](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes next,
 each with its own plan. In rough order: an ASCII style that needs no Nerd Font, a light palette, and a

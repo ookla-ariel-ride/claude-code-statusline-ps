@@ -39,7 +39,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | `subagent-statusline.ps1` | The per-subagent line for the agent panel, wired up by `install.ps1 -Subagents`. A different contract from the main script: Claude Code runs it once for the whole panel with every live row in one payload (`columns` and a `tasks` array) and reads one JSON object per line back, `{"id","content"}`, keyed by the task id. One line per row: the robot glyph, the agent's name, its context percentage and token count, clipped to `columns`. A `columns` of 0 means no room and prints no row; a missing or malformed one means no information about the width and prints in full. No config file, no git probe, no powerline style, no state file. Its second line is a marker the installer looks for, as a whole line inside the first ten, before it overwrites or deletes an installed copy. Twelve small helpers are copied verbatim from `statusline.ps1`, because that script reads stdin and prints as it loads and so cannot be dot-sourced; `test.ps1` fails when the copies drift. |
 | `tools/capture-stdin.ps1` | Appends stdin to a file and prints nothing on stdout. Point a settings key at it to find out what Claude Code sends at an integration point whose payload is not documented. Bounded in three places against a capture left running: stdin is read to a ceiling, the record is cut to `-MaxBytes` (1 MiB by default) with a truncation marker, and the file is rotated over one `.1` sibling when the existing length plus this record would exceed the cap, so each generation stays at or under it. The append is taken under a `.lock` sibling; a tick that cannot get it drops its payload. A write it cannot make is reported once to stderr and to a `.error` sidecar, after which it stops until the sidecar is deleted. |
 | `install.ps1` | Copies the script to `~/.claude/`, writes the `statusLine` entry to user settings with `hideVimModeIndicator` on and, with `-RefreshInterval <seconds>`, a `refreshInterval`; with `-Subagents`, also copies `subagent-statusline.ps1` there and writes a `subagentStatusLine` entry of `type` and `command` only; optionally installs JetBrainsMono Nerd Font via winget and sets it as the Windows Terminal default font. Both commands carry a double-quoted forward-slash path, so a profile with a space or an `&` in it still runs. Settings are replaced atomically, the way `Write-AtomicJson` does it in `statusline.ps1`, under an exclusive lock on a `.lock` sibling held across the whole read-modify-write: serialize to a uniquely named sibling, compare the destination with what was read, parse the new text back, take the `.bak`, compare once more, then move. The lock serialises writers that take it and has no effect on one that does not; the second comparison narrows the loss window to the rename itself rather than removing it, and what a rename replaces is in the `.bak`. Ownership of the subagent artifacts is decided by strict match, not substring: the entry has to be the exact command form the installer writes with the target as the `-File` argument itself, and the file has to carry the marker as a whole line inside its first ten. `-Subagents` refuses to install over a file that fails that check, stages its copy under a temporary name so a settings failure changes nothing, and keeps the version it replaces as `~/.claude/.claude-code-statusline-ps.subagent-rollback.ps1` — a project-owned name rather than a `.bak` beside the script, and still marker-checked before it is overwritten or deleted. Supports `-Uninstall`, which removes the `statusLine` entry and script outright and the subagent entry and script only when they pass the ownership check, and `-SettingsPath` (the seam the tests use). |
-| `statusline.json` | Defaults for layout, style, the folder mode, the state file toggle, the `links` toggle for the OSC 8 hyperlinks, segment toggles, the colour thresholds, the alarm percentages (`alarm.context`, `alarm.limits`), glyph overrides, and the git probe's timeout and cache (`git.timeoutMs`, `git.cacheSeconds`, `git.cache`). A `preset` key names one of three built-in shapes — `minimal`, `cost`, `full` — for the layout, the style and every segment toggle at once; it is expanded before the rest of the file it appears in, so any key beside it wins. The layout-one `order` and layout-two `rows` keys are left out so the registry stays the source and a new segment appears on its own, and the `quiet` thresholds are left out for the same reason: they default to zero, which hides nothing. Installed beside the script. |
+| `statusline.json` | Defaults for layout, style, the folder mode, the state file toggle, the `links` toggle for the OSC 8 hyperlinks, the taskbar progress toggle, segment toggles, the colour thresholds, the alarm percentages (`alarm.context`, `alarm.limits`), glyph overrides, and the git probe's timeout and cache (`git.timeoutMs`, `git.cacheSeconds`, `git.cache`). A `preset` key names one of three built-in shapes — `minimal`, `cost`, `full` — for the layout, the style and every segment toggle at once; it is expanded before the rest of the file it appears in, so any key beside it wins. The layout-one `order` and layout-two `rows` keys are left out so the registry stays the source and a new segment appears on its own, and the `quiet` thresholds are left out for the same reason: they default to zero, which hides nothing. Installed beside the script. |
 | `<workspace.project_dir>\.claude\statusline.json` | The project's own copy of the same keys, merged over the user file key by key so a repository can pin its layout without changing any other session. Read only when the payload names a project directory that holds it, and not at all when `-Config` names a file. Read as untrusted input: opened first and judged by the handle, at most 64 KiB, within one 250 ms budget that starts before the first filesystem call. |
 | `%TEMP%\claude-statusline-state\` | One JSON file per session (`<session_id>.json`, version 1): last cost, token totals, context and 5-hour percentages, and a ring of up to twenty cost readings. Read before the line is built, for the cost segment's per-turn delta, written after it is printed, swept of day-old files at most every six hours. The three counters (cost and the two token totals) are kept from the previous record when the payload does not carry them; the two percentages are read fresh and left absent, because a gauge carried forward describes a moment that has passed. `~/.claude/statusline-state` when `TEMP` is empty. |
 | `%TEMP%\claude-statusline\` | The git probe cache: one JSON file per repository, named by the first 16 hex characters of the SHA-256 of the lower-cased work tree path, holding the root, a stamp string (the UTC ticks of the git directory, of `index`, `HEAD`, `ORIG_HEAD`, `FETCH_HEAD`, `MERGE_HEAD`, `packed-refs`, `logs/HEAD`, `config` and `info/exclude`, and of every directory under `refs`, capped at 256; a worktree's main repository after a bar), the write time and the last `git status` record, or null when the probe failed. Read before the branch segment is built and reused for `git.cacheSeconds` while the stamp string matches; swept of day-old files with the state sweep. `TMPDIR`, then the runtime's temp path, when `TEMP` is empty. |
@@ -203,11 +203,14 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 - **Links live in the segment text.** `Format-Link` wraps text in an OSC 8 hyperlink and the PR,
   folder and branch builders put the result in their record's `Text` and `Short`, so the renderer
   needs no link support: the colour codes of either style wrap the link, and OSC 8 carries no SGR
-  state, so a powerline background runs through it. The width rule strips OSC 8 (either terminator)
-  before the colour codes, so a URL never counts as text and never changes what fits — the folder and
+  state, so a powerline background runs through it. The width rule strips any OSC string (either
+  terminator) before the colour codes, so a URL never counts as text and never changes what fits — the folder and
   branch segments shrink and drop at exactly the widths they always did. Each builder wraps its
   finished string whole, the glyph, the worktree badge and the dim counts included, so nothing inside
   is reordered and the inline colour codes keep their places.
+  One OSC rule and not one per command: a hyperlink wrapper and the taskbar sequence below are both
+  "ESC ] anything terminator", which is exactly what a terminal that does not know the command
+  swallows, so measuring them the same way is measuring what is drawn.
   The helper owns its own type gate: anything that is not a string, is over 2083 characters, holds
   whitespace or a control character, or does not parse as an absolute URI in one of three schemes is
   not linked, so a payload cannot end the sequence early. The schemes are `http` and `https` for the
@@ -223,6 +226,44 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   the checkout wrote — so both builders guard their fields and hand the result to `Format-Link` rather
   than around it, and either builder returning `$null` renders the segment byte for byte as it was
   before links existed.
+- **The taskbar bar is terminal state, so staying silent is not the neutral choice.** With
+  `"taskbar": true` the script writes OSC 9;4 with the context percentage, which Windows Terminal
+  draws on the window's taskbar button. What it writes outlives the process: whatever the last render
+  set stays there until something sets it again. So a render that has no percentage — no
+  `context_window` yet, a `used_percentage` still null before the first API response, a payload that
+  would not parse — writes the clear form rather than nothing, and a render that ends with **no line
+  at all** still writes its sequence. A bar frozen at a figure from a payload no longer on screen is
+  worse than an honest bar over an empty line. A real 0% is state 1 and not state 0: a known zero and
+  an unknown figure must not look the same. Which of state 1 and state 2 goes out is `Test-AlarmState`
+  and nothing narrower, so the bar turns red at exactly the moment the model segment does. Turning the
+  key off writes nothing at all, not even a clear — a default-off feature must not fight Claude Code's
+  own progress bar on every render of every user who never asked for it — and the cost of that choice
+  is that the last bar drawn stays until the window closes, which the README says out loud.
+- **The one corner the taskbar does not repair, and why it is a documented limit rather than a fix.**
+  A payload that will not parse names no project directory, so the project file is not read on that
+  path. That rule predates this key and every project-only value has always been subject to it; for
+  every other key it is invisible, because a colour or a toggle that did not reach a line is replaced
+  on the next render. This key writes state that outlives the render, so `"taskbar": true` set **only**
+  in a project file leaves the last good render's bar lit with no clear behind it. Closing it would
+  need the script to know it had lit that terminal's bar before, and a malformed payload leaves nothing
+  to key that on: no `project_dir`, no `session_id`, and no terminal identifier of any kind. The
+  alternatives were both worse than the gap — reading a project config from somewhere the payload did
+  not name widens an untrusted read on the path with the least information, and clearing
+  unconditionally would have the default-off configuration write terminal state it was never asked to
+  write and wipe Claude Code's own bar. So: enabled in the user file there is no gap, enabled in a
+  project file the bar is stale until the next payload that parses, and both halves are pinned by
+  tests. The fix, if it is ever wanted, belongs in how the malformed path finds the project config,
+  not in this feature.
+- **One write site, and it is not a line.** The sequence goes out through a single
+  `Write-Host -NoNewline` above every path that prints and above the one that prints nothing. The
+  bytes are identical to gluing it onto the front of the first line, so a layout-one render is still
+  one line; a render with no line writes the sequence and no newline, so nothing moves on screen. The
+  alternative, prefixing the first line printed, would have needed the same string threaded through
+  three print sites — one of which does not exist on the empty render. It also has to stay outside the
+  line rather than merely at the front of it: the folder, branch and pr segments carry OSC 8 hyperlink
+  wrappers, folder and branch one each in `Text` and `Short`, so a line can hold six, and a progress
+  sequence written between a wrapper and its closer would sit inside a hyperlink's text run. Writing it
+  before any line exists is what rules that out.
 - **Per-session state on disk, one read and one write.** A render cannot see the previous payload, so a
   small JSON file per `session_id` carries the last cost and token totals forward. The cost segment's
   per-turn delta is the difference from the total in that file, so the read sits before the build and
@@ -366,8 +407,9 @@ twelve short functions and a drift test. The intended order for the rest:
    the folder and branch links (#13) are done, reusing `Format-Link` around the finished text of each.
 2. Config: presets, a quiet block, an alarm colour (#21 to #23). Each is one key over
    `Merge-StatusConfigFile`.
-3. Style and terminal: an ASCII style, a light palette, a right-aligned group with a clock, taskbar
-   progress (#24, #25, #27, #28).
+3. Style and terminal: an ASCII style, a light palette, a right-aligned group with a clock
+   (#25, #27, #28). Taskbar progress (#24) is done and is the first writer of terminal state that
+   outlives the render.
 
 ## License
 
