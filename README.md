@@ -733,7 +733,8 @@ Terminal settings files — a user-defined scheme, a built-in one, a redefined b
 ways the chain can break — and then the switch itself runs with both `USERPROFILE` and `LOCALAPPDATA`
 redirected, so a light scheme writes `"palette": "light"`, Campbell writes `dark`, and a missing,
 broken, unknown or OS-following scheme leaves `statusline.json` byte for byte as it was. The light
-palette's own group recomputes every contrast ratio in the table from the xterm colour cube. The subagent group pipes every payload in
+palette's own group recomputes every contrast ratio in both tables from the xterm colour cube, and
+holds each of them to a 3:1 floor for every inline marker inside every block it can be drawn in. The subagent group pipes every payload in
 `samples/subagent/` through `subagent-statusline.ps1` and reads the replies the way the panel does:
 each line must be an object with a string `id` and a string `content`, every id must belong to a task
 in the payload, every row must be one line carrying the robot glyph, and it must fit the payload's

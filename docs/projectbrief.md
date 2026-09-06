@@ -459,7 +459,10 @@ config allows a model segment, and a render that shows nothing still writes its 
 `palette` key picks the dark colour table or a light one tuned for a pale background (#28), and
 `install.ps1 -DetectTheme` reads Windows Terminal's default colour scheme to set it — or writes
 nothing and says why, since terminals do not report their own background and a wrong guess costs more
-than no guess. A `right` key pushes any named segments against the right
+than no guess. Both tables are now held to the same 3:1 floor for an inline marker inside a powerline
+block (#82): the dark table had never been measured, `cached` on the model block was 1.05:1, and the
+fix needed the `warn` block to stop being the one light block in a dark table — no single marker
+colour can clear both a 0.45-luminance yellow and a 0.058-luminance grey. A `right` key pushes any named segments against the right
 edge of the first line, and a wall-clock segment gives that edge something to hold (#25); the clock is
 the only registry record that is off by default. The agent panel is not covered by either `style` or
 `palette`: it reads no config file, which is #78.
