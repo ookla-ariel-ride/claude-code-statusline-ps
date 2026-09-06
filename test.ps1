@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+﻿#Requires -Version 7.0
 <#
 .SYNOPSIS
   Tests statusline.ps1.
@@ -2117,22 +2117,25 @@ Confirm-Equal (Format-Line @() 'plain') '' 'plain: no segments'
 Confirm-Equal (Format-Line @($segModel, $segFolder) 'powerline') "$esc[0;1;48;5;31;38;5;231m M $esc[38;5;31;48;5;25m$arrow$esc[0;48;5;25;38;5;231m F $esc[0m$esc[38;5;25m$arrow$esc[0m" 'powerline: two segments'
 Confirm-Equal (Format-Line @($segDim) 'powerline') "$esc[0;48;5;238;38;5;250m X $esc[0m$esc[38;5;238m$arrow$esc[0m" 'powerline: one segment'
 Confirm-Equal (Format-Inline 'added' '+1' 'dim' 'plain') "$esc[32m+1$esc[90m" 'inline plain restores segment colour'
-Confirm-Equal (Format-Inline 'removed' '-2' 'dim' 'powerline') "$esc[38;5;224m-2$esc[38;5;250m" 'inline powerline restores segment fg'
+Confirm-Equal (Format-Inline 'removed' '-2' 'dim' 'powerline') "$esc[38;5;222m-2$esc[38;5;250m" 'inline powerline restores segment fg'
 
 $pal = Get-Palette
 Confirm-Equal $pal.Roles.warn.Sgr '33' 'palette warn sgr'
-Confirm-Equal $pal.Roles.warn.Fg 231 'palette warn fg'
+Confirm-Equal $pal.Roles.warn.Fg 16 'palette warn fg'
 Confirm-Equal $pal.Roles.branch.Bg 90 'palette branch bg'
-Confirm-Equal $pal.Inline.added.Fg 46 'palette inline added fg'
+Confirm-Equal $pal.Inline.added.Light 46 'palette inline added fg on a light-inked block'
 Confirm-Equal $pal.Inline.cached.Sgr '90' 'palette inline cached sgr'
-Confirm-Equal $pal.Inline.cached.Fg 254 'palette inline cached fg'
+Confirm-Equal $pal.Inline.cached.Light 86 'palette inline cached fg on a light-inked block'
 # One palette table as a single sorted string, so two tables compare as text whatever order a
 # hashtable happens to enumerate its keys in.
 function Format-PaletteText($Palette) {
     $rows = foreach ($group in 'Roles', 'Inline') {
         foreach ($name in @($Palette[$group].Keys | Sort-Object)) {
             $e = $Palette[$group][$name]
-            "$group.$name=$($e.Sgr)/$($e.Fg)/$($e.Bg)"
+            # Every key an entry can carry, sorted, so a table that differs anywhere differs here. Naming
+            # the keys one by one would have let the two ink columns be added without this noticing.
+            $fields = foreach ($k in @($e.Keys | Sort-Object)) { "$k=$($e[$k])" }
+            "$group.$name[$($fields -join ',')]"
         }
     }
     return (@($rows) -join ' ')
@@ -2178,6 +2181,17 @@ function Get-ContrastRatio($A, $B) {
     if ($la -lt $lb) { $t = $la; $la = $lb; $lb = $t }
     return ($la + 0.05) / ($lb + 0.05)
 }
+# Straight-line distance between two colours in sRGB, 0 for the same colour and 441.7 for black against
+# white. A crude stand-in for perceptual difference and named as one: it is here because a CONTRAST
+# RATIO CANNOT ANSWER THE QUESTION RULE 4b ASKS. A marker inside a dark block has to clear 3:1 against
+# that block, which on the model block means relative luminance above 0.71 - and the block's own text is
+# white, luminance 1.0, so every colour that clears the first bar is within 1.38:1 of the text. Two
+# colours a luminance ratio calls identical can still be a green and a white, and this is the figure
+# that says so. It is checkable by hand from the same hex the rest of this group uses, which a
+# perceptually uniform space would not be.
+function Get-RgbDistance($A, $B) {
+    return [math]::Sqrt([math]::Pow($A[0] - $B[0], 2) + [math]::Pow($A[1] - $B[1], 2) + [math]::Pow($A[2] - $B[2], 2))
+}
 # The colour index an SGR run ends in, for the plain-style codes: '38;5;24' is index 24, and so is
 # '1;38;5;24' and '22;38;5;24', where the leading number is a weight rather than a colour. $null for
 # a code that names no 256-colour index, which is every code in the dark table.
@@ -2214,8 +2228,27 @@ foreach ($r in $roleNames) {
 }
 foreach ($i in $inlineNames) {
     Confirm-True ($light.Inline[$i].Sgr -ne $dark.Inline[$i].Sgr) "light palette: inline $i has a different plain code from dark"
-    Confirm-True ($light.Inline[$i].Fg -ne $dark.Inline[$i].Fg) "light palette: inline $i has a different powerline foreground from dark"
+    Confirm-True ($light.Inline[$i].Dark -ne $dark.Inline[$i].Light) "light palette: inline $i differs from the dark table's marker for a light-inked block"
+    # The two tables' Dark columns ARE the same five numbers, and that is the point rather than a slip:
+    # a dark marker on a light block is one problem, not two, so it has one answer. Pinned so a change
+    # to either table has to be a change to both, or say why not.
+    Confirm-Equal $light.Inline[$i].Dark $dark.Inline[$i].Dark "palette: inline $i is the same colour on a dark-inked block in both tables"
 }
+# EVERY ROLE NAMES ITS INK, AND EVERY MARKER CARRIES EXACTLY THE COLUMNS THE ROLES ASK FOR. Format-Inline
+# looks a marker up by the block's ink, so a role with an ink no marker has a column for would render an
+# empty escape into the middle of a segment. The other half matters as much: a column no role asks for is
+# a colour nothing draws and nothing below can measure against a real background, so it is refused too.
+foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
+    $inks = @($roleNames | ForEach-Object { $p.T.Roles[$_].Ink } | Sort-Object -Unique)
+    foreach ($r in $roleNames) { Confirm-True ($p.T.Roles[$r].Ink -in @('Light', 'Dark')) "$($p.N) palette: role $r names an ink" }
+    foreach ($i in $inlineNames) {
+        $cols = @($p.T.Inline[$i].Keys | Where-Object { $_ -ne 'Sgr' } | Sort-Object)
+        Confirm-Equal ($cols -join ',') ($inks -join ',') "$($p.N) palette: inline $i carries exactly the ink columns its roles ask for"
+    }
+}
+# Seven distinct block backgrounds, so two segments side by side are never one undivided band and the
+# arrow between them is never a colour painted on itself.
+Confirm-Equal ((@(foreach ($r in $roleNames) { $dark.Roles[$r].Bg }) | Sort-Object -Unique).Count) 7 'dark palette: seven distinct block backgrounds'
 # Seven distinct block backgrounds, so two segments side by side are never one undivided band and the
 # arrow between them is never a colour painted on itself.
 Confirm-Equal ((@(foreach ($r in $roleNames) { $light.Roles[$r].Bg }) | Sort-Object -Unique).Count) 7 'light palette: seven distinct block backgrounds'
@@ -2243,12 +2276,11 @@ foreach ($r in $roleNames) {
 }
 Write-Host ("   light plain: worst foreground contrast {0:N2}:1" -f $worst)
 # 2. Powerline style. The block paints its own background, so the pair is what has to be readable and
-#    the terminal's own theme does not enter into it. BOTH tables are held to this one, at different
-#    bars: the light table was built to 4.5 and the dark table's own floor is model, 231 on 31, at
-#    4.13, so it is held to 4.0. That is a REGRESSION BAR, not a design bar - #82 retunes the inline
-#    markers and the one block background that made them impossible, and this assertion is what stops
-#    a background moved for rule 4 being moved out from under its own block's text. Raising the dark
-#    bar to 4.5 is a separate decision about the model block, which nothing here changes.
+#    the terminal's own theme does not enter into it. BOTH tables are held to 4.5, with ONE EXEMPTION
+#    NAMED IN THE LIST BELOW rather than a lowered bar: the dark model block, 231 on 31, is 4.13 and
+#    predates the rule. Naming it keeps the debt legible and keeps the other six at 4.5, where a bar
+#    lowered to 4.0 for the whole table would have quietly let any of them slide to 4.0 as well.
+$pairExempt = @{ 'dark.model' = 4.0 }   # 4.13, older than this rule; retuning the model block is its own decision
 $worstPair = 99.0
 foreach ($r in $roleNames) {
     $ratio = Get-ContrastRatio (Get-XtermRgb $light.Roles[$r].Fg) (Get-XtermRgb $light.Roles[$r].Bg)
@@ -2259,13 +2291,45 @@ $worstDarkPair = 99.0
 foreach ($r in $roleNames) {
     $ratio = Get-ContrastRatio (Get-XtermRgb $dark.Roles[$r].Fg) (Get-XtermRgb $dark.Roles[$r].Bg)
     if ($ratio -lt $worstDarkPair) { $worstDarkPair = $ratio }
-    Confirm-True ($ratio -ge 4.0) ("dark powerline ${r}: $($dark.Roles[$r].Fg) on $($dark.Roles[$r].Bg) is {0:N2}:1" -f $ratio)
+    $bar = if ($pairExempt.ContainsKey("dark.$r")) { $pairExempt["dark.$r"] } else { 4.5 }
+    Confirm-True ($ratio -ge $bar) ("dark powerline ${r}: $($dark.Roles[$r].Fg) on $($dark.Roles[$r].Bg) is {0:N2}:1, bar $bar" -f $ratio)
 }
 Write-Host ("   powerline block pair: light {0:N2}:1, dark {1:N2}:1" -f $worstPair, $worstDarkPair)
-# Seven distinct block backgrounds in the dark table for the same reason the light table has them: two
-# segments side by side must not read as one band, and the arrow between them must not be a colour
-# painted on itself. Asserted for both tables so retuning one background cannot silently collide.
-Confirm-Equal ((@(foreach ($r in $roleNames) { $dark.Roles[$r].Bg }) | Sort-Object -Unique).Count) 7 'dark palette: seven distinct block backgrounds'
+# 2b. PROPERTY (c): THE ARROW BETWEEN TWO BLOCKS. A powerline arrow is the left block's BACKGROUND
+#    painted as a foreground on the right block's background, so two adjacent blocks of equal luminance
+#    leave nothing to see at the joint even when the two colours are plainly different side by side -
+#    the eye resolves a thin glyph by luminance. #82's first attempt moved the dark warn block to 130
+#    (#AF5F00) and landed it on exactly the luminance of ok, 28 (#008700): 1.00:1, one merged band from
+#    a context meter at 60% into a warm cache segment. So every ordered pair of the seven backgrounds is
+#    measured, both ways a pair can differ:
+#      luminance 1.10:1 - the pre-#82 dark table's own minimum (dim/branch, 1.104), so this is a
+#        regression floor on numbers that shipped rather than a bar invented here, and it is the one
+#        that catches an isoluminant collision;
+#      distance 40 in sRGB - that table's other minimum (model/folder, exactly 40.0), which catches a
+#        pair that drifts together in hue while keeping a luminance step.
+#    ONLY THE DARK TABLE IS HELD TO THE LUMINANCE HALF. The light table is pale by construction, seven
+#    tints inside a narrow luminance band told apart by hue, and six of its twenty-one pairs are under
+#    1.10 - ok/warn is 1.001, the same shape of defect, and it shipped in #28. That is a real finding
+#    about the light table and it is filed rather than fixed here, because fixing it means retuning a
+#    light background, which is not this issue - it is #89. Its distance half is asserted, and its worst luminance
+#    pair is printed on every run so the number is visible rather than merely true.
+foreach ($p in @(@{ N = 'dark'; T = $dark; Lum = $true }, @{ N = 'light'; T = $light; Lum = $false })) {
+    $worstLum = 99.0; $worstLumPair = ''; $worstDist = 9999.0
+    for ($i = 0; $i -lt $roleNames.Count; $i++) {
+        for ($j = $i + 1; $j -lt $roleNames.Count; $j++) {
+            $a = $p.T.Roles[$roleNames[$i]].Bg
+            $b = $p.T.Roles[$roleNames[$j]].Bg
+            $pair = "$($roleNames[$i])/$($roleNames[$j])"
+            $ratio = Get-ContrastRatio (Get-XtermRgb $a) (Get-XtermRgb $b)
+            $dist = Get-RgbDistance (Get-XtermRgb $a) (Get-XtermRgb $b)
+            if ($ratio -lt $worstLum) { $worstLum = $ratio; $worstLumPair = $pair }
+            if ($dist -lt $worstDist) { $worstDist = $dist }
+            if ($p.Lum) { Confirm-True ($ratio -ge 1.10) ("$($p.N) arrow ${pair}: backgrounds $a and $b are {0:N3}:1 apart in luminance" -f $ratio) }
+            Confirm-True ($dist -ge 40) ("$($p.N) arrow ${pair}: backgrounds $a and $b are {0:N1} apart in sRGB" -f $dist)
+        }
+    }
+    Write-Host ("   $($p.N) arrow: worst pair {0:N3}:1 at $worstLumPair, worst distance {1:N1}" -f $worstLum, $worstDist)
+}
 # 3. The block background against the terminal's own ground. This is not about text: the trailing
 #    arrow paints the last block's BACKGROUND as a foreground on whatever the terminal is, and the
 #    edge of every block is that same boundary. A tint too close to the ground makes the arrow
@@ -2289,14 +2353,22 @@ Write-Host ("   block edge against the terminal's ground: light {0:N2}:1, dark {
 #    the light table has - Format-Inline is called from the model, context, lines, limits and branch
 #    segments, whose roles between them cover the lot. 3:1 rather than 4.5 for the second rule: these
 #    are one-word markers beside the figure they qualify, not the figure itself.
-#    BOTH TABLES ARE HELD TO RULE 4 (#82). The dark table used to be exempt, and the exemption is what
-#    hid the bug: `cached` on the model block measured 1.05:1, which is one colour drawn on itself for
-#    all a reader can tell, and `92% cached` was simply not there on a default line. The marker is
-#    drawn against WHATEVER BLOCK CALLED Format-Inline, so the check is every marker against every
-#    background rather than the pairs a reader of today's segment builders can talk themselves into: a
-#    role moving between segments must not be able to reopen this.
+#    BOTH TABLES ARE HELD TO RULE 4 (#82), AND IT HAS TWO HALVES, because a marker has two neighbours.
+#    (a) THE BLOCK'S BACKGROUND, 3:1. The dark table used to be exempt from this and the exemption is
+#        what hid the bug: `cached` on the model block measured 1.05:1, one colour drawn on itself for
+#        all a reader can tell, and `92% cached` was simply not there on a default line.
+#    (b) THE BLOCK'S OWN TEXT, 85 apart in sRGB. Clearing (a) alone is not enough and the first attempt
+#        at #82 proved it: `track` 255 and `cached` 254 cleared 3:1 against every background and then
+#        measured 1.16:1 and 1.27:1 against the 231 white every dark block writes in, so `92% cached`
+#        read as one white run with the figure it qualifies. (b) IS A DISTANCE AND NOT A RATIO because
+#        on a dark block no ratio is available - see the note over Get-RgbDistance. 85 is a round
+#        number under the pre-#82 dark table's own minimum over the pairings that render (98.0, `muted`
+#        inside the model block) and over every distance the review flagged (56.6 the largest of them).
+#    Both halves are checked for EVERY marker against EVERY block that takes the marker's ink column,
+#    not the pairs a reader of today's segment builders can talk themselves into: a role moving between
+#    segments must not be able to reopen this. The ink column is why the two loops below read
+#    $tab.Inline[$i][$tab.Roles[$r].Ink] rather than one fixed foreground.
 $worstInlineWhite = 99.0
-$worstInlineBlock = 99.0
 foreach ($i in $inlineNames) {
     $idx = Get-SgrColourIndex $light.Inline[$i].Sgr
     Confirm-True ($null -ne $idx) "light palette: inline $i names a 256-colour index"
@@ -2305,34 +2377,35 @@ foreach ($i in $inlineNames) {
         if ($w -lt $worstInlineWhite) { $worstInlineWhite = $w }
         Confirm-True ($w -ge 4.5) ("light inline ${i}: colour $idx on white is {0:N2}:1" -f $w)
     }
-    foreach ($r in $roleNames) {
-        $ratio = Get-ContrastRatio (Get-XtermRgb $light.Inline[$i].Fg) (Get-XtermRgb $light.Roles[$r].Bg)
-        if ($ratio -lt $worstInlineBlock) { $worstInlineBlock = $ratio }
-        Confirm-True ($ratio -ge 3.0) ("light inline ${i}: $($light.Inline[$i].Fg) inside the $r block is {0:N2}:1" -f $ratio)
-    }
 }
-$worstDarkInline = 99.0
-foreach ($i in $inlineNames) {
-    foreach ($r in $roleNames) {
-        $ratio = Get-ContrastRatio (Get-XtermRgb $dark.Inline[$i].Fg) (Get-XtermRgb $dark.Roles[$r].Bg)
-        if ($ratio -lt $worstDarkInline) { $worstDarkInline = $ratio }
-        Confirm-True ($ratio -ge 3.0) ("dark inline ${i}: $($dark.Inline[$i].Fg) inside the $r block is {0:N2}:1" -f $ratio)
+foreach ($p in @(@{ N = 'light'; T = $light }, @{ N = 'dark'; T = $dark })) {
+    $worstBlock = 99.0; $worstBlockAt = ''; $worstInk = 9999.0; $worstInkAt = ''
+    foreach ($i in $inlineNames) {
+        foreach ($r in $roleNames) {
+            $mk = $p.T.Inline[$i][$p.T.Roles[$r].Ink]
+            $ratio = Get-ContrastRatio (Get-XtermRgb $mk) (Get-XtermRgb $p.T.Roles[$r].Bg)
+            $dist = Get-RgbDistance (Get-XtermRgb $mk) (Get-XtermRgb $p.T.Roles[$r].Fg)
+            if ($ratio -lt $worstBlock) { $worstBlock = $ratio; $worstBlockAt = "$i in $r" }
+            if ($dist -lt $worstInk) { $worstInk = $dist; $worstInkAt = "$i in $r" }
+            Confirm-True ($ratio -ge 3.0) ("$($p.N) inline ${i}: $mk inside the $r block is {0:N2}:1 against its background" -f $ratio)
+            Confirm-True ($dist -ge 85) ("$($p.N) inline ${i}: $mk inside the $r block is {0:N1} from that block's text $($p.T.Roles[$r].Fg)" -f $dist)
+        }
     }
+    Write-Host ("   $($p.N) inline: worst against a background {0:N2}:1 ($worstBlockAt), worst against block text {1:N1} ($worstInkAt)" -f $worstBlock, $worstInk)
 }
-Write-Host ("   inline markers: light on white {0:N2}:1, light inside a block {1:N2}:1, dark inside a block {2:N2}:1" -f $worstInlineWhite, $worstInlineBlock, $worstDarkInline)
-# A contrast floor is only worth having if the colour it names is the one the terminal ends up in, and
-# in powerline style Format-Inline has a second job: it must not reset. A reset would drop the block's
-# BACKGROUND as well as its foreground and tear a hole in the block, and the marker's own ratio would
-# then be measured against the wrong thing entirely. So every marker in every block, both tables: the
-# run opens on the marker's own colour, closes by handing the block's foreground back, and carries no
-# reset in between. Ordinal comparisons throughout - these are rendered strings.
+Write-Host ("   light inline on white: worst {0:N2}:1" -f $worstInlineWhite)
+# A contrast floor is only worth having if the colour it names is the one the terminal ends up in, so
+# the ratios above are joined to the bytes here. This one exact string carries all three of the things
+# that could go wrong: the marker is the colour the RIGHT INK COLUMN names, so a block cannot be handed
+# the other column's number; the run closes by handing the block's own foreground back; and there is no
+# reset in between, which would drop the block's BACKGROUND as well and leave the ratio measured against
+# something that is not on the screen. Confirm-Equal is ordinal - these are rendered strings.
 foreach ($paletteName in @('dark', 'light')) {
     $tab = Get-Palette $paletteName
     foreach ($i in $inlineNames) {
         foreach ($r in $roleNames) {
             $run = Format-Inline $i 'x' $r 'powerline' $paletteName
-            Confirm-Equal $run "$esc[38;5;$($tab.Inline[$i].Fg)mx$esc[38;5;$($tab.Roles[$r].Fg)m" "$paletteName inline ${i} in the $r block: the marker colour, then the block's own foreground back"
-            Confirm-True (-not $run.Contains("$esc[0m")) "$paletteName inline ${i} in the $r block: no reset, so the block background survives the marker"
+            Confirm-Equal $run "$esc[38;5;$($tab.Inline[$i][$tab.Roles[$r].Ink])mx$esc[38;5;$($tab.Roles[$r].Fg)m" "$paletteName inline ${i} in the $r block: the $($tab.Roles[$r].Ink)-ink marker, then the block's own foreground back"
         }
     }
 }
@@ -2360,7 +2433,7 @@ Confirm-Equal $asciiLight "$esc[${lightModelSgr}mM$esc[0m $esc[${lightDimSgr}m>$
 Confirm-Equal (ConvertTo-PlainText $asciiLight) (ConvertTo-PlainText (Format-Line @($segModel, $segFolder) 'ascii' 'dark')) 'ascii + light: the palette changes no character, only the colour'
 Confirm-True (@([char[]] $asciiLight | Where-Object { [int] $_ -lt 0x20 -or [int] $_ -gt 0x7E } | Where-Object { $_ -ne $esc }).Count -eq 0) 'ascii + light: every character outside the escapes is printable ASCII'
 Confirm-Equal (Format-Inline 'added' '+1' 'dim' 'plain' 'light') "$esc[$($light.Inline.added.Sgr)m+1$esc[${lightDimSgr}m" 'light inline plain restores the light segment colour'
-Confirm-Equal (Format-Inline 'removed' '-2' 'dim' 'powerline' 'light') "$esc[38;5;$($light.Inline.removed.Fg)m-2$esc[38;5;$($light.Roles.dim.Fg)m" 'light inline powerline restores the light segment fg'
+Confirm-Equal (Format-Inline 'removed' '-2' 'dim' 'powerline' 'light') "$esc[38;5;$($light.Inline.removed.Dark)m-2$esc[38;5;$($light.Roles.dim.Fg)m" 'light inline powerline restores the light segment fg'
 Confirm-Equal (Format-Inline 'added' '+1' 'dim' 'plain') (Format-Inline 'added' '+1' 'dim' 'plain' 'dark') 'inline: no palette argument is the dark render'
 # The 1M marker is drawn over the model segment, which is bold; the dark table spells that non-bold
 # run 22;36 and the light one has to carry the same 22 or the marker comes out bold.
@@ -2954,7 +3027,7 @@ Confirm-Equal $seg.Text "$plain32$counts32 $(Format-Inline 'cached' '92% cached'
 Confirm-Equal $seg.Short $plain32 'context cached 92: the suffix never reaches Short'
 Confirm-Equal $seg.Role 'ok' 'context cached 92: the suffix does not touch the role'
 $seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500) $cachePl
-Confirm-Equal $seg.Text "$plain32$counts32 $esc[38;5;254m92% cached$esc[38;5;231m" 'context cached 92 in powerline: the suffix restores the segment foreground'
+Confirm-Equal $seg.Text "$plain32$counts32 $esc[38;5;86m92% cached$esc[38;5;231m" 'context cached 92 in powerline: the suffix restores the segment foreground'
 Confirm-Equal $seg.Short $plain32 'context cached 92 in powerline: the suffix never reaches Short'
 # The same payload as JSON: ConvertFrom-Json hands the counts over as Int64 or Double, not Int32.
 $seg = Get-ContextSegment (Get-JsonPayload 'context_window' '{"used_percentage":32,"total_input_tokens":60000,"total_output_tokens":4000,"context_window_size":200000,"current_usage":{"input_tokens":2000,"cache_creation_input_tokens":3000,"cache_read_input_tokens":57500}}') $cacheCfg
@@ -3021,17 +3094,20 @@ Confirm-Equal (Get-ContextSegment (Get-CachePayload 0 0 0 0) $cacheCfg).Short $n
 # every band gets its own row in both styles. The bands are moved rather than the payload, so the text
 # in front of the suffix is the same 32% in all six and the only thing under test is the colour.
 # A red meter in powerline is the case where getting this wrong is most visible, and it is also the
-# one the pinned string alone cannot catch: all three bands share the powerline foreground 231 - warn
-# joined them when its block turned dark in #82 - so the role is asserted beside the text, and plain
-# style, where ok is 32, warn is 33 and bad is 31, is what separates them.
+# one the pinned string alone cannot catch: ok and bad share the powerline foreground 231, so the role
+# is asserted beside the text, and plain style, where ok is 32 and bad is 31, separates them. The warn
+# row is the one that exercises the OTHER INK COLUMN: its block is light and its text is black, so the
+# cached marker there is 238 rather than the 86 the two dark-blocked bands take, and the code handed
+# back is 16 rather than 231. Marker and restore are spelled out per row rather than computed, so a
+# table that swapped the two columns would fail here and not merely change what this expects.
 foreach ($row in @(
-        @{ Bands = @{ Warn = 60; Bad = 85 }; Role = 'ok'; Plain = '32'; Fg = 231 }
-        @{ Bands = @{ Warn = 20; Bad = 40 }; Role = 'warn'; Plain = '33'; Fg = 231 }
-        @{ Bands = @{ Warn = 20; Bad = 30 }; Role = 'bad'; Plain = '31'; Fg = 231 })) {
+        @{ Bands = @{ Warn = 60; Bad = 85 }; Role = 'ok'; Plain = '32'; Fg = 231; Mark = 86 }
+        @{ Bands = @{ Warn = 20; Bad = 40 }; Role = 'warn'; Plain = '33'; Fg = 16; Mark = 238 }
+        @{ Bands = @{ Warn = 20; Bad = 30 }; Role = 'bad'; Plain = '31'; Fg = 231; Mark = 86 })) {
     foreach ($styleName in @('plain', 'powerline')) {
         $roleCfg = @{ Style = $styleName; Thresholds = $row.Bands }
         $seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500) $roleCfg
-        $open = if ($styleName -eq 'plain') { "$esc[90m" } else { "$esc[38;5;254m" }
+        $open = if ($styleName -eq 'plain') { "$esc[90m" } else { "$esc[38;5;$($row.Mark)m" }
         $back = if ($styleName -eq 'plain') { "$esc[$($row.Plain)m" } else { "$esc[38;5;$($row.Fg)m" }
         $roleLabel = "context cached on a $($row.Role) meter in $styleName"
         Confirm-Equal $seg.Role $row.Role "${roleLabel}: 32% bands as $($row.Role) here"
@@ -3684,7 +3760,7 @@ Confirm-True ($seg.Text.Contains("$esc[22;36m1M$esc[1;36m")) 'model 1M: plain ma
 Confirm-Equal $seg.Role 'model' 'model 1M: role'
 Confirm-Equal $seg.Short $null 'model 1M: no short form'
 $seg = Get-ModelSegment (Get-ModelPayload 1000000) @{ Style = 'powerline' }
-Confirm-True ($seg.Text.Contains("$esc[38;5;159m1M$esc[38;5;231m")) 'model 1M: powerline marker restores the model foreground'
+Confirm-True ($seg.Text.Contains("$esc[38;5;87m1M$esc[38;5;231m")) 'model 1M: powerline marker restores the model foreground'
 Confirm-Equal (Get-ModelSegment (Get-ModelPayload 200000) $plainCfg).Text "$iconModel Fable 5.1" 'model 200k: exact text'
 Confirm-Equal (Get-ModelSegment (Get-ModelPayload $null) $plainCfg).Text "$iconModel Fable 5.1" 'model no size: exact text'
 Confirm-Equal (Get-ModelSegment (Get-ModelPayload 400000) $plainCfg).Text "$iconModel Fable 5.1" 'model other size: exact text'
@@ -3720,7 +3796,7 @@ Confirm-True ($seg.Text.Contains("$esc[22;36m1M$esc[31m")) 'model alarm 1M: the 
 Confirm-True (-not $seg.Text.Contains("$esc[1;36m")) 'model alarm 1M: no bold cyan is left anywhere in the text'
 Confirm-True ((ConvertTo-PlainText $seg.Text).EndsWith("$iconModel Fable 5.1 1M")) 'model alarm 1M: the plain text is unchanged'
 $seg = Get-ModelSegment (Get-ModelPayload 1000000) (Get-ModelAlarmConfig 60 'powerline')
-Confirm-True ($seg.Text.Contains("$esc[38;5;159m1M$esc[38;5;231m")) 'model alarm 1M: the powerline marker restores 231, which both roles share'
+Confirm-True ($seg.Text.Contains("$esc[38;5;87m1M$esc[38;5;231m")) 'model alarm 1M: the powerline marker restores 231, which both roles share'
 # The rate limits reach the model segment too, with no context percentage in the payload at all.
 $limitPayload = [pscustomobject]@{ model = [pscustomobject]@{ display_name = 'Fable 5.1' }
     rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{ used_percentage = 95 } } }
@@ -4045,13 +4121,13 @@ Confirm-Equal $seg.Role 'ok' 'limits overrunning under 120: the role is still th
 # role and restores the segment's own foreground - the warn one here, which the 80 earns on its own.
 $paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":80,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $paceCfg
-Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'plain') (")) 'limits well over pace: the up arrow is red and hands the warn colour back'
+Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'plain') (")) 'limits well over pace: the up arrow takes the removed role and hands the warn colour back'
 Confirm-Equal $seg.Role 'warn' 'limits well over pace: the role is the worse figure, not the projection'
 Confirm-Equal $seg.Short "$iconLimit 5h 80%" 'limits well over pace: the short form keeps the figure without the arrow'
 
 $paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":80,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $pacePlCfg
-Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'powerline') (")) 'limits well over pace in powerline: the red arrow restores the segment foreground'
+Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'powerline') (")) 'limits well over pace in powerline: the removed-role arrow restores the segment foreground'
 
 # The 7-day figure never gets an arrow, whatever its reset says: one payload cannot pace a week.
 $paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
@@ -4576,7 +4652,7 @@ Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m${iconAhead}1$esc[35m $es
 Confirm-Equal $seg.Short "$iconBranch feature/x" 'branch counts: short has no arrows'
 Confirm-Equal $seg.Role 'branch' 'branch counts: role'
 $seg = Get-BranchSegment $probePayload $branchPowerlineCfg
-Confirm-Equal $seg.Text "$iconBranch feature/x $esc[38;5;255m${iconAhead}1$esc[38;5;231m $esc[38;5;255m${iconBehind}2$esc[38;5;231m" 'branch counts: powerline arrows restore the block fg'
+Confirm-Equal $seg.Text "$iconBranch feature/x $esc[38;5;123m${iconAhead}1$esc[38;5;231m $esc[38;5;123m${iconBehind}2$esc[38;5;231m" 'branch counts: powerline arrows restore the block fg'
 $script:mockGitBranch = Get-BranchRecord 'topic' $false -Ahead 2
 $seg = Get-BranchSegment $probePayload $branchCfg
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch topic ${iconAhead}2" 'branch ahead only: no behind arrow'
