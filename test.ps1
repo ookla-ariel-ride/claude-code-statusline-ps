@@ -9693,7 +9693,9 @@ $s = Read-SettingFile $spacedSettings
 $spacedMain = Join-Path $spacedHome '.claude\statusline.ps1'
 $spacedSub = Join-Path $spacedHome '.claude\subagent-statusline.ps1'
 Confirm-Equal $s.statusLine.command ('pwsh -NoProfile -NoLogo -NonInteractive -File "' + ($spacedMain -replace '\\', '/') + '"') 'spaced profile: the statusLine path is quoted'
-Confirm-Equal $s.subagentStatusLine.command ('pwsh -NoProfile -NoLogo -NonInteractive -File "' + ($spacedSub -replace '\\', '/') + '"') 'spaced profile: the subagentStatusLine path is quoted'
+# The panel's own arguments come after the quoted path, so the quoting has to hold with something
+# following it - which is the case a closing quote in the wrong place would break.
+Confirm-Equal $s.subagentStatusLine.command ('pwsh -NoProfile -NoLogo -NonInteractive -File "' + ($spacedSub -replace '\\', '/') + '" -Style plain -Palette dark') 'spaced profile: the subagentStatusLine path is quoted'
 Confirm-True ($s.statusLine.command.Contains(' c/.claude/')) 'spaced profile: the path really does carry a space'
 Confirm-True ($s.statusLine.command.Contains('&')) 'spaced profile: the path really does carry an ampersand'
 # Through cmd, which is what Claude Code hands the command to on Windows. The subagent line answers a
