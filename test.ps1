@@ -188,7 +188,7 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-ProjectConfigLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -216,6 +216,9 @@ $iconVim = [char]::ConvertFromUtf32(0xE62B)
 $iconAgent = [char]::ConvertFromUtf32(0xF007)
 $iconSession = [char]::ConvertFromUtf32(0xF02B)
 $iconClock = [char]::ConvertFromUtf32(0xF051B)
+# The wall clock's own glyph, nf-md-clock_outline, which is not the session clock's stopwatch. Two
+# segments, two times, two glyphs: one says how long this session has run, the other what time it is.
+$iconTime = [char]::ConvertFromUtf32(0xF0150)
 # The clock segment's separator: a middle dot with a space either side, spelled from its code point so
 # this file stays ASCII. A dash next to a percentage reads as a range, which is why it is not one.
 $middot = [char]::ConvertFromUtf32(0xB7)
@@ -308,19 +311,24 @@ Write-Host '== unit: registry' -ForegroundColor Cyan
 # dispatch and the row split. This pins its contents to what the script did when each list was written
 # out by hand, so a change there is a deliberate one. Array order is layout one.
 $registryTable = @(
-    @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true; ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
-    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true; ShrinkRank = 4;     DropRank = 10;    Row = 2; RowRank = 1 }
-    @{ Name = 'cache';   Build = 'Get-CacheSegment';   Default = $true; ShrinkRank = 3;     DropRank = 3;     Row = 2; RowRank = 2 }
-    @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true; ShrinkRank = 1;     DropRank = 5;     Row = 2; RowRank = 4 }
-    @{ Name = 'clock';   Build = 'Get-ClockSegment';   Default = $true; ShrinkRank = 8;     DropRank = 2;     Row = 2; RowRank = 5 }
-    @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true; ShrinkRank = $null; DropRank = 1;     Row = 2; RowRank = 6 }
-    @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true; ShrinkRank = 2;     DropRank = 6;     Row = 2; RowRank = 3 }
-    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true; ShrinkRank = 7;     DropRank = 4;     Row = 1; RowRank = 5 }
-    @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true; ShrinkRank = $null; DropRank = 7;     Row = 1; RowRank = 4 }
-    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true; ShrinkRank = 6;     DropRank = 8;     Row = 1; RowRank = 2 }
-    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true; ShrinkRank = 5;     DropRank = 9;     Row = 1; RowRank = 3 })
+    @{ Name = 'model';   Build = 'Get-ModelSegment';   Default = $true;  ShrinkRank = $null; DropRank = $null; Row = 1; RowRank = 1 }
+    @{ Name = 'context'; Build = 'Get-ContextSegment'; Default = $true;  ShrinkRank = 4;     DropRank = 11;    Row = 2; RowRank = 1 }
+    @{ Name = 'cache';   Build = 'Get-CacheSegment';   Default = $true;  ShrinkRank = 3;     DropRank = 4;     Row = 2; RowRank = 2 }
+    @{ Name = 'cost';    Build = 'Get-CostSegment';    Default = $true;  ShrinkRank = 1;     DropRank = 6;     Row = 2; RowRank = 4 }
+    @{ Name = 'clock';   Build = 'Get-ClockSegment';   Default = $true;  ShrinkRank = 8;     DropRank = 3;     Row = 2; RowRank = 5 }
+    @{ Name = 'lines';   Build = 'Get-LinesSegment';   Default = $true;  ShrinkRank = $null; DropRank = 2;     Row = 2; RowRank = 6 }
+    @{ Name = 'limits';  Build = 'Get-LimitsSegment';  Default = $true;  ShrinkRank = 2;     DropRank = 7;     Row = 2; RowRank = 3 }
+    @{ Name = 'badges';  Build = 'Get-BadgesSegment';  Default = $true;  ShrinkRank = 7;     DropRank = 5;     Row = 1; RowRank = 5 }
+    @{ Name = 'pr';      Build = 'Get-PrSegment';      Default = $true;  ShrinkRank = $null; DropRank = 8;     Row = 1; RowRank = 4 }
+    @{ Name = 'folder';  Build = 'Get-FolderSegment';  Default = $true;  ShrinkRank = 6;     DropRank = 9;     Row = 1; RowRank = 2 }
+    @{ Name = 'branch';  Build = 'Get-BranchSegment';  Default = $true;  ShrinkRank = 5;     DropRank = 10;    Row = 1; RowRank = 3 }
+    @{ Name = 'time';    Build = 'Get-TimeSegment';    Default = $false; ShrinkRank = $null; DropRank = 1;     Row = 1; RowRank = 6 })
 $registry = @(Get-SegmentRegistry)
-Confirm-Equal $registry.Count $registryTable.Count 'registry: eleven records'
+Confirm-Equal $registry.Count $registryTable.Count 'registry: twelve records'
+# The wall clock is the only record whose Default is false, and the table above is where that is pinned:
+# it is a segment nobody had before this release, its value moves without a payload behind it, and an
+# install that upgraded into a clock it never asked for would be a behaviour change carried by a default.
+Confirm-Equal (@($registry | Where-Object { -not $_.Default } | ForEach-Object { $_.Name }) -join ',') 'time' 'registry: the wall clock is the one segment that is off by default'
 for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
     $want = $registryTable[$i]
     $got = $registry[$i]
@@ -330,29 +338,39 @@ for ($i = 0; $i -lt [math]::Min($registry.Count, $registryTable.Count); $i++) {
         Confirm-Equal $got[$key] $want[$key] "registry: $($want.Name) $key"
     }
 }
-# Cost is first in the shrink order and fourth in the drop order: its per-turn delta is the first detail
+# Every DropRank below moved up by one when the wall clock took slot 1; the ARGUMENT for each is the
+# ordering between them, and none of that changed. The numbers in this comment are the ones after that
+# shift, so a reader comparing them to the table sees the table.
+# Cost is first in the shrink order and sixth in the drop order: its per-turn delta is the first detail
 # on the line to go, and the segment itself still goes after lines and badges, which is where it was.
 # Badges was last of the six: its Short form sheds the agent and session names, which is the least
 # missed detail on the line, so it was the last thing tried before whole segments start going. Clock is
-# behind it now, last of the eight, and that is not a contradiction with its place second in the drop
+# behind it now, last of the eight, and that is not a contradiction with its place third in the drop
 # order: stage one runs to the end before stage two starts, so a segment that is dropped early is still
 # offered the chance to shed its api share first. What the two ranks say together is that the api share
-# is the last detail worth keeping and the segment is the first number worth losing, which is the order
-# a session clock earns - it is the only figure on the line that says nothing about what the session is
-# doing right now.
+# is the last detail worth keeping and the segment is the first NUMBER ABOUT THE SESSION worth losing,
+# which is the order a session clock earns - it is the only figure on the line that says nothing about
+# what the session is doing right now. The wall clock below goes ahead of even that, and does not
+# contradict it: a wall clock is not a figure about the session at all.
 # Cache shrinks third, straight after limits, where its Short form costs one word and loses nothing.
-# It drops third, and the two segments that go before it are the two that make the argument: lines,
-# which carries no state at all, and the clock, which is history. THE TIE BETWEEN CLOCK AND CACHE IS
+# It drops fourth, and the three segments that go before it are the three that make the argument: the
+# wall clock, which is not about this session at all; lines, which carries no state; and the session
+# clock, which is history. THE TIE BETWEEN CLOCK AND CACHE IS
 # BROKEN BY COLOUR, not by subject. Both are arguably the least urgent number on the line - the clock
 # because it describes what has already happened, the cache because it describes the next turn rather
-# than this one - and stacking those two arguments would leave them both claiming slot two. What
+# than this one - and stacking those two arguments would leave them both claiming the same slot. What
 # separates them is that Get-ClockSegment's role is a hard-coded 'dim' with no threshold and no alarm
 # behind it, while the cache segment has a warn band and two bad states. The drop order is the last
 # line of defence for a warning, because a dropped segment takes its colour with it, so a segment that
-# can turn red has to outlive one that cannot by construction. Clock second, cache third.
+# can turn red has to outlive one that cannot by construction. Clock third, cache fourth.
+# The wall clock is in neither shrink slot and first in the drop order, ahead of lines. It has no Short
+# form because there is nothing in `14:05` to shed, and it is the first whole segment to go because it is
+# the only figure on the line that says nothing about the session at all - not what it costs, not how
+# full it is, not even how long it has been running. Lines, which used to hold that slot, at least counts
+# work this session did.
 Confirm-Equal ((Get-SegmentOrder 'ShrinkRank') -join ',') 'cost,limits,cache,context,branch,folder,badges,clock' 'registry: shrink order'
-Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'lines,clock,cache,badges,cost,limits,pr,folder,branch,context' 'registry: drop order'
-Confirm-Equal ((Get-SegmentOrder 'RowRank' 1) -join ',') 'model,folder,branch,pr,badges' 'registry: layout two row 1'
+Confirm-Equal ((Get-SegmentOrder 'DropRank') -join ',') 'time,lines,clock,cache,badges,cost,limits,pr,folder,branch,context' 'registry: drop order'
+Confirm-Equal ((Get-SegmentOrder 'RowRank' 1) -join ',') 'model,folder,branch,pr,badges,time' 'registry: layout two row 1'
 Confirm-Equal ((Get-SegmentOrder 'RowRank' 2) -join ',') 'context,cache,limits,cost,clock,lines' 'registry: layout two row 2'# The four assertions above pin what the order function returned; these pin the property that makes it
 # right. Get-SegmentOrder drops each record into a hashtable slot keyed by its rank number and then
 # reads slots 1..Count back, so a rank used twice silently OVERWRITES the earlier record - the loser
@@ -389,12 +407,20 @@ function Write-TempConfig([string] $Name, [string] $Json) {
 }
 # Every segment name in layout-one order, from the registry, so this list cannot drift from the script's.
 $allSegments = @((Get-SegmentRegistry).Name)
+# The names a config with no file behind it leaves ON. Not the same list as $allSegments any more: the
+# wall clock is registered and off, so "every segment on" is a claim about the registry's own Default
+# column rather than about the whole registry. Derived here for the same reason $allSegments is - a
+# segment added later, on or off, is covered without an edit.
+$defaultOnSegments = @(Get-SegmentRegistry | Where-Object { $_.Default } | ForEach-Object { $_.Name })
+$defaultOffSegments = @(Get-SegmentRegistry | Where-Object { -not $_.Default } | ForEach-Object { $_.Name })
 
 $c = Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')
 Confirm-Equal $c.Layout 'one' 'config missing: layout'
 Confirm-Equal $c.Style 'plain' 'config missing: style'
 Confirm-Equal $c.Folder 'repo' 'config missing: folder repo'
-Confirm-True (@($allSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'config missing: all segments on'
+Confirm-True (@($defaultOnSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'config missing: every segment the registry defaults on is on'
+Confirm-True (@($defaultOffSegments | Where-Object { $c.Segments[$_] }).Count -eq 0) 'config missing: and the one it defaults off is off'
+Confirm-True (@($allSegments | Where-Object { -not $c.Segments.ContainsKey($_) }).Count -eq 0) 'config missing: every registry name has a toggle either way'
 
 $c = Read-StatusConfig (Write-TempConfig 'folder-leaf.json' '{ "folder": "LEAF" }')
 Confirm-Equal $c.Folder 'leaf' 'config folder: leaf, case-insensitive'
@@ -622,6 +648,41 @@ $c = Read-StatusConfig (Write-TempConfig 'rows-good-order-bad.json' '{ "rows": [
 Confirm-Equal (Get-RowText $c) 'model|cost' 'config rows: kept when order is invalid'
 Confirm-Equal ($c.Order -join ',') $registryOrder 'config rows: the invalid order falls back on its own'
 
+# The right key: the segments pushed flush against the right edge of the first line. It reads through the
+# same Read-SegmentNameList the order and rows keys read through, so an unknown name, a repeat and an
+# entry that is not a string are all skipped and a value that is not an array leaves the group beneath it.
+# THE ONE DELIBERATE DIFFERENCE IS THE EMPTY LIST. `order` and `rows` fall back from it because a line
+# with no segments named on it is not a layout and there is nothing the file could have meant; an empty
+# right group is the built-in default and a real thing to ask for, and keeping it is the only way a
+# project file can take back a group the user file asked for.
+$c = Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')
+Confirm-True ($c.Right -is [array]) 'config missing: the right group is an array'
+Confirm-Equal ($c.Right -join ',') '' 'config missing: the right group is empty'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'right-one.json' '{ "right": ["time"] }')).Right -join ',') 'time' 'config right: one name'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'right-two.json' '{ "right": ["clock", "time"] }')).Right -join ',') 'clock,time' 'config right: two names in the order given'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'right-case.json' '{ "right": ["TIME", "Time"] }')).Right -join ',') 'time' 'config right: case folded, a repeat keeps its first place'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'right-unknown.json' '{ "right": ["nonsense", "time"] }')).Right -join ',') 'time' 'config right: an unknown name is skipped'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'right-none.json' '{ "right": ["nonsense"] }')).Right -join ',') '' 'config right: a list naming no segment gives an empty group'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'right-mixed.json' '{ "right": ["time", 3, null, true, ["clock"]] }')).Right -join ',') 'time' 'config right: entries that are not strings are skipped'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'right-string.json' '{ "right": "time" }')).Right -join ',') '' 'config right: a string is not a list'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'right-object.json' '{ "right": { "time": 1 } }')).Right -join ',') '' 'config right: an object is not a list'
+Confirm-Equal ((Read-StatusConfig (Write-TempConfig 'right-null.json' '{ "right": null }')).Right -join ',') '' 'config right: null leaves the group empty'
+# A name whose segment is switched off stays in the list, the way a toggled-off name stays in the order:
+# nothing builds that segment, so it never reaches Get-FittedLine and the group is simply empty on the
+# line. Two keys saying the same thing in two ways is what this pins.
+$c = Read-StatusConfig (Write-TempConfig 'right-toggled-off.json' '{ "right": ["time"], "segments": { "time": false } }')
+Confirm-Equal ($c.Right -join ',') 'time' 'config right: a toggled-off name stays in the group'
+Confirm-Equal $c.Segments.time $false 'config right: the toggle still applies'
+# The empty list kept rather than falling back, shown where it matters: a second file taking the group
+# away from the first. This is the case the order key cannot express and the reason for the difference.
+$emptyRight = Merge-StatusConfigFile (Read-StatusConfig (Write-TempConfig 'right-first.json' '{ "right": ["time"] }')) (Write-TempConfig 'right-second.json' '{ "right": [] }')
+Confirm-Equal ($emptyRight.Right -join ',') '' 'config right: an empty list in a second file takes the group away'
+$keptRight = Merge-StatusConfigFile (Read-StatusConfig (Write-TempConfig 'right-first2.json' '{ "right": ["time"] }')) (Write-TempConfig 'right-silent.json' '{ "layout": "two" }')
+Confirm-Equal ($keptRight.Right -join ',') 'time' 'config right: a second file that says nothing about it keeps the group'
+$c = Read-StatusConfig (Write-TempConfig 'right-good-order-bad.json' '{ "right": ["time"], "order": 5 }')
+Confirm-Equal ($c.Right -join ',') 'time' 'config right: kept when another key is invalid'
+Confirm-Equal ($c.Order -join ',') $registryOrder 'config right: the invalid order falls back on its own'
+
 # The thresholds key: warn and bad, whole numbers 0 to 100 with warn at or below bad. Either value
 # missing, not a whole number, out of range, or warn above bad falls back to 60 and 85 for both.
 function Get-ThresholdText($c) { return "$($c.Thresholds.Warn)/$($c.Thresholds.Bad)" }
@@ -721,6 +782,9 @@ function Get-SegmentText($c) { return (@($allSegments | Where-Object { $c.Segmen
 $presetShape = @(
     @{ Name = 'minimal'; Layout = 'one'; Style = 'plain'; On = 'model,context,folder,branch' }
     @{ Name = 'cost'; Layout = 'one'; Style = 'plain'; On = 'model,context,cache,cost,clock,lines,limits' }
+    # `full` means everything, so it is the one preset that turns the wall clock on - and the only place
+    # in the script where `time` is on without the user naming it. `minimal` answers which model, how
+    # full and where am I; `cost` is the line of numbers about the session. A clock is neither.
     @{ Name = 'full'; Layout = 'two'; Style = 'powerline'; On = ($allSegments -join ',') }
 )
 foreach ($want in $presetShape) {
@@ -764,7 +828,7 @@ Confirm-Equal (Get-SegmentText $c) ($allSegments -join ',') 'preset: a name in c
 Confirm-Equal $c.Style 'powerline' 'preset: a name in capitals takes the full style'
 # Anything the table does not have returns $null and leaves the defaults standing. The helper is untyped
 # so a number, an array or a boolean is refused rather than turned into a name.
-$defaultSegments = ($allSegments -join ',')
+$defaultSegments = ($defaultOnSegments -join ',')
 $presetBadIndex = 0
 foreach ($case in @(
         @{ Label = 'an unknown name'; Value = 'nope'; Json = '"nope"' }
@@ -836,7 +900,9 @@ Confirm-Equal (Get-AlarmText $defaultCfg) '90/90' 'default config: alarm 90 and 
 Confirm-Equal $defaultCfg.Icons.Count 0 'default config: no icon overrides'
 Confirm-Equal $defaultCfg.Git.TimeoutMs 1500 'default config: git timeout 1500'
 Confirm-True ($defaultCfg.Quiet.cost -eq 0 -and $defaultCfg.Quiet.context -eq 0 -and $defaultCfg.Quiet.limits -eq 0) 'default config: quiet is 0 for all three'
-Confirm-True (@($allSegments | Where-Object { -not $defaultCfg.Segments[$_] }).Count -eq 0) 'default config: every segment on'
+Confirm-True (@($defaultOnSegments | Where-Object { -not $defaultCfg.Segments[$_] }).Count -eq 0) 'default config: every segment the registry defaults on is on'
+Confirm-True (@($defaultOffSegments | Where-Object { $defaultCfg.Segments[$_] }).Count -eq 0) 'default config: the wall clock is off'
+Confirm-Equal ($defaultCfg.Right -join ',') '' 'default config: the right group is empty'
 # A fresh table every call, nested tables included, so a caller that changes its copy cannot reach the next.
 $defaultCfg.Layout = 'two'; $defaultCfg.Segments.cost = $false; $defaultCfg.Git.TimeoutMs = 999; $defaultCfg.Thresholds.Warn = 1; $defaultCfg.Alarm.Context = 1; $defaultCfg.Icons.model = 1; $defaultCfg.Quiet.cost = 9
 $fresh = Get-DefaultStatusConfig
@@ -862,7 +928,7 @@ $c = Read-StatusConfig $userPath (Write-TempProjectDir 'proj-layout' '{ "layout"
 Confirm-Equal $c.Layout 'two' 'project config: the project layout is applied'
 Confirm-Equal $c.Style 'powerline' 'project config: the user style is kept'
 Confirm-Equal $c.Segments.cost $false 'project config: the user segment toggle is kept'
-Confirm-True (@($allSegments | Where-Object { $_ -ne 'cost' -and -not $c.Segments[$_] }).Count -eq 0) 'project config: the other ten segments stay on'
+Confirm-True (@($defaultOnSegments | Where-Object { $_ -ne 'cost' -and -not $c.Segments[$_] }).Count -eq 0) 'project config: the other ten segments stay on'
 # The project file with no user file at all: it applies over the built-in defaults.
 $c = Read-StatusConfig $missingConfig (Write-TempProjectDir 'proj-alone' '{ "layout": "two", "state": false }')
 Confirm-Equal $c.Layout 'two' 'project config alone: the layout is applied'
@@ -1328,8 +1394,16 @@ Confirm-Equal $c.Style 'plain' 'shipped config: style plain'
 Confirm-Equal $c.Folder 'repo' 'shipped config: folder repo'
 Confirm-Equal $shippedJson.folder 'repo' 'shipped config: the file itself says folder repo'
 $shippedSegments = @($c.Segments.Keys)
-Confirm-Equal $shippedSegments.Count 11 'shipped config: eleven segments'
-Confirm-True (@($shippedSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'shipped config: every segment on'
+Confirm-Equal $shippedSegments.Count 12 'shipped config: twelve segments in the merged config'
+# The file names eleven and sets each to true; the twelfth, the wall clock, is deliberately NOT in it and
+# takes the registry's own default of false. That is what keeps an upgrade silent: the installer keeps an
+# existing statusline.json, and a new key written into the shipped file would only reach a fresh install
+# anyway, so the honest place for a segment that is off by default is the registry and nowhere else.
+Confirm-True (@($defaultOnSegments | Where-Object { -not $c.Segments[$_] }).Count -eq 0) 'shipped config: every segment the file names is on'
+Confirm-Equal $c.Segments.time $false 'shipped config: the wall clock is off, from the registry default'
+Confirm-True (-not $shippedJson.segments.PSObject.Properties.Name.Contains('time')) 'shipped config: the file itself does not name the wall clock'
+Confirm-Equal ($c.Right -join ',') '' 'shipped config: no right group'
+Confirm-True ($null -eq $shippedJson.right) 'shipped config: the file itself does not name a right group'
 $shippedFileSegments = @($shippedJson.segments.PSObject.Properties)
 Confirm-Equal $shippedFileSegments.Count 11 'shipped config: the file itself lists eleven segments'
 # -ne coerces its right side to the left side's type, so 'true' -ne $true is False; test the type too.
@@ -1372,7 +1446,7 @@ Write-Host '== unit: icons' -ForegroundColor Cyan
 # Get-IconSet turns the built-in table and the config's overrides into one glyph per name, and the
 # script assigns its $icon* constants from that set.
 $defaultIcons = Get-IconDefault
-Confirm-Equal $defaultIcons.Count 23 'icons: twenty-three built-in glyphs'
+Confirm-Equal $defaultIcons.Count 24 'icons: twenty-four built-in glyphs'
 Confirm-Equal $defaultIcons.pr 0xF407 'icons: pr is the pull-request glyph'
 Confirm-Equal $defaultIcons.model 0xF06A9 'icons: model is the robot'
 Confirm-Equal $defaultIcons.worktree 0xF04C1 'icons: worktree is the source fork'
@@ -1390,13 +1464,19 @@ Confirm-Equal (Get-VisibleWidth $iconCache) 1 'icons: the fire glyph is one cell
 # two are neighbours in the same font and neither draws a box, so a swapped digit would render a
 # perfectly reasonable stopwatch and nothing would say it was the wrong one.
 Confirm-Equal $defaultIcons.clock 0xF051B 'icons: clock is nf-md-timer_outline, not the filled nf-md-timer at F13AB'
+# The wall clock's own glyph, nf-md-clock_outline, and it is NOT the stopwatch above. The two segments
+# print two different times - how long this session has run, and what time it is - so they get two
+# different faces, and pinning both by number here is what stops a later edit collapsing them into one.
+Confirm-Equal $defaultIcons.time 0xF0150 'icons: time is nf-md-clock_outline, the wall clock'
+Confirm-True ($defaultIcons.time -ne $defaultIcons.clock) 'icons: the wall clock and the session stopwatch are different glyphs'
+Confirm-Equal (Get-VisibleWidth $iconTime) 1 'icons: the wall clock glyph is one cell wide'
 # Every built-in code point has to survive the guards a config value goes through. The glyph a config
 # may put in its place is held to that bar, so the one it replaces cannot sit below it.
 foreach ($e in $defaultIcons.GetEnumerator()) {
     Confirm-Equal (Read-CodePoint ('{0:X}' -f $e.Value)) $e.Value "icons: the built-in $($e.Key) code point passes the guards"
 }
 $set = Get-IconSet @{ Icons = @{} }
-Confirm-Equal $set.Count 23 'icons: one glyph per name'
+Confirm-Equal $set.Count 24 'icons: one glyph per name'
 Confirm-Equal $set.pr $iconPr 'icons: no override gives the built-in pr glyph'
 Confirm-Equal $set.model $iconModel 'icons: no override gives the built-in model glyph'
 Confirm-Equal $set.dirty $iconDirty 'icons: no override gives the built-in pencil'
@@ -2118,6 +2198,99 @@ Confirm-Equal (Get-VisibleWidth $line) 33 'fit: custom drop order width'
 $line = Get-FittedLine $fit 'plain' 10 -DropOrder @('model')
 Confirm-True ($line.Contains('M') -and $line.Contains('CCC')) 'fit: drop order naming model leaves it in place'
 Confirm-Equal (Get-VisibleWidth $line) 38 'fit: drop order naming model drops nothing'
+
+# ---- The right group ----
+# $Right names segments that leave the packed line and sit flush against the right edge, with spaces
+# between the two groups. The set below is the fitting set with branch pushed right: the left group is
+# 39 cells (21 of text and six three-cell separators) and the right group is 2, so 42 is the narrowest
+# line that can hold both with the one space between them that the gap rule requires.
+#
+# THE RULE, in the order the three stages run:
+#   1. Shrink. Both groups, in the one $ShrinkOrder, exactly as before - a Short form is detail shed and
+#      which side of the line the segment sits on says nothing about whether the detail is worth losing.
+#   2. Drop the right group, LAST NAMED FIRST. A segment pushed to the edge is decoration, so the whole
+#      group goes before one packed segment does. A dropped right member is GONE, not moved back into
+#      the left group: re-inlining it would make the line wider, which is the opposite of what the stage
+#      is for.
+#   3. Drop from the left group in $DropOrder, which by then is exactly the stage 2 that was here before.
+# So when the two groups together cannot fit, the answer is the answer this function already gave: the
+# right group is empty by the time stage 3 starts, and a left group that still will not fit overflows
+# with the model on it, the way it always has.
+$fitRight = Get-FitSegmentSet
+$leftPacked = "M $chevron CCCCCC $chevron AA $chevron LL $chevron IIIIII $chevron GG $chevron FF"
+$line = Get-FittedLine $fitRight 'plain' 60 -Right @('branch')
+Confirm-Equal (Get-VisibleWidth $line) 60 'right group: the line is exactly the width it was given'
+Confirm-Equal (ConvertTo-PlainText $line) ($leftPacked + (' ' * 19) + 'BB') 'right group: the left group, nineteen spaces and the right member at 60 columns'
+Confirm-Equal $fitRight[7].Text 'BB' 'right group: input not mutated'
+# The gap rule at its edge: 42 is one space, 41 is not a fit and stage one has to find the cells.
+$line = Get-FittedLine $fitRight 'plain' 42 -Right @('branch')
+Confirm-Equal (ConvertTo-PlainText $line) ($leftPacked + ' BB') 'right group: 42 columns is the narrowest line that holds both groups with a space between them'
+$line = Get-FittedLine $fitRight 'plain' 41 -Right @('branch')
+Confirm-Equal (Get-VisibleWidth $line) 41 'right group: 41 columns is still exactly 41 once limits has shrunk'
+Confirm-True ((ConvertTo-PlainText $line) -eq "M $chevron CCCCCC $chevron AA $chevron LL $chevron III $chevron GG $chevron FF   BB") 'right group: stage one shrinks the left group and the padding absorbs what it saved'
+# Stage two, and the success criterion behind it: the right member goes before ANY packed segment does,
+# including the one the drop order would have taken first. At 35 columns the same set without a right
+# group loses lines and keeps branch; with one it loses branch and keeps lines.
+$line = Get-FittedLine $fitRight 'plain' 35 -Right @('branch')
+Confirm-Equal (Get-VisibleWidth $line) 33 'right group: dropping the right member is what makes 35 columns fit'
+Confirm-True (-not $line.Contains('BB') -and $line.Contains('LL')) 'right group: the right member goes before lines, which the drop order would have dropped first'
+$line = Get-FittedLine $fitRight 'plain' 35
+Confirm-True ($line.Contains('BB') -and -not $line.Contains('LL')) 'right group: without one, 35 columns drops lines and keeps branch'
+# A width of $null is the early return: nothing is measured, so there is no target to pad to and no
+# right group at all. The named segments render inline in their ordinary places, exactly as before.
+$line = Get-FittedLine $fitRight 'plain' $null -Right @('branch')
+Confirm-Equal (ConvertTo-PlainText $line) "$leftPacked $chevron BB" 'right group: no width means no alignment and the inline order'
+Confirm-Equal (Get-VisibleWidth $line) 44 'right group: the unfitted line is the same 44 cells it always was'
+# The group renders in the order the list names, not the order the line had. Left is 34 cells here and
+# the right group 7, so 42 is again the narrowest fit and 60 leaves 19 spaces.
+$line = Get-FittedLine $fitRight 'plain' 60 -Right @('branch', 'folder')
+$leftShorter = "M $chevron CCCCCC $chevron AA $chevron LL $chevron IIIIII $chevron GG"
+Confirm-Equal (ConvertTo-PlainText $line) ($leftShorter + (' ' * 19) + "BB $chevron FF") 'right group: the members are in the order the list names them, not the order the line had'
+# Last named, first dropped. At 35 the shrink stage is spent (left 28, right 7, and 36 is its floor),
+# so folder goes and branch stays.
+$line = Get-FittedLine $fitRight 'plain' 35 -Right @('branch', 'folder')
+$plain = ConvertTo-PlainText $line
+Confirm-Equal (Get-VisibleWidth $line) 35 'right group: still exactly the width once a member has gone'
+Confirm-Equal $plain ("M $chevron CCC $chevron AA $chevron LL $chevron III $chevron GG" + (' ' * 5) + 'BB') 'right group: the last name in the list is the first member dropped'
+# Stage one reaches into the right group. limits is pushed right here and its Short form is shed at 40,
+# which is before the context counts go and long before anything is dropped.
+$line = Get-FittedLine $fitRight 'plain' 40 -Right @('limits')
+$plain = ConvertTo-PlainText $line
+Confirm-Equal (Get-VisibleWidth $line) 40 'right group: exactly forty cells with limits on the edge'
+Confirm-True ($plain.EndsWith('III', [System.StringComparison]::Ordinal) -and -not $plain.Contains('IIIIII')) 'right group: stage one sheds a right member''s detail'
+Confirm-True ($plain.Contains('LL') -and $plain.Contains('CCCCCC')) 'right group: and sheds it before the context counts and before anything is dropped'
+# When the two groups cannot fit however much is shed, the right group is gone by stage three and what
+# is left is what this function always did: the model alone, overflowing.
+Confirm-Equal (Get-FittedLine $fitRight 'plain' 0 -Right @('branch')) "$esc[1;36mM$esc[0m" 'right group: at a width nothing fits, the group is gone and the model alone overflows'
+Confirm-Equal (Get-FittedLine @($fit[2]) 'plain' 1 -Right @('cost')) $null 'right group: a line that is nothing but a right group can still drop to nothing'
+# A name no segment on the line carries changes nothing, which is what makes a right group naming a
+# switched-off segment a no-op rather than a layout change.
+Confirm-Equal (Get-FittedLine $fitRight 'plain' 44 -Right @('pr')) (Get-FittedLine $fitRight 'plain' 44) 'right group: a name no segment on the line has changes nothing'
+Confirm-Equal (Get-FittedLine $fitRight 'plain' 35 -Right @('pr')) (Get-FittedLine $fitRight 'plain' 35) 'right group: and changes nothing at a width that has to drop segments either'
+# An empty group is today's line byte for byte at every width, including the ones that shrink, drop and
+# overflow. This is the check behind "right absent gives output identical to today": no padding is added
+# to a line with nothing to push against, so a render without the key cannot have moved.
+foreach ($w in @(44, 43, 40, 37, 10, 6, 0)) {
+    Confirm-Equal (Get-FittedLine $fit 'plain' $w -Right @()) (Get-FittedLine $fit 'plain' $w) "right group: an empty list at $w columns is the line it was before the group existed"
+    Confirm-Equal (Get-FittedLine $fit 'powerline' $w -Right @()) (Get-FittedLine $fit 'powerline' $w) "right group: an empty list at $w columns in powerline too"
+}
+# THE MEASUREMENT THE DESIGN TURNS ON. A line can carry six OSC 8 hyperlink wrappers - folder and branch
+# each emit one in Text and another in Short, and pr emits one - and an SGR code in front of every
+# segment, and none of that draws a cell. Padding counted from .Length would be short by the whole of
+# the escape and the line would come out far narrower than the width it was handed.
+$rightUrl = 'https://github.com/octo/demo/tree/main'
+$fitLinked = Get-FitSegmentSet
+$fitLinked[7] = @{ Name = 'branch'; Text = (Format-Link $rightUrl 'BB'); Short = $null; Role = 'branch'; Bold = $false }
+$line = Get-FittedLine $fitLinked 'plain' 60 -Right @('branch')
+Confirm-Equal (Get-VisibleWidth $line) 60 'right group: a linked right member is padded by what it draws, not by how long the string is'
+Confirm-True ($line.Contains("$esc]8;;$rightUrl$esc\")) 'right group: the link survives the alignment'
+Confirm-Equal (ConvertTo-PlainText $line) ($leftPacked + (' ' * 19) + 'BB') 'right group: the link adds no cells, so the padding is the one the unlinked line got'
+Confirm-True ($line.Length -gt 100) 'right group: and the raw string really is far longer than the 60 cells it draws'
+# Powerline blocks are aligned the same way: each block is its text plus three cells, so the left group
+# is 42 and the right 5.
+$line = Get-FittedLine $fitRight 'powerline' 60 -Right @('branch')
+Confirm-Equal (Get-VisibleWidth $line) 60 'right group: powerline blocks are aligned the same way'
+Confirm-True ((ConvertTo-PlainText $line) -match '\s{13}\s*BB ') 'right group: the powerline padding sits between the two runs of blocks'
 
 Write-Host '== unit: pr' -ForegroundColor Cyan
 # The link helper: OSC 8 open, the text, OSC 8 close, with ESC \ as the terminator. Anything that is not
@@ -2954,6 +3127,40 @@ Confirm-Equal (Get-ClockSegment (Get-ClockPayload 3600000 1400000)).Text "$iconC
 # It is a true statement about a session that spent a millisecond on the API, and the case that has to
 # stay distinguishable from it - no api figure at all - already renders with no dot and no `api` part.
 Confirm-Equal (Get-ClockSegment (Get-ClockPayload 4320000 1)).Text "$clock1h12 $middot api 0%" 'clock: a share that rounds to nothing still says so'
+
+Write-Host '== unit: time' -ForegroundColor Cyan
+# The wall clock: the local time of day, the way a shell prompt puts the time on the right of the line.
+# It is NOT the clock segment above. That one prints how long this session has been running and what
+# share of it went on the API; this one prints what time it is, and a session that has run 1h12m says
+# nothing about whether it is now 09:14 or 23:47.
+#
+# It reads no payload field, so there is nothing to feed it and nothing to pin but the shape, the glyph
+# and that the value really is this machine's clock. The time is read either side of the call and the
+# text has to match one of the two, which is exact rather than a regex: the only way the minute could be
+# neither is a call that crossed two minute boundaries.
+$timeBefore = Get-Date
+$timeSeg = Get-TimeSegment
+$timeAfter = Get-Date
+Confirm-Equal $timeSeg.Name 'time' 'time: the segment is named time'
+Confirm-Equal $timeSeg.Role 'dim' 'time: dim, with no threshold band and no alarm behind it'
+Confirm-Equal $timeSeg.Bold $false 'time: never bold'
+Confirm-Equal $timeSeg.Short $null 'time: no short form, because there is nothing in 14:05 to shed'
+Confirm-True ($timeSeg.Text -eq "$iconTime $($timeBefore.ToString('HH\:mm'))" -or $timeSeg.Text -eq "$iconTime $($timeAfter.ToString('HH\:mm'))") "time: the text is the glyph and this machine's local HH:mm, got '$($timeSeg.Text)'"
+Confirm-True ($timeSeg.Text -match "^$([regex]::Escape($iconTime)) [0-2]\d:[0-5]\d$") 'time: the shape is the glyph, a space, and 24-hour HH:mm'
+Confirm-Equal (Get-VisibleWidth $timeSeg.Text) 7 'time: seven cells - one for the glyph, one space, five for the clock'
+# The separator is a literal colon whatever the culture calls its time separator. A format string of
+# 'HH:mm' would print 14.05 under a culture that writes times that way, and both the README and the
+# shape check above say a colon.
+$oldTimeCulture = [System.Threading.Thread]::CurrentThread.CurrentCulture
+try {
+    $dotCulture = [cultureinfo]::new('en-US')
+    $dotCulture.DateTimeFormat.TimeSeparator = '.'
+    [System.Threading.Thread]::CurrentThread.CurrentCulture = $dotCulture
+    Confirm-True ((Get-TimeSegment).Text -match "^$([regex]::Escape($iconTime)) [0-2]\d:[0-5]\d$") 'time: a culture whose time separator is a dot still prints a colon'
+} finally { [System.Threading.Thread]::CurrentThread.CurrentCulture = $oldTimeCulture }
+# The build loop calls every builder with the payload, the config and the state, so a builder that wants
+# none of the three still has to survive being handed all three.
+Confirm-Equal (Get-TimeSegment ([pscustomobject]@{}) @{ Style = 'plain' } $null).Name 'time' 'time: the builder ignores the three arguments the build loop hands it'
 
 Write-Host '== unit: quiet guard' -ForegroundColor Cyan
 $quietTable = @{ Quiet = @{ cost = 1.0; context = 30.0; limits = 0.0 } }
@@ -6238,6 +6445,7 @@ $segmentGlyphs = @{
     pr      = @($iconPr)
     folder  = @($iconFolder)
     branch  = @($iconHome, $iconBranch, $iconDirty, $iconAhead, $iconBehind, $iconConflict, $iconWorktree)
+    time    = @($iconTime)
 }
 # The segment behind each row of the absence table, so a row can be skipped when its segment is off
 # (the per-segment absence assertions cover that case instead, for every glyph the segment owns).
@@ -6303,8 +6511,8 @@ if ($Config) {
     $path = Write-TempConfig 'rows-swapped.json' ('{ "layout": "two", "style": "powerline", "rows": ' + (ConvertTo-Json -InputObject $swappedRows -Compress) + ' }')
     $configSet.Add((Get-ConfigRecord 'rows-swapped' $path (Read-StatusConfig $path) $keyWidths))
     Confirm-Equal ($configSet[$configSet.Count - 1].Rows[0] -join ',') 'lines,clock,cost,limits,cache,context' 'rows-swapped config: first row is the registry second row reversed'
-    Confirm-Equal ($configSet[$configSet.Count - 1].Rows[1] -join ',') 'badges,pr,branch,folder,model' 'rows-swapped config: second row is the registry first row reversed'
-    Confirm-Equal ($configSet[$configSet.Count - 2].Rows[0] -join ',') 'branch,folder,pr,badges,limits,lines,clock,cache,context,model' 'order-reversed config: one row, reversed, without cost'
+    Confirm-Equal ($configSet[$configSet.Count - 1].Rows[1] -join ',') 'time,badges,pr,branch,folder,model' 'rows-swapped config: second row is the registry first row reversed'
+    Confirm-Equal ($configSet[$configSet.Count - 2].Rows[0] -join ',') 'time,branch,folder,pr,badges,limits,lines,clock,cache,context,model' 'order-reversed config: one row, reversed, without cost'
 }
 
 # No sample carries a session_id, so no render in the matrix may write state. The child renders get a
@@ -6888,6 +7096,7 @@ $presetArrow = [char]::ConvertFromUtf32(0xE0B0)
 $presetGlyph = @{
     model = $iconModel; context = $iconCtx; cost = $iconCost; clock = $iconClock; lines = $iconLines; limits = $iconLimit
     fast = $iconFast; think = $iconThink; effort = $iconEffort; vim = $iconVim; folder = $iconFolder; branch = $iconHome
+    time = $iconTime
 }
 function Get-PresetRender([string] $Name, [string] $Json) {
     $r = Invoke-StatusLine $payload06 (Write-TempConfig "render-preset-$Name.json" $Json) 0
@@ -6902,16 +7111,16 @@ $r = Get-PresetRender 'minimal' '{ "preset": "minimal" }'
 $text = ConvertTo-PlainText ($r.Lines -join "`n")
 Confirm-Equal $r.Lines.Count 1 'render preset minimal: one line'
 Confirm-True (-not $text.Contains($presetArrow)) 'render preset minimal: plain style, no powerline arrow'
-Confirm-PresetGlyph 'minimal' $text @('model', 'context', 'folder', 'branch') @('cost', 'clock', 'lines', 'limits', 'fast', 'think', 'effort', 'vim')
+Confirm-PresetGlyph 'minimal' $text @('model', 'context', 'folder', 'branch') @('cost', 'clock', 'lines', 'limits', 'fast', 'think', 'effort', 'vim', 'time')
 $r = Get-PresetRender 'cost' '{ "preset": "cost" }'
 $text = ConvertTo-PlainText ($r.Lines -join "`n")
 Confirm-Equal $r.Lines.Count 1 'render preset cost: one line'
-Confirm-PresetGlyph 'cost' $text @('model', 'context', 'cost', 'clock', 'lines', 'limits') @('fast', 'think', 'effort', 'vim', 'folder', 'branch')
+Confirm-PresetGlyph 'cost' $text @('model', 'context', 'cost', 'clock', 'lines', 'limits') @('fast', 'think', 'effort', 'vim', 'folder', 'branch', 'time')
 $r = Get-PresetRender 'full' '{ "preset": "full" }'
 $text = ConvertTo-PlainText ($r.Lines -join "`n")
 Confirm-Equal $r.Lines.Count 2 'render preset full: two lines'
 Confirm-True (($r.Lines -join "`n").Contains($presetArrow)) 'render preset full: powerline arrows between the blocks'
-Confirm-PresetGlyph 'full' $text @('model', 'context', 'cost', 'clock', 'lines', 'limits', 'fast', 'think', 'effort', 'vim', 'folder', 'branch') @()
+Confirm-PresetGlyph 'full' $text @('model', 'context', 'cost', 'clock', 'lines', 'limits', 'fast', 'think', 'effort', 'vim', 'folder', 'branch', 'time') @()
 # A segment turned off beside the preset it belongs to, through the whole script.
 $r = Get-PresetRender 'cost-no-cost' '{ "preset": "cost", "segments": { "cost": false } }'
 $text = ConvertTo-PlainText ($r.Lines -join "`n")
@@ -6923,6 +7132,83 @@ Confirm-Equal ((Get-PresetRender 'unknown' '{ "preset": "nope" }').Lines -join "
 Confirm-Equal ((Get-PresetRender 'number' '{ "preset": 5 }').Lines -join "`n") $plainRender 'render preset: a non-string name renders the empty config byte for byte'
 $r = Invoke-StatusLine $payload06 (Join-Path $PSScriptRoot 'statusline.json') 0
 Confirm-Equal ($r.Lines -join "`n") $plainRender 'render preset: the shipped statusline.json still renders the default line'
+
+Write-Host ''
+Write-Host '== render: the right group and the wall clock' -ForegroundColor Cyan
+# The two new keys through the whole script rather than through Get-FittedLine alone. The clock's value
+# moves between one render and the next, so what is pinned is the glyph, the HH:mm shape, where on the
+# line it lands, and - the point of the whole feature - that line one comes out exactly COLUMNS - 1 cells
+# with the clock flush against its end.
+$rightIcon = [regex]::Escape($iconTime)
+$rightPath = Write-TempConfig 'right-group.json' '{ "layout": "one", "style": "plain", "segments": { "time": true }, "right": ["time"] }'
+$rightPlain = Write-TempConfig 'right-plain.json' '{ "layout": "one", "style": "plain" }'
+$rightOffPath = Write-TempConfig 'right-segment-off.json' '{ "layout": "one", "style": "plain", "right": ["time"] }'
+$rightBogusPath = Write-TempConfig 'right-bogus.json' '{ "layout": "one", "style": "plain", "right": ["nonsense"] }'
+# 01 and 10 have room for both groups at 120 columns. 06 has not, and that is the third case below.
+foreach ($name in @('01-main-clean.json', '10-pr.json')) {
+    $payload = $samplePayloads[$name]
+    $r = Invoke-StatusLine $payload $rightPath 120
+    Confirm-True ($r.ExitCode -eq 0) "right render $($name): exit code $($r.ExitCode)"
+    Confirm-True ($r.Err.Count -eq 0) "right render $($name): stderr empty"
+    Confirm-Equal $r.Lines.Count 1 "right render $($name): one line"
+    Confirm-Equal (Measure-VisibleWidth $r.Lines[0]) 119 "right render $($name): line one is exactly COLUMNS - 1 cells"
+    $text = ConvertTo-PlainText $r.Lines[0]
+    Confirm-True ($text -match "$rightIcon [0-2]\d:[0-5]\d$") "right render $($name): the line ends with the clock glyph and HH:mm"
+    Confirm-True ($text -match "  +$rightIcon ") "right render $($name): spaces, not a chevron, in front of the right group"
+    Confirm-True (-not ($text -match "$chevron $rightIcon")) "right render $($name): the right group is not separated like a packed segment"
+    # Unset width is the early return: nothing is measured, so there is no target to pad to and no right
+    # group either. The same config prints the clock inline at the end of the ordinary order.
+    $r = Invoke-StatusLine $payload $rightPath 0
+    Confirm-True ($r.Err.Count -eq 0) "right render $($name): stderr empty at the unset width"
+    $text = ConvertTo-PlainText ($r.Lines -join "`n")
+    Confirm-True ($text -match "$chevron $rightIcon [0-2]\d:[0-5]\d$") "right render $($name): COLUMNS unset prints the clock inline at the end of the order"
+    Confirm-True (-not ($text -match "  $rightIcon")) "right render $($name): and pads nothing to get there"
+}
+# The case the design has to answer rather than avoid: 06's packed line is wider than the terminal even
+# once every Short form has been shed, so the two groups cannot both be on it. The right group goes first
+# and whole - it is decoration, and the alternative is a line that keeps a clock and loses a rate limit -
+# and what is left is exactly the line the same config prints with no right group at all.
+$payload06 = $samplePayloads[$sample06.Name]
+$crowded = Invoke-StatusLine $payload06 $rightPath 120
+$crowdedNoTime = Invoke-StatusLine $payload06 (Write-TempConfig 'right-inline-off.json' '{ "layout": "one", "style": "plain", "segments": { "time": false } }') 120
+Confirm-True ($crowded.Err.Count -eq 0) 'right render 06: stderr empty'
+Confirm-True (-not (ConvertTo-PlainText ($crowded.Lines -join "`n")).Contains($iconTime)) 'right render 06: a line with no room for both groups sheds the right one'
+Confirm-Equal ($crowded.Lines -join "`n") ($crowdedNoTime.Lines -join "`n") 'right render 06: and what is left is the line the same config prints without the group'
+# `right` absent, or naming a segment that is switched off, or naming nothing the registry has, each
+# leaves the render exactly what it was before either key existed. This is the success criterion that
+# every existing install keeps its line.
+foreach ($name in @('01-main-clean.json', '06-limits-badges-lines.json', '10-pr.json')) {
+    $payload = $samplePayloads[$name]
+    $none = Invoke-StatusLine $payload $rightPlain 120
+    foreach ($case in @(@{ Path = $rightOffPath; What = 'a right group whose segment is off' }, @{ Path = $rightBogusPath; What = 'an unknown name in the right group' })) {
+        $r = Invoke-StatusLine $payload $case.Path 120
+        Confirm-Equal ($r.Lines -join "`n") ($none.Lines -join "`n") "right render $($name): $($case.What) renders exactly what it did before"
+        Confirm-Equal $r.Err.Count 0 "right render $($name): $($case.What) writes nothing to stderr"
+    }
+}
+# Layout two aligns row one and leaves row two alone. The clock sits on row one, so pushing it right
+# moves it to the end of the first line and the second line is the one it always was.
+$rightTwoPath = Write-TempConfig 'right-two.json' '{ "layout": "two", "style": "plain", "segments": { "time": true }, "right": ["time"] }'
+$rightTwoNone = Write-TempConfig 'right-two-none.json' '{ "layout": "two", "style": "plain" }'
+$two = Invoke-StatusLine $samplePayloads['01-main-clean.json'] $rightTwoPath 120
+$twoNone = Invoke-StatusLine $samplePayloads['01-main-clean.json'] $rightTwoNone 120
+Confirm-True ($two.Err.Count -eq 0) 'right render layout two: stderr empty'
+Confirm-Equal $two.Lines.Count 2 'right render layout two: two lines'
+Confirm-Equal (Measure-VisibleWidth $two.Lines[0]) 119 'right render layout two: row one is exactly COLUMNS - 1 cells'
+Confirm-True ((ConvertTo-PlainText $two.Lines[0]) -match "$rightIcon [0-2]\d:[0-5]\d$") 'right render layout two: row one ends with the clock'
+Confirm-Equal $two.Lines[1] $twoNone.Lines[1] 'right render layout two: row two is byte for byte the row it was'
+Confirm-True ((Measure-VisibleWidth $two.Lines[1]) -lt 119) 'right render layout two: and row two is not padded out to the width'
+# The check above cannot see a right group that leaks onto row two, because the wall clock is a row-one
+# segment and row two never holds it. So name a ROW TWO segment instead: the session clock. The group
+# then finds nothing on row one and, because it belongs to row one alone, nothing on row two either -
+# the whole render has to come out byte for byte the render with no right group at all. A print loop
+# that handed the same group to every line set would right-align row two and pad it to the full width,
+# and that is exactly what the second and third assertions here refuse.
+$rowTwoRight = Write-TempConfig 'right-two-rowtwo.json' '{ "layout": "two", "style": "plain", "right": ["clock"] }'
+$rowTwo = Invoke-StatusLine $samplePayloads['01-main-clean.json'] $rowTwoRight 120
+Confirm-True ($rowTwo.Err.Count -eq 0) 'right render row two: stderr empty'
+Confirm-Equal ($rowTwo.Lines -join "`n") ($twoNone.Lines -join "`n") 'right render row two: a group naming a row-two segment belongs to row one and so changes nothing'
+Confirm-True ((Measure-VisibleWidth $rowTwo.Lines[1]) -lt 119) 'right render row two: row two is not aligned to the width by a group that named one of its segments'
 
 # The taskbar sequence through the whole script. Every check here is against a second render of the
 # same payload with the key off, so what is pinned is "the sequence and nothing else changed" rather
