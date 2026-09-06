@@ -39,7 +39,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 | `subagent-statusline.ps1` | The per-subagent line for the agent panel, wired up by `install.ps1 -Subagents`. A different contract from the main script: Claude Code runs it once for the whole panel with every live row in one payload (`columns` and a `tasks` array) and reads one JSON object per line back, `{"id","content"}`, keyed by the task id. One line per row: the robot glyph, the agent's name, its context percentage and token count, clipped to `columns`. A `columns` of 0 means no room and prints no row; a missing or malformed one means no information about the width and prints in full. No config file, no git probe, no powerline style, no state file. Its second line is a marker the installer looks for, as a whole line inside the first ten, before it overwrites or deletes an installed copy. Twelve small helpers are copied verbatim from `statusline.ps1`, because that script reads stdin and prints as it loads and so cannot be dot-sourced; `test.ps1` fails when the copies drift. |
 | `tools/capture-stdin.ps1` | Appends stdin to a file and prints nothing on stdout. Point a settings key at it to find out what Claude Code sends at an integration point whose payload is not documented. Bounded in three places against a capture left running: stdin is read to a ceiling, the record is cut to `-MaxBytes` (1 MiB by default) with a truncation marker, and the file is rotated over one `.1` sibling when the existing length plus this record would exceed the cap, so each generation stays at or under it. The append is taken under a `.lock` sibling; a tick that cannot get it drops its payload. A write it cannot make is reported once to stderr and to a `.error` sidecar, after which it stops until the sidecar is deleted. |
 | `install.ps1` | Copies the script to `~/.claude/`, writes the `statusLine` entry to user settings with `hideVimModeIndicator` on and, with `-RefreshInterval <seconds>`, a `refreshInterval`; with `-Subagents`, also copies `subagent-statusline.ps1` there and writes a `subagentStatusLine` entry of `type` and `command` only; optionally installs JetBrainsMono Nerd Font via winget and sets it as the Windows Terminal default font. Both commands carry a double-quoted forward-slash path, so a profile with a space or an `&` in it still runs. Settings are replaced atomically, the way `Write-AtomicJson` does it in `statusline.ps1`, under an exclusive lock on a `.lock` sibling held across the whole read-modify-write: serialize to a uniquely named sibling, compare the destination with what was read, parse the new text back, take the `.bak`, compare once more, then move. The lock serialises writers that take it and has no effect on one that does not; the second comparison narrows the loss window to the rename itself rather than removing it, and what a rename replaces is in the `.bak`. Ownership of the subagent artifacts is decided by strict match, not substring: the entry has to be the exact command form the installer writes with the target as the `-File` argument itself, and the file has to carry the marker as a whole line inside its first ten. `-Subagents` refuses to install over a file that fails that check, stages its copy under a temporary name so a settings failure changes nothing, and keeps the version it replaces as `~/.claude/.claude-code-statusline-ps.subagent-rollback.ps1` — a project-owned name rather than a `.bak` beside the script, and still marker-checked before it is overwritten or deleted. Supports `-Uninstall`, which removes the `statusLine` entry and script outright and the subagent entry and script only when they pass the ownership check, and `-SettingsPath` (the seam the tests use). |
-| `statusline.json` | Defaults for layout, style, the folder mode, the state file toggle, the `links` toggle for the OSC 8 hyperlinks, the taskbar progress toggle, segment toggles, the colour thresholds, the alarm percentages (`alarm.context`, `alarm.limits`), glyph overrides, and the git probe's timeout and cache (`git.timeoutMs`, `git.cacheSeconds`, `git.cache`). A `preset` key names one of three built-in shapes — `minimal`, `cost`, `full` — for the layout, the style and every segment toggle at once; it is expanded before the rest of the file it appears in, so any key beside it wins. The layout-one `order` and layout-two `rows` keys are left out so the registry stays the source and a new segment appears on its own, and the `quiet` thresholds are left out for the same reason: they default to zero, which hides nothing. Installed beside the script. |
+| `statusline.json` | Defaults for layout, style, the `palette` colour table, the folder mode, the state file toggle, the `links` toggle for the OSC 8 hyperlinks, the taskbar progress toggle, segment toggles, the colour thresholds, the alarm percentages (`alarm.context`, `alarm.limits`), glyph overrides, and the git probe's timeout and cache (`git.timeoutMs`, `git.cacheSeconds`, `git.cache`). A `preset` key names one of three built-in shapes — `minimal`, `cost`, `full` — for the layout, the style and every segment toggle at once; it is expanded before the rest of the file it appears in, so any key beside it wins. The layout-one `order` and layout-two `rows` keys are left out so the registry stays the source and a new segment appears on its own, and the `quiet` thresholds are left out for the same reason: they default to zero, which hides nothing. Installed beside the script. |
 | `<workspace.project_dir>\.claude\statusline.json` | The project's own copy of the same keys, merged over the user file key by key so a repository can pin its layout without changing any other session. Read only when the payload names a project directory that holds it, and not at all when `-Config` names a file. Read as untrusted input: opened first and judged by the handle, at most 64 KiB, within one 250 ms budget that starts before the first filesystem call. |
 | `%TEMP%\claude-statusline-state\` | One JSON file per session (`<session_id>.json`, version 1): last cost, token totals, context and 5-hour percentages, and a ring of up to twenty cost readings. Read before the line is built, for the cost segment's per-turn delta, written after it is printed, swept of day-old files at most every six hours. The three counters (cost and the two token totals) are kept from the previous record when the payload does not carry them; the two percentages are read fresh and left absent, because a gauge carried forward describes a moment that has passed. `~/.claude/statusline-state` when `TEMP` is empty. |
 | `%TEMP%\claude-statusline\` | The git probe cache: one JSON file per repository, named by the first 16 hex characters of the SHA-256 of the lower-cased work tree path, holding the root, a stamp string (the UTC ticks of the git directory, of `index`, `HEAD`, `ORIG_HEAD`, `FETCH_HEAD`, `MERGE_HEAD`, `packed-refs`, `logs/HEAD`, `config` and `info/exclude`, and of every directory under `refs`, capped at 256; a worktree's main repository after a bar), the write time and the last `git status` record, or null when the probe failed. Read before the branch segment is built and reused for `git.cacheSeconds` while the stamp string matches; swept of day-old files with the state sweep. `TMPDIR`, then the runtime's temp path, when `TEMP` is empty. |
@@ -92,6 +92,18 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
 - **Segment records and one renderer.** Each segment is a small record (name, text, short text,
   colour role, bold); one function renders a line in plain, powerline or ascii style, and width fitting
   shrinks then drops records in a fixed order.
+- **Style and palette are two axes, not one list.** `style` is the SHAPE a line is drawn in — a
+  chevron between coloured words, solid blocks with arrows, or the same shape in printable ASCII — and
+  `palette` is the COLOUR NUMBERS those shapes use, which depend only on whether the terminal's
+  background is dark or light. `Get-Palette` takes the palette name and returns the whole table,
+  `Format-Line`, `Format-Inline` and `Get-FittedLine` each carry it, and all six pairings are drawn;
+  `ascii` with `light` is the ASCII characters in the light numbers, and neither feature needs a case
+  for the other, because an SGR code is digits and semicolons. Both parameters default to `dark`, so
+  every caller and every config written before the key existed renders the same bytes. The light
+  table's values are picked against contrast ratios rather than by eye — a plain foreground at 4.5:1
+  on white and on off-white, a block's own pair at 4.5:1, a block's background at 1.7:1 against the
+  terminal's ground so the trailing arrow and the block edges survive, and an inline marker at 3:1
+  inside any block — and `test.ps1` recomputes every one of them from the xterm cube.
 - **The right group is a layout, and a layout is the first thing a narrow line gives up.** `right`
   names segments that leave the packed line and sit flush against the right edge of the FIRST line;
   everything else stays where it was. `Get-FittedLine` splits the records in two, renders each group
@@ -126,7 +138,9 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   column while some terminals draw them as two. So `Get-IconAscii` answers for the glyphs and
   `Get-MarkSet` for the characters that are not glyphs, and the `icons` overrides — code points, every
   one — are ignored in this style, so the promise holds whatever a user or a repository's own config
-  asks for. Colours are the plain palette, role for role. Each of the twenty-four stand-ins follows one
+  asks for. Colours are the plain palette, role for role, in whichever table `palette` names — the
+  style picks characters and never colours, so `ascii` with `light` needs no case of its own in
+  either. Each of the twenty-four stand-ins follows one
   rule in three clauses: nothing at all where what follows already names the segment (the model name,
   `$1.07`, `1h12m`, `14:05`, `+156 -23`, `5h 24%`, an effort level, a vim mode); otherwise the mark
   ASCII already uses for the thing (`~` home, `*` a dirty tree, `^` and `v` ahead and behind, `!` a
@@ -441,10 +455,14 @@ request, `refreshInterval` (#26), and `-Subagents` installs a
 second script for the agent panel (#15). A state file per session (#4) carries the last cost forward,
 and the cost segment reads it for its per-turn delta (#5). Every silent catch can be traced through an
 optional log behind `CLAUDE_STATUSLINE_DEBUG` (#43). Both fallback lines are printed only where the
-config allows a model segment, and a render that shows nothing still writes its state (#42). A light
-palette is still a constant in the script. A `right` key pushes any named segments against the right
+config allows a model segment, and a render that shows nothing still writes its state (#42). A
+`palette` key picks the dark colour table or a light one tuned for a pale background (#28), and
+`install.ps1 -DetectTheme` reads Windows Terminal's default colour scheme to set it — or writes
+nothing and says why, since terminals do not report their own background and a wrong guess costs more
+than no guess. A `right` key pushes any named segments against the right
 edge of the first line, and a wall-clock segment gives that edge something to hold (#25); the clock is
-the only registry record that is off by default.
+the only registry record that is off by default. The agent panel is not covered by either `style` or
+`palette`: it reads no config file, which is #78.
 
 ## Future work
 
@@ -461,11 +479,21 @@ twelve short functions and a drift test. The intended order for the rest:
    the folder and branch links (#13) are done, reusing `Format-Link` around the finished text of each.
 2. Config: presets, a quiet block, an alarm colour (#21 to #23). Each is one key over
    `Merge-StatusConfigFile`.
-3. Style and terminal: a light palette (#28). The right-aligned group and its wall clock (#25) are
+3. Style and terminal: all done. The right-aligned group and its wall clock (#25) are
    done, and are the first thing on the line whose position is decided by the width rather than by
    the order. The ASCII style (#27) is done: a third `style` value, its own icon and mark tables, and
-   the `icons` overrides refused under it so the line it promises is the line it draws. Taskbar
-   progress (#24) is done and is the first writer of terminal state that outlives the render.
+   the `icons` overrides refused under it so the line it promises is the line it draws. The light
+   palette (#28) is done as a second axis rather than a fourth style, with `-DetectTheme` reading
+   Windows Terminal's scheme at install time and declining to answer when the settings file cannot
+   say. Taskbar progress (#24) is done and is the first writer of terminal state that outlives the
+   render.
+4. The agent panel (#78). `subagent-statusline.ps1` reads no config file, so neither `style` nor
+   `palette` reaches it, and the gap is structural rather than an oversight in either. The decision it
+   needs is where a panel learns a setting from: a config read on every tick, an environment variable,
+   or an argument the installer bakes into the `subagentStatusLine` command. The last is the closest
+   fit and is also the one that cannot be added without touching `Test-OwnSubagentEntry`, which
+   recognises this project's entry by the command's exact shape — `pwsh`, its switches, `-File`, and
+   exactly one argument after it.
 
 ## License
 

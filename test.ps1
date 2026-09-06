@@ -463,6 +463,36 @@ Confirm-Equal (Read-StatusConfig (Write-TempConfig 'style-ascii-caps.json' '{ "s
 Confirm-Equal (Read-StatusConfig (Write-TempConfig 'style-ascii-typo.json' '{ "style": "asciii" }')).Style 'plain' 'config style: a near miss falls back to plain'
 Confirm-Equal ((Get-StatusConfigKey | Where-Object { $_.Json -eq 'style' }).Allowed -join ',') 'plain,powerline,ascii' 'config style: three allowed values'
 
+# The palette key. A SEPARATE AXIS FROM style, and the two rows below are the whole of that claim in
+# the config: style says what shape a line is drawn in, palette says what colour numbers it is drawn
+# with, and neither row constrains the other, so all six combinations parse. The default is dark,
+# which is the colour table this script has always used, so a config file that says nothing about the
+# palette - which is every config file written before this key existed - renders exactly as it did.
+Confirm-Equal (Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')).Palette 'dark' 'config missing: palette defaults to dark'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'palette-light.json' '{ "palette": "light" }')).Palette 'light' 'config palette light'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'palette-caps.json' '{ "palette": "LIGHT" }')).Palette 'light' 'config palette LIGHT: case folded'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'palette-dark.json' '{ "palette": "Dark" }')).Palette 'dark' 'config palette Dark: case folded'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'palette-bogus.json' '{ "palette": "beige" }')).Palette 'dark' 'config palette: an unknown value falls back to dark'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'palette-number.json' '{ "palette": 3 }')).Palette 'dark' 'config palette: a non-string falls back to dark'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'palette-array.json' '{ "palette": ["light"] }')).Palette 'dark' 'config palette: an array falls back to dark'
+Confirm-Equal ((Get-StatusConfigKey | Where-Object { $_.Json -eq 'palette' }).Allowed -join ',') 'dark,light' 'config palette: two allowed values'
+Confirm-Equal ((Get-StatusConfigKey | Where-Object { $_.Json -eq 'palette' }).Kind) 'Enum' 'config palette: read as an enum, like layout and style'
+# Every style crossed with every palette, from one file each, so the two keys are shown not to
+# interfere: a palette value never moves the style and a style value never moves the palette.
+$comboN = 0
+foreach ($st in @('plain', 'powerline', 'ascii')) {
+    foreach ($pl in @('dark', 'light')) {
+        $comboN++
+        $c = Read-StatusConfig (Write-TempConfig "palette-combo-$comboN.json" ('{ "style": "' + $st + '", "palette": "' + $pl + '" }'))
+        Confirm-Equal "$($c.Style)/$($c.Palette)" "$st/$pl" "config palette: style $st with palette $pl"
+    }
+}
+# A preset names a layout, a style and the segment toggles and says nothing about the palette, so a
+# file that asks for one leaves the key where the defaults or a later key put it.
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'palette-preset.json' '{ "preset": "full" }')).Palette 'dark' 'config palette: a preset does not set it'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'palette-preset-light.json' '{ "preset": "full", "palette": "light" }')).Palette 'light' 'config palette: a preset does not clear it either'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'palette-preset-light.json' '{ "preset": "full", "palette": "light" }')).Style 'powerline' 'config palette: and the preset still sets the style'
+
 $c = Read-StatusConfig (Write-TempConfig 'segments-array.json' '{ "segments": [true] }')
 Confirm-Equal $c.Segments.model $true 'config segments not an object: all on'
 
@@ -1408,6 +1438,12 @@ Confirm-True ($shippedJson -is [System.Management.Automation.PSCustomObject]) 's
 $c = Read-StatusConfig $shippedConfig
 Confirm-Equal $c.Layout 'one' 'shipped config: layout one'
 Confirm-Equal $c.Style 'plain' 'shipped config: style plain'
+# palette ships spelled out at its default of dark, the way taskbar ships spelled out at false: the key
+# is there to flip rather than something to find in the README, and dark is what the line has always
+# been. It is a separate key from style rather than a fourth style value, so both are in the file.
+Confirm-Equal $c.Palette 'dark' 'shipped config: palette dark'
+Confirm-Equal $shippedJson.palette 'dark' 'shipped config: the file itself says palette dark'
+Confirm-Equal $shippedJson.style 'plain' 'shipped config: and still says style plain beside it'
 Confirm-Equal $c.Folder 'repo' 'shipped config: folder repo'
 Confirm-Equal $shippedJson.folder 'repo' 'shipped config: the file itself says folder repo'
 $shippedSegments = @($c.Segments.Keys)
@@ -2090,6 +2126,216 @@ Confirm-Equal $pal.Roles.branch.Bg 90 'palette branch bg'
 Confirm-Equal $pal.Inline.added.Fg 46 'palette inline added fg'
 Confirm-Equal $pal.Inline.cached.Sgr '90' 'palette inline cached sgr'
 Confirm-Equal $pal.Inline.cached.Fg 244 'palette inline cached fg'
+# One palette table as a single sorted string, so two tables compare as text whatever order a
+# hashtable happens to enumerate its keys in.
+function Format-PaletteText($Palette) {
+    $rows = foreach ($group in 'Roles', 'Inline') {
+        foreach ($name in @($Palette[$group].Keys | Sort-Object)) {
+            $e = $Palette[$group][$name]
+            "$group.$name=$($e.Sgr)/$($e.Fg)/$($e.Bg)"
+        }
+    }
+    return (@($rows) -join ' ')
+}
+# No argument is the dark table, and 'dark' by name is the same table, so every caller written before
+# the parameter existed keeps the colours it had.
+Confirm-Equal (Format-PaletteText (Get-Palette 'dark')) (Format-PaletteText $pal) 'palette: no argument is the dark table'
+Confirm-Equal (Format-PaletteText (Get-Palette 'DARK')) (Format-PaletteText $pal) 'palette: the name is matched case-insensitively'
+# A name that is not a palette is dark, the same silent fallback the config key makes, so a palette
+# reaching Get-Palette by any route other than Read-StatusConfig cannot land on an empty table.
+Confirm-Equal (Format-PaletteText (Get-Palette 'beige')) (Format-PaletteText $pal) 'palette: an unknown name is the dark table'
+Confirm-Equal (Format-PaletteText (Get-Palette '')) (Format-PaletteText $pal) 'palette: an empty name is the dark table'
+Confirm-True ((Format-PaletteText (Get-Palette 'light')) -ne (Format-PaletteText $pal)) 'palette: the light table is not the dark one'
+
+Write-Host '== unit: light palette' -ForegroundColor Cyan
+# CONTRAST IS THE WHOLE POINT OF THIS TABLE, so the numbers are checked rather than eyeballed. The two
+# functions below are the test's own, and there is nothing in statusline.ps1 for them to agree with by
+# accident: the script holds colour INDICES and knows nothing about what they look like. So this is a
+# real second opinion on every value in the light table.
+#   Get-XtermRgb    the xterm 256-colour layout: 16 to 231 are a 6x6x6 cube on the levels
+#                   0, 95, 135, 175, 215, 255, and 232 to 255 are a grey ramp at 8 + 10n.
+#   Get-ContrastRatio  WCAG 2.1: linearise each channel, weight them 0.2126 / 0.7152 / 0.0722 for
+#                   relative luminance, then (lighter + 0.05) / (darker + 0.05).
+# A reader who wants to check a value by hand needs only those two rules and the hex the first one
+# gives; a reader who wants to check them all can read the ratios this group prints.
+function Get-XtermRgb([int] $Index) {
+    if ($Index -lt 16) { throw "no fixed rgb for colour index $Index" }
+    if ($Index -ge 232) { $v = 8 + 10 * ($Index - 232); return @($v, $v, $v) }
+    $levels = @(0, 95, 135, 175, 215, 255)
+    $n = $Index - 16
+    return @($levels[[math]::Floor($n / 36)], $levels[[math]::Floor(($n % 36) / 6)], $levels[$n % 6])
+}
+function Get-RelativeLuminance($Rgb) {
+    $lin = foreach ($v in $Rgb) {
+        $s = $v / 255
+        if ($s -le 0.03928) { $s / 12.92 } else { [math]::Pow((($s + 0.055) / 1.055), 2.4) }
+    }
+    return 0.2126 * $lin[0] + 0.7152 * $lin[1] + 0.0722 * $lin[2]
+}
+function Get-ContrastRatio($A, $B) {
+    $la = Get-RelativeLuminance $A
+    $lb = Get-RelativeLuminance $B
+    if ($la -lt $lb) { $t = $la; $la = $lb; $lb = $t }
+    return ($la + 0.05) / ($lb + 0.05)
+}
+# The colour index an SGR run ends in, for the plain-style codes: '38;5;24' is index 24, and so is
+# '1;38;5;24' and '22;38;5;24', where the leading number is a weight rather than a colour. $null for
+# a code that names no 256-colour index, which is every code in the dark table.
+function Get-SgrColourIndex([string] $Sgr) {
+    if ($Sgr -match '38;5;(\d+)$') { return [int] $Matches[1] }
+    return $null
+}
+# Sanity on the test's own arithmetic before it is used to judge anything: three ratios anyone can
+# look up. Black on white is 21, a colour on itself is 1, and #767676 is the classic "smallest grey
+# that clears 4.5 on white".
+Confirm-True ([math]::Abs((Get-ContrastRatio @(0, 0, 0) @(255, 255, 255)) - 21) -lt 0.001) 'contrast: black on white is 21:1'
+Confirm-True ([math]::Abs((Get-ContrastRatio @(90, 90, 90) @(90, 90, 90)) - 1) -lt 0.001) 'contrast: a colour on itself is 1:1'
+Confirm-True ([math]::Abs((Get-ContrastRatio @(0x76, 0x76, 0x76) @(255, 255, 255)) - 4.54) -lt 0.01) 'contrast: #767676 on white is 4.54:1'
+Confirm-Equal (Get-XtermRgb 16) @(0, 0, 0) 'xterm: 16 is black'
+Confirm-Equal (Get-XtermRgb 231) @(255, 255, 255) 'xterm: 231 is white'
+Confirm-Equal (Get-XtermRgb 250) @(188, 188, 188) 'xterm: 250 is #BCBCBC on the grey ramp'
+Confirm-Equal (Get-XtermRgb 44) @(0, 215, 215) 'xterm: 44 is #00D7D7 in the cube'
+
+$dark = Get-Palette 'dark'
+$light = Get-Palette 'light'
+$roleNames = @('model', 'ok', 'warn', 'bad', 'dim', 'folder', 'branch')
+$inlineNames = @('added', 'removed', 'track', 'muted', 'cached')
+# The light table is the same shape as the dark one, role for role and inline role for inline role.
+# Format-Inline reads the Inline table by name for a colour that has to survive a powerline
+# background, so a light table missing one of those names would render an empty escape into the
+# middle of a segment rather than fall back to anything.
+Confirm-Equal (@($light.Roles.Keys | Sort-Object) -join ',') (@($dark.Roles.Keys | Sort-Object) -join ',') 'light palette: the same role names as dark'
+Confirm-Equal (@($light.Inline.Keys | Sort-Object) -join ',') (@($dark.Inline.Keys | Sort-Object) -join ',') 'light palette: the same inline names as dark'
+Confirm-Equal (@($light.Roles.Keys | Sort-Object) -join ',') ((@($roleNames) | Sort-Object) -join ',') 'light palette: seven roles, the ones the segments use'
+Confirm-Equal (@($light.Inline.Keys | Sort-Object) -join ',') ((@($inlineNames) | Sort-Object) -join ',') 'light palette: five inline roles'
+foreach ($r in $roleNames) {
+    Confirm-True ($light.Roles[$r].Sgr -ne $dark.Roles[$r].Sgr) "light palette: role $r has a different plain code from dark"
+    Confirm-True ($light.Roles[$r].Bg -ne $dark.Roles[$r].Bg) "light palette: role $r has a different block background from dark"
+}
+foreach ($i in $inlineNames) {
+    Confirm-True ($light.Inline[$i].Sgr -ne $dark.Inline[$i].Sgr) "light palette: inline $i has a different plain code from dark"
+    Confirm-True ($light.Inline[$i].Fg -ne $dark.Inline[$i].Fg) "light palette: inline $i has a different powerline foreground from dark"
+}
+# Seven distinct block backgrounds, so two segments side by side are never one undivided band and the
+# arrow between them is never a colour painted on itself.
+Confirm-Equal ((@(foreach ($r in $roleNames) { $light.Roles[$r].Bg }) | Sort-Object -Unique).Count) 7 'light palette: seven distinct block backgrounds'
+
+# THE FOUR CONTRAST RULES. The grounds are the two a light terminal actually has: pure white, and the
+# off-white a great many light themes use. Ratios are printed as well as asserted, so a reader can see
+# the margin rather than only that a bar was cleared.
+$groundWhite = @(255, 255, 255)
+$groundPale = @(245, 245, 245)
+$groundBlack = @(12, 12, 12)   # Campbell, Windows Terminal's default scheme
+# 1. Plain style. The role's own foreground is drawn straight onto the terminal's background, so it
+#    carries the whole readability of the line. 4.5:1 is the WCAG AA bar for body text.
+$worst = 99.0
+foreach ($r in $roleNames) {
+    $idx = Get-SgrColourIndex $light.Roles[$r].Sgr
+    Confirm-True ($null -ne $idx) "light palette: role $r names a 256-colour index, not one of the 16 the terminal picks"
+    if ($null -eq $idx) { continue }
+    $rgb = Get-XtermRgb $idx
+    $w = Get-ContrastRatio $rgb $groundWhite
+    $p = Get-ContrastRatio $rgb $groundPale
+    if ($w -lt $worst) { $worst = $w }
+    if ($p -lt $worst) { $worst = $p }
+    Confirm-True ($w -ge 4.5) ("light plain ${r}: colour $idx on white is {0:N2}:1" -f $w)
+    Confirm-True ($p -ge 4.5) ("light plain ${r}: colour $idx on #F5F5F5 is {0:N2}:1" -f $p)
+}
+Write-Host ("   light plain: worst foreground contrast {0:N2}:1" -f $worst)
+# 2. Powerline style. The block paints its own background, so the pair is what has to be readable and
+#    the terminal's own theme does not enter into it.
+$worstPair = 99.0
+foreach ($r in $roleNames) {
+    $ratio = Get-ContrastRatio (Get-XtermRgb $light.Roles[$r].Fg) (Get-XtermRgb $light.Roles[$r].Bg)
+    if ($ratio -lt $worstPair) { $worstPair = $ratio }
+    Confirm-True ($ratio -ge 4.5) ("light powerline ${r}: $($light.Roles[$r].Fg) on $($light.Roles[$r].Bg) is {0:N2}:1" -f $ratio)
+}
+Write-Host ("   light powerline: worst block pair {0:N2}:1" -f $worstPair)
+# 3. The block background against the terminal's own ground. This is not about text: the trailing
+#    arrow paints the last block's BACKGROUND as a foreground on whatever the terminal is, and the
+#    edge of every block is that same boundary. A tint too close to the ground makes the arrow
+#    disappear and the blocks stop reading as blocks. The bar is the same for both palettes, and the
+#    dark table is measured against the same ground here so neither is special-cased.
+$worstBg = 99.0
+foreach ($r in $roleNames) {
+    $ratio = Get-ContrastRatio (Get-XtermRgb $light.Roles[$r].Bg) $groundWhite
+    if ($ratio -lt $worstBg) { $worstBg = $ratio }
+    Confirm-True ($ratio -ge 1.7) ("light powerline ${r}: background $($light.Roles[$r].Bg) against white is {0:N2}:1" -f $ratio)
+}
+$worstDarkBg = 99.0
+foreach ($r in $roleNames) {
+    $ratio = Get-ContrastRatio (Get-XtermRgb $dark.Roles[$r].Bg) $groundBlack
+    if ($ratio -lt $worstDarkBg) { $worstDarkBg = $ratio }
+    Confirm-True ($ratio -ge 1.7) ("dark powerline ${r}: background $($dark.Roles[$r].Bg) against #0C0C0C is {0:N2}:1" -f $ratio)
+}
+Write-Host ("   block edge against the terminal's ground: light {0:N2}:1, dark {1:N2}:1" -f $worstBg, $worstDarkBg)
+# 4. The inline roles. In plain style they are drawn on the terminal's ground like everything else; in
+#    powerline they are drawn INSIDE a block, so they have to hold up against every block background
+#    the light table has - Format-Inline is called from the model, context, lines, limits and branch
+#    segments, whose roles between them cover the lot. 3:1 rather than 4.5 for the second rule: these
+#    are one-word markers beside the figure they qualify, not the figure itself.
+#    THE DARK TABLE IS NOT HELD TO RULE 4 AND WOULD NOT PASS IT. Its worst inline pairing is printed
+#    below; it is a pre-existing shortcoming of the dark powerline blocks, not something this palette
+#    introduced, and fixing it would change colours on everyone's line.
+$worstInlineWhite = 99.0
+$worstInlineBlock = 99.0
+foreach ($i in $inlineNames) {
+    $idx = Get-SgrColourIndex $light.Inline[$i].Sgr
+    Confirm-True ($null -ne $idx) "light palette: inline $i names a 256-colour index"
+    if ($null -ne $idx) {
+        $w = Get-ContrastRatio (Get-XtermRgb $idx) $groundWhite
+        if ($w -lt $worstInlineWhite) { $worstInlineWhite = $w }
+        Confirm-True ($w -ge 4.5) ("light inline ${i}: colour $idx on white is {0:N2}:1" -f $w)
+    }
+    foreach ($r in $roleNames) {
+        $ratio = Get-ContrastRatio (Get-XtermRgb $light.Inline[$i].Fg) (Get-XtermRgb $light.Roles[$r].Bg)
+        if ($ratio -lt $worstInlineBlock) { $worstInlineBlock = $ratio }
+        Confirm-True ($ratio -ge 3.0) ("light inline ${i}: $($light.Inline[$i].Fg) inside the $r block is {0:N2}:1" -f $ratio)
+    }
+}
+$worstDarkInline = 99.0
+foreach ($i in $inlineNames) {
+    foreach ($r in $roleNames) {
+        $ratio = Get-ContrastRatio (Get-XtermRgb $dark.Inline[$i].Fg) (Get-XtermRgb $dark.Roles[$r].Bg)
+        if ($ratio -lt $worstDarkInline) { $worstDarkInline = $ratio }
+    }
+}
+Write-Host ("   inline markers: light on white {0:N2}:1, light inside a block {1:N2}:1, dark inside a block {2:N2}:1" -f $worstInlineWhite, $worstInlineBlock, $worstDarkInline)
+
+# The renderers with the light table. Style and palette are separate arguments and neither reads the
+# other: the same three styles, each rendered twice.
+$lightModelSgr = $light.Roles.model.Sgr
+$lightFolderSgr = $light.Roles.folder.Sgr
+$lightDimSgr = $light.Roles.dim.Sgr
+Confirm-Equal (Format-Line @($segModel, $segFolder) 'plain' 'light') "$esc[${lightModelSgr}mM$esc[0m $esc[${lightDimSgr}m$chevron$esc[0m $esc[${lightFolderSgr}mF$esc[0m" 'light plain: two segments, and the chevron follows the palette'
+Confirm-True (-not (Format-Line @($segModel, $segFolder) 'plain' 'light').Contains("$esc[90m")) 'light plain: the hardcoded bright-black chevron is gone'
+Confirm-True (-not (Format-Line @($segModel, $segFolder) 'plain' 'light').Contains("$esc[1;36m")) 'light plain: no bright cyan model'
+# The dark render is unchanged to the byte, chevron included, which is the whole of the upgrade
+# promise: the separator moved into the palette and the dark palette spells it the same way.
+Confirm-Equal (Format-Line @($segModel, $segFolder) 'plain' 'dark') "$esc[1;36mM$esc[0m $esc[90m$chevron$esc[0m $esc[34mF$esc[0m" 'dark plain: byte-identical to before the palette parameter'
+Confirm-Equal (Format-Line @($segModel, $segFolder) 'plain') (Format-Line @($segModel, $segFolder) 'plain' 'dark') 'plain: no palette argument is the dark render'
+Confirm-Equal (Format-Line @($segModel, $segFolder) 'powerline' 'light') "$esc[0;1;48;5;$($light.Roles.model.Bg);38;5;$($light.Roles.model.Fg)m M $esc[38;5;$($light.Roles.model.Bg);48;5;$($light.Roles.folder.Bg)m$arrow$esc[0;48;5;$($light.Roles.folder.Bg);38;5;$($light.Roles.folder.Fg)m F $esc[0m$esc[38;5;$($light.Roles.folder.Bg)m$arrow$esc[0m" 'light powerline: two blocks on the light backgrounds'
+Confirm-Equal (Format-Line @($segModel, $segFolder) 'powerline') (Format-Line @($segModel, $segFolder) 'powerline' 'dark') 'powerline: no palette argument is the dark render'
+# ascii + light. The ascii style changes WHICH CHARACTERS are drawn and the palette changes WHAT
+# COLOUR they are drawn in, so the two compose without either knowing about the other: the ascii
+# divider with the light dim code around it. The one thing that has to hold is that the palette
+# cannot break the ascii promise - and it cannot, because an SGR code is digits and semicolons.
+$asciiLight = Format-Line @($segModel, $segFolder) 'ascii' 'light'
+Confirm-Equal $asciiLight "$esc[${lightModelSgr}mM$esc[0m $esc[${lightDimSgr}m>$esc[0m $esc[${lightFolderSgr}mF$esc[0m" 'ascii + light: the ascii divider in the light dim colour'
+Confirm-Equal (ConvertTo-PlainText $asciiLight) (ConvertTo-PlainText (Format-Line @($segModel, $segFolder) 'ascii' 'dark')) 'ascii + light: the palette changes no character, only the colour'
+Confirm-True (@([char[]] $asciiLight | Where-Object { [int] $_ -lt 0x20 -or [int] $_ -gt 0x7E } | Where-Object { $_ -ne $esc }).Count -eq 0) 'ascii + light: every character outside the escapes is printable ASCII'
+Confirm-Equal (Format-Inline 'added' '+1' 'dim' 'plain' 'light') "$esc[$($light.Inline.added.Sgr)m+1$esc[${lightDimSgr}m" 'light inline plain restores the light segment colour'
+Confirm-Equal (Format-Inline 'removed' '-2' 'dim' 'powerline' 'light') "$esc[38;5;$($light.Inline.removed.Fg)m-2$esc[38;5;$($light.Roles.dim.Fg)m" 'light inline powerline restores the light segment fg'
+Confirm-Equal (Format-Inline 'added' '+1' 'dim' 'plain') (Format-Inline 'added' '+1' 'dim' 'plain' 'dark') 'inline: no palette argument is the dark render'
+# The 1M marker is drawn over the model segment, which is bold; the dark table spells that non-bold
+# run 22;36 and the light one has to carry the same 22 or the marker comes out bold.
+Confirm-True ($light.Inline.muted.Sgr.StartsWith('22;', [System.StringComparison]::Ordinal)) 'light inline muted: still opens with the normal-intensity code'
+Confirm-True ($light.Roles.model.Sgr.StartsWith('1;', [System.StringComparison]::Ordinal)) 'light model: still opens with the bold code'
+# Get-FittedLine hands the palette to every Format-Line it makes, at a width and without one.
+Confirm-Equal (Get-FittedLine @($segModel, $segFolder) 'plain' $null -Palette 'light') (Format-Line @($segModel, $segFolder) 'plain' 'light') 'fitted, no width: the light render'
+Confirm-Equal (Get-FittedLine @($segModel, $segFolder) 'plain' 40 -Palette 'light') (Format-Line @($segModel, $segFolder) 'plain' 'light') 'fitted at a width that holds it: the light render'
+Confirm-Equal (Get-FittedLine @($segModel, $segFolder) 'plain' 40 -Right @('folder') -Palette 'light') (Join-AlignedLine (Format-Line @($segModel) 'plain' 'light') (Format-Line @($segFolder) 'plain' 'light') 40) 'fitted with a right group: both groups are light'
+Confirm-Equal (Get-FittedLine @($segModel, $segFolder) 'plain' 40) (Get-FittedLine @($segModel, $segFolder) 'plain' 40 -Palette 'dark') 'fitted: no palette argument is the dark render'
 
 Write-Host '== unit: fitting' -ForegroundColor Cyan
 function Get-FitSegmentSet {
@@ -5961,6 +6207,118 @@ function Get-WriteStamp([string] $Path) { if (Test-Path -LiteralPath $Path) { re
 function Get-ContentHash([string] $Path) { if (Test-Path -LiteralPath $Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash }; return $null }
 $realHash = [ordered]@{}
 foreach ($name in @('settings.json', 'settings.json.bak', 'statusline.ps1', 'statusline.json')) { $realHash[$name] = Get-ContentHash (Join-Path $realClaudeDir $name) }
+# The two halves of -DetectTheme as pure functions, pulled out of install.ps1 by the parser the same
+# way statusline.ps1's are, so the settings walk and the luminance arithmetic can be exercised without
+# running an installer at all.
+. (Import-ScriptFunction $installer @('Get-BackgroundLuminance', 'Get-SchemeBackground'))
+# Relative luminance, WCAG 2.1. The two anchors are exact by definition; the middle grey is the value
+# the formula gives for #808080 and is here because a linearisation left out - the common mistake -
+# would give 0.502 instead.
+Confirm-True ([math]::Abs((Get-BackgroundLuminance '#FFFFFF') - 1) -lt 1e-9) 'luminance: #FFFFFF is 1'
+Confirm-True ([math]::Abs((Get-BackgroundLuminance '#000000') - 0) -lt 1e-9) 'luminance: #000000 is 0'
+Confirm-True ([math]::Abs((Get-BackgroundLuminance '#808080') - 0.2159) -lt 0.001) 'luminance: #808080 is 0.216, so the channels are linearised'
+Confirm-True ([math]::Abs((Get-BackgroundLuminance '#0A0A0A') - 0.00304) -lt 0.0001) 'luminance: #0A0A0A takes the linear branch under 0.03928'
+Confirm-True ((Get-BackgroundLuminance 'FFFFFF') -eq 1) 'luminance: the hash is optional'
+Confirm-True ((Get-BackgroundLuminance '#ffffff') -eq 1) 'luminance: lower-case hex'
+# The nine backgrounds Windows Terminal ships, plus the two grounds this palette was designed against.
+# The point of the group is the gap: every dark scheme is under 0.05 and every light one over 0.85, so
+# the 0.5 cut sits in an empty band rather than near any real terminal.
+foreach ($case in @(
+        @{ Hex = '#0C0C0C'; Light = $false; Name = 'Campbell' }
+        @{ Hex = '#012456'; Light = $false; Name = 'Campbell Powershell' }
+        @{ Hex = '#000000'; Light = $false; Name = 'Vintage and Tango Dark' }
+        @{ Hex = '#282C34'; Light = $false; Name = 'One Half Dark' }
+        @{ Hex = '#002B36'; Light = $false; Name = 'Solarized Dark' }
+        @{ Hex = '#FAFAFA'; Light = $true;  Name = 'One Half Light' }
+        @{ Hex = '#FDF6E3'; Light = $true;  Name = 'Solarized Light' }
+        @{ Hex = '#FFFFFF'; Light = $true;  Name = 'Tango Light' })) {
+    $l = Get-BackgroundLuminance $case.Hex
+    Confirm-True ($null -ne $l -and (($l -gt 0.5) -eq $case.Light)) ("luminance: $($case.Name) $($case.Hex) is {0:N3}, which reads as $(if ($case.Light) { 'light' } else { 'dark' })" -f $l)
+}
+# Anything that is not a colour is $null rather than a number, because the caller's whole decision
+# rests on this value and a 0 for an unparseable string would be a silent vote for the dark palette.
+foreach ($bad in @('not-a-colour', '#FFF', '#GGGGGG', '#FFFFFFFF', '#FFFFF', '', '#', 'rgb(255,255,255)', ' #FFFFFF')) {
+    Confirm-True ($null -eq (Get-BackgroundLuminance $bad)) "luminance: '$bad' is not a colour"
+}
+foreach ($bad in @($null, 7, @('#FFFFFF'), $true)) {
+    Confirm-True ($null -eq (Get-BackgroundLuminance $bad)) "luminance: a value of type $(if ($null -eq $bad) { 'null' } else { $bad.GetType().Name }) is not a colour"
+}
+
+# The settings walk. Each case is a whole Windows Terminal settings file in the temp tree; the
+# function is given the path, so nothing here reads the real one.
+$wtDir = Join-Path $tmp 'wt-settings'
+New-Item -ItemType Directory -Force $wtDir | Out-Null
+function Write-WtSetting([string] $Name, [string] $Json) {
+    $p = Join-Path $wtDir $Name
+    [System.IO.File]::WriteAllText($p, $Json, [System.Text.UTF8Encoding]::new($false))
+    return $p
+}
+$guid = '{61c54bbd-c2c6-5271-96e7-009a87ff44bf}'
+# A profile naming a scheme the file itself defines. The user's own definition is the answer whether
+# or not the name is also one of the shipped ones.
+$p = Write-WtSetting 'own-scheme.json' ('{ "defaultProfile": "' + $guid + '", "profiles": { "list": [ { "guid": "' + $guid + '", "colorScheme": "Mine" } ] }, "schemes": [ { "name": "Other", "background": "#101010" }, { "name": "Mine", "background": "#FDF6E3" } ] }')
+$s = Get-SchemeBackground $p
+Confirm-Equal $s.Scheme 'Mine' 'scheme walk: the default profile names its own scheme'
+Confirm-Equal $s.Background '#FDF6E3' 'scheme walk: and the background comes from the schemes list'
+# A built-in scheme, which Windows Terminal does not write into the user file, so the name is all
+# there is and the installer has to carry the background itself.
+$p = Write-WtSetting 'builtin.json' ('{ "defaultProfile": "' + $guid + '", "profiles": { "list": [ { "guid": "' + $guid + '", "colorScheme": "One Half Light" } ] } }')
+$s = Get-SchemeBackground $p
+Confirm-Equal $s.Scheme 'One Half Light' 'scheme walk: a built-in scheme name'
+Confirm-Equal $s.Background '#FAFAFA' 'scheme walk: its background comes from the built-in map'
+$p = Write-WtSetting 'builtin-dark.json' ('{ "defaultProfile": "' + $guid + '", "profiles": { "list": [ { "guid": "' + $guid + '", "colorScheme": "Campbell" } ] } }')
+Confirm-Equal (Get-SchemeBackground $p).Background '#0C0C0C' 'scheme walk: Campbell from the built-in map'
+# A user file that redefines a shipped name wins over the built-in map: it is the file the terminal
+# actually reads.
+$p = Write-WtSetting 'override.json' ('{ "defaultProfile": "' + $guid + '", "profiles": { "list": [ { "guid": "' + $guid + '", "colorScheme": "Campbell" } ] }, "schemes": [ { "name": "Campbell", "background": "#FFFFFF" } ] }')
+Confirm-Equal (Get-SchemeBackground $p).Background '#FFFFFF' 'scheme walk: a redefined built-in name takes the file, not the map'
+# colorScheme on profiles.defaults, which is where a user who set it once for every profile has it.
+$p = Write-WtSetting 'defaults.json' ('{ "defaultProfile": "' + $guid + '", "profiles": { "defaults": { "colorScheme": "Solarized Light" }, "list": [ { "guid": "' + $guid + '" } ] } }')
+$s = Get-SchemeBackground $p
+Confirm-Equal $s.Scheme 'Solarized Light' 'scheme walk: falls back to profiles.defaults'
+Confirm-Equal $s.Background '#FDF6E3' 'scheme walk: and reads its background'
+# The profile's own value wins over the defaults block.
+$p = Write-WtSetting 'both.json' ('{ "defaultProfile": "' + $guid + '", "profiles": { "defaults": { "colorScheme": "Campbell" }, "list": [ { "guid": "' + $guid + '", "colorScheme": "Tango Light" } ] } }')
+Confirm-Equal (Get-SchemeBackground $p).Scheme 'Tango Light' 'scheme walk: the profile beats the defaults block'
+# The older schema, where profiles is the list itself rather than an object holding one.
+$p = Write-WtSetting 'flat.json' ('{ "defaultProfile": "' + $guid + '", "profiles": [ { "guid": "' + $guid + '", "colorScheme": "Vintage" } ] }')
+Confirm-Equal (Get-SchemeBackground $p).Background '#000000' 'scheme walk: profiles as a bare list'
+# A colorScheme OBJECT. Recent Windows Terminal lets a profile name one scheme for the OS light theme
+# and another for the dark one and follows whichever is in force. Nothing in the settings file says
+# which that is, so there is no answer here to give: no background, and a reason that names both.
+$p = Write-WtSetting 'pair.json' ('{ "defaultProfile": "' + $guid + '", "profiles": { "list": [ { "guid": "' + $guid + '", "colorScheme": { "light": "One Half Light", "dark": "One Half Dark" } } ] } }')
+$s = Get-SchemeBackground $p
+Confirm-True ($null -eq $s.Background) 'scheme walk: a light/dark colorScheme pair yields no background'
+Confirm-True ($s.Reason -match 'One Half Light' -and $s.Reason -match 'One Half Dark') "scheme walk: the reason names both members, got '$($s.Reason)'"
+Confirm-True ($s.Reason -match 'OS') "scheme walk: the reason says it follows the OS setting, got '$($s.Reason)'"
+# Every way the chain can break. Each one has to come back with no background and a reason, never a
+# guess and never an exception.
+foreach ($case in @(
+        @{ Name = 'no-default'; Json = '{ "profiles": { "list": [ { "guid": "' + $guid + '", "colorScheme": "Campbell" } ] } }'; Label = 'no defaultProfile' }
+        @{ Name = 'no-match'; Json = '{ "defaultProfile": "{deadbeef-0000-0000-0000-000000000000}", "profiles": { "list": [ { "guid": "' + $guid + '", "colorScheme": "Campbell" } ] } }'; Label = 'no profile with that guid' }
+        @{ Name = 'no-scheme'; Json = '{ "defaultProfile": "' + $guid + '", "profiles": { "list": [ { "guid": "' + $guid + '" } ] } }'; Label = 'the profile names no scheme' }
+        @{ Name = 'unknown-scheme'; Json = '{ "defaultProfile": "' + $guid + '", "profiles": { "list": [ { "guid": "' + $guid + '", "colorScheme": "Someone Elses Theme" } ] } }'; Label = 'a scheme that is neither defined nor built in' }
+        @{ Name = 'no-background'; Json = '{ "defaultProfile": "' + $guid + '", "profiles": { "list": [ { "guid": "' + $guid + '", "colorScheme": "Mine" } ] }, "schemes": [ { "name": "Mine", "foreground": "#FFFFFF" } ] }'; Label = 'a scheme with no background' }
+        @{ Name = 'bad-background'; Json = '{ "defaultProfile": "' + $guid + '", "profiles": { "list": [ { "guid": "' + $guid + '", "colorScheme": "Mine" } ] }, "schemes": [ { "name": "Mine", "background": "puce" } ] }'; Label = 'a background that is not a colour' }
+        @{ Name = 'broken'; Json = '{ "defaultProfile": '; Label = 'a settings file that does not parse' }
+        @{ Name = 'empty'; Json = ''; Label = 'an empty settings file' }
+        @{ Name = 'array'; Json = '[ 1, 2 ]'; Label = 'a settings file that is not an object' }
+        @{ Name = 'scheme-not-string'; Json = '{ "defaultProfile": "' + $guid + '", "profiles": { "list": [ { "guid": "' + $guid + '", "colorScheme": 7 } ] } }'; Label = 'a colorScheme that is a number' })) {
+    $p = Write-WtSetting "break-$($case.Name).json" $case.Json
+    $s = Get-SchemeBackground $p
+    Confirm-True ($null -eq $s.Background) "scheme walk: $($case.Label) yields no background"
+    Confirm-True ([bool] $s.Reason) "scheme walk: $($case.Label) still gives a reason"
+}
+$s = Get-SchemeBackground (Join-Path $wtDir 'nothing-here.json')
+Confirm-True ($null -eq $s.Background) 'scheme walk: a settings file that is not there yields no background'
+Confirm-True ([bool] $s.Reason) 'scheme walk: and still gives a reason'
+$s = Get-SchemeBackground ''
+Confirm-True ($null -eq $s.Background) 'scheme walk: an empty path yields no background'
+# A settings path with a bracket in it is read literally, the same rule every other read in the
+# installer follows.
+$p = Write-WtSetting 'wild[1].json' ('{ "defaultProfile": "' + $guid + '", "profiles": { "list": [ { "guid": "' + $guid + '", "colorScheme": "Tango Light" } ] } }')
+Confirm-Equal (Get-SchemeBackground $p).Background '#FFFFFF' 'scheme walk: a path with a bracket in it'
+
 $oldUserProfile = $env:USERPROFILE
 try {
 $env:USERPROFILE = $installHome
@@ -6108,6 +6466,124 @@ if ($seamHolds) {
     Confirm-True ($r.Err.Count -eq 0) "uninstall again: stderr empty, got '$($r.Err -join ' | ')'"
     Confirm-Equal (Get-Content -LiteralPath $existing -Raw) $before 'uninstall again: settings.json content unchanged'
     Confirm-True ((Get-WriteStamp $existing) -eq $beforeStamp) 'uninstall again: settings.json not rewritten'
+}
+
+# ---- -DetectTheme end to end ----
+# The installer looks for Windows Terminal's settings.json under LOCALAPPDATA, so LOCALAPPDATA is
+# redirected into the temp tree the same way USERPROFILE is. Between the two redirections this group
+# reads no real settings file and writes into no real home.
+$themeHome = Join-Path $tmp 'theme-home'
+$themeLocal = Join-Path $tmp 'theme-local'
+$themeWtDir = Join-Path $themeLocal 'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState'
+$themeSettings = Join-Path $themeHome 'settings.json'
+$themeConfig = Join-Path $themeHome '.claude\statusline.json'
+$oldLocalAppData = $env:LOCALAPPDATA
+$oldThemeProfile = $env:USERPROFILE
+try {
+    $env:USERPROFILE = $themeHome
+    $env:LOCALAPPDATA = $themeLocal
+    # Sets the Windows Terminal settings file the installer will find, or removes it when $Json is
+    # $null, which is the "no Windows Terminal here" case.
+    function Write-ThemeWtSetting($Json) {
+        if (Test-Path -LiteralPath $themeWtDir) { Remove-Item -LiteralPath $themeWtDir -Recurse -Force }
+        if ($null -eq $Json) { return }
+        New-Item -ItemType Directory -Force $themeWtDir | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $themeWtDir 'settings.json'), $Json, [System.Text.UTF8Encoding]::new($false))
+    }
+    function Read-ThemeConfig { if (Test-Path -LiteralPath $themeConfig) { return (Get-Content -LiteralPath $themeConfig -Raw | ConvertFrom-Json) }; return $null }
+    $themeGuid = '{61c54bbd-c2c6-5271-96e7-009a87ff44bf}'
+    function Format-WtJson([string] $Scheme) {
+        return '{ "defaultProfile": "' + $themeGuid + '", "profiles": { "list": [ { "guid": "' + $themeGuid + '", "colorScheme": "' + $Scheme + '" } ] } }'
+    }
+    # A plain install first, with no switch: the shipped statusline.json lands in the temp home and it
+    # names no palette, so the script's own default, dark, is in force.
+    Write-ThemeWtSetting (Format-WtJson 'One Half Light')
+    $r = Invoke-Installer 'install without -DetectTheme' @('-SettingsPath', $themeSettings)
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'detect off: exit code 0, stderr empty'
+    Confirm-True (Test-Path $themeConfig) 'detect off: statusline.json installed'
+    Confirm-Equal (Read-ThemeConfig).palette 'dark' 'detect off: the shipped default of dark is what landed'
+    Confirm-True (-not (($r.Lines -join "`n") -match 'palette')) 'detect off: and nothing is said about a palette'
+    # A light scheme. The key is written, every other key survives, and the line printed names both the
+    # scheme it found and the palette it chose - a detection nobody can see is a detection nobody can
+    # correct.
+    $before = Get-Content -LiteralPath $themeConfig -Raw
+    $r = Invoke-Installer 'install -DetectTheme, One Half Light' @('-DetectTheme', '-SettingsPath', $themeSettings)
+    Confirm-True ($r.ExitCode -eq 0) "detect light: exit code $($r.ExitCode)"
+    Confirm-True ($r.Err.Count -eq 0) "detect light: stderr empty, got '$($r.Err -join ' | ')'"
+    $cfgAfter = Read-ThemeConfig
+    Confirm-Equal $cfgAfter.palette 'light' 'detect light: One Half Light writes palette light'
+    $text = $r.Lines -join "`n"
+    Confirm-True ($text -match 'One Half Light') "detect light: the message names the scheme, got '$text'"
+    Confirm-True ($text -match 'light') "detect light: the message names the palette"
+    # Every key the shipped file had is still there, with the values it had. This is the "preserving
+    # every other key" promise, checked against the file as it was rather than against a list.
+    $beforeObj = $before | ConvertFrom-Json
+    foreach ($prop in $beforeObj.PSObject.Properties) {
+        Confirm-True ($null -ne $cfgAfter.PSObject.Properties[$prop.Name]) "detect light: the $($prop.Name) key survived"
+    }
+    Confirm-Equal ($cfgAfter.segments | ConvertTo-Json -Depth 5 -Compress) ($beforeObj.segments | ConvertTo-Json -Depth 5 -Compress) 'detect light: the segments block is unchanged'
+    Confirm-Equal ($cfgAfter.git | ConvertTo-Json -Depth 5 -Compress) ($beforeObj.git | ConvertTo-Json -Depth 5 -Compress) 'detect light: the git block is unchanged'
+    Confirm-Equal $cfgAfter.style $beforeObj.style 'detect light: the style key is untouched, because palette is a separate axis'
+    # A dark scheme, over the light key that is now in the file: detection replaces what it wrote last
+    # time rather than only ever adding.
+    Write-ThemeWtSetting (Format-WtJson 'Campbell')
+    $r = Invoke-Installer 'install -DetectTheme, Campbell' @('-DetectTheme', '-SettingsPath', $themeSettings)
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'detect dark: exit code 0, stderr empty'
+    Confirm-Equal (Read-ThemeConfig).palette 'dark' 'detect dark: Campbell writes palette dark'
+    Confirm-True ((($r.Lines -join "`n")) -match 'Campbell') 'detect dark: the message names the scheme'
+    # No Windows Terminal at all. The config is left exactly as it was - BYTE FOR BYTE, because the
+    # honest answer to "which theme is this" is often that there is no way to tell, and rewriting the
+    # file to say `dark` would turn a guess into a setting.
+    Write-ThemeWtSetting $null
+    $before = Get-Content -LiteralPath $themeConfig -Raw
+    $beforeStamp = Get-WriteStamp $themeConfig
+    $r = Invoke-Installer 'install -DetectTheme, no Windows Terminal' @('-DetectTheme', '-SettingsPath', $themeSettings)
+    Confirm-True ($r.ExitCode -eq 0) "detect none: exit code $($r.ExitCode)"
+    Confirm-True ($r.Err.Count -eq 0) "detect none: stderr empty, got '$($r.Err -join ' | ')'"
+    Confirm-Equal (Get-Content -LiteralPath $themeConfig -Raw) $before 'detect none: statusline.json unchanged'
+    Confirm-True ((Get-WriteStamp $themeConfig) -eq $beforeStamp) 'detect none: statusline.json not rewritten'
+    Confirm-True ((($r.Lines -join "`n")) -match 'palette') 'detect none: it still says what it could not do'
+    # A profile that follows the OS light/dark setting. Both schemes are named in the file and nothing
+    # in the file says which is in force, so this is the case where a guess would be a coin toss
+    # between the readable palette and the unreadable one. Nothing is written and both names are said.
+    Write-ThemeWtSetting ('{ "defaultProfile": "' + $themeGuid + '", "profiles": { "list": [ { "guid": "' + $themeGuid + '", "colorScheme": { "light": "One Half Light", "dark": "One Half Dark" } } ] } }')
+    $before = Get-Content -LiteralPath $themeConfig -Raw
+    $r = Invoke-Installer 'install -DetectTheme, an OS-following profile' @('-DetectTheme', '-SettingsPath', $themeSettings)
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'detect pair: exit code 0, stderr empty'
+    Confirm-Equal (Get-Content -LiteralPath $themeConfig -Raw) $before 'detect pair: statusline.json unchanged'
+    $text = $r.Lines -join "`n"
+    Confirm-True ($text -match 'One Half Light' -and $text -match 'One Half Dark') "detect pair: the message names both schemes, got '$text'"
+    # A settings file that will not parse, and a scheme nobody has heard of. Both leave the config as
+    # it is and exit 0: -DetectTheme is a convenience on top of an install, never a reason to fail one.
+    foreach ($case in @(
+            @{ Name = 'broken settings'; Json = '{ "defaultProfile": ' }
+            @{ Name = 'an unknown scheme'; Json = (Format-WtJson 'Someone Elses Theme') })) {
+        Write-ThemeWtSetting $case.Json
+        $before = Get-Content -LiteralPath $themeConfig -Raw
+        $r = Invoke-Installer "install -DetectTheme, $($case.Name)" @('-DetectTheme', '-SettingsPath', $themeSettings)
+        Confirm-True ($r.ExitCode -eq 0) "detect $($case.Name): exit code $($r.ExitCode)"
+        Confirm-True ($r.Err.Count -eq 0) "detect $($case.Name): stderr empty, got '$($r.Err -join ' | ')'"
+        Confirm-Equal (Get-Content -LiteralPath $themeConfig -Raw) $before "detect $($case.Name): statusline.json unchanged"
+    }
+    # A user-defined scheme with a pale background, and the file that carries a palette key already:
+    # the whole point of writing the key is that the status line then reads it, so the last check runs
+    # the script itself against the config the installer just wrote.
+    Write-ThemeWtSetting ('{ "defaultProfile": "' + $themeGuid + '", "profiles": { "list": [ { "guid": "' + $themeGuid + '", "colorScheme": "Paper" } ] }, "schemes": [ { "name": "Paper", "background": "#FDF6E3" } ] }')
+    $r = Invoke-Installer 'install -DetectTheme, a user scheme' @('-DetectTheme', '-SettingsPath', $themeSettings)
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'detect user scheme: exit code 0, stderr empty'
+    Confirm-Equal (Read-ThemeConfig).palette 'light' 'detect user scheme: a #FDF6E3 background writes palette light'
+    # The two ends joined: the status line's own config reader, on the file the installer just wrote.
+    # A key spelled in a way the script does not accept would be a detection that changed nothing.
+    Confirm-Equal (Read-StatusConfig $themeConfig).Palette 'light' 'detect user scheme: the script reads back the palette the installer wrote'
+    Confirm-Equal (Read-StatusConfig $themeConfig).Style 'plain' 'detect user scheme: and the rest of the file still reads'
+    # -Uninstall keeps statusline.json, palette key and all, exactly as it keeps every other key in it.
+    $before = Get-Content -LiteralPath $themeConfig -Raw
+    $r = Invoke-Installer 'uninstall after -DetectTheme' @('-Uninstall', '-SettingsPath', $themeSettings)
+    Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'detect uninstall: exit code 0, stderr empty'
+    Confirm-Equal (Get-Content -LiteralPath $themeConfig -Raw) $before 'detect uninstall: statusline.json is kept as it was'
+} finally {
+    $env:USERPROFILE = $oldThemeProfile
+    if ($null -ne $oldLocalAppData) { $env:LOCALAPPDATA = $oldLocalAppData } else { Remove-Item Env:LOCALAPPDATA -ErrorAction SilentlyContinue }
 }
 } finally {
     $env:USERPROFILE = $oldUserProfile
@@ -7738,6 +8214,70 @@ foreach ($case in @(
     Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) "render taskbar user-file $($case.Name): exit code 0, stderr empty"
     Confirm-True (($r.Lines -join "`n").StartsWith($case.Want, [System.StringComparison]::Ordinal)) "render taskbar user-file $($case.Name): $($case.Label)"
 }
+Write-Host ''
+Write-Host '== render: light palette' -ForegroundColor Cyan
+# The palette key through the whole script, at the unset width, on the two samples with the most on
+# them. The codes checked for are the light table's; the codes checked against are the dark table's,
+# including the chevron's `e[90m, which used to be written into Format-Line rather than read from a
+# palette and is the one code that could survive a palette change by being hardcoded.
+$lightConfig = Write-TempConfig 'render-palette-light.json' '{ "palette": "light" }'
+$darkConfig = Write-TempConfig 'render-palette-dark.json' '{ "palette": "dark" }'
+$bogusConfig = Write-TempConfig 'render-palette-bogus.json' '{ "palette": "beige" }'
+$plainConfig = Write-TempConfig 'render-palette-none.json' '{}'
+# Every SGR run the dark table can put on a plain line, so "none of these" is a claim about the whole
+# table rather than about the two codes the issue named.
+$darkPlainCodes = @("$esc[1;36m", "$esc[32m", "$esc[33m", "$esc[31m", "$esc[90m", "$esc[34m", "$esc[35m", "$esc[22;36m")
+foreach ($name in @('01-main-clean.json', '06-limits-badges-lines.json')) {
+    $p = $samplePayloads[$name]
+    $rLight = Invoke-StatusLine $p $lightConfig 0
+    $rDark = Invoke-StatusLine $p $darkConfig 0
+    Confirm-True ($rLight.ExitCode -eq 0 -and $rLight.Err.Count -eq 0) "render light ${name}: exit code 0, stderr empty"
+    $lightText = $rLight.Lines -join "`n"
+    $darkText = $rDark.Lines -join "`n"
+    Confirm-True ($lightText.Contains("$esc[1;38;5;24m")) "render light ${name}: the model segment is the light bold teal"
+    Confirm-True ($lightText.Contains("$esc[38;5;240m")) "render light ${name}: the dim code appears, chevron included"
+    foreach ($code in $darkPlainCodes) {
+        Confirm-True (-not $lightText.Contains($code)) "render light ${name}: no dark code $($code -replace $esc, '<ESC>') anywhere on the line"
+    }
+    # The dark render still carries the codes it always did, which is what makes the check above a
+    # comparison rather than a claim about a sample that happens not to reach those roles.
+    Confirm-True ($darkText.Contains("$esc[1;36m") -and $darkText.Contains("$esc[90m")) "render dark ${name}: the dark codes are still there"
+    # A palette is a colour, so the visible line and its width are the same either way. That is also
+    # what says the light palette cannot change what fits or what is dropped.
+    Confirm-Equal (ConvertTo-PlainText $lightText) (ConvertTo-PlainText $darkText) "render light ${name}: the visible text is the same as dark"
+    Confirm-Equal (Measure-VisibleWidth $lightText) (Measure-VisibleWidth $darkText) "render light ${name}: the same width as dark"
+}
+# The upgrade promise, on every sample: no palette key, the dark key, and an unusable value all render
+# the same bytes. Nobody's line moves until they ask for it.
+foreach ($sample in $sampleFiles) {
+    $p = $samplePayloads[$sample.Name]
+    $none = (Invoke-StatusLine $p $plainConfig 0).Lines -join "`n"
+    Confirm-Equal ((Invoke-StatusLine $p $darkConfig 0).Lines -join "`n") $none "render palette $($sample.Name): the dark key renders what no key renders"
+    Confirm-Equal ((Invoke-StatusLine $p $bogusConfig 0).Lines -join "`n") $none "render palette $($sample.Name): an unusable value renders what no key renders"
+}
+# Powerline and ascii with the light palette, so all three styles are covered against it. The block
+# background is the light table's, and the ascii style's promise is unaffected: a colour code is
+# digits and semicolons, so changing the numbers cannot put a non-ASCII character on the line.
+$palLight = Get-Palette 'light'
+$r = Invoke-StatusLine $samplePayloads['06-limits-badges-lines.json'] (Write-TempConfig 'render-palette-light-pl.json' '{ "palette": "light", "style": "powerline" }') 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render light powerline: exit code 0, stderr empty'
+$plText = $r.Lines -join "`n"
+Confirm-True ($plText.Contains("$esc[0;1;48;5;$($palLight.Roles.model.Bg);38;5;$($palLight.Roles.model.Fg)m")) 'render light powerline: the model block is on the light background'
+Confirm-True (-not $plText.Contains("$esc[0;1;48;5;31;38;5;231m")) 'render light powerline: no dark model block'
+$r = Invoke-StatusLine $samplePayloads['06-limits-badges-lines.json'] (Write-TempConfig 'render-palette-light-ascii.json' '{ "palette": "light", "style": "ascii" }') 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render light ascii: exit code 0, stderr empty'
+$asciiText = $r.Lines -join "`n"
+Confirm-Equal (Get-NonAsciiName (ConvertTo-PlainText $asciiText)) '' 'render light ascii: the palette breaks no part of the ascii promise'
+Confirm-True ($asciiText.Contains("$esc[38;5;240m>")) 'render light ascii: the ascii divider carries the light dim colour'
+# The stand-in line the script prints when a payload will not parse. It is one glyph and one word with
+# no segment behind it, so it never went through the palette; on a light terminal a raw cyan 36 is the
+# one thing left on screen and the least readable colour there is.
+$r = Invoke-StatusLine 'not json' $lightConfig 0
+Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render light bad payload: exit code 0, stderr empty'
+Confirm-True (($r.Lines -join "`n").Contains("$esc[$($palLight.Roles.model.Sgr)m")) 'render light bad payload: the stand-in follows the palette'
+Confirm-Equal ((Invoke-StatusLine 'not json' $darkConfig 0).Lines -join "`n") ((Invoke-StatusLine 'not json' $plainConfig 0).Lines -join "`n") 'render dark bad payload: the stand-in is unchanged'
+Confirm-True (((Invoke-StatusLine 'not json' $plainConfig 0).Lines -join "`n").Contains("$esc[36m")) 'render dark bad payload: still the raw cyan it always was'
+
 Write-Host ''
 Write-Host '== render: links' -ForegroundColor Cyan
 # The links key through the whole script, on the two segments it was added for. This payload names a
