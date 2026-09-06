@@ -352,11 +352,10 @@ not touch it. The refresh interval — seconds — is what keeps the bar current
 idle; without it the bar only moves when something else redraws the line. Anyone who prefers Claude
 Code's turn-progress bar leaves `taskbar` at `false` and changes nothing.
 
-Two things worth knowing before you turn it on. A bar the status line has drawn stays on the taskbar
-until something draws over it — that is how the sequence works, and it is why a render with no
-percentage to show writes a clear rather than nothing. And for the same reason, turning the key back
-off does not put the taskbar back: the last bar drawn is still there. Closing the window clears it, and
-so does one line in the same terminal:
+A bar the status line has drawn stays on the taskbar until something draws over it — that is how the
+sequence works, and it is why a render with no percentage to show writes a clear rather than nothing.
+And for the same reason, turning the key back off does not put the taskbar back: the last bar drawn is
+still there. Closing the window clears it, and so does one line in the same terminal:
 
 ```powershell
 Write-Host "`e]9;4;0;0`a" -NoNewline
