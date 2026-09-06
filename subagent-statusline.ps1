@@ -4,7 +4,8 @@
 # deletes ~/.claude/subagent-statusline.ps1, so a file of that name this project did not install is
 # left where it is. Do not remove or reword it.
 #
-# Claude Code subagent status line (PowerShell 7) with Nerd Font glyphs and ANSI colour.
+# Claude Code subagent status line (PowerShell 7) with Nerd Font glyphs and ANSI colour, or ASCII
+# stand-ins and the light colours when -Style and -Palette ask for them.
 # Wired up as the subagentStatusLine setting, which Claude Code runs for the agent panel. It is not
 # the same contract as the main status line: the command is run once for the whole panel and gets one
 # payload holding every live row, and it answers with one JSON object per line, {"id","content"},
@@ -18,20 +19,45 @@
 # Every field is optional and anything missing is left out, the same rule the main script follows.
 #
 # One line per row, no wrapping and no second row: the panel is not a full-width bar. No git probe,
-# because a panel can hold several rows and each tick would pay for a git status per row. No config
-# file either, so this script has no toggles - which is why the panel is always Nerd Font glyphs in
-# the dark palette whatever statusline.json says about `style` or `palette`. See #78 and the note
-# above Get-Palette.
+# because a panel can hold several rows and each tick would pay for a git status per row.
+#
+# STILL NO CONFIG FILE, and -Style and -Palette are why it does not need one. The panel is launched
+# once per tick for every row at once, so a statusline.json read here would be the read #19 had to
+# bound against untrusted input and #65 had to make cheap, paid again on a path that has nothing else
+# to do. So the two settings that decide what a row is DRAWN with arrive as arguments instead, and
+# install.ps1 bakes the pair into the subagentStatusLine command from the same statusline.json the
+# status line reads. Fixed until the installer runs again, which fits what they are: a style is about
+# the terminal's font and a palette about its background, neither of which changes with the session.
+# See #78. The values are the same two enums statusline.json takes, folded to lower case and falling
+# back to the default when they are anything else - never a ValidateSet, because this command line can
+# be edited by hand and a panel that throws takes every row down with it.
+#
+# WHAT THE FALLBACK DOES NOT COVER, and cannot: a command line that TRUNCATES an argument. `-Style`
+# with nothing after it is a parameter binding failure, and binding happens before the first line of
+# this script runs, so PowerShell prints its own error where the panel expects JSON and every row goes
+# blank - not just the argument that was mistyped. No shape of parameter avoids that; reading $args by
+# hand instead would trade one panel-wide failure for a script that accepts anything and quietly draws
+# the wrong thing. THE COMMAND LINE IS THE INSTALLER'S, not a place to configure this: change `style`
+# or `palette` in statusline.json and run install.ps1 again, and the installer rewrites the command -
+# it refreshes an entry it recognises whether or not -Subagents is passed. Test-OwnSubagentEntry does
+# not recognise a truncated argument either, so an entry edited into that state is one -Uninstall
+# leaves behind, which is the other half of the same reason not to edit it.
+# `powerline` is accepted and draws exactly what `plain` draws: the panel has no separators between
+# segments and no chevrons, which is the whole of what that style changes on the main line. Accepting
+# it anyway is what lets the installer pass `style` through verbatim rather than mapping it.
 #
 # The helpers below - G, C, Read-StdinText, Get-VisibleWidth, Get-ClippedText, Get-Palette,
-# Get-ThresholdRole, Test-WideWindow, K, Get-FiniteNumber, Get-PayloadNumber, Format-PayloadText,
-# Test-PayloadText and Get-PayloadText, fourteen of them - are copied verbatim from statusline.ps1,
-# and test.ps1 checks the same fourteen names for drift, so this list and that one cannot disagree
-# without one of them failing. They cannot be shared by dot-sourcing: statusline.ps1 reads stdin to
-# the end and prints as it loads, so loading it here would eat this script's payload and print a
-# status line.
+# Get-MarkSet, Get-ThresholdRole, Test-WideWindow, K, Get-FiniteNumber, Get-PayloadNumber,
+# Format-PayloadText, Test-PayloadText and Get-PayloadText, fifteen of them - are copied verbatim from
+# statusline.ps1, and test.ps1 checks the same fifteen names for drift, so this list and that one
+# cannot disagree without one of them failing. They cannot be shared by dot-sourcing: statusline.ps1
+# reads stdin to the end and prints as it loads, so loading it here would eat this script's payload
+# and print a status line.
 [CmdletBinding()]
-param()
+param(
+    [string] $Style = 'plain',
+    [string] $Palette = 'dark'
+)
 $ErrorActionPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 # PowerShell strips ANSI colour when stdout is redirected unless told otherwise; the host always redirects it.
@@ -40,6 +66,23 @@ $PSStyle.OutputRendering = 'Ansi'
 function G([int] $cp) { [char]::ConvertFromUtf32($cp) }
 $e = [char]27
 function C([string] $code, [string] $text) { "$e[${code}m$text$e[0m" }
+
+# One of $Allowed, folded to lower case, or $Default for anything else - a value the list does not
+# hold, an empty string, or a parameter that was never passed. The same answer Merge-StatusConfigFile
+# gives statusline.json for a `style` or `palette` it cannot read, and for the same reason: a setting
+# nobody can read is a setting that was not set. NOT a [ValidateSet] on the parameter, which is the
+# obvious way to write this and the wrong one here - the command line is in the user's settings.json
+# and can be edited or half-edited by hand, and a binding failure prints a PowerShell error where the
+# panel expects JSON and takes every row down with it, not just the argument that was mistyped.
+# This one is not shared with statusline.ps1: the main script reads its enums out of a config file
+# through the key table, so there is no function there to copy, and inventing one would mean editing
+# the config merge to use it. Six lines against a change to the path every render takes.
+function Get-EnumArgument($Value, [string[]] $Allowed, [string] $Default) {
+    if ($Value -isnot [string]) { return $Default }
+    $v = $Value.ToLowerInvariant()
+    if ($v -in $Allowed) { return $v }
+    return $Default
+}
 
 # The payload, read as UTF-8 whatever the console is set to. Claude Code sends UTF-8; [Console]::In
 # decodes with [Console]::InputEncoding, which comes from the console's INPUT code page - 437 on an
@@ -121,19 +164,14 @@ function Get-VisibleWidth([string] $Text) {
 }
 
 # Colour table, copied whole from statusline.ps1 and pinned to it by the drift gate, light half
-# included. THE PANEL ALWAYS CALLS IT WITH NO ARGUMENT, so it always gets the dark table.
-# That is a limitation, stated rather than hidden: a palette is a property of the terminal, and this
-# script has nowhere to learn one from. It reads no config file - see the header - so `"palette":
-# "light"` in statusline.json reaches the status line and not the panel, and a user on a pale terminal
-# gets a readable bar above an unreadable panel. Every way to close that gap is a decision this issue
-# is not the place to make, and #78 is the issue that makes it for the style key: a config read the
-# panel pays for on every tick, a second place to configure the same thing in the environment, or an
-# argument the installer bakes into the subagentStatusLine command. The last is the closest fit and is
-# the one thing that cannot be bolted on here, because Test-OwnSubagentEntry in install.ps1 recognises
-# this project's command by its exact shape - pwsh, its switches, -File, and EXACTLY ONE argument after
-# it - so an extra argument would make the uninstaller stop recognising its own entry. The light table
-# is carried here anyway rather than stripped out, because the gate compares this function with the
-# other copy as text and a panel that learns a palette later should find it already here.
+# included, and the panel now has a palette to hand it. -Palette carries the same `palette` value the
+# status line reads out of statusline.json, put on the command line by install.ps1, so a pale terminal
+# gets a readable panel under its readable bar instead of the dark table whatever the config said (#78).
+# The argument is enough because a palette is a property of the terminal and not of the session: it
+# does not move between renders, so a config read on every tick would be paying to re-learn a constant.
+# Test-OwnSubagentEntry in install.ps1 is what made this more than a one-line change - it recognises
+# this project's entry by the command's exact shape - and it now knows these two arguments by name and
+# by allowed value, so the command the installer writes is still one it will take back out.
 function Get-Palette([string] $Palette = 'dark') {
     if ($Palette -eq 'light') {
         return @{
@@ -173,6 +211,30 @@ function Get-Palette([string] $Palette = 'dark') {
             cached  = @{ Sgr = '90';    Light = 86;  Dark = 238 }
         }
     }
+}
+
+# The characters a line is drawn from that are not icons, copied whole from statusline.ps1 and pinned
+# to it by the drift gate. The panel uses ONE of the seven, Ellipsis, which is the tail Get-ClippedText
+# puts on a name it had to cut - and that one character is half of everything the ascii style changes
+# here. The other six are for a meter, a minus, a separator and two pace arrows the panel does not
+# draw; they come along because the gate compares this function with the other copy as text, and
+# because a table of stand-ins with holes in it is worse than one that answers for everything.
+#
+# The OTHER half is the row's glyph, and that one is NOT taken from Get-IconAscii even though that
+# table holds every icon stand-in the project has. Its `model` entry - the robot is the model segment's
+# glyph - is deliberately EMPTY, because on the main line the model's NAME follows it and a mark in
+# front of a name that already names itself is a label on a label. A panel row has no such guarantee:
+# the glyph is the one thing a row always keeps, the fallback when a task's own fields are all
+# unusable, so an empty stand-in would render an empty row. So the panel takes that table's `agent`
+# mark instead, @, the character it already uses for a person driving a thread, which is what a row IS.
+# One character rather than the whole 24-entry table copied in to read one key: the entry that
+# corresponds is the wrong answer here, and pinning the panel to every future icon edit would buy
+# nothing. test.ps1 compares the panel's output with (Get-IconAscii).agent, so the two are still tied.
+function Get-MarkSet([string] $Style) {
+    if ($Style -eq 'ascii') {
+        return @{ BarFull = '#'; BarEmpty = '.'; Minus = '-'; Middot = '|'; Steady = '='; Rising = '^'; Ellipsis = '.' }
+    }
+    return @{ BarFull = (G 0x2588); BarEmpty = (G 0x2591); Minus = (G 0x2212); Middot = (G 0xB7); Steady = (G 0x2192); Rising = (G 0x2191); Ellipsis = (G 0x2026) }
 }
 
 # Colour bands for a percentage. Every caller passes both bands: the config's thresholds, 60 and 85 unless
@@ -233,9 +295,26 @@ function Get-PayloadText($v) {
 
 # ---- Row parts ----
 
-$iconModel = G 0xF06A9   # nf-md-robot, the same glyph the model segment uses
-$palette = Get-Palette
-$ellipsis = G 0x2026
+# The two arguments, read once, here rather than at the top of the file: this is where the only three
+# things they decide are built. Anything the lists do not hold falls back to the default and the row
+# still renders - see Get-EnumArgument for why that is not a ValidateSet.
+#
+# THE FOURTH COPY OF THESE TWO ENUMS, and the one furthest from the others: statusline.json's allowed
+# values live in Get-StatusConfigKey, the installer's in Get-SubagentArgumentSpec and again in the
+# ValidateSet on its parameters, and these literals are the panel's. They cannot be shared - this
+# script loads nothing, which is the same constraint that makes the copied helpers copies - so
+# test.ps1 reads all four out of the source and compares them. A value added to one list and not the
+# others is a failure there rather than a panel that silently refuses what the installer just wrote.
+$styleName = Get-EnumArgument $Style @('plain', 'powerline', 'ascii') 'plain'
+$paletteName = Get-EnumArgument $Palette @('dark', 'light') 'dark'
+
+# The row's glyph. nf-md-robot, the same glyph the model segment uses, or the ascii stand-in - see the
+# note above Get-MarkSet for why that character is a literal here and not a lookup in Get-IconAscii.
+$iconModel = if ($styleName -eq 'ascii') { '@' } else { G 0xF06A9 }
+# The colour table, not the name: $palette would be the parameter, and PowerShell's variable names are
+# case-insensitive, so the assignment would eat the argument it was built from.
+$colours = Get-Palette $paletteName
+$ellipsis = (Get-MarkSet $styleName).Ellipsis
 
 # What to call the row: the agent's registered name, else its label (a progress summary, a bash
 # command, a workflow name or a remote title), else the task description, else its type. $null when
@@ -313,11 +392,11 @@ function Format-SubagentRow($task, [int] $Width) {
         if ($progress.Count -eq 0) { break }
         $progress = if ($progress.Count -eq 1) { @() } else { @($progress[0..($progress.Count - 2)]) }
     }
-    $text = C $palette.Roles.model.Sgr ($iconModel + $(if ($shown) { " $shown" } else { '' }))
-    foreach ($p in $progress) { $text += '  ' + (C $palette.Roles[$p.Role].Sgr $p.Text) }
+    $text = C $colours.Roles.model.Sgr ($iconModel + $(if ($shown) { " $shown" } else { '' }))
+    foreach ($p in $progress) { $text += '  ' + (C $colours.Roles[$p.Role].Sgr $p.Text) }
     # Last guard: a row that still overflows falls back to the glyph on its own rather than pushing the
     # panel into a wrap. Nothing above should reach here; the check costs one measurement per row.
-    if ($Width -gt 0 -and (Get-VisibleWidth $text) -gt $Width) { return C $palette.Roles.model.Sgr $iconModel }
+    if ($Width -gt 0 -and (Get-VisibleWidth $text) -gt $Width) { return C $colours.Roles.model.Sgr $iconModel }
     return $text
 }
 
@@ -354,7 +433,7 @@ foreach ($task in $tasks) {
     $id = $task.id
     if (-not (Test-PayloadText $id)) { continue }
     if (-not $seen.Add([string] $id)) { continue }
-    $content = try { Format-SubagentRow $task $width } catch { C $palette.Roles.model.Sgr $iconModel }
-    if (-not $content) { $content = C $palette.Roles.model.Sgr $iconModel }
+    $content = try { Format-SubagentRow $task $width } catch { C $colours.Roles.model.Sgr $iconModel }
+    if (-not $content) { $content = C $colours.Roles.model.Sgr $iconModel }
     Write-Host ([pscustomobject]@{ id = $id; content = $content } | ConvertTo-Json -Compress -Depth 3)
 }
