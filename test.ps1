@@ -6295,7 +6295,6 @@ Start-Sleep -Seconds 60
     $diagLimitFn = [System.Management.Automation.Language.Parser]::ParseFile($script, [ref] $null, [ref] $null).Find(
         { param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-StatusDiagLimit' }, $true)
     Confirm-Equal ((Get-Item function:Get-StatusDiagLimit).Definition.Trim()) ($diagLimitFn.Body.Extent.Text.Trim().TrimStart('{').TrimEnd('}').Trim()) 'diag rollover: and the body is the script''s own rather than a replica'
-    if ($env:CLAUDE_TEST_STOP_AFTER_DIAG) { Write-Host "STOP_AFTER_DIAG reached, failed=$script:failed"; exit 77 }
 
     # The whole script, run twice on one payload: the log changes nothing a terminal would show, and
     # the run with it on leaves a log behind.
