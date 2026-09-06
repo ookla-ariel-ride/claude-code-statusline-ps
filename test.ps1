@@ -71,6 +71,11 @@ $script:failed = 0
 # Ordinal, not -ceq, for the reason above: every check in this file that pins a rendered string would
 # otherwise have said nothing about a right-to-left override sitting in the middle of it, which is
 # exactly the thing those checks exist to catch.
+#
+# A third trap in the same family, not about comparison but about what gets compared: a bare negative
+# literal in command-argument position is the string '-5', not a number. A typed parameter coerces it
+# back; an untyped guard like Get-FiniteNumber refuses the string, so the check passes for the wrong
+# reason. Write it as (-5).
 function Confirm-Equal($Actual, $Expected, [string] $Label) {
     if ([string]::Equals("$Actual", "$Expected", [System.StringComparison]::Ordinal)) { $script:passed++; return }
     $script:failed++
@@ -219,7 +224,8 @@ $iconConflict = [char]::ConvertFromUtf32(0xF071)
 $iconPr = [char]::ConvertFromUtf32(0xF407)
 $iconWorktree = [char]::ConvertFromUtf32(0xF04C1)
 $iconFast = [char]::ConvertFromUtf32(0xF0E7)
-$iconThink = [char]::ConvertFromUtf32(0xF09D0)
+$iconThink = [char]::ConvertFromUtf32(0xF09D1)
+$iconCost = [char]::ConvertFromUtf32(0xF0114)
 $iconEffort = [char]::ConvertFromUtf32(0xF04C5)
 $iconVim = [char]::ConvertFromUtf32(0xE62B)
 $iconAgent = [char]::ConvertFromUtf32(0xF007)
@@ -1523,6 +1529,44 @@ Confirm-Equal $defaultIcons.clock 0xF051B 'icons: clock is nf-md-timer_outline, 
 Confirm-Equal $defaultIcons.time 0xF0150 'icons: time is nf-md-clock_outline, the wall clock'
 Confirm-True ($defaultIcons.time -ne $defaultIcons.clock) 'icons: the wall clock and the session stopwatch are different glyphs'
 Confirm-Equal (Get-VisibleWidth $iconTime) 1 'icons: the wall clock glyph is one cell wide'
+# cost and think were shipped one glyph off: cost carried nf-md-clock_start (F0155, a clock with an
+# arrow) under a comment that said nf-md-cash, and think carried nf-md-braille (F09D0, a hand with
+# dots) under a comment that said nf-md-brain. Checked the same three ways as cache above, before this
+# table was corrected. Pinned by number so a later edit cannot slide either one back to its neighbour.
+Confirm-Equal $defaultIcons.cost 0xF0114 'icons: cost is nf-md-cash, not nf-md-clock_start at F0155'
+Confirm-Equal $defaultIcons.think 0xF09D1 'icons: think is nf-md-brain, not nf-md-braille at F09D0'
+# docs/render-icons.ps1 keeps its own $icons table by hand, tied to Get-IconDefault by nothing but a
+# person copying values across - exactly the class of drift this file just fixed for cost and think.
+# Parsed rather than dot-sourced: running the script renders fonts to disk and needs one installed, and
+# the literal is all this check wants. Compared through an explicit name map rather than by matching key
+# text, because two keys can share a name without sharing a meaning: render-icons.ps1's chevron
+# (U+E0B1) and arrow (U+E0B0) are the powerline divider and arrow Format-Line builds directly, not
+# Get-IconDefault entries at all, and Get-IconDefault's OWN chevron (U+203A) is the folder segment's
+# owner/name separator - a different glyph that happens to answer to the same name. Both are left out
+# of the map, and checked separately below, so a name collision cannot pass as a match.
+$riTokens = $null
+$riErrors = $null
+$riAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'docs/render-icons.ps1'), [ref] $riTokens, [ref] $riErrors)
+Confirm-Equal $riErrors.Count 0 'render-icons: docs/render-icons.ps1 parses, so the table check below means something'
+$riAssign = $riAst.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$icons' }, $true)
+$riIcons = @{}
+foreach ($pair in $riAssign.Right.Expression.Child.KeyValuePairs) {
+    $riIcons[$pair.Item1.Value] = $pair.Item2.PipelineElements[0].Expression.Value
+}
+Confirm-Equal $riIcons.Count 22 'render-icons: the table has twenty built-in glyphs plus the two separators'
+$riToDefaultName = [ordered]@{
+    robot = 'model'; memory = 'context'; fire = 'cache'; cash = 'cost'; code = 'lines'
+    tachometer = 'limits'; bolt = 'fast'; brain = 'think'; speedometer = 'effort'
+    'timer-outline' = 'clock'; 'clock-outline' = 'time'; vim = 'vim'; user = 'agent'; tag = 'session'
+    'folder-open' = 'folder'; home = 'home'; branch = 'branch'; pencil = 'dirty'; fork = 'worktree'
+    'pull-request' = 'pr'
+}
+foreach ($e in $riToDefaultName.GetEnumerator()) {
+    Confirm-Equal $riIcons[$e.Key] $defaultIcons[$e.Value] "render-icons: $($e.Key) matches Get-IconDefault's $($e.Value)"
+}
+Confirm-Equal $riIcons.chevron 0xE0B1 'render-icons: chevron is the powerline divider, not mapped to Get-IconDefault'
+Confirm-Equal $riIcons.arrow 0xE0B0 'render-icons: arrow is the powerline arrow, not mapped to Get-IconDefault'
+Confirm-True ($riIcons.chevron -ne $defaultIcons.chevron) 'render-icons: its chevron and Get-IconDefault.chevron share a name and nothing else'
 # Every built-in code point has to survive the guards a config value goes through. The glyph a config
 # may put in its place is held to that bar, so the one it replaces cannot sit below it.
 foreach ($e in $defaultIcons.GetEnumerator()) {
@@ -1596,6 +1640,27 @@ foreach ($name in @('Control', 'Format', 'Surrogate', 'OtherNotAssigned', 'Space
 }
 Confirm-True (([System.Globalization.UnicodeCategory]::PrivateUse) -notin $refusedCategories) 'code point: private use is allowed, which is where the Nerd Font glyphs live'
 
+Write-Host '== unit: negative literals' -ForegroundColor Cyan
+# The bare-negative trap noted above Confirm-Equal is documented, not enforced, unless something checks
+# for it - so this file's own syntax tree is parsed and searched for the shape that trap takes: a
+# CommandAst argument (the command name itself skipped) that is a bare-word string constant starting
+# with a hyphen and a digit. A parenthesised (-5) parses as a ParenExpressionAst, a different node type,
+# so it can never match and this check has no false positives against the fix this file already applies.
+$selfTokens = $null
+$selfErrors = $null
+$selfAst = [System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref] $selfTokens, [ref] $selfErrors)
+Confirm-Equal $selfErrors.Count 0 'negative literals: this file parses, so the syntax tree check below means something'
+$bareNegatives = @($selfAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object {
+        $cmd = $_
+        for ($i = 1; $i -lt $cmd.CommandElements.Count; $i++) {
+            $el = $cmd.CommandElements[$i]
+            if ($el -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $el.StringConstantType -eq 'BareWord' -and $el.Value -match '^-\d') {
+                "line $($el.Extent.StartLineNumber): $($el.Value)"
+            }
+        }
+    })
+Confirm-Equal $bareNegatives.Count 0 "negative literals: no bare negative literal sits in argument position, found: $($bareNegatives -join ', ')"
+
 Write-Host '== unit: state' -ForegroundColor Cyan
 # The state helpers derive their directory from TEMP, so point it at a folder under $tmp for these cases
 # and put it back afterwards. Nothing here touches the machine's real state directory.
@@ -1646,13 +1711,9 @@ Confirm-Equal (Get-PayloadNumber 2147483648) $null 'state number: a count must f
 Confirm-Equal (Get-StateNumber 2147483648 -Whole) 2147483648 'state number: a whole figure may exceed an Int32'
 Confirm-Equal (Get-StateNumber 1e300 -Whole) $null 'state number: a whole figure must fit a long'
 
-# Every negative literal below is parenthesised, and that is not style. A bare `-100` in argument
-# position is bound as the STRING "-100", not as the number: PowerShell reads a leading hyphen as the
-# start of a parameter name and falls back to passing the token through as text. An untyped parameter
-# then holds a string, Get-FiniteNumber refuses it because it is not a ValueType, and the check passes
-# for the wrong reason - it would pass against an implementation with no sign rule at all. A mutation
-# run is what found it here. `(-100)` is an expression and binds the number, so write it that way
-# wherever a negative figure is the thing under test.
+# Every negative literal below is parenthesised, and that is not style - it is the bare-negative trap
+# noted above Confirm-Equal, and a mutation run is what found it here: a bare `-100` passed as the
+# STRING "-100", Get-FiniteNumber refused it, and the check passed for the wrong reason.
 #
 # A cumulative figure has to be possible as well as finite: dollars spent and tokens sent only count up,
 # so a negative one is a corrupt record or a wrong payload, not a figure. It is refused rather than
@@ -1766,8 +1827,8 @@ Confirm-Equal $negCarry.input_tokens $null 'state merge: a negative count in the
 # 100 - and the one reader a stored one has refuses anything at or below zero at its own door.
 $negGauge = Merge-SessionState $back ([pscustomobject]@{ context_window = [pscustomobject]@{ used_percentage = -3 }
         rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{ used_percentage = -3 } } }) 1767225840
-Confirm-Equal $negGauge.used_percentage -3 'state merge: a negative context percentage is stored as it arrived, because a gauge is not a counter'
-Confirm-Equal $negGauge.five_hour_percentage -3 'state merge: and so is a negative five-hour percentage'
+Confirm-Equal $negGauge.used_percentage (-3) 'state merge: a negative context percentage is stored as it arrived, because a gauge is not a counter'
+Confirm-Equal $negGauge.five_hour_percentage (-3) 'state merge: and so is a negative five-hour percentage'
 $badCost = Merge-SessionState $null ([pscustomobject]@{ cost = [pscustomobject]@{ total_cost_usd = 'lots' } }) 1
 Confirm-Equal $badCost.cost_usd $null 'state merge: string cost is not a number'
 Confirm-Equal @($badCost.history).Count 0 'state merge: string cost starts no history'
@@ -1837,7 +1898,7 @@ Confirm-Equal $neg.cost_usd $null 'state read: a negative cost reads as no figur
 Confirm-Equal $neg.input_tokens $null 'state read: a negative input count reads as no figure'
 Confirm-Equal $neg.output_tokens 4000 'state read: the counter beside it is untouched'
 Confirm-Equal $neg.updated_at 5 'state read: updated_at is a clock reading and keeps the plain rule'
-Confirm-Equal $neg.used_percentage -3 'state read: a percentage is a gauge and is not refused here'
+Confirm-Equal $neg.used_percentage (-3) 'state read: a percentage is a gauge and is not refused here'
 Confirm-Equal $neg.five_hour_percentage 23.5 'state read: the five-hour gauge reads as written'
 Confirm-Equal @($neg.history).Count 1 'state read: a ring entry with a negative cost is dropped'
 Confirm-Equal $neg.history[0].cost_usd 0.5 'state read: and the honest entry is kept'
@@ -2781,7 +2842,7 @@ Confirm-True $seg.Text.StartsWith("$iconCtx 100% ") 'context 110: clamped text p
 Confirm-True $seg.Text.Contains($bar100) 'context 110: bar is 10 full blocks'
 Confirm-Equal $seg.Role 'bad' 'context 110: role'
 
-$seg = Get-ContextSegment (Get-ContextPayload -5) $bandCfg
+$seg = Get-ContextSegment (Get-ContextPayload (-5)) $bandCfg
 $bar0 = $blockLight * 10
 Confirm-True $seg.Text.StartsWith("$iconCtx 0% ") 'context -5: clamped text prefix'
 Confirm-True $seg.Text.Contains($bar0) 'context -5: bar is 10 light blocks'
@@ -2819,8 +2880,8 @@ Confirm-Equal (Get-ContextSegment (Get-ContextPayload 8) $quiet30) $null 'contex
 Confirm-Equal (Get-ContextSegment (Get-ContextPayload 29) $quiet30) $null 'context quiet 30: 29% is still below the line'
 Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload 30) $quiet30)) 'context quiet 30: 30% is on the line and stays'
 # A payload at -5 clamps to 0 and is compared as 0, so a quiet of 0 keeps it and any threshold hides it.
-Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload -5) $quietOff)) 'context quiet 0: a clamped 0% meter is still built'
-Confirm-Equal (Get-ContextSegment (Get-ContextPayload -5) $quiet30) $null 'context quiet 30: a clamped 0% meter is hidden'
+Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload (-5)) $quietOff)) 'context quiet 0: a clamped 0% meter is still built'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload (-5)) $quiet30) $null 'context quiet 30: a clamped 0% meter is hidden'
 # $bandCfg carries no Quiet table at all, which is what an older config object looks like to the guard.
 Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload 0) $bandCfg)) 'context quiet: a config with no Quiet table hides nothing'
 
@@ -3217,7 +3278,6 @@ Confirm-Equal (ConvertTo-PlainText (Get-FittedLine @($fitModel, $fitCache) 'plai
 Confirm-Equal (ConvertTo-PlainText (Get-FittedLine @($fitModel, $fitCache) 'plain' 15)) "$iconModel Fable 5.1" 'cache fitting: 15 columns drops the segment and keeps the model'
 
 Write-Host '== unit: cost' -ForegroundColor Cyan
-$iconCost = [char]::ConvertFromUtf32(0xF0155)
 function Get-CostPayload($Usd) { return [pscustomobject]@{ cost = [pscustomobject]@{ total_cost_usd = $Usd } } }
 $quiet1 = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 1.0; context = 0.0; limits = 0.0 } }
 Confirm-Equal (Get-CostSegment (Get-CostPayload 0.4312) $quietOff).Text ("$iconCost `$" + ('{0:N2}' -f 0.4312)) 'cost quiet 0: the figure is built'
@@ -3466,9 +3526,9 @@ Confirm-Equal (Get-WholePercent 90.4) 90 'whole percent: 90.4 rounds down'
 Confirm-Equal (Get-WholePercent 90.5) 90 'whole percent: 90.5 stays at the even 90, it does not go to 91'
 Confirm-Equal (Get-WholePercent 91.5) 92 'whole percent: 91.5 goes up to the even 92'
 Confirm-Equal (Get-WholePercent 0.5) 0 'whole percent: 0.5 goes to the even 0'
-Confirm-Equal (Get-WholePercent -0.6) -1 'whole percent: a negative rounds away from zero the same way'
+Confirm-Equal (Get-WholePercent (-0.6)) (-1) 'whole percent: a negative rounds away from zero the same way'
 Confirm-Equal (Get-WholePercent 1e300) ([int]::MaxValue) 'whole percent: a figure past Int32 clamps instead of throwing'
-Confirm-Equal (Get-WholePercent -1e300) ([int]::MinValue) 'whole percent: and the same at the bottom'
+Confirm-Equal (Get-WholePercent (-1e300)) ([int]::MinValue) 'whole percent: and the same at the bottom'
 # The two segments that print a percentage go through it, so the rule cannot drift apart between them.
 $roundCfg = @{ Style = 'plain'; Thresholds = @{ Warn = 60; Bad = 85 } }
 Confirm-True ((Get-ContextSegment (Get-JsonPayload 'context_window' '{"used_percentage":89.6}') $roundCfg).Text.StartsWith("$iconCtx 90%")) 'whole percent: the context meter prints 89.6 as 90%'
@@ -3512,7 +3572,7 @@ Confirm-True (-not (Test-AlarmLevel 90.5 91)) 'alarm level: 90.5 prints as 90% a
 Confirm-True (Test-AlarmLevel 90.5 90.4) 'alarm level: a fractional level is rounded the same way, so 90.4 is a 90 alarm'
 Confirm-True (-not (Test-AlarmLevel 0 0)) 'alarm level: a level of 0 is off, even at 0%'
 Confirm-True (-not (Test-AlarmLevel 100 0)) 'alarm level: a level of 0 is off at 100%'
-Confirm-True (-not (Test-AlarmLevel 100 -1)) 'alarm level: a negative level is off'
+Confirm-True (-not (Test-AlarmLevel 100 (-1))) 'alarm level: a negative level is off'
 Confirm-True (-not (Test-AlarmLevel 100 $null)) 'alarm level: a missing level is off'
 Confirm-True (-not (Test-AlarmLevel 100 '90')) 'alarm level: a level that is a string is off'
 Confirm-True (-not (Test-AlarmLevel $null 90)) 'alarm level: a null percentage does not fire'
@@ -4856,7 +4916,7 @@ $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 0
 Confirm-Equal $script:probeCalls ($before + 2) 'lifetime 0: every call probes'
 Confirm-Equal $g.Branch 'main' 'lifetime 0: the probe result comes back'
 Confirm-Equal (Get-Item -LiteralPath $cacheEntry).LastWriteTimeUtc $stamp 'lifetime 0: the entry is not rewritten'
-$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir -1
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir (-1)
 Confirm-Equal $script:probeCalls ($before + 3) 'lifetime below 0: probes'
 $g = Get-CachedGitBranch $cacheRepo 1500 '' 5
 Confirm-Equal $script:probeCalls ($before + 4) 'no cache directory given: probes'
@@ -6069,7 +6129,6 @@ function Confirm-NormalRender($Result, [string] $Cost, [string] $Label) {
     Confirm-Equal $text "$iconModel M $chevron $iconCost `$$Cost $chevron $iconHome main" "${Label}: normal line"
 }
 $iconModel = [char]::ConvertFromUtf32(0xF06A9)
-$iconCost = [char]::ConvertFromUtf32(0xF0155)
 $stateOffConfig = Write-TempConfig 'state-off.json' '{ "state": false }'
 
 $r1 = Invoke-StatusLine (Get-StatePayloadJson 1.07) $null 0
@@ -6835,10 +6894,8 @@ function Convert-ToHermeticPayload([string] $Path) {
 }
 $samplePayloads = @{}
 foreach ($sample in $sampleFiles) { $samplePayloads[$sample.Name] = Convert-ToHermeticPayload $sample.FullName }
-$iconCost = [char]::ConvertFromUtf32(0xF0155)
 $iconLines = [char]::ConvertFromUtf32(0xF121)
 $iconFast = [char]::ConvertFromUtf32(0xF0E7)
-$iconThink = [char]::ConvertFromUtf32(0xF09D0)
 $iconEffort = [char]::ConvertFromUtf32(0xF04C5)
 $iconVim = [char]::ConvertFromUtf32(0xE62B)
 $minus = [char]::ConvertFromUtf32(0x2212)
