@@ -228,7 +228,7 @@ function Get-IconDefault {
         model    = 0xF06A9   # nf-md-robot
         context  = 0xF035B   # nf-md-memory
         cache    = 0xF0238   # nf-md-fire  (prompt cache warmth)
-        cost     = 0xF0155   # nf-md-cash
+        cost     = 0xF0114   # nf-md-cash
         # nf-md-timer_outline, the outline stopwatch. Issue #8 named that glyph and then wrote F13AB
         # beside it, which is nf-md-timer, the filled one; the name is what says how the glyph should
         # look, so this is F051B, the code point the Nerd Fonts glyph list gives that name.
@@ -252,7 +252,7 @@ function Get-IconDefault {
         lines    = 0xF121    # nf-fa-code  (lines added/removed)
         limits   = 0xF0E4    # nf-fa-tachometer (rate limits)
         fast     = 0xF0E7    # nf-fa-bolt  (fast mode)
-        think    = 0xF09D0   # nf-md-brain (extended thinking)
+        think    = 0xF09D1   # nf-md-brain (extended thinking)
         effort   = 0xF04C5   # nf-md-speedometer (effort level)
         vim      = 0xE62B    # nf-custom-vim
         agent    = 0xF007    # nf-fa-user (the custom agent driving the main thread)

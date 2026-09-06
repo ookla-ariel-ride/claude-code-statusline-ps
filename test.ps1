@@ -219,7 +219,7 @@ $iconConflict = [char]::ConvertFromUtf32(0xF071)
 $iconPr = [char]::ConvertFromUtf32(0xF407)
 $iconWorktree = [char]::ConvertFromUtf32(0xF04C1)
 $iconFast = [char]::ConvertFromUtf32(0xF0E7)
-$iconThink = [char]::ConvertFromUtf32(0xF09D0)
+$iconThink = [char]::ConvertFromUtf32(0xF09D1)
 $iconEffort = [char]::ConvertFromUtf32(0xF04C5)
 $iconVim = [char]::ConvertFromUtf32(0xE62B)
 $iconAgent = [char]::ConvertFromUtf32(0xF007)
@@ -1523,6 +1523,15 @@ Confirm-Equal $defaultIcons.clock 0xF051B 'icons: clock is nf-md-timer_outline, 
 Confirm-Equal $defaultIcons.time 0xF0150 'icons: time is nf-md-clock_outline, the wall clock'
 Confirm-True ($defaultIcons.time -ne $defaultIcons.clock) 'icons: the wall clock and the session stopwatch are different glyphs'
 Confirm-Equal (Get-VisibleWidth $iconTime) 1 'icons: the wall clock glyph is one cell wide'
+# cost and think were shipped one glyph off: cost carried nf-md-clock_start (F0155, a clock with an
+# arrow) under a comment that said nf-md-cash, and think carried nf-md-braille (F09D0, a hand with
+# dots) under a comment that said nf-md-brain. Checked against the Nerd Fonts glyphnames.json the
+# cheat sheet is generated from ("md-cash":{"code":"f0114"}, "md-brain":{"code":"f09d1"}), against the
+# shipped JetBrainsMono NF cmap (both code points carry an outline distinct from the old ones) and
+# against a rendered image (a banknote, a brain) before this table was corrected. Pinned by number so
+# a later edit cannot slide either one back to its neighbour.
+Confirm-Equal $defaultIcons.cost 0xF0114 'icons: cost is nf-md-cash, not nf-md-clock_start at F0155'
+Confirm-Equal $defaultIcons.think 0xF09D1 'icons: think is nf-md-brain, not nf-md-braille at F09D0'
 # Every built-in code point has to survive the guards a config value goes through. The glyph a config
 # may put in its place is held to that bar, so the one it replaces cannot sit below it.
 foreach ($e in $defaultIcons.GetEnumerator()) {
@@ -6069,7 +6078,7 @@ function Confirm-NormalRender($Result, [string] $Cost, [string] $Label) {
     Confirm-Equal $text "$iconModel M $chevron $iconCost `$$Cost $chevron $iconHome main" "${Label}: normal line"
 }
 $iconModel = [char]::ConvertFromUtf32(0xF06A9)
-$iconCost = [char]::ConvertFromUtf32(0xF0155)
+$iconCost = [char]::ConvertFromUtf32(0xF0114)
 $stateOffConfig = Write-TempConfig 'state-off.json' '{ "state": false }'
 
 $r1 = Invoke-StatusLine (Get-StatePayloadJson 1.07) $null 0
@@ -6835,10 +6844,10 @@ function Convert-ToHermeticPayload([string] $Path) {
 }
 $samplePayloads = @{}
 foreach ($sample in $sampleFiles) { $samplePayloads[$sample.Name] = Convert-ToHermeticPayload $sample.FullName }
-$iconCost = [char]::ConvertFromUtf32(0xF0155)
+$iconCost = [char]::ConvertFromUtf32(0xF0114)
 $iconLines = [char]::ConvertFromUtf32(0xF121)
 $iconFast = [char]::ConvertFromUtf32(0xF0E7)
-$iconThink = [char]::ConvertFromUtf32(0xF09D0)
+$iconThink = [char]::ConvertFromUtf32(0xF09D1)
 $iconEffort = [char]::ConvertFromUtf32(0xF04C5)
 $iconVim = [char]::ConvertFromUtf32(0xE62B)
 $minus = [char]::ConvertFromUtf32(0x2212)
