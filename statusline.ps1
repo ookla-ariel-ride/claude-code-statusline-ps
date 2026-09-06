@@ -23,6 +23,40 @@ function G([int] $cp) { [char]::ConvertFromUtf32($cp) }
 $e = [char]27
 function C([string] $code, [string] $text) { "$e[${code}m$text$e[0m" }
 
+# The payload, read as UTF-8 whatever the console is set to. Claude Code sends UTF-8; [Console]::In
+# decodes with [Console]::InputEncoding, which comes from the console's INPUT code page - 437 on an
+# ordinary Windows console, and the machine's OEM code page in a console the host makes fresh for the
+# render, whatever the terminal itself is set to. So a branch, a folder or a name that was not English
+# arrived here as mojibake before any segment had seen it - two characters of Japanese in, six of
+# Latin-1 and box drawing out - in every style, on every render.
+#
+# A reader rather than an assignment to [Console]::InputEncoding, which would have fixed the decode
+# just as well, and the reason is the byte order mark and not the code page. .NET builds [Console]::In
+# with detectEncodingFromByteOrderMarks OFF, so a mark on the front of the payload survives into the
+# string as U+FEFF and ConvertFrom-Json then refuses the whole thing. The reader below has that flag
+# on, and the flag is the ONLY thing stripping the mark here: UTF8Encoding($false) has an empty
+# preamble, so StreamReader's other check - the one that matches the encoding's own preamble - never
+# fires. It also means a payload some other producer wrote as UTF-16 is read rather than arriving as a
+# line of NULs. The smaller, second reason, stated accurately: assigning [Console]::InputEncoding
+# writes the console's input code page when stdin is NOT redirected, and leaves it written after this
+# process is gone; a reader of our own asks the console for nothing.
+#
+# Not redirected is the one case the reader gets WRONG, which is why it is not taken. A console hands
+# its bytes over at its own input code page, so decoding them as UTF-8 would turn a pasted accent into
+# a replacement character where [Console]::In got it right. Claude Code always redirects, and so does
+# every invocation in the README and in test.ps1; typing at the script by hand is the case below.
+# Everything else is swallowed and answered with the empty string, which is what an empty stdin already
+# gives and what every caller downstream already handles: a status line that throws where the line
+# should be is worse than one that prints its fallback.
+function Read-StdinText() {
+    if (-not [Console]::IsInputRedirected) { return [Console]::In.ReadToEnd() }
+    $reader = $null
+    try {
+        $reader = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false), $true)
+        return $reader.ReadToEnd()
+    } catch { return '' } finally { if ($null -ne $reader) { $reader.Dispose() } }
+}
+
 # ---- Diagnostics log ----
 # The git probe, the probe cache and the state file swallow every failure on purpose: a status line
 # that throws, or that prints an error where the branch should be, is worse than one that is a little
@@ -92,6 +126,13 @@ function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [i
 # a record that cannot be written inside it is dropped. Losing a line is the right trade against holding
 # the line up, and it is the trade #43 already made when it took a zero wait on the rollover mutex and
 # an approximate cap over guaranteed ones.
+# What that trade costs is more than the one line, and saying so here rather than leaving it to be
+# rediscovered: an open or a close that overruns leaves a writer on the log that nothing in this process
+# is waiting for any longer. A pool thread closes it a moment later, but until then the file is held. A
+# render writes one line and exits, so there it is invisible; in a long-lived process that writes many -
+# a test run, or anything that dot-sources this - the next record's open can meet that handle and be
+# dropped in turn, and a rollover's rename can throw on it, so one overrun record can cost several. It
+# heals as soon as the filesystem does.
 # RolloverMs is how much of that budget has to be left before the one call this function cannot bound -
 # the rename a rollover does - is attempted at all. Half, so that reaching it means both size reads
 # answered in well under half a record's clock. The note at the call site has the reasoning.
@@ -228,7 +269,7 @@ function Get-IconDefault {
         model    = 0xF06A9   # nf-md-robot
         context  = 0xF035B   # nf-md-memory
         cache    = 0xF0238   # nf-md-fire  (prompt cache warmth)
-        cost     = 0xF0155   # nf-md-cash
+        cost     = 0xF0114   # nf-md-cash
         # nf-md-timer_outline, the outline stopwatch. Issue #8 named that glyph and then wrote F13AB
         # beside it, which is nf-md-timer, the filled one; the name is what says how the glyph should
         # look, so this is F051B, the code point the Nerd Fonts glyph list gives that name.
@@ -252,7 +293,7 @@ function Get-IconDefault {
         lines    = 0xF121    # nf-fa-code  (lines added/removed)
         limits   = 0xF0E4    # nf-fa-tachometer (rate limits)
         fast     = 0xF0E7    # nf-fa-bolt  (fast mode)
-        think    = 0xF09D0   # nf-md-brain (extended thinking)
+        think    = 0xF09D1   # nf-md-brain (extended thinking)
         effort   = 0xF04C5   # nf-md-speedometer (effort level)
         vim      = 0xE62B    # nf-custom-vim
         agent    = 0xF007    # nf-fa-user (the custom agent driving the main thread)
@@ -1052,76 +1093,118 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
 # config file written before this parameter existed - and every caller inside this script that does not
 # pass one - renders the same bytes it did.
 #
-# HOW THE LIGHT NUMBERS WERE CHOSEN. Not by darkening the dark ones: a light table has to clear a
-# contrast bar on a pale ground, and the four rules below are checked by arithmetic in test.ps1 rather
-# than by eye, against the two grounds a light terminal actually has (#FFFFFF and an off-white
-# #F5F5F5). The ratios are WCAG 2.1 relative luminance, and the colour indices are the xterm 6x6x6 cube
-# on the levels 0, 95, 135, 175, 215, 255 with a grey ramp at 8 + 10n, so anyone can work out the hex
-# for a number here and check a ratio by hand.
-#   1. A plain-style foreground clears 4.5:1 on both grounds. The worst is warn, 94 (#875F00), at 5.25.
-#      All seven are 256-colour codes rather than the basic sixteen on purpose: the sixteen are
-#      whatever the terminal's scheme says they are, which is exactly the thing that goes wrong on a
-#      light theme, and a light table that could not say what a colour looks like would be no better
-#      than the dark one.
-#   2. A powerline block's own pair clears 4.5:1. All seven are near-black text on a pale block, which
-#      is the dark table's near-white-on-saturated turned over; the worst is dim at 6.95.
+# HOW THE NUMBERS WERE CHOSEN. Not by eye: the rules below are arithmetic, checked in test.ps1 against
+# the grounds a terminal actually has. The ratios are WCAG 2.1 relative luminance, the DISTANCES are
+# straight-line distance in sRGB, and the colour indices are the xterm 6x6x6 cube on the levels
+# 0, 95, 135, 175, 215, 255 with a grey ramp at 8 + 10n, so anyone can work out the hex for a number
+# here and check a figure by hand.
+#   1. A plain-style foreground clears 4.5:1 on both light grounds (#FFFFFF and an off-white #F5F5F5).
+#      The worst is light warn, 94 (#875F00), at 5.25. All seven light codes are 256-colour codes
+#      rather than the basic sixteen on purpose: the sixteen are whatever the terminal's scheme says
+#      they are, which is exactly the thing that goes wrong on a light theme.
+#   2. A powerline block's own text on its own background clears 4.5:1. The light table's worst is
+#      folder at 10.40; the dark table's worst is model, 231 on 31, at 4.13, which is older than the
+#      rule and is exempted BY NAME in the test so the debt stays visible rather than lowering the bar
+#      for the other six.
 #   3. A block's background clears 1.7:1 against the terminal's own ground, because the trailing arrow
 #      paints that background as a FOREGROUND on the terminal and every block edge is the same
 #      boundary. The light table's worst is bad, 217, at 1.75; the dark table's is dim, 238, at 2.01
-#      against Campbell, so the same rule holds for both.
-#   4. An inline foreground clears 4.5:1 on the ground in plain style and 3:1 inside every block in
-#      powerline, since a marker sits inside whichever segment called Format-Inline. The dark table
-#      does not meet the second half of that - its worst inline pairing is 1.05:1, `cached` on the
-#      model block - and it is left as it is: the numbers are on everyone's line already.
-# Role for role the two tables line up: ok is the same green as inline added, bad the same red as
-# removed, track and cached the same grey as dim, and muted is the model's own colour at normal
-# intensity, which is why its code opens with 22 in both tables.
+#      against Campbell.
+#   4. THE THREE THINGS AN INLINE MARKER HAS TO DO. A marker - `92% cached`, `1M`, `+156`, an arrow, a
+#      branch count - is drawn INSIDE a block by Format-Inline, beside that block's own text. So it has
+#      to clear three bars at once, and #82 is the issue that found out what happens when only one of
+#      them is checked:
+#        (a) 3:1 against the block's BACKGROUND, or it is invisible. `cached` 244 inside the model
+#            block was 1.05:1 - one colour drawn on itself, for all a reader could tell.
+#        (b) at least 85 sRGB distance from the block's own TEXT, or it merges with the figure it
+#            qualifies. This is a distance and not a ratio on purpose: see below.
+#        (c) and, for the blocks themselves rather than the markers, every ordered pair of dark block
+#            backgrounds stays 1.10:1 apart in luminance and 40 apart in distance, because the arrow
+#            between two blocks is the left block's background painted as a foreground on the right
+#            one's. Two blocks of equal luminance make that arrow disappear even when the two colours
+#            are plainly different side by side.
+#
+# WHY THERE ARE TWO MARKER COLUMNS. (a) and (b) pull in opposite directions, and on a dark block they
+# pull hard enough that no single colour can do both. A dark block is dark, so a marker clearing 3:1
+# against it must be BRIGHT - inside the model block, 31 (#0087AF), it must be above 0.71 relative
+# luminance, which is nearly white. But the block's own text is white. Anything that clears (a) there
+# is within 1.38:1 of the text, so (b) CANNOT be a luminance ratio on a dark block; it has to be
+# colour distance, and the marker has to carry a hue. On the warn block the arithmetic is the mirror
+# image: the block is light and its text is black, so a marker must be DARK to clear (a), and then (b)
+# comes free in luminance. One colour cannot be both bright and dark, so each marker carries two:
+# `Light` for a block whose own text is light, `Dark` for a block whose own text is dark. Each role
+# names which column it takes in `Ink`, and Format-Inline looks the marker up by it. A palette carries
+# only the columns its own roles ask for, so there is no unused colour in either table: every role in
+# the light table has dark ink, so the light table has a `Dark` column and nothing else.
+#
+# WHAT THAT COST, STATED PLAINLY. On a dark block a marker cannot be quiet, because quiet means close
+# to the background and (a) forbids it; and it cannot be grey, because grey means close to white text
+# and (b) forbids it. So the dark table's `Light` column is bright and hued where it used to be mid
+# grey: `track` and `cached` are pale cyans rather than 245/244, and `muted` is a brighter cyan than
+# 152. `removed` is the one that loses something real. A red cannot clear (a) inside the model block:
+# with red at full, green has to reach 215 and blue 135 before the luminance is high enough, and that
+# colour is #FFD787 - an apricot, and the reddest thing that exists up there. So the dark `Light`
+# `removed` is 222, warm rather than red, and the true red 124 survives in the `Dark` column where the
+# warn block's light background makes it possible. added stays 46, the green it always was.
+# Role for role the two tables still line up: ok is the green of inline added, bad the red of removed,
+# and muted is the model's own colour at normal intensity, which is why its code opens with 22 in both.
+# The two tables' `Dark` columns are the same five numbers, and deliberately so - a dark marker on a
+# light block is the same problem in both palettes, so it has the same answer.
 function Get-Palette([string] $Palette = 'dark') {
     if ($Palette -eq 'light') {
         return @{
             Roles = @{
-                model  = @{ Sgr = '1;38;5;24'; Fg = 16;  Bg = 44 }
-                ok     = @{ Sgr = '38;5;22';   Fg = 16;  Bg = 77 }
-                warn   = @{ Sgr = '38;5;94';   Fg = 16;  Bg = 214 }
-                bad    = @{ Sgr = '38;5;124';  Fg = 16;  Bg = 217 }
-                dim    = @{ Sgr = '38;5;240';  Fg = 236; Bg = 250 }
-                folder = @{ Sgr = '38;5;25';   Fg = 16;  Bg = 147 }
-                branch = @{ Sgr = '38;5;90';   Fg = 16;  Bg = 182 }
+                model  = @{ Sgr = '1;38;5;24'; Fg = 16; Bg = 44;  Ink = 'Dark' }
+                ok     = @{ Sgr = '38;5;22';   Fg = 16; Bg = 77;  Ink = 'Dark' }
+                warn   = @{ Sgr = '38;5;94';   Fg = 16; Bg = 214; Ink = 'Dark' }
+                bad    = @{ Sgr = '38;5;124';  Fg = 16; Bg = 217; Ink = 'Dark' }
+                dim    = @{ Sgr = '38;5;240';  Fg = 16; Bg = 250; Ink = 'Dark' }
+                folder = @{ Sgr = '38;5;25';   Fg = 16; Bg = 147; Ink = 'Dark' }
+                branch = @{ Sgr = '38;5;90';   Fg = 16; Bg = 182; Ink = 'Dark' }
             }
             Inline = @{
-                added   = @{ Sgr = '38;5;22';    Fg = 22 }
-                removed = @{ Sgr = '38;5;124';   Fg = 124 }
-                track   = @{ Sgr = '38;5;240';   Fg = 240 }
-                muted   = @{ Sgr = '22;38;5;24'; Fg = 24 }
-                cached  = @{ Sgr = '38;5;240';   Fg = 238 }
+                added   = @{ Sgr = '38;5;22';    Dark = 22 }
+                removed = @{ Sgr = '38;5;124';   Dark = 124 }
+                track   = @{ Sgr = '38;5;240';   Dark = 240 }
+                muted   = @{ Sgr = '22;38;5;24'; Dark = 24 }
+                cached  = @{ Sgr = '38;5;240';   Dark = 238 }
             }
         }
     }
     return @{
         Roles = @{
-            model  = @{ Sgr = '1;36'; Fg = 231; Bg = 31 }
-            ok     = @{ Sgr = '32';   Fg = 231; Bg = 28 }
-            warn   = @{ Sgr = '33';   Fg = 16;  Bg = 178 }
-            bad    = @{ Sgr = '31';   Fg = 231; Bg = 160 }
-            dim    = @{ Sgr = '90';   Fg = 250; Bg = 238 }
-            folder = @{ Sgr = '34';   Fg = 231; Bg = 25 }
-            branch = @{ Sgr = '35';   Fg = 231; Bg = 90 }
+            model  = @{ Sgr = '1;36'; Fg = 231; Bg = 31;  Ink = 'Light' }
+            ok     = @{ Sgr = '32';   Fg = 231; Bg = 28;  Ink = 'Light' }
+            warn   = @{ Sgr = '33';   Fg = 16;  Bg = 178; Ink = 'Dark' }
+            bad    = @{ Sgr = '31';   Fg = 231; Bg = 160; Ink = 'Light' }
+            dim    = @{ Sgr = '90';   Fg = 250; Bg = 238; Ink = 'Light' }
+            folder = @{ Sgr = '34';   Fg = 231; Bg = 25;  Ink = 'Light' }
+            branch = @{ Sgr = '35';   Fg = 231; Bg = 90;  Ink = 'Light' }
         }
         Inline = @{
-            added   = @{ Sgr = '32'; Fg = 46 }
-            removed = @{ Sgr = '31'; Fg = 203 }
-            track   = @{ Sgr = '90'; Fg = 245 }
-            muted   = @{ Sgr = '22;36'; Fg = 152 }
-            cached  = @{ Sgr = '90'; Fg = 244 }
+            added   = @{ Sgr = '32';    Light = 46;  Dark = 22 }
+            removed = @{ Sgr = '31';    Light = 222; Dark = 124 }
+            track   = @{ Sgr = '90';    Light = 123; Dark = 240 }
+            muted   = @{ Sgr = '22;36'; Light = 87;  Dark = 24 }
+            cached  = @{ Sgr = '90';    Light = 86;  Dark = 238 }
         }
     }
 }
 
 # A foreground-only colour change inside a segment that restores the segment's own foreground afterwards,
 # so a powerline background is never interrupted by a reset.
+# In powerline style the marker is picked by the BLOCK'S INK - which of the two columns in the Inline
+# table this block takes - because a marker has to clear the block's background and stay apart from the
+# block's own text at the same time, and on a dark block those two pull in opposite directions. See the
+# note over Get-Palette. The role is already in hand here, so the choice costs one lookup and no caller
+# has to know about it. Plain style draws on the terminal's own ground, where there is no block and no
+# block text, so it keeps the single Sgr code it always had.
 function Format-Inline([string] $Role, [string] $Text, [string] $SegmentRole, [string] $Style, [string] $Palette = 'dark') {
     $pal = Get-Palette $Palette
-    if ($Style -eq 'powerline') { return "`e[38;5;$($pal.Inline[$Role].Fg)m$Text`e[38;5;$($pal.Roles[$SegmentRole].Fg)m" }
+    if ($Style -eq 'powerline') {
+        $ink = $pal.Roles[$SegmentRole].Ink
+        return "`e[38;5;$($pal.Inline[$Role][$ink])m$Text`e[38;5;$($pal.Roles[$SegmentRole].Fg)m"
+    }
     return "`e[$($pal.Inline[$Role].Sgr)m$Text`e[$($pal.Roles[$SegmentRole].Sgr)m"
 }
 
@@ -1351,7 +1434,14 @@ function Read-PorcelainStatus([string] $Text) {
 
 # Runs git status in $Dir with a hard timeout. Any failure, or no git on PATH, returns $null.
 # Stdout and stderr are drained on .NET threads so a long listing cannot fill the pipe and stall git.
-function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
+# $WaitForExit answers "did git finish inside the budget" and defaults to the wait itself, so no caller
+# passes one and every render takes the line below. It exists for the tests, the way Get-PaceArrow's
+# $Now does: what happens when git does not answer - the tree is killed and the probe reports nothing -
+# could otherwise only be reached by really waiting a timeout out behind a fake that really hangs, and
+# a check written that way is a check on a wall clock, which a loaded machine does not honour. Given a
+# script block, it is called with the process and the timeout and its answer stands in for the wait's,
+# so the decision can be taken deliberately in a test and the clock left out of it.
+function Get-GitBranch([string] $Dir, [int] $TimeoutMs, [scriptblock] $WaitForExit) {
     if (-not $Dir) { return $null }
     if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return $null }
     $git = (Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
@@ -1372,7 +1462,7 @@ function Get-GitBranch([string] $Dir, [int] $TimeoutMs) {
         $p = [System.Diagnostics.Process]::Start($psi)
         $outTask = $p.StandardOutput.ReadToEndAsync()
         $errTask = $p.StandardError.ReadToEndAsync()
-        $exited = $p.WaitForExit($TimeoutMs)
+        $exited = if ($WaitForExit) { [bool] (& $WaitForExit $p $TimeoutMs) } else { $p.WaitForExit($TimeoutMs) }
         if (-not $exited) {
             # Kill the whole tree, then give it a moment to actually go away before we dispose the handles.
             try { $p.Kill($true) } catch { if ($script:diagOn) { Write-StatusDiag "git probe: kill failed: $($_.Exception.Message)" } }
@@ -1800,7 +1890,7 @@ function Write-SessionState([string] $SessionId, $State) {
     } catch { if ($script:diagOn) { Write-StatusDiag "state write failed: $($_.Exception.Message)" } }
 }
 
-$raw = [Console]::In.ReadToEnd()
+$raw = Read-StdinText
 $payloadOk = $true
 $d = $null
 try { $d = $raw | ConvertFrom-Json } catch { $payloadOk = $false }
@@ -2842,7 +2932,9 @@ function Get-WorktreeName($d) {
 # the probe cache, which is handed no directory when the config turns it off and does the rest of the
 # deciding itself. Either way the record has the same keys. Ahead/behind counts only exist on the git
 # path; the file counts come from either source. All of them render dim between the name and the
-# pencil, arrows first, then +staged ~modified ?untracked, then the conflict glyph in red. A session in
+# pencil, arrows first, then +staged ~modified ?untracked, then the conflict glyph in the removed role -
+# a true red on the light warn block, a warm apricot on a dark one, for the reason given over
+# Get-Palette. A session in
 # a git worktree gets the fork glyph and the worktree's name in front of the counts, from the payload
 # rather than from git. Short is icon, name and pencil, so a wide line sheds the badge and the counts
 # before it sheds whole segments. Zero counts render nothing, and a session outside a worktree gets no

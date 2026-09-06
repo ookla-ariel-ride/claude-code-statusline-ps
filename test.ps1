@@ -23,8 +23,17 @@ param(
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+# The encoding a payload piped to a native command is written WITH. Pinned rather than left to the
+# default, which is what a profile is free to change: every render below sends its payload through
+# `$Payload | pwsh`, and sample 15's is not ASCII, so a host on 437 would emit `??/x` and the matrix
+# would fail for a reason on this side of the pipe while the transport block, which writes its own
+# bytes, went on passing. That is the sending half of the very defect #80 was about.
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $PSStyle.OutputRendering = 'Ansi'
 $script = Join-Path $PSScriptRoot 'statusline.ps1'
+$subScript = Join-Path $PSScriptRoot 'subagent-statusline.ps1'
+# One lookup for every child this file starts, rather than one per launcher.
+$pwshExe = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
 $esc = [char]27
 # The escapes a rendered line can carry and a terminal does not show: an OSC string with either
 # terminator (ESC \ or BEL), or an SGR colour code. One OSC rule and not one per command - the 8
@@ -71,6 +80,11 @@ $script:failed = 0
 # Ordinal, not -ceq, for the reason above: every check in this file that pins a rendered string would
 # otherwise have said nothing about a right-to-left override sitting in the middle of it, which is
 # exactly the thing those checks exist to catch.
+#
+# A third trap in the same family, not about comparison but about what gets compared: a bare negative
+# literal in command-argument position is the string '-5', not a number. A typed parameter coerces it
+# back; an untyped guard like Get-FiniteNumber refuses the string, so the check passes for the wrong
+# reason. Write it as (-5).
 function Confirm-Equal($Actual, $Expected, [string] $Label) {
     if ([string]::Equals("$Actual", "$Expected", [System.StringComparison]::Ordinal)) { $script:passed++; return }
     $script:failed++
@@ -173,27 +187,106 @@ function Invoke-StatusLine([string] $Payload, [string] $ConfigPath, [int] $Colum
     }
 }
 
-# Starts statusline.ps1 in a child pwsh and returns before it finishes, so the caller can look at the
-# machine while the render is still running. The payload goes in on stdin and both output streams are
-# drained on .NET threads, so the child never blocks on a full pipe. COLUMNS is cleared for the child the
-# way Invoke-StatusLine clears it for a width of 0.
-function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
-    $pwshPath = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
-    $psi = [System.Diagnostics.ProcessStartInfo]::new($pwshPath)
-    foreach ($a in @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', $script)) { $psi.ArgumentList.Add($a) }
+# The ProcessStartInfo every child this file starts directly is built from: the same switches, COLUMNS
+# cleared, an optional PATH prefix, and all three streams redirected. The three encodings are named
+# rather than left to default, and that is not tidiness. .NET gives an unset StandardInputEncoding the
+# console's INPUT code page and an unset output encoding the host's console encoding, so a child
+# launched from here was being sent its payload at whatever the console happened to be on - which is
+# exactly the defect #80 fixed on the other side of the same pipe. Naming all three means the bytes a
+# test sends and the bytes it reads back are the test's own choice.
+function Get-ChildPwshStartInfo([string[]] $Arguments, [string] $PathPrefix) {
+    $psi = [System.Diagnostics.ProcessStartInfo]::new($pwshExe)
+    foreach ($a in @('-NoProfile', '-NoLogo', '-NonInteractive') + @($Arguments)) { $psi.ArgumentList.Add($a) }
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
+    $psi.StandardInputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
     [void] $psi.Environment.Remove('COLUMNS')
     if ($PathPrefix) { $psi.Environment['PATH'] = $PathPrefix + [System.IO.Path]::PathSeparator + $env:PATH }
-    $p = [System.Diagnostics.Process]::Start($psi)
+    return $psi
+}
+
+# Starts statusline.ps1 in a child pwsh and returns before it finishes, so the caller can look at the
+# machine while the render is still running. The payload goes in on stdin and both output streams are
+# drained on .NET threads, so the child never blocks on a full pipe. COLUMNS is cleared for the child the
+# way Invoke-StatusLine clears it for a width of 0. $ConfigPath is how the one caller widens the window
+# it has to look in: a render it means to watch mid-probe is no use if the probe is over before a pwsh
+# has finished starting.
+function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix, [string] $ConfigPath) {
+    $childArgs = if ($ConfigPath) { @('-File', $script, '-Config', $ConfigPath) } else { @('-File', $script) }
+    $p = [System.Diagnostics.Process]::Start((Get-ChildPwshStartInfo $childArgs $PathPrefix))
     $out = $p.StandardOutput.ReadToEndAsync()
     $err = $p.StandardError.ReadToEndAsync()
     $p.StandardInput.Write($Payload)
     $p.StandardInput.Close()
     return @{ Process = $p; Out = $out; Err = $err }
+}
+
+# A child pwsh with the payload written to its stdin as raw bytes. Invoke-ChildPwsh sends through the
+# pipeline, where $OutputEncoding chooses the bytes; here the bytes are the caller's, so a failure can
+# only be the child's reading of them. $InputCodePage above 0 runs the script under the small forcing
+# wrapper the transport block writes, which sets the child's own [Console]::InputEncoding - the value
+# [Console]::In decodes with, and the value a console's input code page supplies - before handing over.
+# The write is guarded: a child that has already exited (a parse error in the script under test) makes
+# Write throw, and under this file's $ErrorActionPreference of Stop that would take the whole run down
+# instead of leaving the exit code and stderr for the checks below to report.
+function Invoke-ChildPwshUtf8([string] $File, [string[]] $Arguments, [byte[]] $Bytes, [int] $InputCodePage) {
+    $childArgs = if ($InputCodePage -gt 0) { @('-File', $forceCodePageScript, "$InputCodePage", $File) + @($Arguments) } else { @('-File', $File) + @($Arguments) }
+    $p = [System.Diagnostics.Process]::Start((Get-ChildPwshStartInfo $childArgs ''))
+    try {
+        $out = $p.StandardOutput.ReadToEndAsync()
+        $err = $p.StandardError.ReadToEndAsync()
+        try {
+            $p.StandardInput.BaseStream.Write($Bytes, 0, $Bytes.Length)
+            $p.StandardInput.BaseStream.Flush()
+            $p.StandardInput.Close()
+        } catch { $null = $_ }
+        $p.WaitForExit()
+        return @{ Out = $out.Result; Err = $err.Result; ExitCode = $p.ExitCode }
+    } finally { $p.Dispose() }
+}
+
+# The wrapper Invoke-ChildPwshUtf8 runs a script under when it is asked for an input code page. It sets
+# the CHILD's own [Console]::InputEncoding, which is the value [Console]::In decodes with and the value
+# a console's input code page supplies, so a check can be about a code page without a code page being
+# forced on the suite's own console and needing to be put back. With stdin redirected - which it always
+# is here - .NET does not touch any console at all for that assignment, so nothing outlives the child.
+# Written into whichever temp tree the caller is using, because this file has two and the first is gone
+# by the time the second needs it.
+function Write-ForceCodePageScript([string] $Dir) {
+    $path = Join-Path $Dir 'force-input-codepage.ps1'
+    [System.IO.File]::WriteAllText($path, @'
+param([int] $CodePage, [string] $Target, [Parameter(ValueFromRemainingArguments = $true)] [string[]] $Rest)
+[Console]::InputEncoding = [System.Text.Encoding]::GetEncoding($CodePage)
+# The remaining arguments arrive as one flat list, and splatting a LIST passes it positionally, which
+# is not what -Config means. Every caller passes -Name value pairs and nothing else, so pair them back
+# up into a hashtable and splat that, which is the named form.
+$splat = @{}
+for ($i = 0; $i + 1 -lt $Rest.Count; $i += 2) { $splat[$Rest[$i].TrimStart('-')] = $Rest[$i + 1] }
+& $Target @splat
+'@, [System.Text.UTF8Encoding]::new($false))
+    return $path
+}
+
+# The subagent panel's replies, read the way the panel reads them: stdout line by line, keeping the
+# lines that are an object with a string id and a string content. Ordinal, because two live tasks can
+# have ids that differ only in case and the panel keeps them apart; a plain [ordered] hashtable would
+# fold them together and hide that. Bad counts the lines the panel would have thrown away.
+function Get-SubagentReply([string[]] $Lines) {
+    $rows = [System.Collections.Specialized.OrderedDictionary]::new([System.StringComparer]::Ordinal)
+    $bad = 0
+    foreach ($line in $Lines) {
+        if (-not "$line".Trim()) { continue }
+        $obj = try { "$line" | ConvertFrom-Json } catch { $null }
+        if ($obj -isnot [System.Management.Automation.PSCustomObject] -or
+            $obj.id -isnot [string] -or $obj.content -isnot [string]) { $bad++; continue }
+        $rows[$obj.id] = $obj.content
+    }
+    return @{ Rows = $rows; Bad = $bad }
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
@@ -203,8 +296,16 @@ function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix) {
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
 # test has to supply them; the badges section reads the script's own copies back. The git timeout is not
 # one of them any more - the segment reads it from the config - so this is only the test's own
-# shorthand for the direct Get-GitBranch calls below, pinned to the script's default.
-$gitTimeoutMs = (Get-DefaultGitConfig).TimeoutMs
+# shorthand for the direct Get-GitBranch calls below.
+# It is deliberately far longer than the shipped default. Every call that uses it is asking what git
+# said, never how long git took, and a probe that runs out of budget answers nothing at all: on a
+# machine running four test suites at once, where starting any process took seconds, the shipped 1500 ms
+# would lose those answers and the checks would fail for a reason that is not in the script. The default
+# itself is what the hang cases in the git group exercise, and Get-DefaultGitConfig's own value is
+# pinned in the config group.
+# This one is a direct argument to Get-GitBranch rather than a config value, so it is not clamped and
+# really is thirty seconds; the config fixtures below cannot ask for more than the clamp's 10000.
+$gitTimeoutMs = 30000
 $iconLimit = [char]::ConvertFromUtf32(0xF0E4)
 $iconModel = [char]::ConvertFromUtf32(0xF06A9)
 $iconFolder = [char]::ConvertFromUtf32(0xF07C)
@@ -219,7 +320,8 @@ $iconConflict = [char]::ConvertFromUtf32(0xF071)
 $iconPr = [char]::ConvertFromUtf32(0xF407)
 $iconWorktree = [char]::ConvertFromUtf32(0xF04C1)
 $iconFast = [char]::ConvertFromUtf32(0xF0E7)
-$iconThink = [char]::ConvertFromUtf32(0xF09D0)
+$iconThink = [char]::ConvertFromUtf32(0xF09D1)
+$iconCost = [char]::ConvertFromUtf32(0xF0114)
 $iconEffort = [char]::ConvertFromUtf32(0xF04C5)
 $iconVim = [char]::ConvertFromUtf32(0xE62B)
 $iconAgent = [char]::ConvertFromUtf32(0xF007)
@@ -233,6 +335,15 @@ $iconTime = [char]::ConvertFromUtf32(0xF0150)
 $middot = [char]::ConvertFromUtf32(0xB7)
 $ellipsis = [char]::ConvertFromUtf32(0x2026)
 $defaultEffort = 'high'
+# The characters that are not English, spelled from code points once so this file stays ASCII and the
+# three places that need them cannot drift into disagreeing about what was sent: the ascii style's
+# in-process checks, the transport block's child renders, and sample 15's rows in the marker tables.
+# One from each of the three shapes that break differently - a pair of CJK ideographs (three UTF-8
+# bytes each), a Latin letter with an accent (two), and a code point outside the BMP (four bytes and
+# two UTF-16 units, the case a decode that works a unit at a time gets wrong its own way).
+$cjkBranch = [char]::ConvertFromUtf32(0x6A5F) + [char]::ConvertFromUtf32(0x80FD) + '/x'
+$acuteO = [char]::ConvertFromUtf32(0xF3)
+$astralRocket = [char]::ConvertFromUtf32(0x1F680)
 $badgeNameCells = 20
 
 # A payload with one top-level key whose value is the given JSON. It goes through ConvertFrom-Json so
@@ -1523,6 +1634,44 @@ Confirm-Equal $defaultIcons.clock 0xF051B 'icons: clock is nf-md-timer_outline, 
 Confirm-Equal $defaultIcons.time 0xF0150 'icons: time is nf-md-clock_outline, the wall clock'
 Confirm-True ($defaultIcons.time -ne $defaultIcons.clock) 'icons: the wall clock and the session stopwatch are different glyphs'
 Confirm-Equal (Get-VisibleWidth $iconTime) 1 'icons: the wall clock glyph is one cell wide'
+# cost and think were shipped one glyph off: cost carried nf-md-clock_start (F0155, a clock with an
+# arrow) under a comment that said nf-md-cash, and think carried nf-md-braille (F09D0, a hand with
+# dots) under a comment that said nf-md-brain. Checked the same three ways as cache above, before this
+# table was corrected. Pinned by number so a later edit cannot slide either one back to its neighbour.
+Confirm-Equal $defaultIcons.cost 0xF0114 'icons: cost is nf-md-cash, not nf-md-clock_start at F0155'
+Confirm-Equal $defaultIcons.think 0xF09D1 'icons: think is nf-md-brain, not nf-md-braille at F09D0'
+# docs/render-icons.ps1 keeps its own $icons table by hand, tied to Get-IconDefault by nothing but a
+# person copying values across - exactly the class of drift this file just fixed for cost and think.
+# Parsed rather than dot-sourced: running the script renders fonts to disk and needs one installed, and
+# the literal is all this check wants. Compared through an explicit name map rather than by matching key
+# text, because two keys can share a name without sharing a meaning: render-icons.ps1's chevron
+# (U+E0B1) and arrow (U+E0B0) are the powerline divider and arrow Format-Line builds directly, not
+# Get-IconDefault entries at all, and Get-IconDefault's OWN chevron (U+203A) is the folder segment's
+# owner/name separator - a different glyph that happens to answer to the same name. Both are left out
+# of the map, and checked separately below, so a name collision cannot pass as a match.
+$riTokens = $null
+$riErrors = $null
+$riAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'docs/render-icons.ps1'), [ref] $riTokens, [ref] $riErrors)
+Confirm-Equal $riErrors.Count 0 'render-icons: docs/render-icons.ps1 parses, so the table check below means something'
+$riAssign = $riAst.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$icons' }, $true)
+$riIcons = @{}
+foreach ($pair in $riAssign.Right.Expression.Child.KeyValuePairs) {
+    $riIcons[$pair.Item1.Value] = $pair.Item2.PipelineElements[0].Expression.Value
+}
+Confirm-Equal $riIcons.Count 22 'render-icons: the table has twenty built-in glyphs plus the two separators'
+$riToDefaultName = [ordered]@{
+    robot = 'model'; memory = 'context'; fire = 'cache'; cash = 'cost'; code = 'lines'
+    tachometer = 'limits'; bolt = 'fast'; brain = 'think'; speedometer = 'effort'
+    'timer-outline' = 'clock'; 'clock-outline' = 'time'; vim = 'vim'; user = 'agent'; tag = 'session'
+    'folder-open' = 'folder'; home = 'home'; branch = 'branch'; pencil = 'dirty'; fork = 'worktree'
+    'pull-request' = 'pr'
+}
+foreach ($e in $riToDefaultName.GetEnumerator()) {
+    Confirm-Equal $riIcons[$e.Key] $defaultIcons[$e.Value] "render-icons: $($e.Key) matches Get-IconDefault's $($e.Value)"
+}
+Confirm-Equal $riIcons.chevron 0xE0B1 'render-icons: chevron is the powerline divider, not mapped to Get-IconDefault'
+Confirm-Equal $riIcons.arrow 0xE0B0 'render-icons: arrow is the powerline arrow, not mapped to Get-IconDefault'
+Confirm-True ($riIcons.chevron -ne $defaultIcons.chevron) 'render-icons: its chevron and Get-IconDefault.chevron share a name and nothing else'
 # Every built-in code point has to survive the guards a config value goes through. The glyph a config
 # may put in its place is held to that bar, so the one it replaces cannot sit below it.
 foreach ($e in $defaultIcons.GetEnumerator()) {
@@ -1596,6 +1745,27 @@ foreach ($name in @('Control', 'Format', 'Surrogate', 'OtherNotAssigned', 'Space
 }
 Confirm-True (([System.Globalization.UnicodeCategory]::PrivateUse) -notin $refusedCategories) 'code point: private use is allowed, which is where the Nerd Font glyphs live'
 
+Write-Host '== unit: negative literals' -ForegroundColor Cyan
+# The bare-negative trap noted above Confirm-Equal is documented, not enforced, unless something checks
+# for it - so this file's own syntax tree is parsed and searched for the shape that trap takes: a
+# CommandAst argument (the command name itself skipped) that is a bare-word string constant starting
+# with a hyphen and a digit. A parenthesised (-5) parses as a ParenExpressionAst, a different node type,
+# so it can never match and this check has no false positives against the fix this file already applies.
+$selfTokens = $null
+$selfErrors = $null
+$selfAst = [System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref] $selfTokens, [ref] $selfErrors)
+Confirm-Equal $selfErrors.Count 0 'negative literals: this file parses, so the syntax tree check below means something'
+$bareNegatives = @($selfAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object {
+        $cmd = $_
+        for ($i = 1; $i -lt $cmd.CommandElements.Count; $i++) {
+            $el = $cmd.CommandElements[$i]
+            if ($el -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $el.StringConstantType -eq 'BareWord' -and $el.Value -match '^-\d') {
+                "line $($el.Extent.StartLineNumber): $($el.Value)"
+            }
+        }
+    })
+Confirm-Equal $bareNegatives.Count 0 "negative literals: no bare negative literal sits in argument position, found: $($bareNegatives -join ', ')"
+
 Write-Host '== unit: state' -ForegroundColor Cyan
 # The state helpers derive their directory from TEMP, so point it at a folder under $tmp for these cases
 # and put it back afterwards. Nothing here touches the machine's real state directory.
@@ -1646,13 +1816,9 @@ Confirm-Equal (Get-PayloadNumber 2147483648) $null 'state number: a count must f
 Confirm-Equal (Get-StateNumber 2147483648 -Whole) 2147483648 'state number: a whole figure may exceed an Int32'
 Confirm-Equal (Get-StateNumber 1e300 -Whole) $null 'state number: a whole figure must fit a long'
 
-# Every negative literal below is parenthesised, and that is not style. A bare `-100` in argument
-# position is bound as the STRING "-100", not as the number: PowerShell reads a leading hyphen as the
-# start of a parameter name and falls back to passing the token through as text. An untyped parameter
-# then holds a string, Get-FiniteNumber refuses it because it is not a ValueType, and the check passes
-# for the wrong reason - it would pass against an implementation with no sign rule at all. A mutation
-# run is what found it here. `(-100)` is an expression and binds the number, so write it that way
-# wherever a negative figure is the thing under test.
+# Every negative literal below is parenthesised, and that is not style - it is the bare-negative trap
+# noted above Confirm-Equal, and a mutation run is what found it here: a bare `-100` passed as the
+# STRING "-100", Get-FiniteNumber refused it, and the check passed for the wrong reason.
 #
 # A cumulative figure has to be possible as well as finite: dollars spent and tokens sent only count up,
 # so a negative one is a corrupt record or a wrong payload, not a figure. It is refused rather than
@@ -1766,8 +1932,8 @@ Confirm-Equal $negCarry.input_tokens $null 'state merge: a negative count in the
 # 100 - and the one reader a stored one has refuses anything at or below zero at its own door.
 $negGauge = Merge-SessionState $back ([pscustomobject]@{ context_window = [pscustomobject]@{ used_percentage = -3 }
         rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{ used_percentage = -3 } } }) 1767225840
-Confirm-Equal $negGauge.used_percentage -3 'state merge: a negative context percentage is stored as it arrived, because a gauge is not a counter'
-Confirm-Equal $negGauge.five_hour_percentage -3 'state merge: and so is a negative five-hour percentage'
+Confirm-Equal $negGauge.used_percentage (-3) 'state merge: a negative context percentage is stored as it arrived, because a gauge is not a counter'
+Confirm-Equal $negGauge.five_hour_percentage (-3) 'state merge: and so is a negative five-hour percentage'
 $badCost = Merge-SessionState $null ([pscustomobject]@{ cost = [pscustomobject]@{ total_cost_usd = 'lots' } }) 1
 Confirm-Equal $badCost.cost_usd $null 'state merge: string cost is not a number'
 Confirm-Equal @($badCost.history).Count 0 'state merge: string cost starts no history'
@@ -1837,7 +2003,7 @@ Confirm-Equal $neg.cost_usd $null 'state read: a negative cost reads as no figur
 Confirm-Equal $neg.input_tokens $null 'state read: a negative input count reads as no figure'
 Confirm-Equal $neg.output_tokens 4000 'state read: the counter beside it is untouched'
 Confirm-Equal $neg.updated_at 5 'state read: updated_at is a clock reading and keeps the plain rule'
-Confirm-Equal $neg.used_percentage -3 'state read: a percentage is a gauge and is not refused here'
+Confirm-Equal $neg.used_percentage (-3) 'state read: a percentage is a gauge and is not refused here'
 Confirm-Equal $neg.five_hour_percentage 23.5 'state read: the five-hour gauge reads as written'
 Confirm-Equal @($neg.history).Count 1 'state read: a ring entry with a negative cost is dropped'
 Confirm-Equal $neg.history[0].cost_usd 0.5 'state read: and the honest entry is kept'
@@ -2117,22 +2283,25 @@ Confirm-Equal (Format-Line @() 'plain') '' 'plain: no segments'
 Confirm-Equal (Format-Line @($segModel, $segFolder) 'powerline') "$esc[0;1;48;5;31;38;5;231m M $esc[38;5;31;48;5;25m$arrow$esc[0;48;5;25;38;5;231m F $esc[0m$esc[38;5;25m$arrow$esc[0m" 'powerline: two segments'
 Confirm-Equal (Format-Line @($segDim) 'powerline') "$esc[0;48;5;238;38;5;250m X $esc[0m$esc[38;5;238m$arrow$esc[0m" 'powerline: one segment'
 Confirm-Equal (Format-Inline 'added' '+1' 'dim' 'plain') "$esc[32m+1$esc[90m" 'inline plain restores segment colour'
-Confirm-Equal (Format-Inline 'removed' '-2' 'dim' 'powerline') "$esc[38;5;203m-2$esc[38;5;250m" 'inline powerline restores segment fg'
+Confirm-Equal (Format-Inline 'removed' '-2' 'dim' 'powerline') "$esc[38;5;222m-2$esc[38;5;250m" 'inline powerline restores segment fg'
 
 $pal = Get-Palette
 Confirm-Equal $pal.Roles.warn.Sgr '33' 'palette warn sgr'
 Confirm-Equal $pal.Roles.warn.Fg 16 'palette warn fg'
 Confirm-Equal $pal.Roles.branch.Bg 90 'palette branch bg'
-Confirm-Equal $pal.Inline.added.Fg 46 'palette inline added fg'
+Confirm-Equal $pal.Inline.added.Light 46 'palette inline added fg on a light-inked block'
 Confirm-Equal $pal.Inline.cached.Sgr '90' 'palette inline cached sgr'
-Confirm-Equal $pal.Inline.cached.Fg 244 'palette inline cached fg'
+Confirm-Equal $pal.Inline.cached.Light 86 'palette inline cached fg on a light-inked block'
 # One palette table as a single sorted string, so two tables compare as text whatever order a
 # hashtable happens to enumerate its keys in.
 function Format-PaletteText($Palette) {
     $rows = foreach ($group in 'Roles', 'Inline') {
         foreach ($name in @($Palette[$group].Keys | Sort-Object)) {
             $e = $Palette[$group][$name]
-            "$group.$name=$($e.Sgr)/$($e.Fg)/$($e.Bg)"
+            # Every key an entry can carry, sorted, so a table that differs anywhere differs here. Naming
+            # the keys one by one would have let the two ink columns be added without this noticing.
+            $fields = foreach ($k in @($e.Keys | Sort-Object)) { "$k=$($e[$k])" }
+            "$group.$name[$($fields -join ',')]"
         }
     }
     return (@($rows) -join ' ')
@@ -2178,6 +2347,17 @@ function Get-ContrastRatio($A, $B) {
     if ($la -lt $lb) { $t = $la; $la = $lb; $lb = $t }
     return ($la + 0.05) / ($lb + 0.05)
 }
+# Straight-line distance between two colours in sRGB, 0 for the same colour and 441.7 for black against
+# white. A crude stand-in for perceptual difference and named as one: it is here because a CONTRAST
+# RATIO CANNOT ANSWER THE QUESTION RULE 4b ASKS. A marker inside a dark block has to clear 3:1 against
+# that block, which on the model block means relative luminance above 0.71 - and the block's own text is
+# white, luminance 1.0, so every colour that clears the first bar is within 1.38:1 of the text. Two
+# colours a luminance ratio calls identical can still be a green and a white, and this is the figure
+# that says so. It is checkable by hand from the same hex the rest of this group uses, which a
+# perceptually uniform space would not be.
+function Get-RgbDistance($A, $B) {
+    return [math]::Sqrt([math]::Pow($A[0] - $B[0], 2) + [math]::Pow($A[1] - $B[1], 2) + [math]::Pow($A[2] - $B[2], 2))
+}
 # The colour index an SGR run ends in, for the plain-style codes: '38;5;24' is index 24, and so is
 # '1;38;5;24' and '22;38;5;24', where the leading number is a weight rather than a colour. $null for
 # a code that names no 256-colour index, which is every code in the dark table.
@@ -2214,8 +2394,27 @@ foreach ($r in $roleNames) {
 }
 foreach ($i in $inlineNames) {
     Confirm-True ($light.Inline[$i].Sgr -ne $dark.Inline[$i].Sgr) "light palette: inline $i has a different plain code from dark"
-    Confirm-True ($light.Inline[$i].Fg -ne $dark.Inline[$i].Fg) "light palette: inline $i has a different powerline foreground from dark"
+    Confirm-True ($light.Inline[$i].Dark -ne $dark.Inline[$i].Light) "light palette: inline $i differs from the dark table's marker for a light-inked block"
+    # The two tables' Dark columns ARE the same five numbers, and that is the point rather than a slip:
+    # a dark marker on a light block is one problem, not two, so it has one answer. Pinned so a change
+    # to either table has to be a change to both, or say why not.
+    Confirm-Equal $light.Inline[$i].Dark $dark.Inline[$i].Dark "palette: inline $i is the same colour on a dark-inked block in both tables"
 }
+# EVERY ROLE NAMES ITS INK, AND EVERY MARKER CARRIES EXACTLY THE COLUMNS THE ROLES ASK FOR. Format-Inline
+# looks a marker up by the block's ink, so a role with an ink no marker has a column for would render an
+# empty escape into the middle of a segment. The other half matters as much: a column no role asks for is
+# a colour nothing draws and nothing below can measure against a real background, so it is refused too.
+foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
+    $inks = @($roleNames | ForEach-Object { $p.T.Roles[$_].Ink } | Sort-Object -Unique)
+    foreach ($r in $roleNames) { Confirm-True ($p.T.Roles[$r].Ink -in @('Light', 'Dark')) "$($p.N) palette: role $r names an ink" }
+    foreach ($i in $inlineNames) {
+        $cols = @($p.T.Inline[$i].Keys | Where-Object { $_ -ne 'Sgr' } | Sort-Object)
+        Confirm-Equal ($cols -join ',') ($inks -join ',') "$($p.N) palette: inline $i carries exactly the ink columns its roles ask for"
+    }
+}
+# Seven distinct block backgrounds, so two segments side by side are never one undivided band and the
+# arrow between them is never a colour painted on itself.
+Confirm-Equal ((@(foreach ($r in $roleNames) { $dark.Roles[$r].Bg }) | Sort-Object -Unique).Count) 7 'dark palette: seven distinct block backgrounds'
 # Seven distinct block backgrounds, so two segments side by side are never one undivided band and the
 # arrow between them is never a colour painted on itself.
 Confirm-Equal ((@(foreach ($r in $roleNames) { $light.Roles[$r].Bg }) | Sort-Object -Unique).Count) 7 'light palette: seven distinct block backgrounds'
@@ -2243,14 +2442,60 @@ foreach ($r in $roleNames) {
 }
 Write-Host ("   light plain: worst foreground contrast {0:N2}:1" -f $worst)
 # 2. Powerline style. The block paints its own background, so the pair is what has to be readable and
-#    the terminal's own theme does not enter into it.
+#    the terminal's own theme does not enter into it. BOTH tables are held to 4.5, with ONE EXEMPTION
+#    NAMED IN THE LIST BELOW rather than a lowered bar: the dark model block, 231 on 31, is 4.13 and
+#    predates the rule. Naming it keeps the debt legible and keeps the other six at 4.5, where a bar
+#    lowered to 4.0 for the whole table would have quietly let any of them slide to 4.0 as well.
+$pairExempt = @{ 'dark.model' = 4.0 }   # 4.13, older than this rule; retuning the model block is its own decision
 $worstPair = 99.0
 foreach ($r in $roleNames) {
     $ratio = Get-ContrastRatio (Get-XtermRgb $light.Roles[$r].Fg) (Get-XtermRgb $light.Roles[$r].Bg)
     if ($ratio -lt $worstPair) { $worstPair = $ratio }
     Confirm-True ($ratio -ge 4.5) ("light powerline ${r}: $($light.Roles[$r].Fg) on $($light.Roles[$r].Bg) is {0:N2}:1" -f $ratio)
 }
-Write-Host ("   light powerline: worst block pair {0:N2}:1" -f $worstPair)
+$worstDarkPair = 99.0
+foreach ($r in $roleNames) {
+    $ratio = Get-ContrastRatio (Get-XtermRgb $dark.Roles[$r].Fg) (Get-XtermRgb $dark.Roles[$r].Bg)
+    if ($ratio -lt $worstDarkPair) { $worstDarkPair = $ratio }
+    $bar = if ($pairExempt.ContainsKey("dark.$r")) { $pairExempt["dark.$r"] } else { 4.5 }
+    Confirm-True ($ratio -ge $bar) ("dark powerline ${r}: $($dark.Roles[$r].Fg) on $($dark.Roles[$r].Bg) is {0:N2}:1, bar $bar" -f $ratio)
+}
+Write-Host ("   powerline block pair: light {0:N2}:1, dark {1:N2}:1" -f $worstPair, $worstDarkPair)
+# 2b. PROPERTY (c): THE ARROW BETWEEN TWO BLOCKS. A powerline arrow is the left block's BACKGROUND
+#    painted as a foreground on the right block's background, so two adjacent blocks of equal luminance
+#    leave nothing to see at the joint even when the two colours are plainly different side by side -
+#    the eye resolves a thin glyph by luminance. #82's first attempt moved the dark warn block to 130
+#    (#AF5F00) and landed it on exactly the luminance of ok, 28 (#008700): 1.00:1, one merged band from
+#    a context meter at 60% into a warm cache segment. So every ordered pair of the seven backgrounds is
+#    measured, both ways a pair can differ:
+#      luminance 1.10:1 - the pre-#82 dark table's own minimum (dim/branch, 1.104), so this is a
+#        regression floor on numbers that shipped rather than a bar invented here, and it is the one
+#        that catches an isoluminant collision;
+#      distance 40 in sRGB - that table's other minimum (model/folder, exactly 40.0), which catches a
+#        pair that drifts together in hue while keeping a luminance step.
+#    ONLY THE DARK TABLE IS HELD TO THE LUMINANCE HALF. The light table is pale by construction, seven
+#    tints inside a narrow luminance band told apart by hue, and six of its twenty-one pairs are under
+#    1.10 - ok/warn is 1.001, the same shape of defect, and it shipped in #28. That is a real finding
+#    about the light table and it is filed rather than fixed here, because fixing it means retuning a
+#    light background, which is not this issue - it is #89. Its distance half is asserted, and its worst luminance
+#    pair is printed on every run so the number is visible rather than merely true.
+foreach ($p in @(@{ N = 'dark'; T = $dark; Lum = $true }, @{ N = 'light'; T = $light; Lum = $false })) {
+    $worstLum = 99.0; $worstLumPair = ''; $worstDist = 9999.0
+    for ($i = 0; $i -lt $roleNames.Count; $i++) {
+        for ($j = $i + 1; $j -lt $roleNames.Count; $j++) {
+            $a = $p.T.Roles[$roleNames[$i]].Bg
+            $b = $p.T.Roles[$roleNames[$j]].Bg
+            $pair = "$($roleNames[$i])/$($roleNames[$j])"
+            $ratio = Get-ContrastRatio (Get-XtermRgb $a) (Get-XtermRgb $b)
+            $dist = Get-RgbDistance (Get-XtermRgb $a) (Get-XtermRgb $b)
+            if ($ratio -lt $worstLum) { $worstLum = $ratio; $worstLumPair = $pair }
+            if ($dist -lt $worstDist) { $worstDist = $dist }
+            if ($p.Lum) { Confirm-True ($ratio -ge 1.10) ("$($p.N) arrow ${pair}: backgrounds $a and $b are {0:N3}:1 apart in luminance" -f $ratio) }
+            Confirm-True ($dist -ge 40) ("$($p.N) arrow ${pair}: backgrounds $a and $b are {0:N1} apart in sRGB" -f $dist)
+        }
+    }
+    Write-Host ("   $($p.N) arrow: worst pair {0:N3}:1 at $worstLumPair, worst distance {1:N1}" -f $worstLum, $worstDist)
+}
 # 3. The block background against the terminal's own ground. This is not about text: the trailing
 #    arrow paints the last block's BACKGROUND as a foreground on whatever the terminal is, and the
 #    edge of every block is that same boundary. A tint too close to the ground makes the arrow
@@ -2274,11 +2519,22 @@ Write-Host ("   block edge against the terminal's ground: light {0:N2}:1, dark {
 #    the light table has - Format-Inline is called from the model, context, lines, limits and branch
 #    segments, whose roles between them cover the lot. 3:1 rather than 4.5 for the second rule: these
 #    are one-word markers beside the figure they qualify, not the figure itself.
-#    THE DARK TABLE IS NOT HELD TO RULE 4 AND WOULD NOT PASS IT. Its worst inline pairing is printed
-#    below; it is a pre-existing shortcoming of the dark powerline blocks, not something this palette
-#    introduced, and fixing it would change colours on everyone's line.
+#    BOTH TABLES ARE HELD TO RULE 4 (#82), AND IT HAS TWO HALVES, because a marker has two neighbours.
+#    (a) THE BLOCK'S BACKGROUND, 3:1. The dark table used to be exempt from this and the exemption is
+#        what hid the bug: `cached` on the model block measured 1.05:1, one colour drawn on itself for
+#        all a reader can tell, and `92% cached` was simply not there on a default line.
+#    (b) THE BLOCK'S OWN TEXT, 85 apart in sRGB. Clearing (a) alone is not enough and the first attempt
+#        at #82 proved it: `track` 255 and `cached` 254 cleared 3:1 against every background and then
+#        measured 1.16:1 and 1.27:1 against the 231 white every dark block writes in, so `92% cached`
+#        read as one white run with the figure it qualifies. (b) IS A DISTANCE AND NOT A RATIO because
+#        on a dark block no ratio is available - see the note over Get-RgbDistance. 85 is a round
+#        number under the pre-#82 dark table's own minimum over the pairings that render (98.0, `muted`
+#        inside the model block) and over every distance the review flagged (56.6 the largest of them).
+#    Both halves are checked for EVERY marker against EVERY block that takes the marker's ink column,
+#    not the pairs a reader of today's segment builders can talk themselves into: a role moving between
+#    segments must not be able to reopen this. The ink column is why the two loops below read
+#    $tab.Inline[$i][$tab.Roles[$r].Ink] rather than one fixed foreground.
 $worstInlineWhite = 99.0
-$worstInlineBlock = 99.0
 foreach ($i in $inlineNames) {
     $idx = Get-SgrColourIndex $light.Inline[$i].Sgr
     Confirm-True ($null -ne $idx) "light palette: inline $i names a 256-colour index"
@@ -2287,20 +2543,38 @@ foreach ($i in $inlineNames) {
         if ($w -lt $worstInlineWhite) { $worstInlineWhite = $w }
         Confirm-True ($w -ge 4.5) ("light inline ${i}: colour $idx on white is {0:N2}:1" -f $w)
     }
-    foreach ($r in $roleNames) {
-        $ratio = Get-ContrastRatio (Get-XtermRgb $light.Inline[$i].Fg) (Get-XtermRgb $light.Roles[$r].Bg)
-        if ($ratio -lt $worstInlineBlock) { $worstInlineBlock = $ratio }
-        Confirm-True ($ratio -ge 3.0) ("light inline ${i}: $($light.Inline[$i].Fg) inside the $r block is {0:N2}:1" -f $ratio)
+}
+foreach ($p in @(@{ N = 'light'; T = $light }, @{ N = 'dark'; T = $dark })) {
+    $worstBlock = 99.0; $worstBlockAt = ''; $worstInk = 9999.0; $worstInkAt = ''
+    foreach ($i in $inlineNames) {
+        foreach ($r in $roleNames) {
+            $mk = $p.T.Inline[$i][$p.T.Roles[$r].Ink]
+            $ratio = Get-ContrastRatio (Get-XtermRgb $mk) (Get-XtermRgb $p.T.Roles[$r].Bg)
+            $dist = Get-RgbDistance (Get-XtermRgb $mk) (Get-XtermRgb $p.T.Roles[$r].Fg)
+            if ($ratio -lt $worstBlock) { $worstBlock = $ratio; $worstBlockAt = "$i in $r" }
+            if ($dist -lt $worstInk) { $worstInk = $dist; $worstInkAt = "$i in $r" }
+            Confirm-True ($ratio -ge 3.0) ("$($p.N) inline ${i}: $mk inside the $r block is {0:N2}:1 against its background" -f $ratio)
+            Confirm-True ($dist -ge 85) ("$($p.N) inline ${i}: $mk inside the $r block is {0:N1} from that block's text $($p.T.Roles[$r].Fg)" -f $dist)
+        }
+    }
+    Write-Host ("   $($p.N) inline: worst against a background {0:N2}:1 ($worstBlockAt), worst against block text {1:N1} ($worstInkAt)" -f $worstBlock, $worstInk)
+}
+Write-Host ("   light inline on white: worst {0:N2}:1" -f $worstInlineWhite)
+# A contrast floor is only worth having if the colour it names is the one the terminal ends up in, so
+# the ratios above are joined to the bytes here. This one exact string carries all three of the things
+# that could go wrong: the marker is the colour the RIGHT INK COLUMN names, so a block cannot be handed
+# the other column's number; the run closes by handing the block's own foreground back; and there is no
+# reset in between, which would drop the block's BACKGROUND as well and leave the ratio measured against
+# something that is not on the screen. Confirm-Equal is ordinal - these are rendered strings.
+foreach ($paletteName in @('dark', 'light')) {
+    $tab = Get-Palette $paletteName
+    foreach ($i in $inlineNames) {
+        foreach ($r in $roleNames) {
+            $run = Format-Inline $i 'x' $r 'powerline' $paletteName
+            Confirm-Equal $run "$esc[38;5;$($tab.Inline[$i][$tab.Roles[$r].Ink])mx$esc[38;5;$($tab.Roles[$r].Fg)m" "$paletteName inline ${i} in the $r block: the $($tab.Roles[$r].Ink)-ink marker, then the block's own foreground back"
+        }
     }
 }
-$worstDarkInline = 99.0
-foreach ($i in $inlineNames) {
-    foreach ($r in $roleNames) {
-        $ratio = Get-ContrastRatio (Get-XtermRgb $dark.Inline[$i].Fg) (Get-XtermRgb $dark.Roles[$r].Bg)
-        if ($ratio -lt $worstDarkInline) { $worstDarkInline = $ratio }
-    }
-}
-Write-Host ("   inline markers: light on white {0:N2}:1, light inside a block {1:N2}:1, dark inside a block {2:N2}:1" -f $worstInlineWhite, $worstInlineBlock, $worstDarkInline)
 
 # The renderers with the light table. Style and palette are separate arguments and neither reads the
 # other: the same three styles, each rendered twice.
@@ -2325,7 +2599,7 @@ Confirm-Equal $asciiLight "$esc[${lightModelSgr}mM$esc[0m $esc[${lightDimSgr}m>$
 Confirm-Equal (ConvertTo-PlainText $asciiLight) (ConvertTo-PlainText (Format-Line @($segModel, $segFolder) 'ascii' 'dark')) 'ascii + light: the palette changes no character, only the colour'
 Confirm-True (@([char[]] $asciiLight | Where-Object { [int] $_ -lt 0x20 -or [int] $_ -gt 0x7E } | Where-Object { $_ -ne $esc }).Count -eq 0) 'ascii + light: every character outside the escapes is printable ASCII'
 Confirm-Equal (Format-Inline 'added' '+1' 'dim' 'plain' 'light') "$esc[$($light.Inline.added.Sgr)m+1$esc[${lightDimSgr}m" 'light inline plain restores the light segment colour'
-Confirm-Equal (Format-Inline 'removed' '-2' 'dim' 'powerline' 'light') "$esc[38;5;$($light.Inline.removed.Fg)m-2$esc[38;5;$($light.Roles.dim.Fg)m" 'light inline powerline restores the light segment fg'
+Confirm-Equal (Format-Inline 'removed' '-2' 'dim' 'powerline' 'light') "$esc[38;5;$($light.Inline.removed.Dark)m-2$esc[38;5;$($light.Roles.dim.Fg)m" 'light inline powerline restores the light segment fg'
 Confirm-Equal (Format-Inline 'added' '+1' 'dim' 'plain') (Format-Inline 'added' '+1' 'dim' 'plain' 'dark') 'inline: no palette argument is the dark render'
 # The 1M marker is drawn over the model segment, which is bold; the dark table spells that non-bold
 # run 22;36 and the light one has to carry the same 22 or the marker comes out bold.
@@ -2781,7 +3055,7 @@ Confirm-True $seg.Text.StartsWith("$iconCtx 100% ") 'context 110: clamped text p
 Confirm-True $seg.Text.Contains($bar100) 'context 110: bar is 10 full blocks'
 Confirm-Equal $seg.Role 'bad' 'context 110: role'
 
-$seg = Get-ContextSegment (Get-ContextPayload -5) $bandCfg
+$seg = Get-ContextSegment (Get-ContextPayload (-5)) $bandCfg
 $bar0 = $blockLight * 10
 Confirm-True $seg.Text.StartsWith("$iconCtx 0% ") 'context -5: clamped text prefix'
 Confirm-True $seg.Text.Contains($bar0) 'context -5: bar is 10 light blocks'
@@ -2819,8 +3093,8 @@ Confirm-Equal (Get-ContextSegment (Get-ContextPayload 8) $quiet30) $null 'contex
 Confirm-Equal (Get-ContextSegment (Get-ContextPayload 29) $quiet30) $null 'context quiet 30: 29% is still below the line'
 Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload 30) $quiet30)) 'context quiet 30: 30% is on the line and stays'
 # A payload at -5 clamps to 0 and is compared as 0, so a quiet of 0 keeps it and any threshold hides it.
-Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload -5) $quietOff)) 'context quiet 0: a clamped 0% meter is still built'
-Confirm-Equal (Get-ContextSegment (Get-ContextPayload -5) $quiet30) $null 'context quiet 30: a clamped 0% meter is hidden'
+Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload (-5)) $quietOff)) 'context quiet 0: a clamped 0% meter is still built'
+Confirm-Equal (Get-ContextSegment (Get-ContextPayload (-5)) $quiet30) $null 'context quiet 30: a clamped 0% meter is hidden'
 # $bandCfg carries no Quiet table at all, which is what an older config object looks like to the guard.
 Confirm-True ($null -ne (Get-ContextSegment (Get-ContextPayload 0) $bandCfg)) 'context quiet: a config with no Quiet table hides nothing'
 
@@ -2919,7 +3193,7 @@ Confirm-Equal $seg.Text "$plain32$counts32 $(Format-Inline 'cached' '92% cached'
 Confirm-Equal $seg.Short $plain32 'context cached 92: the suffix never reaches Short'
 Confirm-Equal $seg.Role 'ok' 'context cached 92: the suffix does not touch the role'
 $seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500) $cachePl
-Confirm-Equal $seg.Text "$plain32$counts32 $esc[38;5;244m92% cached$esc[38;5;231m" 'context cached 92 in powerline: the suffix restores the segment foreground'
+Confirm-Equal $seg.Text "$plain32$counts32 $esc[38;5;86m92% cached$esc[38;5;231m" 'context cached 92 in powerline: the suffix restores the segment foreground'
 Confirm-Equal $seg.Short $plain32 'context cached 92 in powerline: the suffix never reaches Short'
 # The same payload as JSON: ConvertFrom-Json hands the counts over as Int64 or Double, not Int32.
 $seg = Get-ContextSegment (Get-JsonPayload 'context_window' '{"used_percentage":32,"total_input_tokens":60000,"total_output_tokens":4000,"context_window_size":200000,"current_usage":{"input_tokens":2000,"cache_creation_input_tokens":3000,"cache_read_input_tokens":57500}}') $cacheCfg
@@ -2986,16 +3260,20 @@ Confirm-Equal (Get-ContextSegment (Get-CachePayload 0 0 0 0) $cacheCfg).Short $n
 # every band gets its own row in both styles. The bands are moved rather than the payload, so the text
 # in front of the suffix is the same 32% in all six and the only thing under test is the colour.
 # A red meter in powerline is the case where getting this wrong is most visible, and it is also the
-# one the pinned string alone cannot catch: ok and bad share the foreground 231, so the role is
-# asserted beside the text, and plain style, where ok is 32 and bad is 31, separates them.
+# one the pinned string alone cannot catch: ok and bad share the powerline foreground 231, so the role
+# is asserted beside the text, and plain style, where ok is 32 and bad is 31, separates them. The warn
+# row is the one that exercises the OTHER INK COLUMN: its block is light and its text is black, so the
+# cached marker there is 238 rather than the 86 the two dark-blocked bands take, and the code handed
+# back is 16 rather than 231. Marker and restore are spelled out per row rather than computed, so a
+# table that swapped the two columns would fail here and not merely change what this expects.
 foreach ($row in @(
-        @{ Bands = @{ Warn = 60; Bad = 85 }; Role = 'ok'; Plain = '32'; Fg = 231 }
-        @{ Bands = @{ Warn = 20; Bad = 40 }; Role = 'warn'; Plain = '33'; Fg = 16 }
-        @{ Bands = @{ Warn = 20; Bad = 30 }; Role = 'bad'; Plain = '31'; Fg = 231 })) {
+        @{ Bands = @{ Warn = 60; Bad = 85 }; Role = 'ok'; Plain = '32'; Fg = 231; Mark = 86 }
+        @{ Bands = @{ Warn = 20; Bad = 40 }; Role = 'warn'; Plain = '33'; Fg = 16; Mark = 238 }
+        @{ Bands = @{ Warn = 20; Bad = 30 }; Role = 'bad'; Plain = '31'; Fg = 231; Mark = 86 })) {
     foreach ($styleName in @('plain', 'powerline')) {
         $roleCfg = @{ Style = $styleName; Thresholds = $row.Bands }
         $seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500) $roleCfg
-        $open = if ($styleName -eq 'plain') { "$esc[90m" } else { "$esc[38;5;244m" }
+        $open = if ($styleName -eq 'plain') { "$esc[90m" } else { "$esc[38;5;$($row.Mark)m" }
         $back = if ($styleName -eq 'plain') { "$esc[$($row.Plain)m" } else { "$esc[38;5;$($row.Fg)m" }
         $roleLabel = "context cached on a $($row.Role) meter in $styleName"
         Confirm-Equal $seg.Role $row.Role "${roleLabel}: 32% bands as $($row.Role) here"
@@ -3236,7 +3514,6 @@ Confirm-Equal (ConvertTo-PlainText (Get-FittedLine @($fitModel, $fitCache) 'plai
 Confirm-Equal (ConvertTo-PlainText (Get-FittedLine @($fitModel, $fitCache) 'plain' 15)) "$iconModel Fable 5.1" 'cache fitting: 15 columns drops the segment and keeps the model'
 
 Write-Host '== unit: cost' -ForegroundColor Cyan
-$iconCost = [char]::ConvertFromUtf32(0xF0155)
 function Get-CostPayload($Usd) { return [pscustomobject]@{ cost = [pscustomobject]@{ total_cost_usd = $Usd } } }
 $quiet1 = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Quiet = @{ cost = 1.0; context = 0.0; limits = 0.0 } }
 Confirm-Equal (Get-CostSegment (Get-CostPayload 0.4312) $quietOff).Text ("$iconCost `$" + ('{0:N2}' -f 0.4312)) 'cost quiet 0: the figure is built'
@@ -3521,9 +3798,9 @@ Confirm-Equal (Get-WholePercent 90.4) 90 'whole percent: 90.4 rounds down'
 Confirm-Equal (Get-WholePercent 90.5) 90 'whole percent: 90.5 stays at the even 90, it does not go to 91'
 Confirm-Equal (Get-WholePercent 91.5) 92 'whole percent: 91.5 goes up to the even 92'
 Confirm-Equal (Get-WholePercent 0.5) 0 'whole percent: 0.5 goes to the even 0'
-Confirm-Equal (Get-WholePercent -0.6) -1 'whole percent: a negative rounds away from zero the same way'
+Confirm-Equal (Get-WholePercent (-0.6)) (-1) 'whole percent: a negative rounds away from zero the same way'
 Confirm-Equal (Get-WholePercent 1e300) ([int]::MaxValue) 'whole percent: a figure past Int32 clamps instead of throwing'
-Confirm-Equal (Get-WholePercent -1e300) ([int]::MinValue) 'whole percent: and the same at the bottom'
+Confirm-Equal (Get-WholePercent (-1e300)) ([int]::MinValue) 'whole percent: and the same at the bottom'
 # The two segments that print a percentage go through it, so the rule cannot drift apart between them.
 $roundCfg = @{ Style = 'plain'; Thresholds = @{ Warn = 60; Bad = 85 } }
 Confirm-True ((Get-ContextSegment (Get-JsonPayload 'context_window' '{"used_percentage":89.6}') $roundCfg).Text.StartsWith("$iconCtx 90%")) 'whole percent: the context meter prints 89.6 as 90%'
@@ -3567,7 +3844,7 @@ Confirm-True (-not (Test-AlarmLevel 90.5 91)) 'alarm level: 90.5 prints as 90% a
 Confirm-True (Test-AlarmLevel 90.5 90.4) 'alarm level: a fractional level is rounded the same way, so 90.4 is a 90 alarm'
 Confirm-True (-not (Test-AlarmLevel 0 0)) 'alarm level: a level of 0 is off, even at 0%'
 Confirm-True (-not (Test-AlarmLevel 100 0)) 'alarm level: a level of 0 is off at 100%'
-Confirm-True (-not (Test-AlarmLevel 100 -1)) 'alarm level: a negative level is off'
+Confirm-True (-not (Test-AlarmLevel 100 (-1))) 'alarm level: a negative level is off'
 Confirm-True (-not (Test-AlarmLevel 100 $null)) 'alarm level: a missing level is off'
 Confirm-True (-not (Test-AlarmLevel 100 '90')) 'alarm level: a level that is a string is off'
 Confirm-True (-not (Test-AlarmLevel $null 90)) 'alarm level: a null percentage does not fire'
@@ -3703,7 +3980,7 @@ Confirm-True ($seg.Text.Contains("$esc[22;36m1M$esc[1;36m")) 'model 1M: plain ma
 Confirm-Equal $seg.Role 'model' 'model 1M: role'
 Confirm-Equal $seg.Short $null 'model 1M: no short form'
 $seg = Get-ModelSegment (Get-ModelPayload 1000000) @{ Style = 'powerline' }
-Confirm-True ($seg.Text.Contains("$esc[38;5;152m1M$esc[38;5;231m")) 'model 1M: powerline marker restores the model foreground'
+Confirm-True ($seg.Text.Contains("$esc[38;5;87m1M$esc[38;5;231m")) 'model 1M: powerline marker restores the model foreground'
 Confirm-Equal (Get-ModelSegment (Get-ModelPayload 200000) $plainCfg).Text "$iconModel Fable 5.1" 'model 200k: exact text'
 Confirm-Equal (Get-ModelSegment (Get-ModelPayload $null) $plainCfg).Text "$iconModel Fable 5.1" 'model no size: exact text'
 Confirm-Equal (Get-ModelSegment (Get-ModelPayload 400000) $plainCfg).Text "$iconModel Fable 5.1" 'model other size: exact text'
@@ -3770,7 +4047,7 @@ Confirm-True ($seg.Text.Contains("$esc[22;36m1M$esc[31m")) 'model alarm 1M: the 
 Confirm-True (-not $seg.Text.Contains("$esc[1;36m")) 'model alarm 1M: no bold cyan is left anywhere in the text'
 Confirm-True ((ConvertTo-PlainText $seg.Text).EndsWith("$iconModel Fable 5.1 1M")) 'model alarm 1M: the plain text is unchanged'
 $seg = Get-ModelSegment (Get-ModelPayload 1000000) (Get-ModelAlarmConfig 60 'powerline')
-Confirm-True ($seg.Text.Contains("$esc[38;5;152m1M$esc[38;5;231m")) 'model alarm 1M: the powerline marker restores 231, which both roles share'
+Confirm-True ($seg.Text.Contains("$esc[38;5;87m1M$esc[38;5;231m")) 'model alarm 1M: the powerline marker restores 231, which both roles share'
 # The rate limits reach the model segment too, with no context percentage in the payload at all.
 $limitPayload = [pscustomobject]@{ model = [pscustomobject]@{ display_name = 'Fable 5.1' }
     rate_limits = [pscustomobject]@{ five_hour = [pscustomobject]@{ used_percentage = 95 } } }
@@ -4168,13 +4445,13 @@ Confirm-Equal $seg.Role 'ok' 'limits overrunning under 120: the role is still th
 # role and restores the segment's own foreground - the warn one here, which the 80 earns on its own.
 $paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":80,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $paceCfg
-Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'plain') (")) 'limits well over pace: the up arrow is red and hands the warn colour back'
+Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'plain') (")) 'limits well over pace: the up arrow takes the removed role and hands the warn colour back'
 Confirm-Equal $seg.Role 'warn' 'limits well over pace: the role is the worse figure, not the projection'
 Confirm-Equal $seg.Short "$iconLimit 5h 80%" 'limits well over pace: the short form keeps the figure without the arrow'
 
 $paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":80,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $pacePlCfg
-Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'powerline') (")) 'limits well over pace in powerline: the red arrow restores the segment foreground'
+Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'powerline') (")) 'limits well over pace in powerline: the removed-role arrow restores the segment foreground'
 
 # The 7-day figure never gets an arrow, whatever its reset says: one payload cannot pace a week.
 $paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
@@ -4725,7 +5002,7 @@ Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m${iconAhead}1$esc[35m $es
 Confirm-Equal $seg.Short "$iconBranch feature/x" 'branch counts: short has no arrows'
 Confirm-Equal $seg.Role 'branch' 'branch counts: role'
 $seg = Get-BranchSegment $probePayload $branchPowerlineCfg
-Confirm-Equal $seg.Text "$iconBranch feature/x $esc[38;5;245m${iconAhead}1$esc[38;5;231m $esc[38;5;245m${iconBehind}2$esc[38;5;231m" 'branch counts: powerline arrows restore the block fg'
+Confirm-Equal $seg.Text "$iconBranch feature/x $esc[38;5;123m${iconAhead}1$esc[38;5;231m $esc[38;5;123m${iconBehind}2$esc[38;5;231m" 'branch counts: powerline arrows restore the block fg'
 $script:mockGitBranch = Get-BranchRecord 'topic' $false -Ahead 2
 $seg = Get-BranchSegment $probePayload $branchCfg
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch topic ${iconAhead}2" 'branch ahead only: no behind arrow'
@@ -5041,7 +5318,7 @@ $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 0
 Confirm-Equal $script:probeCalls ($before + 2) 'lifetime 0: every call probes'
 Confirm-Equal $g.Branch 'main' 'lifetime 0: the probe result comes back'
 Confirm-Equal (Get-Item -LiteralPath $cacheEntry).LastWriteTimeUtc $stamp 'lifetime 0: the entry is not rewritten'
-$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir -1
+$g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir (-1)
 Confirm-Equal $script:probeCalls ($before + 3) 'lifetime below 0: probes'
 $g = Get-CachedGitBranch $cacheRepo 1500 '' 5
 Confirm-Equal $script:probeCalls ($before + 4) 'no cache directory given: probes'
@@ -5226,11 +5503,18 @@ try {
     $seg = Get-BranchSegment $segPayload @{ Style = 'plain'; Git = @{ TimeoutMs = 800; CacheSeconds = 0; Cache = $true } }
     Confirm-Equal $script:probeCalls ($before + 3) 'branch segment, cacheSeconds 0: probes'
     Confirm-Equal $script:lastProbeTimeout 800 'branch segment, cacheSeconds 0: the configured timeout reaches the probe'
+    # The same thing from a config file rather than a hashtable, and with the number the git group's
+    # `timeoutMs 100` render uses: that render can only show that a probe with some timeout gave up, so
+    # this is what says the 100 in the file is the 100 the probe is given. The whole way through -
+    # file, Read-StatusConfig, the segment, the probe - with nothing but the stub at the end.
+    $seg = Get-BranchSegment $segPayload (Read-StatusConfig (Write-TempConfig 'git-timeout-100-unit.json' '{ "git": { "timeoutMs": 100, "cacheSeconds": 0 } }'))
+    Confirm-Equal $script:probeCalls ($before + 4) 'branch segment, timeoutMs 100 from a file: probes'
+    Confirm-Equal $script:lastProbeTimeout 100 'branch segment, timeoutMs 100 from a file: the configured timeout reaches the probe'
     $seg = Get-BranchSegment $segPayload @{ Style = 'plain'; Git = @{ TimeoutMs = 900; CacheSeconds = 5; Cache = $true } }
-    Confirm-Equal $script:probeCalls ($before + 3) 'branch segment, cache on again: a hit'
+    Confirm-Equal $script:probeCalls ($before + 4) 'branch segment, cache on again: a hit'
     $seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'topic'; status = 'clean' }; workspace = @{ current_dir = $cacheSub } }) @{ Style = 'plain'; Git = (Get-DefaultGitConfig) }
     Confirm-Equal $seg.Text "$iconBranch topic" 'branch segment, payload with a git object: the payload wins'
-    Confirm-Equal $script:probeCalls ($before + 3) 'branch segment, payload with a git object: neither cache nor probe'
+    Confirm-Equal $script:probeCalls ($before + 4) 'branch segment, payload with a git object: neither cache nor probe'
     Confirm-Equal (Get-CacheFileCount $segCacheDir) 2 'branch segment: one entry and the sweep stamp under TEMP'
     # No TEMP: TMPDIR, as on Linux and macOS.
     Remove-Item Env:TEMP
@@ -5240,10 +5524,10 @@ try {
     Confirm-Equal (Get-GitCacheDir) (Join-Path $segTmpDir 'claude-statusline') 'cache dir: TMPDIR when there is no TEMP'
     $seg = Get-BranchSegment $segPayload @{ Style = 'plain'; Git = (Get-DefaultGitConfig) }
     Confirm-Equal $seg.Text "$iconHome main" 'branch segment, TMPDIR: prints'
-    Confirm-Equal $script:probeCalls ($before + 4) 'branch segment, TMPDIR: a fresh directory, so a probe'
+    Confirm-Equal $script:probeCalls ($before + 5) 'branch segment, TMPDIR: a fresh directory, so a probe'
     Confirm-True (Test-Path -LiteralPath (Join-Path $segTmpDir 'claude-statusline' (Get-CacheEntryName $cacheRepo))) 'branch segment, TMPDIR: the entry sits under TMPDIR'
     $seg = Get-BranchSegment $segPayload @{ Style = 'plain'; Git = (Get-DefaultGitConfig) }
-    Confirm-Equal $script:probeCalls ($before + 4) 'branch segment, TMPDIR: then a hit'
+    Confirm-Equal $script:probeCalls ($before + 5) 'branch segment, TMPDIR: then a hit'
     # Neither: the runtime's temp path, which Windows takes from TMP.
     Remove-Item Env:TMPDIR
     $segTmp = Join-Path $tmp 'temp-cache-tmp'
@@ -5252,7 +5536,7 @@ try {
     Confirm-Equal ([System.IO.Path]::TrimEndingDirectorySeparator((Split-Path (Get-GitCacheDir) -Parent))) $segTmp 'cache dir: the runtime temp path when there is neither TEMP nor TMPDIR'
     $seg = Get-BranchSegment $segPayload @{ Style = 'plain'; Git = (Get-DefaultGitConfig) }
     Confirm-Equal $seg.Text "$iconHome main" 'branch segment, runtime temp path: prints'
-    Confirm-Equal $script:probeCalls ($before + 5) 'branch segment, runtime temp path: a fresh directory, so a probe'
+    Confirm-Equal $script:probeCalls ($before + 6) 'branch segment, runtime temp path: a fresh directory, so a probe'
     Confirm-True (Test-Path -LiteralPath (Join-Path $segTmp 'claude-statusline' (Get-CacheEntryName $cacheRepo))) 'branch segment, runtime temp path: the entry sits there'
 } finally {
     if ($null -ne $oldTemp) { $env:TEMP = $oldTemp } else { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }
@@ -5273,12 +5557,37 @@ $env:TEMP = $diagTemp
 # The test's own spelling of the log's name and of a line's shape, so the script's cannot agree with itself.
 $diagLog = Join-Path $diagTemp 'claude-statusline-diag.log'
 $diagStamp = '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \d+ '
+# A record whose close ran out of budget leaves the writer's handle open - the helper says so, and the
+# pool thread closing it gets there a beat later. On a machine running four test suites at once that
+# beat is long enough for the next read, write or delete here to meet a sharing violation, which under
+# this file's Stop preference takes the whole run down for a reason that has nothing to do with what is
+# being asserted; a loaded run of this group died on the very first record that way. The record budget
+# is pinned where that matters most, further down, but the sink checks expire it deliberately, so every
+# call these helpers make to the log is also retried briefly before it is allowed to throw.
+# Only the two Windows sharing errors are retried - ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION -
+# so a log that is missing, refused or on a broken path still fails the run at once, and only the wait
+# for another handle to close is absorbed.
+$diagSharingHResult = @(-2147024864, -2147024863)  # 0x80070020, 0x80070021
+function Invoke-DiagFile([scriptblock] $Call, [int] $TimeoutMs = 5000) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
+        try { return & $Call } catch {
+            $ex = $_.Exception
+            while ($null -ne $ex -and ($ex -isnot [System.IO.IOException] -or $ex.HResult -notin $diagSharingHResult)) { $ex = $ex.InnerException }
+            if ($null -eq $ex -or $sw.ElapsedMilliseconds -ge $TimeoutMs) { throw }
+            Start-Sleep -Milliseconds 50
+        }
+    }
+}
 function Get-DiagLine {
     # The comma keeps a one-line log an array rather than one string the caller would index by character.
     if (-not (Test-Path -LiteralPath $diagLog)) { return , @() }
-    return , @([System.IO.File]::ReadAllText($diagLog) -split "`n" | Where-Object { $_ -ne '' })
+    $diagText = Invoke-DiagFile { [System.IO.File]::ReadAllText($diagLog) }
+    return , @($diagText -split "`n" | Where-Object { $_ -ne '' })
 }
-function Clear-DiagLog { if (Test-Path -LiteralPath $diagLog) { Remove-Item -LiteralPath $diagLog -Force } }
+function Clear-DiagLog { if (Test-Path -LiteralPath $diagLog) { Invoke-DiagFile { Remove-Item -LiteralPath $diagLog -Force } } }
+# The log filled to a size the next record cannot fit in, which is how every rollover check starts.
+function Write-DiagLogText([string] $Text) { Invoke-DiagFile { [System.IO.File]::WriteAllText($diagLog, $Text) } }
 function Measure-DiagMatch([string] $Pattern) { return @(Get-DiagLine | Where-Object { $_ -match $Pattern }).Count }
 # statusline.ps1 reads CLAUDE_STATUSLINE_DEBUG once at load into $script:diagOn, and every call site
 # tests that variable before it builds a reason or calls anything - which is what makes an unset
@@ -5309,7 +5618,8 @@ try {
     $diagLines = Get-DiagLine
     Confirm-Equal $diagLines.Count 2 'diag on: the second call appends rather than replaces'
     Confirm-True ($diagLines[1] -match 'again$') 'diag on: the second line holds the second reason'
-    $diagBytes = [System.IO.File]::ReadAllBytes($diagLog)
+    # Cast back, because a helper that returns an array hands it to the pipeline element by element.
+    $diagBytes = [byte[]] (Invoke-DiagFile { [System.IO.File]::ReadAllBytes($diagLog) })
     Confirm-True (-not ($diagBytes[0] -eq 0xEF -and $diagBytes[1] -eq 0xBB -and $diagBytes[2] -eq 0xBF)) 'diag file: UTF-8 without a BOM'
     Confirm-Equal $diagBytes[$diagBytes.Count - 1] 10 'diag file: every line ends with a newline'
 
@@ -5690,19 +6000,31 @@ namespace StatuslineTest {
     # The log is rolled over rather than left to grow: an append that would take the file past the cap
     # moves it aside first. The cap is spelled out here rather than read from the script, so the two
     # cannot agree with each other about a wrong number.
+    #
+    # Every check from here to the end of the mutex section is about where the bytes go, never about how
+    # long the filesystem took, and they all go through a whole record - which carries a quarter-second
+    # budget for all of its filesystem calls. On a machine running four test suites at once that budget
+    # is spent before the line is appended: the record is dropped, the log sits at exactly the cap, and
+    # a check about rolling fails for a reason that is not in the script. That is #63. So the budget is
+    # pinned once for the whole run of them and put back from the script itself in the finally, rather
+    # than pinned around each one. The sink checks above keep the shipped budget on purpose: expiring it
+    # is what they are about.
+    $diagRealLimit = Get-StatusDiagLimit
+    . ([scriptblock]::Create("function Get-StatusDiagLimit { return @{ TimeoutMs = 30000; RolloverMs = $($diagRealLimit.RolloverMs) } }"))
+    try {
     $diagCap = 4194304
     $diagRolled = $diagLog + '.1'
-    function Clear-DiagRollover { if (Test-Path -LiteralPath $diagRolled) { Remove-Item -LiteralPath $diagRolled -Recurse -Force } }
+    function Clear-DiagRollover { if (Test-Path -LiteralPath $diagRolled) { Invoke-DiagFile { Remove-Item -LiteralPath $diagRolled -Recurse -Force } } }
     function Get-DiagLogSize { return (Get-Item -LiteralPath $diagLog).Length }
     Clear-DiagLog
     Clear-DiagRollover
     # Room for the line: it lands in the same file and nothing is moved aside.
-    [System.IO.File]::WriteAllText($diagLog, ('x' * ($diagCap - 200)))
+    Write-DiagLogText ('x' * ($diagCap - 200))
     Write-StatusDiag 'still room'
     Confirm-True ((Get-DiagLogSize) -gt ($diagCap - 200) -and (Get-DiagLogSize) -le $diagCap) "diag rollover: under the cap the line is appended, size $(Get-DiagLogSize)"
     Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover: under the cap nothing is moved aside'
     # No room: the full log becomes .log.1 and the line starts a fresh one.
-    [System.IO.File]::WriteAllText($diagLog, ('y' * $diagCap))
+    Write-DiagLogText ('y' * $diagCap)
     Write-StatusDiag 'over the cap'
     $diagLines = Get-DiagLine
     Confirm-Equal $diagLines.Count 1 'diag rollover: the new log holds only the line that crossed the cap'
@@ -5710,7 +6032,7 @@ namespace StatuslineTest {
     Confirm-True (Test-Path -LiteralPath $diagRolled) 'diag rollover: the full log is kept as .log.1'
     Confirm-Equal (Get-Item -LiteralPath $diagRolled).Length $diagCap 'diag rollover: the kept file is the one that was full'
     # A second rollover replaces the first .log.1 rather than piling up a third file.
-    [System.IO.File]::WriteAllText($diagLog, ('z' * $diagCap))
+    Write-DiagLogText ('z' * $diagCap)
     Write-StatusDiag 'over the cap again'
     $diagStream = [System.IO.File]::OpenRead($diagRolled)
     try { $diagFirstByte = $diagStream.ReadByte() } finally { $diagStream.Dispose() }
@@ -5721,7 +6043,7 @@ namespace StatuslineTest {
     # state reads and writes rolls it over instead of pushing past it.
     Clear-DiagLog
     Clear-DiagRollover
-    [System.IO.File]::WriteAllText($diagLog, ('x' * ($diagCap - 120)))
+    Write-DiagLogText ('x' * ($diagCap - 120))
     $diagBoundDir = Join-Path $diagTemp 'cache-bound'
     $diagOverCap = 0
     for ($i = 0; $i -lt 12; $i++) {
@@ -5739,7 +6061,7 @@ namespace StatuslineTest {
     Clear-DiagLog
     Clear-DiagRollover
     New-Item -ItemType Directory -Force $diagRolled | Out-Null
-    [System.IO.File]::WriteAllText($diagLog, ('w' * $diagCap))
+    Write-DiagLogText ('w' * $diagCap)
     $diagRollThrew = $false
     $diagRollOut = @('not run')
     try { $diagRollOut = @(Write-StatusDiag 'the rollover cannot happen') } catch { $diagRollThrew = $true }
@@ -5758,18 +6080,30 @@ namespace StatuslineTest {
     Confirm-Equal $diagLines.Count 1 'diag record cap: an enormous reason is still one line'
     Confirm-Equal $diagLines[0].Split(' ', 3)[2] (('q' * 1000) + ' [cut]') 'diag record cap: the reason is cut at 1000 characters and marked'
     Confirm-True ((Get-DiagLogSize) -lt 1200) "diag record cap: the record is bounded, size $(Get-DiagLogSize)"
-    [System.IO.File]::WriteAllText($diagLog, ('y' * $diagCap))
+    Write-DiagLogText ('y' * $diagCap)
     Write-StatusDiag ('r' * 5000)
     Confirm-True ((Get-DiagLogSize) -le $diagCap) 'diag record cap: an enormous reason on a full log still leaves the log at or under the cap'
 
     # The rollover is taken under a named mutex with no wait at all, so a render that finds another one
-    # already rotating appends rather than waiting on it. A mutex belongs to a thread and is reentrant,
-    # so only another process can hold it against this one: a child pwsh takes it, says so by writing a
-    # file, and keeps it until this one says to let go. The name is spelled out here rather than read
-    # from the script, so the two cannot agree with each other about the wrong one.
+    # already rotating appends rather than waiting on it. A mutex is owned by a thread and is reentrant,
+    # so the thread taking this one cannot contend with itself: another process holds it here, which is
+    # also how it is contended for in life. A child pwsh takes it, says so by writing a file, and keeps
+    # it until this one says to let go. The name is spelled out here rather than read from the script,
+    # so the two cannot agree with each other about the wrong one.
+    #
+    # What is asserted first is the decision on its own, through Invoke-StatusDiagRollover directly,
+    # because a whole record brings two clocks with it that this check is not about: a record has a
+    # quarter-second budget for all its filesystem calls, and on a machine running four test suites at
+    # once that budget is spent before the line is appended - the log then sits at exactly the cap and
+    # the append check fails for a reason that has nothing to do with the mutex, which is #63. The
+    # direct call takes its timeout as an argument, so the size read inside it is given a generous one
+    # and cannot be the reason the file was left alone either: with the mutex the only thing left that
+    # can stop the move, a file that did not move says the mutex stopped it. The checks here that do go
+    # through Write-StatusDiag are covered by the record budget pinned for the whole group above, so
+    # what they report is the mutex decision and not the filesystem's mood.
     Clear-DiagLog
     Clear-DiagRollover
-    [System.IO.File]::WriteAllText($diagLog, ('y' * $diagCap))
+    Write-DiagLogText ('y' * $diagCap)
     $diagReady = Join-Path $tmp 'diag-lock-ready'
     $diagGo = Join-Path $tmp 'diag-lock-go'
     foreach ($diagSignal in @($diagReady, $diagGo)) { if (Test-Path -LiteralPath $diagSignal) { Remove-Item -LiteralPath $diagSignal -Force } }
@@ -5784,7 +6118,7 @@ while (-not [System.IO.File]::Exists($Go) -and [DateTime]::UtcNow -lt $deadline)
 $m.ReleaseMutex()
 $m.Dispose()
 '@)
-    $diagPsi = [System.Diagnostics.ProcessStartInfo]::new((Get-Command pwsh -CommandType Application | Select-Object -First 1).Source)
+    $diagPsi = [System.Diagnostics.ProcessStartInfo]::new($pwshExe)
     foreach ($diagArg in @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', $diagHoldFile, $diagReady, $diagGo)) { $diagPsi.ArgumentList.Add($diagArg) }
     $diagPsi.UseShellExecute = $false
     $diagPsi.CreateNoWindow = $true
@@ -5793,24 +6127,57 @@ $m.Dispose()
         $diagDeadline = [DateTime]::UtcNow.AddSeconds(30)
         while (-not [System.IO.File]::Exists($diagReady) -and [DateTime]::UtcNow -lt $diagDeadline) { Start-Sleep -Milliseconds 20 }
         Confirm-True ([System.IO.File]::Exists($diagReady)) 'diag rollover lock: another process holds the mutex the rollover takes'
+        # The decision, with nothing else left that could account for it: the log is over the cap, the
+        # size read has thirty seconds, and the move does not happen.
+        $diagRollThrewHeld = $false
+        $diagRollOutHeld = @('not run')
+        try { $diagRollOutHeld = @(Invoke-StatusDiagRollover $diagLog 120 $diagCap 30000) } catch { $diagRollThrewHeld = $true }
+        Confirm-True (-not $diagRollThrewHeld) 'diag rollover lock: a rollover it cannot take does not throw'
+        Confirm-Equal $diagRollOutHeld.Count 0 'diag rollover lock: and nothing reaches the pipeline'
+        Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover lock: the file the other render is rotating is left alone'
+        Confirm-Equal (Get-DiagLogSize) $diagCap 'diag rollover lock: and the full log is left exactly as it was'
+        # The same skip through a whole record, which is where the approximate cap comes from.
         $diagLockThrew = $false
         $diagLockOut = @('not run')
         try { $diagLockOut = @(Write-StatusDiag 'another render is rotating') } catch { $diagLockThrew = $true }
-        Confirm-True (-not $diagLockThrew) 'diag rollover lock: a rollover it cannot take does not throw'
-        Confirm-Equal $diagLockOut.Count 0 'diag rollover lock: and nothing reaches the pipeline'
-        Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover lock: the file the other render is rotating is left alone'
+        Confirm-True (-not $diagLockThrew) 'diag rollover lock: a record whose rollover is taken does not throw either'
+        Confirm-Equal $diagLockOut.Count 0 'diag rollover lock: and that record reaches the pipeline with nothing'
+        Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover lock: the record did not roll the log either'
         Confirm-True ((Get-DiagLogSize) -gt $diagCap) 'diag rollover lock: the line is appended anyway rather than waited for, which is what makes the cap approximate'
     } finally {
         [System.IO.File]::WriteAllText($diagGo, 'go')
         [void] $diagHolder.WaitForExit(30000)
         $diagHolder.Dispose()
     }
-    # With the mutex free again the next record rotates as it always did.
+    # With the mutex free again the next record rotates as it always did. The wait for it to come free
+    # is a wait and not an assumption because the name is machine-wide: another copy of this suite,
+    # running beside this one, holds the same mutex for the length of its own check above.
+    $diagFreeMutex = [System.Threading.Mutex]::new($false, 'claude-code-statusline-diag-rollover')
+    $diagFree = $false
+    try {
+        try { $diagFree = $diagFreeMutex.WaitOne(30000) } catch [System.Threading.AbandonedMutexException] { $diagFree = $true }
+        if ($diagFree) { $diagFreeMutex.ReleaseMutex() }
+    } finally { $diagFreeMutex.Dispose() }
+    Confirm-True $diagFree 'diag rollover lock: the other render lets the mutex go'
     Write-StatusDiag 'the other render has finished'
     Confirm-True (Test-Path -LiteralPath $diagRolled) 'diag rollover lock: once the mutex is free the rollover happens'
     Confirm-Equal (Get-DiagLine).Count 1 'diag rollover lock: and the fresh log holds only the new record'
     Clear-DiagLog
     Clear-DiagRollover
+    } finally {
+        # The script's own function, not a hand-written replica of it: a replica would put back only the
+        # two keys this file happens to know about and would go on agreeing with itself if the real one
+        # grew a third.
+        . (Import-ScriptFunction $script @('Get-StatusDiagLimit'))
+    }
+    $diagBackLimit = Get-StatusDiagLimit
+    Confirm-Equal $diagBackLimit.TimeoutMs $diagRealLimit.TimeoutMs 'diag rollover: the real record budget is back'
+    Confirm-Equal $diagBackLimit.RolloverMs $diagRealLimit.RolloverMs 'diag rollover: and the real reserve with it'
+    # Not just the two numbers: the body itself, read out of the script, so a restore that put back a
+    # replica agreeing on both keys would still be caught.
+    $diagLimitFn = [System.Management.Automation.Language.Parser]::ParseFile($script, [ref] $null, [ref] $null).Find(
+        { param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-StatusDiagLimit' }, $true)
+    Confirm-Equal ((Get-Item function:Get-StatusDiagLimit).Definition.Trim()) ($diagLimitFn.Body.Extent.Text.Trim().TrimStart('{').TrimEnd('}').Trim()) 'diag rollover: and the body is the script''s own rather than a replica'
 
     # The whole script, run twice on one payload: the log changes nothing a terminal would show, and
     # the run with it on leaves a log behind.
@@ -5953,15 +6320,27 @@ if ($haveGit) {
     Confirm-Equal $blocked $null 'Get-GitBranch: a ceiling on the parent repo hides it'
     Confirm-Equal (Get-GitBranch $trapChild $gitTimeoutMs).Branch 'main' 'Get-GitBranch: the same directory finds the repo once the ceiling moves back'
 
-    $gitCases.Add(@{ Name = 'clean';           Dir = $clean;          Has = "$iconHome main";              Not = $iconDirty })
-    $gitCases.Add(@{ Name = 'dirty tracked';   Dir = $dirtyTracked;   Has = "$iconHome main ~1 $iconDirty";  Raw = "$esc[33m" })
-    $gitCases.Add(@{ Name = 'dirty untracked'; Dir = $dirtyUntracked; Has = "$iconHome main ?1 $iconDirty" })
-    $gitCases.Add(@{ Name = 'mixed';           Dir = $mixed;          Has = "$iconHome main +1 ~1 ?1 $iconDirty"; Not = $iconConflict; Raw = "$esc[90m+1$esc[33m $esc[90m~1$esc[33m $esc[90m?1$esc[33m" })
-    $gitCases.Add(@{ Name = 'feature';         Dir = $feature;        Has = "$iconBranch feature/x" })
-    $gitCases.Add(@{ Name = 'unborn';          Dir = $unborn;         Has = "$iconHome main";              Not = $iconDirty })
-    $gitCases.Add(@{ Name = 'detached';        Dir = $detached;       Has = "$iconBranch detached" })
-    $gitCases.Add(@{ Name = 'ahead';           Dir = $ahead;          Has = "$iconBranch topic ${iconAhead}1"; Not = $iconBehind; Raw = "$esc[90m${iconAhead}1$esc[35m" })
-    $gitCases.Add(@{ Name = 'behind';          Dir = $behind;         Has = "$iconHome main ${iconBehind}1";   Not = $iconAhead })
+    # Each of these renders is about what the branch segment says, never about how long it took, and a
+    # probe that runs out of budget says nothing at all: the segment is simply absent and every check
+    # below fails on content. The shipped 1500 ms is ample for a one-file repository on a quiet machine
+    # and thin on one running four test suites, where starting a process at all took seconds, so these
+    # renders are given the most patient timeout there is. It is the fixture that moves, not the
+    # assertion - each still pins the exact text - and the shipped default is exercised by the hang case
+    # below, which is the case that is actually about the timeout.
+    # 10000 and not a larger number because that is the top of the range git.timeoutMs is clamped to
+    # (100..10000, pinned by 'config git timeout 99999: clamped to 10000' in the config group): a config
+    # asking for more is not refused, it is quietly cut to this, and a comment promising thirty seconds
+    # would have been describing ten.
+    $gitPatient = Write-TempConfig 'git-patient.json' '{ "git": { "timeoutMs": 10000 } }'
+    $gitCases.Add(@{ Name = 'clean';           Dir = $clean;          Has = "$iconHome main";              Not = $iconDirty; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'dirty tracked';   Dir = $dirtyTracked;   Has = "$iconHome main ~1 $iconDirty";  Raw = "$esc[33m"; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'dirty untracked'; Dir = $dirtyUntracked; Has = "$iconHome main ?1 $iconDirty"; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'mixed';           Dir = $mixed;          Has = "$iconHome main +1 ~1 ?1 $iconDirty"; Not = $iconConflict; Raw = "$esc[90m+1$esc[33m $esc[90m~1$esc[33m $esc[90m?1$esc[33m"; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'feature';         Dir = $feature;        Has = "$iconBranch feature/x"; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'unborn';          Dir = $unborn;         Has = "$iconHome main";              Not = $iconDirty; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'detached';        Dir = $detached;       Has = "$iconBranch detached"; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'ahead';           Dir = $ahead;          Has = "$iconBranch topic ${iconAhead}1"; Not = $iconBehind; Raw = "$esc[90m${iconAhead}1$esc[35m"; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'behind';          Dir = $behind;         Has = "$iconHome main ${iconBehind}1";   Not = $iconAhead; Config = $gitPatient })
 }
 $notRepo = Join-Path $tmp 'not-a-repo'; New-Item -ItemType Directory -Force $notRepo | Out-Null
 $gitCases.Add(@{ Name = 'not a repo'; Dir = $notRepo; NoBranch = $true })
@@ -5972,27 +6351,211 @@ $gitCases.Add(@{ Name = 'not a repo'; Dir = $notRepo; NoBranch = $true })
 # concatenation: "1000$PID" would overflow ping's 32-bit -w once the PID reached seven digits.
 $pingTag = 1000 + $PID
 $fakeFail = Write-FakeGit 'fake-fail' "echo ran > `"%~dp0fake.ran`"`r`necho fatal: not a git repository 1>&2`r`nexit 128"
-$fakeHang = Write-FakeGit 'fake-hang' "echo ran > `"%~dp0fake.ran`"`r`nping -n 11 -w $pingTag 127.0.0.1 > nul`r`nexit 0"
+# The hang fake writes a second marker on its way out, after the ping and just before it exits, and no
+# hang case may find that one. It is what says the probe stopped waiting on its own rather than being
+# handed an answer by a fake that had finished: a probe that ignored its budget and waited the ten
+# seconds out would let the fake reach that line, and every other check here would still pass, because
+# the fake exits 0 with nothing on stdout - no branch, no stderr, no ping left, and a render long past
+# any floor. The removed ceilings used to be what caught that; this catches it without a clock.
+$hangBody = "echo ran > `"%~dp0fake.ran`"`r`nping -n 11 -w $pingTag 127.0.0.1 > nul`r`necho done > `"%~dp0fake.done`"`r`nexit 0"
+$fakeHang = Write-FakeGit 'fake-hang' $hangBody
 $gitCases.Add(@{ Name = 'git fails'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; Marker = (Join-Path $fakeFail 'fake.ran')
                  PathPrefix = $fakeFail })
-$gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 1500; MaxMs = 4000; Marker = (Join-Path $fakeHang 'fake.ran'); NoPing = $true
-                 PathPrefix = $fakeHang })
-# git.timeoutMs moves the wait. The hang fake pings for ten seconds, so 3000 still kills it, and with
-# 100 the render is back well inside the 3000 case's floor; its budget is loose because a whole pwsh
-# start sits around the 100 ms wait, and its marker is not asserted for the same reason. Each gets its
-# own copy of the fake. Neither directory is a repository, so the cache is never consulted and every
-# render really waits.
-$fakeHang3000 = Write-FakeGit 'fake-hang-3000' "echo ran > `"%~dp0fake.ran`"`r`nping -n 11 -w $pingTag 127.0.0.1 > nul`r`nexit 0"
-$fakeHang100 = Write-FakeGit 'fake-hang-100' "echo ran > `"%~dp0fake.ran`"`r`nping -n 11 -w $pingTag 127.0.0.1 > nul`r`nexit 0"
+$gitCases.Add(@{ Name = 'git hangs'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 1500; Marker = (Join-Path $fakeHang 'fake.ran')
+                 NoFinish = (Join-Path $fakeHang 'fake.done'); PathPrefix = $fakeHang })
+# git.timeoutMs moves the wait, and the floor is what says so: a render that waited at least the
+# configured number of milliseconds can only have read that number. Each gets its own copy of the fake.
+# Neither directory is a repository, so the cache is never consulted and every render really waits.
+#
+# MinMs is the only clock these cases still read, and it is a floor rather than a ceiling on purpose: a
+# loaded machine can only make a render slower, so a floor says the same thing on a quiet box and a busy
+# one, while the ceilings these cases used to carry - a whole child render inside four seconds, of which
+# 1.5 was the intended wait - failed under load for a reason that had nothing to do with the probe. That
+# is #63. The two things the ceilings really said are said without a clock now: that the probe reports
+# nothing and kills the tree when the budget runs out, above, by handing the decision to the test; and
+# that the probe stops waiting at all, by NoFinish below, which is the marker the fake writes on its way
+# out and no hang case may find. The 100 ms case keeps no clock: a floor of 100 is met by any render
+# that starts a pwsh whatever the timeout is, so it never said anything.
+# What these cases deliberately do not ask any more is whether the ping child is gone. The render does
+# come back while the ping is still alive - measured at about 5.2 seconds with the kill made a no-op -
+# but by then the fake's ten seconds of ping have only about four left, and any wait long enough to be
+# reliable is longer than that. The check polled for six, so the ping went inside the window whether the
+# kill took it or it simply finished, and the answer was the same either way. The kill is asserted in
+# process instead, where the probe returns within milliseconds of the verdict and the fake still has
+# most of its ping to run.
+$fakeHang3000 = Write-FakeGit 'fake-hang-3000' $hangBody
+$fakeHang100 = Write-FakeGit 'fake-hang-100' $hangBody
 $gitTimeout3000 = Write-TempConfig 'git-timeout-3000.json' '{ "git": { "timeoutMs": 3000 } }'
 $gitTimeout100 = Write-TempConfig 'git-timeout-100.json' '{ "git": { "timeoutMs": 100 } }'
-$gitCases.Add(@{ Name = 'git hangs, timeoutMs 3000'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 3000; MaxMs = 6000; Marker = (Join-Path $fakeHang3000 'fake.ran'); NoPing = $true
-                 PathPrefix = $fakeHang3000; Config = $gitTimeout3000 })
-$gitCases.Add(@{ Name = 'git hangs, timeoutMs 100'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 100; MaxMs = 4000; NoPing = $true
+$gitCases.Add(@{ Name = 'git hangs, timeoutMs 3000'; Dir = $notRepo; NoBranch = $true; NoStderr = $true; MinMs = 3000; Marker = (Join-Path $fakeHang3000 'fake.ran')
+                 NoFinish = (Join-Path $fakeHang3000 'fake.done'); PathPrefix = $fakeHang3000; Config = $gitTimeout3000 })
+$gitCases.Add(@{ Name = 'git hangs, timeoutMs 100'; Dir = $notRepo; NoBranch = $true; NoStderr = $true
+                 Marker = (Join-Path $fakeHang100 'fake.ran'); NoFinish = (Join-Path $fakeHang100 'fake.done')
                  PathPrefix = $fakeHang100; Config = $gitTimeout100 })
 
 function Get-FakePingCount([string] $Tag) {
     return @(Get-CimInstance Win32_Process -Filter "Name='PING.EXE'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match "-n 11 -w $Tag " }).Count
+}
+
+# The kill takes the tree down at once; the operating system reaps it a moment later, and on a machine
+# running four test suites that moment is longer than any fixed sleep worth writing. So wait for the
+# ping to go rather than sleeping a guessed interval and looking once.
+# Where this can be asked matters, and it took a mutation to see it. The window has to be long enough
+# that a killed tree has certainly been reaped inside it, and short enough that a tree nobody killed is
+# still running when it ends - and after a whole child render there is no such window. With Kill($true)
+# made a no-op the render still comes back, at about 5.2 seconds, but the fake's ten seconds of ping
+# have around four left by then, less than the six this polls for, so the ping goes inside the window on
+# its own and the check says the same thing either way. Widening or narrowing does not fix that: four
+# seconds of remaining ping is not enough room for a wait that has to survive a loaded machine.
+# So this is only asked where the answer can still be no - in process, where the probe returns within
+# milliseconds of the verdict and the fake has most of its ping still to run.
+function Wait-FakePingGone([string] $Tag, [int] $TimeoutMs = 6000) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ((Get-FakePingCount $Tag) -gt 0 -and $sw.ElapsedMilliseconds -lt $TimeoutMs) { Start-Sleep -Milliseconds 100 }
+    return ((Get-FakePingCount $Tag) -eq 0)
+}
+
+# ---- The timeout decision, taken deliberately rather than waited for ----
+# The hang cases below assert the wall clock of a whole child render, and a wall clock is the one thing
+# a machine running four test suites at once does not honour: the same render takes 3.3 seconds on a
+# quiet box and 5.5 on a loaded one, against a ceiling of four. That is #63, and the ceilings failed
+# for a reason that had nothing to do with the probe. What they were there to prove is a decision - git
+# did not answer inside the budget, so kill the tree and report nothing - and $WaitForExit hands that
+# decision to the test the way Get-PaceArrow's $Now hands it the clock. The fake here exits at once and
+# prints a branch, so a null answer can only be the decision's, never the fake's.
+$fakeQuick = Write-FakeGit 'fake-quick' "echo ## main`r`nexit 0"
+$waitSpy = @{ Calls = 0; TimeoutMs = 0; Pings = 0; Running = $false }
+$waitExited = { param($p, $ms) $waitSpy.Calls++; $waitSpy.TimeoutMs = $ms; return $p.WaitForExit($ms) }
+$waitTimedOut = { param($p, $ms) $null = $p; $waitSpy.Calls++; $waitSpy.TimeoutMs = $ms; return $false }
+# The same verdict, but not until the fake has really got its ping child running, so that the check
+# that the tree is gone afterwards cannot pass because there was never a tree. The wait is bounded and
+# the count it saw is asserted, so a fake that never started one fails rather than being waited out.
+$waitTimedOutOnce = {
+    param($p, $ms)
+    $waitSpy.Calls++
+    $waitSpy.TimeoutMs = $ms
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($waitSpy.Pings -lt 1 -and $sw.ElapsedMilliseconds -lt 30000) {
+        $waitSpy.Pings = Get-FakePingCount $pingTag
+        if ($waitSpy.Pings -lt 1) { Start-Sleep -Milliseconds 100 }
+    }
+    # The batch file cannot outlive its own ping, so a ping seen means git is still running here, which
+    # is what makes the kill below a kill of something.
+    $waitSpy.Running = -not $p.HasExited
+    return $false
+}
+$oldPath = $env:PATH
+try {
+    $env:PATH = $fakeQuick + [System.IO.Path]::PathSeparator + $env:PATH
+    # Nothing injected: the default wait, which is the one every caller in the script takes.
+    Confirm-Equal (Get-GitBranch $notRepo $gitTimeoutMs).Branch 'main' 'git timeout decision: with no wait supplied the probe still answers from git'
+    # The real wait behind the injection point: the same answer, taken once, with the timeout the
+    # caller passed. That last one is the plumbing the elapsed-time cases proved with a stopwatch -
+    # whatever number reaches the probe is the number the wait is given - without the stopwatch.
+    $waitSpy.Calls = 0
+    Confirm-Equal (Get-GitBranch $notRepo 1234 $waitExited).Branch 'main' 'git timeout decision: an injected wait that says git exited answers from git'
+    Confirm-Equal $waitSpy.Calls 1 'git timeout decision: the wait is taken once'
+    Confirm-Equal $waitSpy.TimeoutMs 1234 'git timeout decision: the wait is given the timeout the caller passed'
+    # The decision itself: same fake, same branch on stdout, same exit code 0, and the probe reports
+    # nothing because the wait said the budget ran out.
+    $waitSpy.Calls = 0
+    Confirm-Equal (Get-GitBranch $notRepo 1234 $waitTimedOut) $null 'git timeout decision: a wait that says the timeout ran out answers nothing, though git exited 0 with a branch'
+    Confirm-Equal $waitSpy.Calls 1 'git timeout decision: the timed-out wait is taken once too'
+} finally { $env:PATH = $oldPath }
+# And the kill that goes with the decision, on the fake that really hangs: the ping child is watched
+# into existence from inside the wait, the verdict is then given, and the tree has to be gone - all
+# without waiting a timeout out.
+# Its own copy of the hanging fake, not the one the case below uses: this block runs first, and a fake
+# writes its "I ran" marker into its own directory, so sharing one would leave that marker there for the
+# case to find whether its own render launched anything or not.
+$fakeHangDecision = Write-FakeGit 'fake-hang-decision' $hangBody
+$oldPath = $env:PATH
+try {
+    $env:PATH = $fakeHangDecision + [System.IO.Path]::PathSeparator + $env:PATH
+    $waitSpy.Calls = 0
+    $waitSpy.Pings = 0
+    Confirm-Equal (Get-GitBranch $notRepo 1234 $waitTimedOutOnce) $null 'git timeout decision, hanging git: the probe answers nothing'
+    Confirm-True ($waitSpy.Pings -ge 1) "git timeout decision, hanging git: the fake had a ping child to kill (count $($waitSpy.Pings))"
+    Confirm-True $waitSpy.Running 'git timeout decision, hanging git: and git itself was still running when the verdict was given'
+    Confirm-True (Wait-FakePingGone $pingTag) 'git timeout decision, hanging git: the ping child is killed with the tree'
+} finally { $env:PATH = $oldPath }
+# ---- And the wait nothing above touches ----
+# Everything above replaces the wait, so nothing above says what the real one is given. The number in
+# the else branch could be anything - a mutation to WaitForExit(5000) passes every check on this page,
+# because the hang fake runs for ten seconds and is killed either way, and the marker it writes on the
+# way out is never reached at five seconds any more than at one hundred milliseconds.
+# So: one call with nothing injected, a timeout of 100, and a fake that takes about three seconds - long
+# enough that a probe honouring 100 ms must kill it, short enough that a probe given seconds instead
+# would let it finish, print its branch and write its marker. The three assertions are the same three
+# the injected block makes, and only the real wait can satisfy them here.
+# Its ping count differs from the hanging fake's, so Get-FakePingCount cannot see this one at all and
+# it can neither satisfy nor spoil a count anywhere else in the group.
+$fakeShortHang = Write-FakeGit 'fake-short-hang' "echo ran > `"%~dp0fake.ran`"`r`nping -n 4 -w $pingTag 127.0.0.1 > nul`r`necho ## main`r`necho done > `"%~dp0fake.done`"`r`nexit 0"
+$shortHangDone = Join-Path $fakeShortHang 'fake.done'
+$oldPath = $env:PATH
+try {
+    $env:PATH = $fakeShortHang + [System.IO.Path]::PathSeparator + $env:PATH
+    Confirm-Equal (Get-GitBranch $notRepo 100) $null 'git timeout decision, the real wait: a hundred milliseconds is not enough for this fake, so the probe answers nothing'
+    Confirm-True (-not (Test-Path -LiteralPath $shortHangDone)) 'git timeout decision, the real wait: and the fake never reached its last line, so it was stopped rather than waited out'
+    # The control, and the reason the two lines above are not both satisfied by a fake that cannot run
+    # at all: the same fake, the same call, with a budget it fits inside. Now it finishes, prints its
+    # branch and writes the marker. Nothing here is a race - the marker is written before the fake
+    # exits, and the probe returns after it - and nothing here is a clock: the two calls differ only in
+    # the number the wait is given.
+    Confirm-Equal (Get-GitBranch $notRepo $gitTimeoutMs).Branch 'main' 'git timeout decision, the real wait: with a budget the fake fits inside, the same probe answers from it (control)'
+    Confirm-True (Test-Path -LiteralPath $shortHangDone) 'git timeout decision, the real wait: and then the fake does reach its last line (control)'
+} finally { $env:PATH = $oldPath }
+# The parameter is for this file and nothing else, and that is read out of the scripts rather than
+# promised in a comment: a call that passed a wait of its own would take the decision away from the
+# clock in a real render, which is the one thing an injection point put there for a test must not do.
+# Counting elements is not enough to say that. `Get-GitBranch -Dir $d -TimeoutMs $t` is five elements
+# and passes nothing; `Get-GitBranch $d $t -WaitForExit $w` is five as well and passes everything; and
+# `Get-GitBranch @args` is two and could pass anything at all. So a call is read the way PowerShell
+# binds it: a named parameter that is a prefix of WaitForExit is one, a splat is one because nothing
+# here can see inside it, and a third value that no parameter name claimed is one.
+function Test-ProbeCallPassesWait([System.Management.Automation.Language.CommandAst] $Call) {
+    $positional = 0
+    $elements = @($Call.CommandElements)
+    for ($i = 1; $i -lt $elements.Count; $i++) {
+        $element = $elements[$i]
+        if ($element -is [System.Management.Automation.Language.CommandParameterAst]) {
+            # PowerShell binds any unambiguous prefix, so -W and -Wait name this parameter too.
+            if ('WaitForExit'.StartsWith($element.ParameterName, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+            # `-TimeoutMs 5` puts the value in the next element; `-TimeoutMs:5` carries it here.
+            if ($null -eq $element.Argument -and $i + 1 -lt $elements.Count -and
+                $elements[$i + 1] -isnot [System.Management.Automation.Language.CommandParameterAst]) { $i++ }
+            continue
+        }
+        if ($element -is [System.Management.Automation.Language.VariableExpressionAst] -and $element.Splatted) { return $true }
+        $positional++
+    }
+    return ($positional -gt 2)
+}
+$mainProbeCount = 0
+foreach ($probePath in @($script, $subScript)) {
+    $probeTokens = $null
+    $probeErrors = $null
+    $probeAst = [System.Management.Automation.Language.Parser]::ParseFile($probePath, [ref] $probeTokens, [ref] $probeErrors)
+    $probeCalls = @($probeAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-GitBranch' }, $true))
+    if ($probePath -eq $script) { $mainProbeCount = $probeCalls.Count }
+    $probeWaits = @($probeCalls | Where-Object { Test-ProbeCallPassesWait $_ })
+    Confirm-Equal $probeWaits.Count 0 "git timeout decision: no call in $(Split-Path $probePath -Leaf) passes a wait of its own, found: $(($probeWaits | ForEach-Object { $_.Extent.Text }) -join ' | ')"
+}
+# And the control for that, which would otherwise pass on a script that had stopped calling the probe,
+# read out of the same walk rather than a second one that could disagree with it.
+Confirm-True ($mainProbeCount -ge 1) 'git timeout decision: the script really does call the probe (control)'
+# The reader itself, on calls written out here, so a guard that answered no to everything is caught.
+foreach ($probeShape in @(
+        @{ Text = 'Get-GitBranch $d $t'; Wait = $false }
+        @{ Text = 'Get-GitBranch -Dir $d -TimeoutMs $t'; Wait = $false }
+        @{ Text = 'Get-GitBranch -TimeoutMs:$t $d'; Wait = $false }
+        @{ Text = 'Get-GitBranch $d $t $w'; Wait = $true }
+        @{ Text = 'Get-GitBranch $d $t -WaitForExit $w'; Wait = $true }
+        @{ Text = 'Get-GitBranch $d $t -W $w'; Wait = $true }
+        @{ Text = 'Get-GitBranch @probeArgs'; Wait = $true })) {
+    $shapeAst = [System.Management.Automation.Language.Parser]::ParseInput($probeShape.Text, [ref] $null, [ref] $null)
+    $shapeCall = $shapeAst.Find({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)
+    Confirm-Equal (Test-ProbeCallPassesWait $shapeCall) $probeShape.Wait "git timeout decision, the guard itself: '$($probeShape.Text)' passes a wait is $($probeShape.Wait)"
 }
 
 foreach ($case in $gitCases) {
@@ -6008,8 +6571,10 @@ foreach ($case in $gitCases) {
     if ($case.NoStderr) { Confirm-True ($r.Err.Count -eq 0) "${label}: nothing on stderr, got '$($r.Err -join ' | ')'" }
     if ($case.Marker) { Confirm-True (Test-Path $case.Marker) "${label}: fake git was actually launched" }
     if ($case.MinMs) { Confirm-True ($r.Ms -ge $case.MinMs) "${label}: waited the full timeout ($($r.Ms) ms, expected at least $($case.MinMs))" }
-    if ($case.MaxMs) { Confirm-True ($r.Ms -lt $case.MaxMs) "${label}: finished in $($r.Ms) ms (limit $($case.MaxMs))" }
-    if ($case.NoPing) { Start-Sleep -Milliseconds 300; Confirm-True ((Get-FakePingCount $pingTag) -eq 0) "${label}: ping child killed with the tree" }
+    # The fake writes this on its last line, so it exists only if the fake was allowed to finish. The
+    # render has already returned, and a probe that waited for the fake could only have returned after
+    # that line ran, so there is no race here to lose: the file is there or the probe stopped first.
+    if ($case.NoFinish) { Confirm-True (-not (Test-Path -LiteralPath $case.NoFinish)) "${label}: the probe stopped waiting on its own rather than letting git finish" }
     Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f $case.Name, $r.Ms, $text)
 }
 
@@ -6029,8 +6594,11 @@ if ($haveGit) {
     # second runs with a git on PATH that only writes a marker and fails, and still prints the branch.
     $fakeFailCached = Write-FakeGit 'fake-fail-cached' "echo ran > `"%~dp0fake.ran`"`r`necho fatal: not a git repository 1>&2`r`nexit 128"
     $cachedMarker = Join-Path $fakeFailCached 'fake.ran'
-    # A long lifetime, so two whole child renders cannot straddle the shipped five seconds on a slow day.
-    $gitCache300 = Write-TempConfig 'git-cache-300.json' '{ "git": { "cacheSeconds": 300 } }'
+    # A long lifetime, so two whole child renders cannot straddle the shipped five seconds on a slow day,
+    # and the same patient timeout the content cases above use - the clamp's maximum - for the same
+    # reason: the first render has to reach real git and get an answer, or every check here fails on a
+    # branch that was never printed.
+    $gitCache300 = Write-TempConfig 'git-cache-300.json' '{ "git": { "cacheSeconds": 300, "timeoutMs": 10000 } }'
     $r1 = Invoke-StatusLine (Get-GitPayload $clean) $gitCache300 0
     $r2 = Invoke-StatusLine (Get-GitPayload $clean) $gitCache300 0 $fakeFailCached
     $text1 = ConvertTo-PlainText ($r1.Lines -join "`n")
@@ -6198,19 +6766,28 @@ foreach ($case in @(
     Write-Host ("{0,-40} {1,5:N0} ms  {2}" -f $label, $r.Ms, $text)
 }
 
-# Positive control for the hang case's "no ping is left behind": that assertion would also pass if the
-# fake had never started a ping. Run the same fake once more without waiting for the render, and watch
-# the ping from outside - it has to be running while the render is still blocked, and gone once the
-# render has exited.
-$hang = Invoke-StatusLineAsync (Get-GitPayload $notRepo) $fakeHang
+# Positive control for the hanging fake: it really does start a ping child, and that child really is
+# running while the render is blocked on the probe. The in-process check further up is what says the
+# probe kills it; this is what says there was something there to kill, from outside, through a whole
+# render rather than through a call.
+# The window this looks in is the render's own timeout: with the shipped 1500 ms a pwsh that takes four
+# seconds to start on a loaded machine can be past the probe before the first look, and the check would
+# fail for want of a window rather than for want of a ping. 3000 is enough of a window and keeps the
+# case short.
+# What is deliberately NOT asked here is whether the ping is gone afterwards. The render does come back
+# with the ping still alive when the probe killed nothing - about 5.2 seconds, measured with Kill($true)
+# made a no-op - but the fake's ten seconds of ping have only about four left at that point, and the
+# wait that would ask the question polls for six. The ping therefore goes inside the window whether the
+# kill took it or it ran itself out, and the check has one answer either way. It used to be asked, and
+# that mutation left it green while four other checks caught the change.
+$hang = Invoke-StatusLineAsync (Get-GitPayload $notRepo) $fakeHang $gitTimeout3000
 $midPings = 0
 $midMs = 0
 $hangSw = [System.Diagnostics.Stopwatch]::StartNew()
 try {
-    Start-Sleep -Milliseconds 500
     $midPings = Get-FakePingCount $pingTag
     # pwsh's own start-up is not instant, so allow a little longer for the child to reach the ping.
-    while ($midPings -lt 1 -and $hangSw.ElapsedMilliseconds -lt 5000 -and -not $hang.Process.HasExited) {
+    while ($midPings -lt 1 -and $hangSw.ElapsedMilliseconds -lt 30000 -and -not $hang.Process.HasExited) {
         Start-Sleep -Milliseconds 100
         $midPings = Get-FakePingCount $pingTag
     }
@@ -6223,8 +6800,9 @@ try {
     $hang.Process.Dispose()
 }
 $hangSw.Stop()
-Start-Sleep -Milliseconds 300
-Confirm-True ((Get-FakePingCount $pingTag) -eq 0) 'git hangs control: ping child gone once the render exited'
+# Not an assertion, only hygiene: the next group counts pings with the same tag, so wait for this one's
+# to go rather than leaving it to overlap. Whether it goes is not in question here, for the reason above.
+$null = Wait-FakePingGone $pingTag
 Write-Host ("{0,-40} {1,5:N0} ms  {2} ping(s) at {3} ms, 0 after" -f 'git hangs control', $hangSw.ElapsedMilliseconds, $midPings, $midMs)
 } finally {
     if ($null -ne $oldGitConfigGlobal) { $env:GIT_CONFIG_GLOBAL = $oldGitConfigGlobal } else { Remove-Item Env:GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue }
@@ -6254,7 +6832,6 @@ function Confirm-NormalRender($Result, [string] $Cost, [string] $Label) {
     Confirm-Equal $text "$iconModel M $chevron $iconCost `$$Cost $chevron $iconHome main" "${Label}: normal line"
 }
 $iconModel = [char]::ConvertFromUtf32(0xF06A9)
-$iconCost = [char]::ConvertFromUtf32(0xF0155)
 $stateOffConfig = Write-TempConfig 'state-off.json' '{ "state": false }'
 
 $r1 = Invoke-StatusLine (Get-StatePayloadJson 1.07) $null 0
@@ -6917,13 +7494,12 @@ try {
 
     # ---- THE PROMISE'S EDGE: names that are not English ----
     # The builders are called directly here rather than through a child render, and the reason is worth
-    # writing down. statusline.ps1 reads its payload with [Console]::In, which decodes with the console's
-    # INPUT code page - 437 on an ordinary Windows console - while the payload arrives as UTF-8 bytes, so
-    # a Japanese branch name piped to a child is already mojibake before any style has been chosen. That
-    # is a defect of the read path, in every style, and not of this one; every other payload this suite
-    # pipes is ASCII, which is why nothing here has ever met it. Calling the builders puts the payload
-    # this test wrote in front of them with no encoding boundary in between, which is what makes the
-    # checks below about the style rather than about the transport.
+    # writing down. It is no longer that a child render could not carry the names: the read path decodes
+    # stdin as UTF-8 now (#80), the transport block below pins that, and sample 15 renders a branch and a
+    # folder that are not English through the whole matrix. It is that a check about the STYLE should not
+    # be able to fail for a reason that belongs to the transport. Calling the builders puts the payload
+    # this test wrote in front of them with no encoding boundary in between, so what fails here is the
+    # style and only the style.
     #
     # WHAT THEY ASSERT: for each segment that draws payload text, the characters outside ASCII in what it
     # built are EXACTLY the ones the name carried. A meter block, a middle dot, a minus sign, a pace
@@ -6931,9 +7507,10 @@ try {
     # it fails here by name. This is the check that says the style replaced the glyphs the SCRIPT picked
     # and nothing of the user's - and equally that it did not transliterate a name into `????`, which
     # would be lossy, silent, and worse than the boxes it was trying to avoid.
-    # The names are built from code points, so this file stays ASCII the way the rest of it does.
+    # The names are built from code points, so this file stays ASCII the way the rest of it does. The
+    # branch is the file's one CJK pair, shared with the transport block and sample 15.
     $nameModel = [char]::ConvertFromUtf32(0xD3) + 'pus 5'                                                # O with acute
-    $nameBranch = [char]::ConvertFromUtf32(0x6A5F) + [char]::ConvertFromUtf32(0x80FD) + '/x'             # two CJK ideographs
+    $nameBranch = $cjkBranch
     $nameLeaf = -join (0x30D7, 0x30ED, 0x30B8, 0x30A7 | ForEach-Object { [char]::ConvertFromUtf32($_) }) # katakana
     $nameOwner = 'o' + [char]::ConvertFromUtf32(0xF1) + 'ate'                                            # n with tilde
     $nameRepo = 'd' + [char]::ConvertFromUtf32(0xE9) + 'mo'                                              # e with acute
@@ -6982,6 +7559,106 @@ Confirm-Equal (Get-PaceArrow $paceSoon 80 ([DateTimeOffset]::UtcNow.ToUnixTimeSe
 Confirm-Equal (Get-PaceArrow $paceSoon 80 ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) 'ascii').Over $true 'ascii: the overrun state is unchanged'
 Confirm-Equal (Get-PaceArrow $paceSoon 10 ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())).Arrow ([char]::ConvertFromUtf32(0x2192)) 'ascii: no style given keeps the right arrow'
 
+# ---- Transport: the payload is decoded as UTF-8, whatever code page the console is on ----
+# Claude Code pipes the payload as UTF-8 bytes. What the script decodes those bytes WITH is a separate
+# question, and the answer used to be the console's INPUT code page, because the read went through
+# [Console]::In: 437 on an ordinary Windows console, and the machine's OEM code page in a console the
+# host makes fresh for the render, whatever the terminal itself is set to. Two bytes of Japanese went
+# in and six characters of Latin-1 and box drawing came out, in every style, on every render.
+#
+# Nothing in this file could see it. Every other payload here is ASCII, and the checks that do use
+# names which are not English - the ascii block above - call the builders in process, where the string
+# is already a .NET string and never crosses a process boundary at all. So these checks cross one on
+# purpose. The payload is encoded to UTF-8 here and written to the child's stdin AS BYTES rather than
+# through the pipeline, so the sending side is this file's choice and the only thing left under test
+# is the read.
+#
+# Two shapes, because stdin is decoded differently in each. The first is the child as the suite starts
+# every other one, in a console of its own at the machine's OEM code page - which is what a host that
+# spawns the render hidden gives it, and on an ordinary Windows machine that is 437 and the bug is
+# there to be caught. The second forces the question rather than waiting for the machine to ask it:
+# the child sets its OWN [Console]::InputEncoding to 437 before the script runs, which is the value
+# [Console]::In decodes with and the value a console's input code page supplies. That makes the check
+# deterministic even where the OEM code page is already UTF-8, and it touches nothing outside the
+# child: .NET only writes a console's code page when stdin is NOT redirected, and here it always is,
+# so there is no console left on 437 anywhere and nothing to put back. A forced code page in the
+# PARENT would have needed a restore, and the suite is routinely run in the background and stopped.
+Write-Host ''
+Write-Host '== transport' -ForegroundColor Cyan
+$forceCodePageScript = Write-ForceCodePageScript $tmp
+
+$utfBranch = $cjkBranch
+$utfLeaf = 'funci' + $acuteO + 'n'
+$utfModel = 'Fable ' + $astralRocket
+$transportCfg = Write-TempConfig 'transport-utf8.json' '{ "layout": "one", "style": "plain", "links": false }'
+# A git object, so the render answers from the payload and probes nothing; links off, so what is
+# compared is the text and not a percent-encoded copy of it beside the text.
+$transportJson = '{ "model": { "display_name": "' + $utfModel + '" },' +
+    ' "context_window": { "used_percentage": 12, "context_window_size": 200000 },' +
+    ' "workspace": { "current_dir": "C:\\src\\' + $utfLeaf + '" },' +
+    ' "git": { "branch": "' + $utfBranch + '", "status": "clean" } }'
+$transportSubJson = '{ "columns": 120, "tasks": [ { "id": "t1", "name": "' + $utfBranch + ' ' + $utfLeaf + ' ' + $utfModel + '" } ] }'
+$transportBytes = [System.Text.Encoding]::UTF8.GetBytes($transportJson)
+$transportSubBytes = [System.Text.Encoding]::UTF8.GetBytes($transportSubJson)
+$transportBom = [byte[]] (@(0xEF, 0xBB, 0xBF) + $transportBytes)
+$transportSubBom = [byte[]] (@(0xEF, 0xBB, 0xBF) + $transportSubBytes)
+$replacementChar = [char]0xFFFD
+# The render the byte-order-mark case below is compared against, kept from the loop rather than run
+# again: it is the same payload, the same config and the same shape.
+$transportPlain = $null
+foreach ($entry in @(@{ Name = 'own console'; Cp = 0 }, @{ Name = 'input code page 437'; Cp = 437 })) {
+    $label = "transport $($entry.Name)"
+    $r = Invoke-ChildPwshUtf8 $script @('-Config', $transportCfg) $transportBytes $entry.Cp
+    $rSub = Invoke-ChildPwshUtf8 $subScript @() $transportSubBytes $entry.Cp
+    if ($entry.Cp -eq 0) { $transportPlain = $r }
+    Confirm-True ($r.ExitCode -eq 0) "${label}: exit code $($r.ExitCode)"
+    Confirm-True (-not $r.Err.Trim()) "${label}: stderr empty, got '$($r.Err.Trim())'"
+    $text = ConvertTo-PlainText ($r.Out.TrimEnd("`r", "`n"))
+    # Ordinal, three times: these are rendered lines, and a culture comparison gives Unicode Format
+    # characters no weight, which is exactly the difference this check exists to see. Each one pins the
+    # payload's own characters against the glyph the script chose to put in front of them, so mojibake
+    # fails it from one side and a transliteration to question marks fails it from the other.
+    Confirm-True ($text.IndexOf("$iconBranch $utfBranch", [System.StringComparison]::Ordinal) -ge 0) "${label}: the branch name is the two ideographs that were sent, not a decode of their bytes"
+    Confirm-True ($text.IndexOf("$iconFolder $utfLeaf", [System.StringComparison]::Ordinal) -ge 0) "${label}: the folder leaf keeps its accented letter"
+    Confirm-True ($text.IndexOf("$iconModel $utfModel", [System.StringComparison]::Ordinal) -ge 0) "${label}: the model name keeps the code point outside the BMP whole"
+    Confirm-True ($text.IndexOf($replacementChar) -lt 0) "${label}: no replacement character on the line"
+    Confirm-True ($rSub.ExitCode -eq 0) "${label}: the subagent panel exits 0, got $($rSub.ExitCode)"
+    Confirm-True (-not $rSub.Err.Trim()) "${label}: the subagent panel writes nothing to stderr, got '$($rSub.Err.Trim())'"
+    $row = [string] (Get-SubagentReply ($rSub.Out -split "`r?`n")).Rows['t1']
+    Confirm-True ([bool] $row) "${label}: the subagent panel answers the task"
+    if ($row) {
+        $rowText = ConvertTo-PlainText $row
+        Confirm-True ($rowText.IndexOf("$utfBranch $utfLeaf $utfModel", [System.StringComparison]::Ordinal) -ge 0) "${label}: the subagent row carries all three names as they were sent"
+        Confirm-True ($rowText.IndexOf($replacementChar) -lt 0) "${label}: no replacement character in the subagent row"
+    }
+    Write-Host ("  {0,-24} {1}" -f $entry.Name, $text)
+}
+
+# A byte order mark on the front is consumed, not carried into the payload: left in the string it would
+# be the first character of what ConvertFrom-Json is handed, and the whole render would fall back. The
+# comparison is against the same payload without one, so this says the mark changed nothing rather than
+# only that the render survived it. UTF8Encoding($false) has an empty preamble, so the reader's
+# detectEncodingFromByteOrderMarks is the only thing that can be stripping it.
+$rBom = Invoke-ChildPwshUtf8 $script @('-Config', $transportCfg) $transportBom 0
+Confirm-True ($rBom.ExitCode -eq 0 -and -not $rBom.Err.Trim()) 'transport BOM: exit code 0, stderr empty'
+Confirm-Equal $rBom.Out $transportPlain.Out 'transport BOM: a payload with a byte order mark renders the same bytes as one without'
+$rSubBom = Invoke-ChildPwshUtf8 $subScript @() $transportSubBom 0
+Confirm-True ($rSubBom.ExitCode -eq 0 -and -not $rSubBom.Err.Trim()) 'transport BOM: the subagent panel exits 0, stderr empty'
+Confirm-True ([bool] (Get-SubagentReply ($rSubBom.Out -split "`r?`n")).Rows['t1']) 'transport BOM: the subagent panel still answers the task'
+
+# Nothing at all on stdin: not a payload, not an empty line, zero bytes. The main script prints the
+# fallback it prints for any payload it cannot read, and the panel prints nothing, which is what they
+# both did before the read path changed and has to keep being true - a reader that threw on an empty
+# stream would take the line with it.
+$rEmpty = Invoke-ChildPwshUtf8 $script @('-Config', $transportCfg) ([byte[]] @()) 0
+Confirm-True ($rEmpty.ExitCode -eq 0) "transport empty stdin: exit code $($rEmpty.ExitCode)"
+Confirm-True (-not $rEmpty.Err.Trim()) "transport empty stdin: stderr empty, got '$($rEmpty.Err.Trim())'"
+Confirm-Equal (ConvertTo-PlainText $rEmpty.Out.TrimEnd("`r", "`n")) "$iconModel claude" 'transport empty stdin: the fallback line, the same one an unreadable payload gives'
+$rSubEmpty = Invoke-ChildPwshUtf8 $subScript @() ([byte[]] @()) 0
+Confirm-True ($rSubEmpty.ExitCode -eq 0) "transport empty stdin: the subagent panel exits 0, got $($rSubEmpty.ExitCode)"
+Confirm-True (-not $rSubEmpty.Err.Trim()) "transport empty stdin: the subagent panel writes nothing to stderr, got '$($rSubEmpty.Err.Trim())'"
+Confirm-Equal ($rSubEmpty.Out.Trim()) '' 'transport empty stdin: the subagent panel prints no row'
+
 # ---- Render matrix: samples x configs x widths ----
 $sampleFiles = Get-ChildItem (Join-Path $PSScriptRoot 'samples') -Filter *.json | Sort-Object Name
 $sample06 = $sampleFiles | Where-Object { $_.Name -eq '06-limits-badges-lines.json' }
@@ -7020,13 +7697,21 @@ function Convert-ToHermeticPayload([string] $Path) {
 }
 $samplePayloads = @{}
 foreach ($sample in $sampleFiles) { $samplePayloads[$sample.Name] = Convert-ToHermeticPayload $sample.FullName }
-$iconCost = [char]::ConvertFromUtf32(0xF0155)
 $iconLines = [char]::ConvertFromUtf32(0xF121)
 $iconFast = [char]::ConvertFromUtf32(0xF0E7)
-$iconThink = [char]::ConvertFromUtf32(0xF09D0)
 $iconEffort = [char]::ConvertFromUtf32(0xF04C5)
 $iconVim = [char]::ConvertFromUtf32(0xE62B)
 $minus = [char]::ConvertFromUtf32(0x2212)
+# Sample 15's two names, from the file's one set of non-English characters at the top.
+# It is the corpus's answer to #80: a branch and a folder that are not English, rendered through every
+# config and every width in the matrix, so the read path is held to UTF-8 by the whole render pass and
+# not only by the transport block above. The names are read back off the file rather than trusted, so a
+# sample edited later fails here by name instead of quietly making the markers below unreachable.
+$sample15Branch = $cjkBranch
+$sample15Leaf = 'proyecto-funci' + $acuteO + 'n'
+$sample15 = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'samples\15-non-english-branch.json') -Raw) | ConvertFrom-Json
+Confirm-Equal $sample15.git.branch $sample15Branch 'sample 15: the branch name in the file is the one the markers expect'
+Confirm-Equal (Split-Path ([string] $sample15.workspace.current_dir) -Leaf) $sample15Leaf 'sample 15: the folder leaf in the file is the one the markers expect'
 # Glyphs a sample must NOT show when every segment is enabled. This is the variant coverage the markers
 # below cannot give, because a marker can only say that something rendered: a clean tree carries no
 # pencil, a feature branch no home icon, a payload without rate limits no tachometer, and 07's badges
@@ -7128,10 +7813,19 @@ $absentGlyphs = @{
         @{ Icon = $iconLimit; Name = 'limits' }
         @{ Icon = $iconConflict; Name = 'warn' }
     )
+    # 15's branch is not main, so the home glyph is the one that has to stay off its line; the tree is
+    # clean and the payload carries no counts, no lines and no rate limits.
+    '15-non-english-branch.json'            = @(
+        @{ Icon = $iconHome; Name = 'home' }
+        @{ Icon = $iconDirty; Name = 'pencil' }
+        @{ Icon = $iconLines; Name = 'lines' }
+        @{ Icon = $iconLimit; Name = 'limits' }
+        @{ Icon = $iconConflict; Name = 'warn' }
+    )
 }
 # 14 is the only sample carrying a prompt_cache block, so the fire glyph has to stay off every other
 # line. A loop for the same reason the worktree and identity ones below are loops: a builder that
-# started drawing warmth from a payload with no prompt_cache in it would show up on all thirteen at
+# started drawing warmth from a payload with no prompt_cache in it would show up on all fourteen at
 # once, and a sample added later is covered without an edit.
 foreach ($sample in $sampleFiles) {
     if ($sample.Name -eq '14-prompt-cache-warm.json') { continue }
@@ -7149,7 +7843,7 @@ foreach ($sample in $sampleFiles) {
 }
 # The same rule for the two identity badges, and for the same reason: 13 is the only sample carrying an
 # agent.name or a session_name, so the user glyph and the tag have to stay off every other line. Written
-# as a loop rather than twelve rows by hand, so a builder that started drawing either badge from a
+# as a loop rather than fourteen rows by hand, so a builder that started drawing either badge from a
 # payload that names neither shows up on every sample at once - including 06, whose four mode badges
 # would otherwise give the segment cover.
 foreach ($sample in $sampleFiles) {
@@ -7195,6 +7889,7 @@ $sampleSegments = @{
     '12-context-alarm.json'                 = @('model', 'context', 'cost', 'folder')
     '13-agent-session.json'                 = @('model', 'context', 'cost', 'badges', 'folder', 'branch')
     '14-prompt-cache-warm.json'             = @('model', 'context', 'cache', 'cost', 'folder', 'branch')
+    '15-non-english-branch.json'            = @('model', 'context', 'cost', 'folder', 'branch')
 }
 # One marker per segment per sample: the segment's glyph plus the value this payload gives it, spelled
 # the way it reaches the line once the escapes are stripped. Every visible segment has to put its marker
@@ -7309,6 +8004,14 @@ $sampleMarkers = @{
         model = "$iconModel Fable 5.1"; context = "$iconCtx 18%"; cache = "$iconCache cache warm"
         cost  = "$iconCost `$$('{0:N2}' -f 1.24)"
         folder = "$iconFolder my-project"; branch = "$iconHome main"
+    }
+    # The two markers that are the point of this sample are the branch and the folder: each is the
+    # payload's own characters behind the glyph the script chose, compared through a child render at
+    # every width and in every style. A read path that decoded the payload at the console's code page
+    # fails both of them here, on top of the transport block, for every config in the matrix.
+    '15-non-english-branch.json'            = @{
+        model  = "$iconModel Fable 5.1"; context = "$iconCtx 12%"; cost = "$iconCost `$$('{0:N2}' -f 0.66)"
+        folder = "$iconFolder $sample15Leaf"; branch = "$iconBranch $sample15Branch"
     }
 }
 # The samples whose model segment the alarm turns red with the built-in alarm of 90: 12 sits at 92% of a
@@ -7664,8 +8367,8 @@ Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) "$bolt claude" 'render
 # One pass rather than a fourth column in the matrix above. Adding ascii to the generated layout-by-style
 # set would grow it from four configs to six and force every row of $sampleMarkers to become style-aware
 # for the sake of renders that differ from the plain ones only in the character table; a pass of its own
-# is fourteen renders and one table, and it can assert the thing the matrix cannot say - that nothing on
-# the line is outside printable ASCII.
+# is one render per sample and one table, and it can assert the thing the matrix cannot say - that
+# nothing on the line is outside printable ASCII that the payload did not put there.
 Write-Host ''
 Write-Host '== render: ascii style' -ForegroundColor Cyan
 $asciiPath = Write-TempConfig 'ascii.json' '{ "style": "ascii" }'
@@ -7740,6 +8443,15 @@ $asciiMarkers = @{
         cost  = "`$$('{0:N2}' -f 1.24)"
         folder = 'dir my-project'; branch = '~ main'
     }
+    # The sample that makes the subset rule above do some work: its payload has a non-empty non-ASCII
+    # side, so "every non-ASCII character on the line came from the payload" is a real claim here rather
+    # than the "nothing but ASCII" it reads as on the other fourteen. The ascii style replaces the
+    # glyphs the SCRIPT chose and leaves the two names exactly as they arrived, which is what these two
+    # markers pin.
+    '15-non-english-branch.json'            = @{
+        model = 'Fable 5.1'; context = 'ctx 12%'; cost = "`$$('{0:N2}' -f 0.66)"
+        folder = "dir $sample15Leaf"; branch = "b $sample15Branch"
+    }
 }
 foreach ($sample in $sampleFiles) {
     $label = "ascii $($sample.Name)"
@@ -7752,11 +8464,11 @@ foreach ($sample in $sampleFiles) {
     # THE PROMISE, and it is about what the script chose rather than about the whole line: every
     # non-ASCII character on the line has to have come from the payload. The plain text is what a
     # terminal draws, so the hyperlink wrappers and the colour codes are gone by here and what is left
-    # is the characters a font has to have. Every sample in this corpus carries English text, so the
-    # payload's side of it is empty and this reads as "nothing but ASCII" for all fourteen - but it is
-    # the subset rule that is asserted, so a sample given a Japanese branch name later still says the
-    # right thing instead of failing for being honest. The render after this loop is where a payload
-    # with a non-empty side is pinned exactly.
+    # is the characters a font has to have. Fourteen of the fifteen samples carry English text, so the
+    # payload's side of it is empty and this reads as "nothing but ASCII" for them - but it is the
+    # SUBSET rule that is asserted, which is what lets sample 15 pass it honestly rather than fail for
+    # carrying a Japanese branch name. That sample's own two markers, in $asciiMarkers below, are where
+    # the non-empty side is pinned exactly.
     $fromPayload = @(Get-NonAsciiName $payload)
     $strayed = @((Get-NonAsciiName $text) | Where-Object { $_ -notin $fromPayload })
     Confirm-Equal ($strayed -join ' ') '' "${label}: every non-ASCII character on the line came from the payload"
@@ -8586,31 +9298,20 @@ Confirm-True (@(Get-ChildItem -LiteralPath $matrixTemp -Recurse -Force -File).Co
 # the tables above and gets its own temp tree here rather than sharing $tmp, which is already gone.
 Write-Host ''
 Write-Host '== subagent' -ForegroundColor Cyan
-$subScript = Join-Path $PSScriptRoot 'subagent-statusline.ps1'
 $subSampleDir = Join-Path $PSScriptRoot 'samples\subagent'
 $subTmp = Join-Path ([System.IO.Path]::GetTempPath()) "statusline-subagent-test-$PID"
 New-Item -ItemType Directory -Force $subTmp | Out-Null
 $iconRobot = [char]::ConvertFromUtf32(0xF06A9)
 $ellipsis = [char]::ConvertFromUtf32(0x2026)
 
-# Runs the subagent script in a child pwsh and reads stdout the way Claude Code does: line by line,
-# each line an object with a string id and a string content, anything else dropped. Rows holds the
-# replies in the order they arrived; Bad counts the lines Claude Code would have thrown away.
+# Runs the subagent script in a child pwsh and reads stdout the way Claude Code does, through the one
+# reply parser this file has: line by line, each line an object with a string id and a string content,
+# anything else dropped.
 function Invoke-SubagentLine([string] $Payload) {
     $r = Invoke-ChildPwsh $subScript @() $Payload
-    # Ordinal, because two live tasks can have ids that differ only in case and the panel keeps them
-    # apart. A plain [ordered] hashtable would fold them together here and hide the very bug below.
-    $rows = [System.Collections.Specialized.OrderedDictionary]::new([System.StringComparer]::Ordinal)
-    $bad = 0
-    foreach ($line in $r.Lines) {
-        if (-not "$line".Trim()) { continue }
-        $obj = try { "$line" | ConvertFrom-Json } catch { $null }
-        if ($obj -isnot [System.Management.Automation.PSCustomObject] -or
-            $obj.id -isnot [string] -or $obj.content -isnot [string]) { $bad++; continue }
-        $rows[$obj.id] = $obj.content
-    }
-    $r.Rows = $rows
-    $r.Bad = $bad
+    $reply = Get-SubagentReply $r.Lines
+    $r.Rows = $reply.Rows
+    $r.Bad = $reply.Bad
     return $r
 }
 
@@ -8782,7 +9483,7 @@ foreach ($bad in @('"columns": "80"', '"columns": 20.5', '"columns": true', '"co
 # The helpers the subagent script copies out of statusline.ps1. Both copies are pulled from the source
 # by the parser and compared as text, so a fix made to one and not the other fails here instead of
 # turning into two scripts that measure a line or colour a percentage differently.
-$sharedHelpers = @('G', 'C', 'Get-VisibleWidth', 'Get-ClippedText', 'Get-Palette', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText')
+$sharedHelpers = @('G', 'C', 'Read-StdinText', 'Get-VisibleWidth', 'Get-ClippedText', 'Get-Palette', 'Get-ThresholdRole', 'Test-WideWindow', 'K', 'Get-FiniteNumber', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText')
 foreach ($name in $sharedHelpers) {
     $a = try { "$(Import-ScriptFunction $script @($name))" } catch { "not found in statusline.ps1" }
     $b = try { "$(Import-ScriptFunction $subScript @($name))" } catch { "not found in subagent-statusline.ps1" }
@@ -8812,6 +9513,41 @@ $capTotal = $capMain + (Get-Item -LiteralPath "$capFile.1").Length
 Confirm-True ($capTotal -le 2 * ($capMax + $capRecordBytes)) "capture: the whole capture is bounded, $capTotal bytes"
 # Twelve records of over 400 bytes each would be more than 4800 bytes unbounded.
 Confirm-True ($capTotal -lt 12 * $capRecordBytes) 'capture: twelve records did not all survive, so the bound is doing something'
+
+# The stub's own read path, which is the third copy of the UTF-8 reader and the one outside the drift
+# gate. A capture is reached for precisely when a session's text is NOT English, and the file is written
+# as UTF-8, so a read at the console's code page would make the one artifact kept in order to find out
+# what a payload contained a record of something else. Written and read back as bytes at both ends, so
+# nothing but the stub's decode is being asked about.
+$forceCodePageScript = Write-ForceCodePageScript $subTmp
+$capUtfFile = Join-Path $subTmp 'cap-utf8.jsonl'
+$capUtfRecord = '{"branch":"' + $cjkBranch + '","dir":"funci' + $acuteO + 'n","note":"' + $astralRocket + '"}'
+$c = Invoke-ChildPwshUtf8 $capScript @('-Path', $capUtfFile, '-MaxBytes', '65536') ([System.Text.Encoding]::UTF8.GetBytes($capUtfRecord)) 437
+Confirm-True ($c.ExitCode -eq 0 -and -not $c.Err.Trim()) "capture UTF-8: exit code 0, stderr empty, got '$($c.Err.Trim())'"
+$capUtfBack = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($capUtfFile)).TrimEnd("`r", "`n")
+Confirm-Equal $capUtfBack $capUtfRecord 'capture UTF-8: the record on disk is the bytes that were piped in, at a console input code page of 437'
+
+# The cut that lands between the two halves of a surrogate pair. The record below is built so the byte
+# budget falls exactly on the high half: a lone surrogate encodes to three bytes and the whole pair to
+# four, so the byte loop above the cut cannot tell them apart, and the UTF-8 write would put a U+FFFD
+# into the file that nothing sent. Get-BoundedRecord is called directly - the truncation arithmetic is
+# what is being pinned, not the file - with the same cap the stub's own tests use.
+. (Import-ScriptFunction $capScript @('Get-BoundedRecord'))
+$capSplitCap = 1024
+# 1004 leading characters puts the pair's first half on the last character the budget allows.
+$capSplit = ('a' * 1004) + $astralRocket + ('b' * 200)
+$capCut = Get-BoundedRecord $capSplit $capSplitCap
+$capSuffix = ' ...[truncated]'
+Confirm-True ([System.Text.Encoding]::UTF8.GetByteCount($capCut) -le $capSplitCap - 2) "capture surrogate: the cut record still fits the cap, $([System.Text.Encoding]::UTF8.GetByteCount($capCut)) bytes"
+Confirm-True ($capCut.EndsWith($capSuffix, [System.StringComparison]::Ordinal)) 'capture surrogate: the record was cut, so there is a boundary to check'
+$capBody = $capCut.Substring(0, $capCut.Length - $capSuffix.Length)
+Confirm-True ($capBody.Length -gt 0 -and -not [char]::IsHighSurrogate($capBody[$capBody.Length - 1])) 'capture surrogate: the cut does not end on half of a surrogate pair'
+$capRoundTrip = [System.Text.Encoding]::UTF8.GetString([System.Text.Encoding]::UTF8.GetBytes($capCut))
+Confirm-True ($capRoundTrip.IndexOf([char]0xFFFD) -lt 0) 'capture surrogate: writing the cut record as UTF-8 puts no replacement character in the file'
+Confirm-Equal $capRoundTrip $capCut 'capture surrogate: the record survives the encoding it is written with unchanged'
+# Both halves or neither: a record cut one character earlier is the honest answer, and a record cut one
+# character later would have to carry the whole pair. Nothing in between is written.
+Confirm-True ($capCut.IndexOf($astralRocket, [System.StringComparison]::Ordinal) -lt 0) 'capture surrogate: the pair the cut fell inside is dropped whole rather than halved'
 
 # A path that cannot be written (a directory of that name) stops the capture once and says why: a line
 # on stderr, never on stdout, a sidecar file, and exit 0 so the panel is not taken down with it.
