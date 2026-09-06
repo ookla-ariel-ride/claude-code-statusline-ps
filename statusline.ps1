@@ -78,44 +78,114 @@ function Read-StdinText() {
 # Moves a log with no room left for the next record over claude-statusline-diag.log.1, so a variable
 # left set in a profile costs two files of the cap's size at most rather than the temp volume.
 # Two renders can be printing at once and would both see the same full file, so the move is taken
-# under a named mutex and the size is read again with the mutex in hand: the second render then finds
-# the small file the first one left and does nothing, rather than moving that over the archive the
-# first one just made. The wait is zero. A render that cannot have the mutex at once skips the
-# rollover and appends, because the file it would have moved is about to shrink under it anyway, so
-# nothing here ever waits on another process - which is the point of a log that must not delay a
-# render. The append itself is not locked at all. That leaves the cap approximate: two renders that
-# overlap can leave the file a little over it, or lose a line to each other, which is the right trade
-# for a diagnostic that is off by default and read by a person. Anything that throws is
-# Write-StatusDiag's to swallow, and nothing here reaches the pipeline.
-# $TimeoutMs is what is left of the record's clock, and it covers the size read below. The mutex costs
-# nothing to bound: the wait is already zero, and taking and releasing it are kernel calls rather than
-# filesystem ones. The rename is the one call here that is not bounded; the caller decides whether the
-# budget can afford it before calling at all, and the note at that call site says what that leaves.
+# under an exclusive lock on Path.lock, opened with FileShare.None, and the size is read again with
+# the lock held: the second render then finds the small file the first one left and does nothing,
+# rather than moving that over the archive the first one just made. The wait is zero. A render that
+# finds the lock file already open elsewhere skips the rollover and appends, because the file it
+# would have moved is about to shrink under it anyway, so nothing here ever waits on another process
+# - which is the point of a log that must not delay a render. The append itself is not locked at all.
+# That leaves the cap approximate: two renders that overlap can leave the file a little over it, or
+# lose a line to each other, which is the right trade for a diagnostic that is off by default and
+# read by a person. Anything that throws is Write-StatusDiag's to swallow, and nothing here reaches
+# the pipeline.
+# $TimeoutMs is what is left of the record's clock, and now covers opening the lock as well as the
+# size read: both are filesystem calls, dispatched to the pool and bounded like every other one here.
+# The rename is the one call that stays unbounded; the caller decides whether the budget can afford
+# it before calling at all, and the note at that call site says what that leaves.
+# A lock file rather than a named mutex (#49): a bare mutex name on .NET/Unix is scoped to the POSIX
+# session, so two renders in different terminals - the likely shape of this race - never contended at
+# all, and a Global\ name (tried and reverted here) traded that for two worse holes, both reproduced:
+# a second Windows user's handle to it fails the default DACL before the constructor returns, and on
+# Unix every Global\ name shares one directory whose creator can leave every other user locked out of
+# it - either way the whole record silently dropped through the catch below. A lock on Path.lock is
+# scoped by the filesystem path instead: users with separate temp folders never contend at all, and on
+# a shared /tmp another user's lock is the UnauthorizedAccessException case below, not a collision this
+# function mistakes for its own kind of contention. The kernel releases the handle on process exit the
+# same as any other, so a killed render leaves no stale lock to answer for. See #49 for the measurements.
+#
+# A lock open that outlasts the budget is abandoned here but is not thereby gone: the task keeps
+# running against the real filesystem underneath, and when it finishes - a moment later, or whenever a
+# starved thread pool gets to it - the handle it hands back would sit open, unclosed, for the rest of
+# the process if nothing ever asked it what happened. That handle is this process's own, so every
+# rollover after it would see a sharing violation - the IOException case below - against itself rather
+# than against another process, which is indistinguishable from real contention from in here and would
+# make the cap gone rather than approximate for the rest of the process's life. A mutex could not do
+# this: a WaitOne(0) that returns false holds nothing.
+# The fix is not a continuation on the abandoned task: ContinueWith runs its callback on whatever thread
+# the task happens to finish on, which is generally a pool thread, and a PowerShell script block is not
+# callable there - verified empirically, it fails with "no Runspace available to run scripts in this
+# thread" every time, silently as far as the task that hosts it is concerned, since an unobserved
+# faulted continuation raises nothing anyone here would see. So the check is made eagerly instead, on
+# whichever later call to this function happens to come next: every call first looks at whatever
+# abandoned tasks earlier calls left running, and disposes the result of any that have finished by then,
+# before it opens anything of its own. A render that reaches this function at all is what performs the
+# cleanup a background continuation cannot; one that never does again leaves the handle for the process
+# exit, the same answer this file gives everywhere else a wait would cost more than it is worth.
+# That dispose is a filesystem close - the one call in this sweep that touches the disk at all - so it
+# goes to the pool and is bounded by what is left of this call's own budget, floored the same 20 ms as
+# the live lock's own close below: a stalled share is exactly what this guard exists for, and closing a
+# finished handle from it on the render's own thread would reintroduce the wait the pool dispatch exists
+# to avoid. The list itself is bounded too, not just each entry in it: a share stalled long enough would
+# otherwise take one abandoned task per render forever, so once the finished ones are swept, anything
+# past the newest 8 still running is dropped from the list outright rather than kept waiting its turn -
+# abandoned for good, the same trade a call that never returns here again already makes with the one
+# it leaves behind.
 function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [int] $TimeoutMs) {
-    $mutex = [System.Threading.Mutex]::new($false, 'claude-code-statusline-diag-rollover')
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $call = Get-StatusDiagDelegate $Path
+    if ($null -eq $script:diagPendingLocks) { $script:diagPendingLocks = [System.Collections.Generic.List[object]]::new() }
+    for ($i = $script:diagPendingLocks.Count - 1; $i -ge 0; $i--) {
+        $pending = $script:diagPendingLocks[$i]
+        if ($pending.IsCompleted) {
+            if ($pending.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) {
+                $closeLeft = [Math]::Max($TimeoutMs - [int] $sw.ElapsedMilliseconds, 20)
+                $closePending = [System.Threading.Tasks.Task]::Run([System.Delegate]::CreateDelegate([Action], $pending.Result, $script:diagUnlockMethod))
+                [void] [System.Threading.Tasks.Task]::WaitAny(@($closePending), $closeLeft)
+            }
+            $script:diagPendingLocks.RemoveAt($i)
+        }
+    }
+    while ($script:diagPendingLocks.Count -gt 8) { $script:diagPendingLocks.RemoveAt(0) }
+    $left = $TimeoutMs - [int] $sw.ElapsedMilliseconds
+    if ($left -le 0) { return }
+    $open = [System.Threading.Tasks.Task]::Run($call.Lock)
+    if ([System.Threading.Tasks.Task]::WaitAny(@($open), $left) -lt 0) {
+        $script:diagPendingLocks.Add($open)
+        return
+    }
+    if (-not $open.IsCompletedSuccessfully) {
+        # Held elsewhere is IOException on every platform this was checked on - Windows, and .NET
+        # Core 3.1 and .NET 8 on Linux - and nothing else here throws that from a plain OpenWrite:
+        # no lock, no rollover, and the caller appends anyway, the zero-wait skip-on-contention trade
+        # #43 chose. Anything else - chiefly UnauthorizedAccessException, a lock file some other user
+        # left behind that this one cannot open at all, permanently rather than for as long as a
+        # holder lives - is a structural failure the same as a directory occupying .log.1, and is let
+        # through so the whole record is dropped rather than appended past the cap forever.
+        if ($open.Exception.InnerException -is [System.IO.IOException]) { return }
+        throw $open.Exception.InnerException
+    }
+    $lock = $open.Result
     try {
-        $held = $false
-        # An abandoned mutex is one this process now owns: the render holding it died mid-move.
-        try { $held = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $held = $true }
-        if (-not $held) { return }
-        try {
-            # The size is read again with the mutex in hand, and it goes to the pool under the caller's
-            # remaining clock exactly as the first read did. Asking a file its size is a filesystem call
-            # wherever it appears: over SMB it is a round trip, and reading it straight from a FileInfo
-            # here would have put an unbounded call back on the render's thread, which is the whole
-            # thing this design exists to keep out. A read that does not answer in time leaves the file
-            # alone - a rollover skipped costs the log its cap for a moment, a rollover waited on costs
-            # the render.
-            if ($TimeoutMs -le 0) { return }
-            $size = [System.Threading.Tasks.Task]::Run((Get-StatusDiagDelegate $Path).Length)
-            if ([System.Threading.Tasks.Task]::WaitAny(@($size), $TimeoutMs) -lt 0) { return }
-            # A faulted size is a file that is not there, so there is nothing to move.
-            if (-not $size.IsCompletedSuccessfully) { return }
-            # Still over the cap with the mutex held, so the render that would have rolled it has not.
-            if ($size.Result + $Need -le $Cap) { return }
-            [System.IO.File]::Move($Path, $Path + '.1', $true)
-        } finally { $mutex.ReleaseMutex() }
-    } finally { $mutex.Dispose() }
+        $left = $TimeoutMs - [int] $sw.ElapsedMilliseconds
+        if ($left -le 0) { return }
+        $size = [System.Threading.Tasks.Task]::Run($call.Length)
+        if ([System.Threading.Tasks.Task]::WaitAny(@($size), $left) -lt 0) { return }
+        # A faulted size is a file that is not there, so there is nothing to move.
+        if (-not $size.IsCompletedSuccessfully) { return }
+        # Still over the cap with the lock held, so the render that would have rolled it has not.
+        if ($size.Result + $Need -le $Cap) { return }
+        [System.IO.File]::Move($Path, $Path + '.1', $true)
+    } finally {
+        # A floor under the wait rather than skipping it once the budget is gone: "returned from here"
+        # is meant to mean "the lock is free again" inside this same process, the same handle-scoped
+        # correctness the continuation above exists for, and skipping the wait entirely would let this
+        # call's own close race the very next one's open. The floor is small because it is not trying to
+        # be a bound - nothing here is - only to give an ordinary close, which is fast, room to land
+        # before this function hands back a "the lock is free" answer that might not be true yet.
+        $left = [Math]::Max($TimeoutMs - [int] $sw.ElapsedMilliseconds, 20)
+        $close = [System.Threading.Tasks.Task]::Run([System.Delegate]::CreateDelegate([Action], $lock, $script:diagUnlockMethod))
+        [void] [System.Threading.Tasks.Task]::WaitAny(@($close), $left)
+    }
 }
 
 # What one record may cost. The log is written from the render path, and the temp folder is a filesystem
@@ -124,7 +194,7 @@ function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [i
 # anything the log is there to diagnose. So every filesystem call one record makes goes to the thread
 # pool and is waited on for what is left of one clock, the same shape the project config read uses, and
 # a record that cannot be written inside it is dropped. Losing a line is the right trade against holding
-# the line up, and it is the trade #43 already made when it took a zero wait on the rollover mutex and
+# the line up, and it is the trade #43 already made when it took a zero wait on the rollover lock and
 # an approximate cap over guaranteed ones.
 # What that trade costs is more than the one line, and saying so here rather than leaving it to be
 # rediscovered: an open or a close that overruns leaves a writer on the log that nothing in this process
@@ -138,19 +208,32 @@ function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [i
 # answered in well under half a record's clock. The note at the call site has the reasoning.
 function Get-StatusDiagLimit { return @{ TimeoutMs = 250; RolloverMs = 125 } }
 
-# The two filesystem calls a record makes, each closed over a FileInfo for the log's path so it can go
-# straight to the pool. Same rule as the bounded config read, and for the same reason: a script block
+# The three filesystem calls a record's own thread may need, each closed over a FileInfo for the log's
+# path (or, for Lock, the path plus the reflected OpenWrite this cache keeps beside it) so every one can
+# go straight to the pool. Same rule as the bounded config read, and for the same reason: a script block
 # converted to a delegate needs a runspace and a pool thread has none, so these are delegates over
 # zero-argument members of plain .NET types. Length is what the rollover decision needs and throws when
 # there is no file yet, which is read as a size of zero rather than as a failure. AppendText opens the
 # file for append and hands back a StreamWriter that is UTF-8 without a byte order mark, which is what
 # the log is; the writer buffers, so putting a line into it is memory and the bytes reach the disk on
 # the close, which is the one call after the open that touches the filesystem and is bounded like it.
+# Lock opens Path.lock exclusively for the rollover; File.OpenWrite is one argument closed the same way
+# the other two are, which is why the rollover's lock goes through this factory rather than building its
+# own - a test that replaces this factory replaces every filesystem call a record can make, the lock
+# included, rather than leaving one real disk write no double can reach. diagUnlockMethod is cached
+# beside diagLockMethod for the same reason: IDisposable.Dispose is the one member every lock result -
+# a real FileStream or a test double's stand-in - answers to, so a single reflected MethodInfo, looked
+# up once, closes either.
 function Get-StatusDiagDelegate([string] $Path) {
     $info = [System.IO.FileInfo]::new($Path)
+    if ($null -eq $script:diagLockMethod) {
+        $script:diagLockMethod = [System.IO.File].GetMethod('OpenWrite', [type[]] @([string]))
+        $script:diagUnlockMethod = [System.IDisposable].GetMethod('Dispose', [type[]] @())
+    }
     return @{
         Length = [System.Delegate]::CreateDelegate([Func[long]], $info, [System.IO.FileInfo].GetProperty('Length').GetMethod)
         Append = [System.Delegate]::CreateDelegate([Func[System.IO.StreamWriter]], $info, [System.IO.FileInfo].GetMethod('AppendText'))
+        Lock   = [System.Delegate]::CreateDelegate([Func[System.IDisposable]], ($Path + '.lock'), $script:diagLockMethod)
     }
 }
 
@@ -205,7 +288,7 @@ function Write-StatusDiag([string] $Reason) {
             # on: reaching this line means the size probe answered, and reaching it with most of the
             # budget left means it answered briskly. Below the reserve the record is dropped instead,
             # unrolled and unwritten, which is the same trade taken everywhere else here and the one #43
-            # took when it chose a zero wait on the mutex.
+            # took when it chose a zero wait on the rollover lock.
             #
             # What that leaves, said plainly: while a filesystem is slow enough to eat the reserve, the
             # log stops being written rather than growing, and it sits at its cap until a render with
