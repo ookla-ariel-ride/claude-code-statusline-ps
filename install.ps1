@@ -15,7 +15,9 @@
   Install JetBrainsMono Nerd Font with winget (asks for elevation once).
 
 .PARAMETER ConfigureWindowsTerminal
-  Set Windows Terminal's default font face to "JetBrainsMono NF" (a backup of settings.json is kept).
+  Set Windows Terminal's default font face to "JetBrainsMono NF" (the previous settings.json is kept at
+  a project-owned backup name beside it, not a generic ".bak"). The font is left unchanged, with a
+  warning, if that backup cannot be taken - a foreign file at the backup name, or a write that failed.
 
 .PARAMETER Subagents
   Also install subagent-statusline.ps1 and add a "subagentStatusLine" entry, the per-subagent line
@@ -65,7 +67,9 @@
   only the panel's own -Style and -Palette arguments with values the panel has - and the file has to
   carry this project's marker line. The rollback copy an install leaves,
   ~/.claude/.claude-code-statusline-ps.subagent-rollback.ps1, is removed on the same test. Anything
-  else of those names is left alone and reported.
+  else of those names is left alone and reported. Removing the entry writes settings.json again, which
+  leaves its own backup and hash sidecar beside it holding the settings as they stood before this
+  uninstall; both are kept, not deleted, and named in the output.
 
 .PARAMETER RefreshInterval
   Seconds between timed re-renders, written as statusLine.refreshInterval. Must be 1 or more. Leave it
@@ -279,6 +283,94 @@ function Get-SettingLock([string] $Path, [int] $TimeoutMs) {
     }
 }
 
+# Where a JSON settings file this installer writes keeps the version it replaced: settings.json here,
+# and Windows Terminal's settings.json under -ConfigureWindowsTerminal. Not "$Path.bak": that is exactly
+# the name a user's own tooling might already be using for the same file, and this installer overwrites
+# it on every write without being asked. A name carrying this project's id instead is not one anyone
+# else's tooling is likely to have picked already - the same reasoning behind $subagentRollback above -
+# but a name alone is still not proof of ownership. JSON has no comment syntax to carry a marker line the
+# way a .ps1 file does, and writing one into the JSON itself would mean the "backup" was no longer a
+# faithful copy of what it replaced. So the marker lives beside the backup instead of inside it: a small
+# sidecar file holding the SHA-256 of the backup's own content, written every time this installer writes
+# the backup. Before the backup is ever overwritten, the sidecar is read back and compared against the
+# backup file's actual hash; a match means this installer's own last write is still sitting there, and
+# anything else - no sidecar, a sidecar that does not match, a file with no sidecar at all - is left
+# alone.
+function Get-JsonBackupPath([string] $Path) { return "$Path.claude-code-statusline-ps-rollback" }
+function Get-BackupHashPath([string] $BackupPath) { return "$BackupPath.sha256" }
+
+# Whether the file at $BackupPath is a backup this installer wrote and that has not been replaced since:
+# its sidecar hash file has to exist and its content has to equal the SHA-256 of $BackupPath as it
+# stands right now. A file that cannot be read, a sidecar that cannot be read, or a hash that does not
+# match are all "not ours" - the same "a name alone is not proof" rule Test-OwnSubagentScript applies to
+# the .ps1 rollback file, carried over to a shape JSON can actually hold.
+function Test-OwnBackupFile([string] $BackupPath) {
+    if (-not (Test-Path -LiteralPath $BackupPath)) { return $false }
+    $hashPath = Get-BackupHashPath $BackupPath
+    if (-not (Test-Path -LiteralPath $hashPath)) { return $false }
+    $recorded = $null
+    try { $recorded = Get-Content -LiteralPath $hashPath -Raw -ErrorAction Stop } catch { return $false }
+    if ($null -eq $recorded) { return $false }
+    $recorded = $recorded.Trim()
+    if (-not $recorded) { return $false }
+    $actual = $null
+    try { $actual = (Get-FileHash -LiteralPath $BackupPath -Algorithm SHA256).Hash } catch { return $false }
+    return [string]::Equals($recorded, $actual, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+# Writes $Content to $BackupPath and records its hash in the sidecar beside it, entirely by way of a
+# temporary sibling and a rename: the backup is written and hashed before it ever takes the real name,
+# so a crash, a full disk, or a reader that happens to look at exactly the wrong moment never sees a
+# backup and sidecar that briefly disagree. $null on success. A short string on failure, naming which of
+# two things went wrong, for the caller to fold into its own warning:
+#   - something already at $BackupPath fails Test-OwnBackupFile - it is left alone rather than replaced.
+#     A sidecar with no backup beside it (an orphan, left by a hand-deleted backup, or by a run that
+#     failed between writing the two) is NOT this case: nothing but this function ever writes a name
+#     shaped like that sidecar, so an orphan is safe to overwrite, and the tmp-and-rename below does so
+#     along with everything else - there is no separate guard for it.
+#   - the write itself did not complete - a locked destination, a full disk, or any other reason. Losing
+#     the ability to roll back is a smaller harm than overwriting a file that was never this installer's,
+#     or than claiming a rollback exists when it does not, so nothing here is left in a state that says
+#     otherwise: the temporary file is removed, and the sidecar is brought back into agreement with
+#     whatever $BackupPath actually holds now - the hash of that content if the rename went through
+#     before the failure, or removed outright if $BackupPath itself never landed - rather than left
+#     mismatched, which would make Test-OwnBackupFile wrongly call it foreign forever after.
+function Backup-OwnedFile([string] $Content, [string] $BackupPath) {
+    if ((Test-Path -LiteralPath $BackupPath) -and -not (Test-OwnBackupFile $BackupPath)) {
+        return "the file already there does not carry this project's hash record"
+    }
+    $hashPath = Get-BackupHashPath $BackupPath
+    $tmpBackup = "$BackupPath.tmp-$([System.IO.Path]::GetRandomFileName())"
+    try {
+        Set-Content -LiteralPath $tmpBackup -Value $Content -Encoding UTF8 -NoNewline -ErrorAction Stop
+        $hash = (Get-FileHash -LiteralPath $tmpBackup -Algorithm SHA256).Hash
+        [System.IO.File]::Move($tmpBackup, $BackupPath, $true)
+        Set-Content -LiteralPath $hashPath -Value $hash -Encoding UTF8 -NoNewline -ErrorAction Stop
+        return $null
+    } catch {
+        # Every cleanup step below is best effort, on a file that might itself be the reason the try
+        # block above failed. -ErrorAction SilentlyContinue alone is not enough for any of them: a
+        # sharing violation on a locked file surfaces as a genuine .NET exception from the underlying
+        # stream, not a cmdlet error record, and reaches the caller regardless of that parameter - which
+        # is exactly what a mutation test here demonstrated. Every step is its own try/catch instead.
+        $message = $_.Exception.Message
+        # Best effort, on a file that might itself be why the failure being cleaned up after happened -
+        # a nested failure here means it could not be helped, not that it should crash the installer.
+        if (Test-Path -LiteralPath $tmpBackup) { try { Remove-Item -LiteralPath $tmpBackup -Force -ErrorAction Stop } catch { $null = $_ } }
+        if (Test-Path -LiteralPath $BackupPath) {
+            $actualHash = $null
+            try { $actualHash = (Get-FileHash -LiteralPath $BackupPath -Algorithm SHA256).Hash } catch { $actualHash = $null }
+            # Reconciling the sidecar to match whatever the backup actually holds now is itself just a
+            # best effort; failing to heal here is not a new problem, since it only leaves the mismatched
+            # pair the surrounding catch already has to report as a failure either way.
+            if ($actualHash) { try { Set-Content -LiteralPath $hashPath -Value $actualHash -Encoding UTF8 -NoNewline -ErrorAction Stop } catch { $null = $_ } }
+        } else {
+            try { Remove-Item -LiteralPath $hashPath -Force -ErrorAction Stop } catch { $null = $_ }
+        }
+        return "the write failed: $message"
+    }
+}
+
 # Replaces the settings file in one step. The same shape as Write-AtomicJson in statusline.ps1: serialize
 # to a uniquely named sibling, then move it over the destination, which is atomic on Windows and on Linux,
 # so a reader never sees a half-written file and a crash, a full disk or a failed encode leaves the old
@@ -292,11 +384,20 @@ function Get-SettingLock([string] $Path, [int] $TimeoutMs) {
 #   - the file is compared with what Read-UserSetting saw twice, when the lock is taken and again
 #     immediately before the rename. A change that lands before that second comparison is refused;
 #   - the serialized text is parsed back before anything is replaced, so a broken document never lands;
-#   - the .bak is taken from the file as it stands, before the replace.
+#   - the backup, at the project-owned name Get-JsonBackupPath names rather than "$Path.bak", is written
+#     from $settingsBaseline[$Path] - the exact text Read-UserSetting saw, refreshed after every write
+#     this process makes - not from a fresh read of $Path taken here. A fresh read would open a gap of
+#     its own: something ignoring the lock could write $Path between the two Confirm-SettingUnchanged
+#     calls, and a backup copied from disk in that window would capture and certify THAT content moments
+#     before the second check refuses the write over it, so the backup would tell a taller tale than "the
+#     version this write replaced" ever justified. Writing from the baseline instead makes the backup
+#     correct by construction, whatever races around it, and it is taken immediately before the rename so
+#     as little as possible can happen between "backed up" and "replaced".
 # What this does not do, stated plainly rather than implied away: a writer that does not take the lock
 # can still save in the gap between that second comparison and the rename, and the rename replaces it.
 # The gap is one filesystem operation wide and closing it would need a compare-and-swap the filesystem
-# does not offer, or a lock every writer honours. The content that was replaced is in the .bak.
+# does not offer, or a lock every writer honours. The content that was replaced is in that backup, when
+# there was a previous version to replace and the backup name was this installer's to write.
 function Write-UserSetting($obj, [string] $Path) {
     $dir = Split-Path $Path -Parent
     if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
@@ -317,8 +418,14 @@ function Write-UserSetting($obj, [string] $Path) {
         if ($null -eq $check -or $check -isnot [System.Management.Automation.PSCustomObject]) {
             throw "Refusing to write $Path : the serialized settings did not read back as an object."
         }
-        Copy-Item -LiteralPath $Path -Destination "$Path.bak" -Force -ErrorAction SilentlyContinue
         Confirm-SettingUnchanged $Path
+        if ($settingsBaseline.ContainsKey($Path) -and $null -ne $settingsBaseline[$Path]) {
+            $backupPath = Get-JsonBackupPath $Path
+            $backupReason = Backup-OwnedFile $settingsBaseline[$Path] $backupPath
+            if ($backupReason) {
+                Write-Warning "Kept: $backupPath : $backupReason, so the previous version of $Path was not backed up."
+            }
+        }
         [System.IO.File]::Move($tmp, $Path, $true)
         # Re-read rather than remembering $json: Set-Content ends the file with a newline that the
         # serialized text does not have, and a second write in the same process would otherwise compare
@@ -611,7 +718,7 @@ function Write-StatusConfigValue([string] $Path, $Values) {
 
 if ($Uninstall) {
     $s = Read-UserSetting $settingsPath
-    # Both keys go in one Write-UserSetting: a second write would overwrite the .bak with the state
+    # Both keys go in one Write-UserSetting: a second write would overwrite the backup with the state
     # after the first, so the backup would no longer hold the settings as they were.
     $removed = @()
     $kept = @()
@@ -633,6 +740,15 @@ if ($Uninstall) {
     if ($removed.Count -gt 0) {
         Write-UserSetting $s $settingsPath
         Write-Host "Removed $($removed -join ' and ') from $settingsPath"
+        # A rollback is exactly what somebody undoing an install wants a moment later, so this write's
+        # own backup is named rather than left for a future write to mention first - the same reason
+        # $configTarget is named below. Not printed when Write-UserSetting itself just warned that the
+        # file there was not this installer's to overwrite: that warning already said what happened, and
+        # a "Kept" line here would name a file that never got the content it is about to imply.
+        $uninstallBackupPath = Get-JsonBackupPath $settingsPath
+        if (Test-OwnBackupFile $uninstallBackupPath) {
+            Write-Host "Kept $uninstallBackupPath and $(Get-BackupHashPath $uninstallBackupPath) (the settings as they were before this uninstall; delete them yourself if you no longer want them)"
+        }
     }
     if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force; Write-Host "Deleted $target" }
     if (Test-Path -LiteralPath $subagentTarget) {
@@ -815,7 +931,7 @@ if ($old -and -not $wantRefresh -and $old.Value.PSObject.Properties['refreshInte
 if ($old) { $s.statusLine = $entry } else { $s | Add-Member -NotePropertyName statusLine -NotePropertyValue $entry }
 # The per-subagent line is a second command Claude Code runs for the agent panel. Its settings schema
 # is {type, command}, so no padding and no vim key go with it, and it is written into the same object
-# so both entries land in one write and one .bak.
+# so both entries land in one write and one backup.
 #
 # WHEN THE ENTRY IS REWRITTEN, and it is not only under -Subagents. The command carries the style and
 # the palette, so a run that changes either - `-Style ascii`, `-Palette light`, `-DetectTheme` - and
@@ -844,6 +960,17 @@ if ($Subagents) {
     # install can be undone. Anything already sitting at the rollback name that is not ours is left
     # alone and the copy is skipped: losing the ability to roll back is a smaller harm than overwriting
     # someone's file, and the install itself is unaffected either way.
+    #
+    # A DELIBERATELY DIFFERENT FAILURE POLICY from Backup-OwnedFile's, stated here rather than implied:
+    # this Copy-Item has no -ErrorAction of its own, so a failure - a locked file, a full disk - throws
+    # under the script's own $ErrorActionPreference = 'Stop' and aborts the whole install, where a JSON
+    # backup that fails the same way is a warning and the settings write goes on. Not an oversight left
+    # from before #52 folded the JSON side in: settings.json holds keys this installer does not own end
+    # to end - a user's own permissions, other tools' settings - so refusing the entire write over a
+    # backup of the few keys this installer manages would be the worse trade. Here there is no such
+    # tension: the file this copy protects is the ONE THING about to be overwritten by the move two lines
+    # down, an install that could not preserve a way back has nothing else at stake to finish for, and
+    # unifying the two policies would mean loosening this one to match rather than the other way round.
     if (Test-Path -LiteralPath $subagentTarget) {
         if ((Test-Path -LiteralPath $subagentRollback) -and -not (Test-OwnSubagentScript $subagentRollback)) {
             Write-Warning "Kept: $subagentRollback does not carry this project's marker line, so the copy of the version being replaced was not written."
@@ -934,13 +1061,40 @@ if ($ConfigureWindowsTerminal) {
     $wt = Get-WindowsTerminalSettingPath
     if (-not $wt) { Write-Warning 'Windows Terminal settings.json not found; set the font manually.' }
     else {
-        Copy-Item $wt "$wt.bak-before-nerdfont" -Force
-        $j = Get-Content $wt -Raw | ConvertFrom-Json
-        if (-not $j.profiles.defaults) { $j.profiles | Add-Member -NotePropertyName defaults -NotePropertyValue ([pscustomobject]@{}) }
-        if (-not $j.profiles.defaults.font) { $j.profiles.defaults | Add-Member -NotePropertyName font -NotePropertyValue ([pscustomobject]@{}) -Force }
-        $j.profiles.defaults.font | Add-Member -NotePropertyName face -NotePropertyValue $fontFace -Force
-        $j | ConvertTo-Json -Depth 32 | Set-Content $wt -Encoding UTF8
-        Write-Host "Windows Terminal default font set to '$fontFace' (backup kept next to settings.json)"
+        # Same treatment as settings.json, and for the same reason Write-UserSetting refuses rather than
+        # silently going on without one: a font change with no way back is not something to offer without
+        # saying so. The content is read once and reused for both the backup and the edit below, rather
+        # than read again after the backup, so nothing here depends on a second read seeing what the
+        # first one saw - Write-UserSetting makes the same choice, for the same reason, with its baseline
+        # text. When the backup cannot be taken, the font is not changed either.
+        $wtContent = Get-Content -LiteralPath $wt -Raw
+        $wtBackupPath = Get-JsonBackupPath $wt
+        $wtBackupReason = Backup-OwnedFile $wtContent $wtBackupPath
+        if ($wtBackupReason) {
+            Write-Warning "Kept: $wtBackupPath : $wtBackupReason, so $wt was not backed up. The font was left unchanged rather than made unrecoverable."
+        } else {
+            $j = $wtContent | ConvertFrom-Json
+            if (-not $j.profiles.defaults) { $j.profiles | Add-Member -NotePropertyName defaults -NotePropertyValue ([pscustomobject]@{}) }
+            if (-not $j.profiles.defaults.font) { $j.profiles.defaults | Add-Member -NotePropertyName font -NotePropertyValue ([pscustomobject]@{}) -Force }
+            $j.profiles.defaults.font | Add-Member -NotePropertyName face -NotePropertyValue $fontFace -Force
+            $wtJson = $j | ConvertTo-Json -Depth 32
+            # The same atomic shape Write-UserSetting and Write-StatusConfigValue use: serialize to a
+            # uniquely named sibling, read it back, then move it over the destination, so a reader never
+            # sees a half-written file and a failed encode or a full disk leaves the old one exactly as
+            # it was - which the backup just taken above can also stand in for either way.
+            $wtTmp = "$wt.tmp-$([System.IO.Path]::GetRandomFileName())"
+            try {
+                Set-Content -LiteralPath $wtTmp -Value $wtJson -Encoding UTF8
+                $wtCheck = Get-Content -LiteralPath $wtTmp -Raw | ConvertFrom-Json
+                if ($null -eq $wtCheck -or $wtCheck -isnot [System.Management.Automation.PSCustomObject]) {
+                    throw "Refusing to write $wt : the serialized settings did not read back as an object."
+                }
+                [System.IO.File]::Move($wtTmp, $wt, $true)
+            } finally {
+                if (Test-Path -LiteralPath $wtTmp) { Remove-Item -LiteralPath $wtTmp -Force -ErrorAction SilentlyContinue }
+            }
+            Write-Host "Windows Terminal default font set to '$fontFace' (backup kept at $wtBackupPath)"
+        }
     }
 }
 
