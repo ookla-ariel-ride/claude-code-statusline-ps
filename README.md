@@ -1,6 +1,6 @@
 # claude-code-statusline-ps
 
-A PowerShell status line for [Claude Code](https://code.claude.com) on Windows. One script, one small JSON config, a Nerd Font.
+A PowerShell status line for [Claude Code](https://code.claude.com) on Windows. One script, one small JSON config, and a Nerd Font — or, with the `ascii` style, no special font at all. A second script draws the agent panel to match.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![PowerShell 7+](https://img.shields.io/badge/PowerShell-7%2B-5391FE.svg?logo=powershell&logoColor=white)](https://github.com/PowerShell/PowerShell)
@@ -367,6 +367,30 @@ The agent panel follows none of this. It takes its style and palette as argument
 in from your **own** file, so a project file changes the bar in that repository and leaves the panel
 where it was. See [Style and palette in the panel](#style-and-palette-in-the-panel).
 
+| Key | Values | What it does |
+|---|---|---|
+| `preset` | `minimal`, `cost`, `full` | A name for a layout, a style and the whole set of segment toggles, listed below. Every other key in the same file is applied over it, so a preset is a starting point rather than a lock. A name none of the three has, or a value that is not a string, changes nothing. |
+| `layout` | `one`, `two` | `two` puts model, folder, branch, pr, badges and time on the first line and context, cache, limits, cost, clock and lines on the second, unless `rows` says otherwise. |
+| `style` | `plain`, `powerline`, `ascii` | `plain` is coloured text with a dim chevron between segments. `powerline` is coloured blocks joined by solid arrows. `ascii` is `plain` with every character drawn from printable ASCII and a `>` between segments, for a terminal whose font you cannot change. See [ASCII style](#ascii-style). |
+| `palette` | `dark`, `light` | Which colour table the line is drawn with. `dark` is what the line has always been and stays the default, so nothing changes until you ask. `light` swaps every colour for one that reads on a pale background. **This is a separate key from `style`, not a fourth style**: `style` is the shape of the line and `palette` is the colours it is drawn in, so all six pairings work — `ascii` with `light` is the ASCII characters in the light colours. `.\install.ps1 -DetectTheme` can set it for you. See [Light palette](#light-palette). |
+| `folder` | `repo`, `leaf` | `repo` shows `owner/name` from `workspace.repo` when the payload has one, with the current directory's name after a `›` when it differs from the project root. `leaf` always shows the directory name alone. |
+| `segments.<name>` | `true`, `false` | `false` hides that segment. The names are the ones in the file above, plus `time`, the wall clock, which is the one segment off by default and so is not written there; `segments.pr` is the pull-request link. |
+| `state` | `true`, `false` | `false` stops the script writing a state file for the session. |
+| `links` | `true`, `false` | `false` turns off the OSC 8 hyperlinks on the folder, branch and pull-request segments. One key covers all three, because the reason to turn them off is never a segment: it is a terminal that prints the escape as text instead of rendering or swallowing it. The links add no width, so the line fits the same either way. |
+| `taskbar` | `true`, `false` | `true` draws the context percentage on the window's taskbar button, so how full the window is stays readable while Claude Code is minimised. Green below the `alarm` level and red at or above it, using the same alarm the model segment uses, so a rate limit at its level colours the bar too while the number stays the context window's. A render with no percentage to show — a session before its first API response, or a payload the script could not read — clears the bar rather than leaving the last one lit. Set it in your own `statusline.json` rather than a project's: a payload that will not parse names no project directory, so a project-only value is not read on the one render that most needs to clear the bar. Off by default, and see [Taskbar progress](#taskbar-progress) below before turning it on: Claude Code writes to the same taskbar button. |
+| `order` | `["model", "branch", "context"]` | The segments of layout `one`, left to right. A segment left out is not shown, an unknown name is skipped, a repeat keeps its first place. Left out altogether, as the installed file leaves it, the segments come in the script's order, new ones included. An empty list, a list naming no segment, or anything that is not a list does the same. |
+| `rows` | `[["model", "branch"], ["context", "cost"]]` | The two lines of layout `two`, with the same rules per row. A segment named on the first row is not repeated on the second, and a row may be empty. Left out, the script's own two rows apply, new segments included. Anything but exactly two lists, or two lists naming no segment, does the same. |
+| `right` | `["time"]` | The segments pushed flush against the right edge of the **first** line, in the order given, with spaces filling the gap. Everything else stays packed against the left. Empty by default, and empty means the line you already have — no padding is added to a line with nothing to push against. The names are read like `order`'s: unknown skipped, repeats keep their first place, and a name whose segment is switched off simply leaves the group empty. Unlike `order` and `rows` an empty list is *kept* rather than falling back, so a project file can take back a group the user file asked for. Row two of layout `two` is never aligned, and with `COLUMNS` unset there is no width to align to, so the named segments render inline in their ordinary places. **A right group is the first thing a narrow line loses**: see [width fitting](#width-fitting) below. |
+| `thresholds` | `{ "warn": 20, "bad": 40 }` | Where the context meter and the rate limits turn yellow and red: whole numbers from 0 to 100 (`20` or `20.0`, not `20.5`), `warn` no higher than `bad`. Either value wrong keeps 60 and 85 for both. A 1M window keeps its own 70 and 90. |
+| `alarm` | `{ "context": 90, "limits": 90 }` | Where the model segment itself turns red: `context` is read against `context_window.used_percentage` and `limits` against the higher of the 5-hour and 7-day figures. Whole numbers, each read on its own, so a file naming one leaves the other at 90. `0` turns that alarm off, a negative counts as `0`, and a number above 100 is kept as written and fires only if the payload reports a figure that high — which a context window never does, since the meter clamps to 100, and a rate limit can, since a limit really at 105% is left unclamped to say so. The spend limit is a billing ceiling rather than a rate and raises no alarm; neither does a percentage that is missing or null, which is what a session sends before its first API response. What is compared is the whole number the segments print, rounded half to even, so the meter and the model can never disagree about whether 90% has been reached: at 89.6 the meter reads 90% and the alarm fires. The alarm reads the percentage whatever the window size, so on a 1M window it fires at the same figure as the window's own fixed 90 band. |
+| `quiet` | `{ "cost": 1.00, "context": 30, "limits": 50 }` | The smallest value a segment is worth showing at: dollars for `cost`, percent for `context`, and percent for `limits` against the larger of the 5-hour and 7-day figures (the spend limit is not one of them, and a payload carrying only a spend limit is never hidden here). Below it the segment is not built at all, so it takes no room and has nothing to shed at a narrow width. **Quiet never hides a segment that is carrying a warning, an error or an alarm**: a context meter or a limits segment already yellow or red stays whatever the threshold says, so does a 5-hour figure whose pace arrow projects an overrun — which is the case that matters most, because a low percentage early in a window is exactly the one that projects red — and so does a figure at or above its `alarm` level, since `alarm` may be set below `thresholds.warn` and a red model segment with no number under it explains nothing. `cost` has no warning state of its own and no alarm is read against a dollar figure, so there its threshold is the whole story. Fractions are allowed, a negative counts as zero, and the test is on the raw figure rather than the printed one, so `"cost": 1.00` hides a cost of 0.996 even though it would have printed `$1.00`. The default is `0` everywhere, which hides nothing; a value that is not a number leaves that one name at `0` and the other two alone. There is deliberately no `quiet.cache`: three of that segment's four states are the warning, and the fourth is a countdown whose whole value is being on the line before it turns yellow, so there is no boring number there for a threshold to hide. |
+| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cache`, `cost`, `clock`, `time`, `folder`, `chevron`, `branch`, `worktree`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `pr`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`, `agent`, `session`. A name the list does not have, or a value that is not a single printable glyph, keeps the built-in one. To count as a glyph a code point has to be inside Unicode, not a surrogate half and not a noncharacter, one or two cells wide, and none of: a control (`A` is a newline, `1B` a bare escape), a format character (`202E` is a right-to-left override, `200D` a zero-width joiner), a line or paragraph separator, a space, or a combining mark. Private use is where the Nerd Font glyphs live, so it is allowed. Ignored entirely under `"style": "ascii"`, which promises that every glyph the script chooses is printable ASCII and a code point is the one thing that cannot keep it. |
+| `git.timeoutMs` | `100` to `10000` | How long the branch segment waits for `git status`, in milliseconds, before it gives up and leaves the segment out. A value outside the range is clamped to it. |
+| `git.cacheSeconds` | `0` to `300` | How long a `git status` result is reused for, in seconds, before git is asked again. `0` asks git on every render. Clamped like `timeoutMs`. |
+| `git.cache` | `true`, `false` | `false` asks git on every render, whatever `cacheSeconds` says. |
+
+### How the config files are read
+
 **Both config files are read under the same budget: 64 KiB and 250 ms.** One clock covers every step of
 one file — the open, the size, each read and the close at the end — and it starts before the first
 filesystem call. The clock is per file, and the two are read one after the other, so a machine where
@@ -425,28 +449,6 @@ the ref stamps are deliberately unbounded: they are many calls of several shapes
 open and one read a config takes, so a budget there would cost more than the case it guards. That is a
 decision about cost and not a claim that they cannot hang — a project directory on a dead share can hold
 a render up in the walk before the git timeout applies to anything.
-
-| Key | Values | What it does |
-|---|---|---|
-| `preset` | `minimal`, `cost`, `full` | A name for a layout, a style and the whole set of segment toggles, listed below. Every other key in the same file is applied over it, so a preset is a starting point rather than a lock. A name none of the three has, or a value that is not a string, changes nothing. |
-| `layout` | `one`, `two` | `two` puts model, folder, branch, pr, badges and time on the first line and context, cache, limits, cost, clock and lines on the second, unless `rows` says otherwise. |
-| `style` | `plain`, `powerline`, `ascii` | `plain` is coloured text with a dim chevron between segments. `powerline` is coloured blocks joined by solid arrows. `ascii` is `plain` with every character drawn from printable ASCII and a `>` between segments, for a terminal whose font you cannot change. See [ASCII style](#ascii-style). |
-| `palette` | `dark`, `light` | Which colour table the line is drawn with. `dark` is what the line has always been and stays the default, so nothing changes until you ask. `light` swaps every colour for one that reads on a pale background. **This is a separate key from `style`, not a fourth style**: `style` is the shape of the line and `palette` is the colours it is drawn in, so all six pairings work — `ascii` with `light` is the ASCII characters in the light colours. `.\install.ps1 -DetectTheme` can set it for you. See [Light palette](#light-palette). |
-| `folder` | `repo`, `leaf` | `repo` shows `owner/name` from `workspace.repo` when the payload has one, with the current directory's name after a `›` when it differs from the project root. `leaf` always shows the directory name alone. |
-| `segments.<name>` | `true`, `false` | `false` hides that segment. The names are the ones in the file above, plus `time`, the wall clock, which is the one segment off by default and so is not written there; `segments.pr` is the pull-request link. |
-| `state` | `true`, `false` | `false` stops the script writing a state file for the session. |
-| `links` | `true`, `false` | `false` turns off the OSC 8 hyperlinks on the folder, branch and pull-request segments. One key covers all three, because the reason to turn them off is never a segment: it is a terminal that prints the escape as text instead of rendering or swallowing it. The links add no width, so the line fits the same either way. |
-| `taskbar` | `true`, `false` | `true` draws the context percentage on the window's taskbar button, so how full the window is stays readable while Claude Code is minimised. Green below the `alarm` level and red at or above it, using the same alarm the model segment uses, so a rate limit at its level colours the bar too while the number stays the context window's. A render with no percentage to show — a session before its first API response, or a payload the script could not read — clears the bar rather than leaving the last one lit. Set it in your own `statusline.json` rather than a project's: a payload that will not parse names no project directory, so a project-only value is not read on the one render that most needs to clear the bar. Off by default, and see [Taskbar progress](#taskbar-progress) below before turning it on: Claude Code writes to the same taskbar button. |
-| `order` | `["model", "branch", "context"]` | The segments of layout `one`, left to right. A segment left out is not shown, an unknown name is skipped, a repeat keeps its first place. Left out altogether, as the installed file leaves it, the segments come in the script's order, new ones included. An empty list, a list naming no segment, or anything that is not a list does the same. |
-| `rows` | `[["model", "branch"], ["context", "cost"]]` | The two lines of layout `two`, with the same rules per row. A segment named on the first row is not repeated on the second, and a row may be empty. Left out, the script's own two rows apply, new segments included. Anything but exactly two lists, or two lists naming no segment, does the same. |
-| `right` | `["time"]` | The segments pushed flush against the right edge of the **first** line, in the order given, with spaces filling the gap. Everything else stays packed against the left. Empty by default, and empty means the line you already have — no padding is added to a line with nothing to push against. The names are read like `order`'s: unknown skipped, repeats keep their first place, and a name whose segment is switched off simply leaves the group empty. Unlike `order` and `rows` an empty list is *kept* rather than falling back, so a project file can take back a group the user file asked for. Row two of layout `two` is never aligned, and with `COLUMNS` unset there is no width to align to, so the named segments render inline in their ordinary places. **A right group is the first thing a narrow line loses**: see [width fitting](#width-fitting) below. |
-| `thresholds` | `{ "warn": 20, "bad": 40 }` | Where the context meter and the rate limits turn yellow and red: whole numbers from 0 to 100 (`20` or `20.0`, not `20.5`), `warn` no higher than `bad`. Either value wrong keeps 60 and 85 for both. A 1M window keeps its own 70 and 90. |
-| `alarm` | `{ "context": 90, "limits": 90 }` | Where the model segment itself turns red: `context` is read against `context_window.used_percentage` and `limits` against the higher of the 5-hour and 7-day figures. Whole numbers, each read on its own, so a file naming one leaves the other at 90. `0` turns that alarm off, a negative counts as `0`, and a number above 100 is kept as written and fires only if the payload reports a figure that high — which a context window never does, since the meter clamps to 100, and a rate limit can, since a limit really at 105% is left unclamped to say so. The spend limit is a billing ceiling rather than a rate and raises no alarm; neither does a percentage that is missing or null, which is what a session sends before its first API response. What is compared is the whole number the segments print, rounded half to even, so the meter and the model can never disagree about whether 90% has been reached: at 89.6 the meter reads 90% and the alarm fires. The alarm reads the percentage whatever the window size, so on a 1M window it fires at the same figure as the window's own fixed 90 band. |
-| `quiet` | `{ "cost": 1.00, "context": 30, "limits": 50 }` | The smallest value a segment is worth showing at: dollars for `cost`, percent for `context`, and percent for `limits` against the larger of the 5-hour and 7-day figures (the spend limit is not one of them, and a payload carrying only a spend limit is never hidden here). Below it the segment is not built at all, so it takes no room and has nothing to shed at a narrow width. **Quiet never hides a segment that is carrying a warning, an error or an alarm**: a context meter or a limits segment already yellow or red stays whatever the threshold says, so does a 5-hour figure whose pace arrow projects an overrun — which is the case that matters most, because a low percentage early in a window is exactly the one that projects red — and so does a figure at or above its `alarm` level, since `alarm` may be set below `thresholds.warn` and a red model segment with no number under it explains nothing. `cost` has no warning state of its own and no alarm is read against a dollar figure, so there its threshold is the whole story. Fractions are allowed, a negative counts as zero, and the test is on the raw figure rather than the printed one, so `"cost": 1.00` hides a cost of 0.996 even though it would have printed `$1.00`. The default is `0` everywhere, which hides nothing; a value that is not a number leaves that one name at `0` and the other two alone. There is deliberately no `quiet.cache`: three of that segment's four states are the warning, and the fourth is a countdown whose whole value is being on the line before it turns yellow, so there is no boring number there for a threshold to hide. |
-| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cache`, `cost`, `clock`, `time`, `folder`, `chevron`, `branch`, `worktree`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `pr`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`, `agent`, `session`. A name the list does not have, or a value that is not a single printable glyph, keeps the built-in one. To count as a glyph a code point has to be inside Unicode, not a surrogate half and not a noncharacter, one or two cells wide, and none of: a control (`A` is a newline, `1B` a bare escape), a format character (`202E` is a right-to-left override, `200D` a zero-width joiner), a line or paragraph separator, a space, or a combining mark. Private use is where the Nerd Font glyphs live, so it is allowed. Ignored entirely under `"style": "ascii"`, which promises that every glyph the script chooses is printable ASCII and a code point is the one thing that cannot keep it. |
-| `git.timeoutMs` | `100` to `10000` | How long the branch segment waits for `git status`, in milliseconds, before it gives up and leaves the segment out. A value outside the range is clamped to it. |
-| `git.cacheSeconds` | `0` to `300` | How long a `git status` result is reused for, in seconds, before git is asked again. `0` asks git on every render. Clamped like `timeoutMs`. |
-| `git.cache` | `true`, `false` | `false` asks git on every render, whatever `cacheSeconds` says. |
 
 ### Width fitting
 
@@ -776,18 +778,9 @@ remembered for the same lifetime, so a slow repository pays the wait once per li
 render. A `statusline.json` from before this cache has no `git` block and gets the defaults: the
 cache on, five seconds, a 1.5 second timeout. Add `"git": { "cache": false }` to turn it off.
 
-Claude Code tells the script the terminal width. When a line is too long the script shortens it in
-two stages:
-
-1. Detail comes off six segments, in this order: the per-turn delta from cost, which is the first
-   thing on the line to go; from limits, every figure but the one that drives its colour (the worst
-   one when the segment is yellow or red, otherwise the first one present) plus the countdown and the
-   pace arrow; the token counts from context; every count from the branch; the owner and directory
-   name from the folder, which keeps only the repository name; and the agent and session badges,
-   which leaves the mode badges.
-2. Whole segments go, from the right: lines, badges, cost, limits, pr, folder, branch, context.
-
-The model segment always stays.
+Claude Code tells the script the terminal width, and a line that is too long is shortened in a fixed
+order: detail first, then the right group, then whole segments. [Width fitting](#width-fitting) above
+lists the order. The model segment always stays.
 
 When no segment can be built at all — a payload with nothing in it, or an `order` naming only
 segments the payload cannot fill — the script prints the model glyph and the word `claude` in place
@@ -872,7 +865,7 @@ because the name only ever appears beside a branch.
 
 ## Test without Claude Code
 
-`test.ps1` runs six groups. Unit checks call the script's helper functions directly (width
+`test.ps1` runs in groups, unit checks first. Those call the script's helper functions directly (width
 measurement, config parsing, the segment table, rendering, width fitting, the context meter, the
 limits, `git status` parsing, the payload counts, the branch and pr segments, the state file, the
 git cache, and the count of filesystem operations a config read costs for each shape of payload —
@@ -919,7 +912,7 @@ single payload larger than its own cap. The render matrix pipes every payload in
 reversed `order`, swapped `rows`) at each width:
 
 ```powershell
-.\test.ps1                                # full run, about three minutes
+.\test.ps1                                # full run, about twelve minutes on a quiet machine
 .\test.ps1 -Columns 80                    # one width instead of 120, 60, 20 and unset
 .\test.ps1 -Config .\statusline.json      # one config instead of the seven
 .\test.ps1 -Raw                           # show ANSI escapes as <ESC>
@@ -1021,7 +1014,7 @@ Colours look washed out, or the chevron between segments is invisible: the defau
 for a dark terminal. Set `"palette": "light"` in `statusline.json`, or run `.\install.ps1 -DetectTheme`
 to have it read Windows Terminal's colour scheme and set the key for you. See
 [Light palette](#light-palette). The agent panel follows the same key: it reads no config file, so
-the installer bakes the palette into the command it writes - rerun `.install.ps1` after changing the
+the installer bakes the palette into the command it writes - rerun `.\install.ps1` after changing the
 key and the panel comes along. See [Style and palette in the panel](#style-and-palette-in-the-panel).
 
 `]8;;` or a URL printed as text on the line: the terminal does not understand OSC 8 hyperlinks and does
@@ -1091,8 +1084,13 @@ Issues and pull requests are welcome. Before opening a PR:
 ```powershell
 .\test.ps1
 Install-Module PSScriptAnalyzer -Scope CurrentUser
-Get-ChildItem *.ps1 | ForEach-Object { Invoke-ScriptAnalyzer -Path $_.FullName -Settings .\PSScriptAnalyzerSettings.psd1 }
+Get-ChildItem *.ps1, docs\*.ps1, tools\*.ps1 | ForEach-Object { Invoke-ScriptAnalyzer -Path $_.FullName -Settings .\PSScriptAnalyzerSettings.psd1 }
 ```
+
+The suite takes about twelve minutes alone and much longer beside other work: some of its render
+checks are budgeted in wall-clock time, and a loaded machine can trip them (see
+[#99](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/99)). If a check fails
+under load and passes alone, treat it as load rather than a regression.
 
 The analyzer settings exclude the Write-Host rule, which a status line cannot avoid, and the
 positional-parameters rule, because the script and its tests call their own small helpers
@@ -1152,10 +1150,18 @@ Done so far:
 - [x] An `ascii` style that needs no Nerd Font
 - [x] A right-aligned group under a `right` key, and a wall-clock segment to put in it
 - [x] A light palette under a `palette` key, and `-DetectTheme` to set it from Windows Terminal's scheme
+- [x] The payload decoded as UTF-8 whatever the console code page, so non-English names render as sent
+- [x] Both config files, the git cache and the state file read under one bounded, encoding-aware reader
+- [x] Installer backups at project-owned names with their provenance checked before they are touched
+- [x] Screenshots regenerated from the shipped samples, showing every segment
 
 [The open issues](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes
-next, each with its own plan. The nearest is giving the agent panel a way to be told about `style` and
-`palette` (#78), which it has no config file to learn either from.
+next. None is a feature; each records a limit found under review and what closing it would take:
+plain-style markers that use the terminal's own `brightBlack` (#88), six light-palette block pairs whose
+joining arrow disappears (#89), a diagnostics log that can outgrow its cap while another render holds
+the lock (#93), test families that fail under parallel load rather than on a defect (#94, #99), and a
+clock seam so the screenshots regenerate to the same bytes (#98).
+
 ## License
 
 MIT. See [`LICENSE`](LICENSE).

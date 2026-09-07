@@ -3,10 +3,12 @@
 ## Purpose
 
 A PowerShell status line for Claude Code on Windows. It replaces the default status line with one
-or two lines showing the active model, context-window usage, session cost, lines changed, rate
-limits, session badges, the branch's pull request as a clickable link, current folder, and the git
-branch with its worktree name and its ahead, behind and file-change counts, rendered with Nerd Font
-glyphs and ANSI colour.
+or two lines showing the active model, context-window usage and its cached share, prompt cache
+warmth, session cost and its per-turn delta, a session clock, lines changed, rate limits with a pace
+arrow, session badges, the branch's pull request as a clickable link, current folder, the git branch
+with its worktree name and its ahead, behind and file-change counts, and optionally the wall clock,
+rendered with Nerd Font glyphs and ANSI colour — or in plain ASCII, on a dark or a light palette. A
+second script draws a matching row for each subagent in the agent panel.
 
 ## Problem
 
@@ -536,16 +538,33 @@ keeps its yellow. The block backgrounds are measured too, in ordered pairs: the 
 block's background painted on the next one's, so two blocks of equal luminance leave nothing at the
 joint. A `right` key pushes any named segments against the right
 edge of the first line, and a wall-clock segment gives that edge something to hold (#25); the clock is
-the only registry record that is off by default. The agent panel is not covered by either `style` or
-`palette`: it reads no config file, which is #78.
+the only registry record that is off by default. The agent panel takes `style` and `palette` as
+arguments the installer bakes into its command (#78), since it reads no config file.
+
+The rest of the backlog closed in one run on 2026-09-06. The payload is decoded as UTF-8 whatever the
+console's input code page (#80). Every payload field the line draws goes through the shared text and
+number guards, `Get-PayloadText` and `Get-PayloadPercent`, and the model segment never drops out (#61,
+#45, #44). The dark palette's inline markers are measured against the same floors as the light table's
+(#82). The two icons that shipped under the wrong code point are corrected (#55), and every bare
+negative literal in the suite is parenthesised, with an AST check to keep it so (#62). The user's
+`statusline.json`, the git cache entry and the state file are read through the bounded reader with
+encoding detection (#48). The diagnostics rollover guard is a lock file beside the log rather than a
+named mutex, which was session-scoped on Unix (#49). The timing tests inject their clocks instead of
+racing them (#63). The installer's backups live at project-owned names and are provenance-checked
+(#52). The screenshots are regenerated from the shipped samples (#77).
 
 ## Future work
 
-Issues #2 to #43 hold the backlog, each with a plan and success criteria. The enablers are done:
-the segment registry and config keys (#20), the per-project config merge (#19), the state file (#4),
-the link helper (#12) and the git cache (#18). A registry refactor that let the two scripts share
-segment builders would remove the copied helpers in `subagent-statusline.ps1`; it is not worth it for
-fifteen short functions and a drift test. The intended order for the rest:
+The feature backlog is done. What remains open are limits recorded under review, none of them a
+feature: plain-style `track` and `cached` markers use SGR 90, the terminal's own `brightBlack`, which
+some dark schemes draw nearly invisible (#88); six of the light palette's block-background pairs are
+isoluminant, so the arrow between them vanishes (#89); the diagnostics log can outgrow its cap while
+another render holds the rollover lock (#93); two more test families fail under parallel load rather
+than on a defect (#94), and a parallel suite run can trip the 250 ms user-config clock and fail random
+matrix cells (#99); and a clock seam through `statusline.ps1` would make the screenshots and every
+clock-relative segment reproducible (#98). A registry refactor that let the two scripts share segment
+builders would remove the copied helpers in `subagent-statusline.ps1`; it is not worth it for fifteen
+short functions and a drift test. How the backlog was ordered, for the record:
 
 1. New segments: all done. Cache warmth (#2), the hit ratio (#3) and the session clock (#8) are in.
    The first two are deliberately separate: one reads `prompt_cache` for whether the cache is alive,
