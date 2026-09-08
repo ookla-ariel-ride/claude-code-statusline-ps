@@ -19,7 +19,18 @@ $PSStyle.OutputRendering = 'Ansi'
 # profile loaded, which is free to have changed it.
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
-$now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+# THE CLOCK IS PINNED, and that is what makes these two PNGs regenerable to the same bytes on any
+# machine in any zone. statusline.ps1 reads its clock once and CLAUDE_STATUSLINE_NOW replaces that
+# reading, so the child render below measures the payload's expiries against the same instant this
+# script builds them from, and the `time` segment in the two-line shot draws this instant's wall clock
+# instead of whatever time the capture happened at. The offset is the zone rule: +00:00 here means the
+# two-line shot reads 14:05 wherever it is regenerated. The variable is set on this process, which
+# exists only for this render, and the child inherits it.
+# Any instant would do; this one is the 14:05 the README and docs/segments.md already print as the
+# example wall clock, so the image and the prose agree.
+$fixedNow = '2026-01-15T14:05:00+00:00'
+$env:CLAUDE_STATUSLINE_NOW = $fixedNow
+$now = [DateTimeOffset]::Parse($fixedNow, [System.Globalization.CultureInfo]::InvariantCulture).ToUnixTimeSeconds()
 # One payload feeds both screenshots; only -Config differs between them. The default (one-line,
 # no -Config) render shows the eleven segments that ship Default = $true; docs/statusline-two-line.json
 # turns the twelfth, `time`, on with "segments": { "time": true }, so the two-line shot is the one that
@@ -30,11 +41,11 @@ $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 # need a value relative to render time, are overlaid on top of it.
 $payload = Get-Content -Raw (Join-Path $Repo 'samples/06-limits-badges-lines.json') | ConvertFrom-Json -AsHashtable
 
-# Both reset times are nudged to the middle of a minute rather than the top of one: the render started
-# here and the child process a moment later each read their own clock, and TimeLeft's and
-# Get-CacheSecondsLeft's own comments note the same few seconds of drift always moves a countdown
-# towards a shorter reading, never a longer one - enough on its own to cross a minute boundary and print
-# a different figure than the other screenshot, started a moment apart from this one.
+# Both reset times are still nudged to the middle of a minute rather than the top of one. The drift
+# they were put there for is gone - this script and the child now share one pinned instant, so a
+# countdown cannot land a minute short of the other screenshot's - but mid-minute is also where a
+# figure is furthest from the boundary that would change it, so a later change to the pinned instant,
+# or a render taken with the pin lifted, still prints these numbers rather than the ones below them.
 $payload.rate_limits.five_hour.resets_at = $now + 4350    # 1h12m30s out -> "(1h12m)"
 $payload.rate_limits.seven_day.resets_at = $now + 400000  # never printed as a countdown; just fresh
 $payload.prompt_cache = @{ warm = $true; expires_at = $now + 2550 }  # 42m30s out -> "cache 42m"
