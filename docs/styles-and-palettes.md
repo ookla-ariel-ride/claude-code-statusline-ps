@@ -12,7 +12,7 @@ change.
 
 ```
 Fable 5.1 > ctx 32% ###....... 64k/200k 92% cached > $1.07 > 1h12m | api 38%
-  > +156 -23 > 5h 24% (2h11m) 7d 88% > fast think xhigh NORMAL > dir my-project > ~ main
+  > +156 -23 > 5h 24% = (2h11m) 7d 88% > fast think xhigh NORMAL > dir my-project > ~ main
 ```
 
 The rule for each stand-in, in order: nothing at all where what follows already names the segment; a

@@ -11,8 +11,8 @@ the [README](../README.md#installation) has the short version.
 - Adds a `statusLine` entry to your user-level `~/.claude/settings.json`. It keeps every other key and keeps a copy of the previous version first, at a project-owned backup name rather than the generic `settings.json.bak` (see [Uninstall](#uninstall)).
 - Sets `hideVimModeIndicator` inside that entry. The badges segment already shows the vim mode, so Claude Code's own indicator would be the same word twice on one bar.
 - With `-RefreshInterval <seconds>`, sets `refreshInterval` inside that entry so Claude Code re-renders the line on a timer as well as on events. Without the switch the key is not written. A value below 1 is refused and nothing is written.
-- With `-Subagents`, also copies `subagent-statusline.ps1` to `~/.claude/` and adds a `subagentStatusLine` entry. See [Subagent status line](agent-panel.md).
-- With `-Style plain|powerline|ascii` or `-Palette dark|light`, writes that key into `~/.claude/statusline.json`, keeping every other key, and carries the same value into the `subagentStatusLine` command. Leave them out and both come from the file as it already stands.
+- With `-Subagents`, also copies `subagent-statusline.ps1` to `~/.claude/` and adds a `subagentStatusLine` entry. See [the agent panel](agent-panel.md).
+- With `-Style plain|powerline|ascii` or `-Palette dark|light`, writes that key into `~/.claude/statusline.json`, keeping every other key, and carries the same value into the `subagentStatusLine` command. Leave them out and both come from the file as it already stands. The pair the panel gets, highest first: `-Style` and `-Palette`, then the palette `-DetectTheme` worked out, then the `style` and `palette` keys in `~/.claude/statusline.json`, then `plain` and `dark`. Any run refreshes a panel entry this installer wrote; `-Subagents` is only what creates one. See [the agent panel](agent-panel.md#style-and-palette).
 - With `-InstallFont`, installs JetBrainsMono Nerd Font through winget. Expect one elevation prompt.
 - With `-ConfigureWindowsTerminal`, sets Windows Terminal's default font to `JetBrainsMono NF` and keeps a copy of its settings first, the same project-owned backup treatment as `settings.json` gets.
 - With `-DetectTheme`, reads Windows Terminal's default colour scheme and writes `"palette": "dark"` or `"palette": "light"` into `~/.claude/statusline.json`, keeping every other key. It prints the scheme it found, that scheme's background and the palette it chose. When it cannot tell — no Windows Terminal, no default profile, a scheme it has no background for, or a profile set to follow the OS light/dark theme — **it writes nothing and says why**, because the palette already defaults to `dark` and a wrong guess of `light` would leave the line unreadable. `-Palette` outranks it, and it still prints what it found. Without any of the three, `statusline.json` is not touched. See [Light palette](styles-and-palettes.md#light-palette).
@@ -32,7 +32,7 @@ The settings entry it writes after `.\install.ps1 -RefreshInterval 10`:
 The path uses forward slashes on purpose. Claude Code may run the command through Git Bash, which
 strips backslashes. It is double-quoted for the same kind of reason: a profile with a space in it,
 such as `C:/Users/Jane Doe`, would otherwise end the `-File` argument at the space. See
-[Subagent status line](agent-panel.md) for the one case the quoting cannot cover.
+[the agent panel](agent-panel.md#style-and-palette) for the one case the quoting cannot cover.
 
 `refreshInterval` is what keeps a clock, or a taskbar bar driven by the context percentage, moving
 between events. Nothing that is drawn on the line itself needs it, so the installer only writes it when

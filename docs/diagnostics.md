@@ -1,6 +1,6 @@
 # The diagnostics log
 
-Nothing to go on: the git probe, the probe cache, the project config read and the state file swallow
+When there is nothing to go on: the git probe, the probe cache, the project config read and the state file swallow
 every failure, so a missing branch segment, a project config that never seems to apply, or a cache
 that never seems to hit leaves nothing behind to look at. Set `CLAUDE_STATUSLINE_DEBUG` to `1` and
 each swallowed failure, each cache hit and miss, each refused config and each state read and write

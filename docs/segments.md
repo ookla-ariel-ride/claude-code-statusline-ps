@@ -43,8 +43,9 @@ synced branch shows only the icon and the name.
 | `nf-fa-exclamation_triangle` `N` | Files in conflict | The `removed` colour, the same one `-N` takes in the lines segment: a true red inside the yellow `warn` block, a warm apricot inside a dark one |
 
 The counts render in the quiet `track` colour, in that order, after the branch name and before the pencil. If the line is
-too wide for the terminal they are the third thing shed, after the limits and context detail and
-before any whole segment goes, leaving the icon, the name and the pencil.
+too wide for the terminal they are the fifth short form taken, after the cost, limits, cache and
+context detail and before any whole segment goes (see [width fitting](configuration.md#width-fitting)),
+leaving the icon, the name and the pencil.
 
 The `git status` call is the one the script already made for the pencil, so the counts cost no
 extra process. If a payload does include a `git` object with `branch` and `status`, as the test

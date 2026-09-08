@@ -67,7 +67,7 @@ the previous version backed up beside it. The switches:
 | `-ConfigureWindowsTerminal` | Sets Windows Terminal's default font to `JetBrainsMono NF`, backing its settings up first. |
 | `-DetectTheme` | Reads Windows Terminal's colour scheme and writes `palette` into `statusline.json`. When it cannot tell, it writes nothing and says why. |
 | `-Style plain\|powerline\|ascii`, `-Palette dark\|light` | Writes that key into `statusline.json` and carries it into the agent panel's command. |
-| `-RefreshInterval <seconds>` | Re-renders on a timer as well as on events. Needed for the wall clock and the taskbar bar; a reinstall without it drops the key. |
+| `-RefreshInterval <seconds>` | Re-renders on a timer as well as on events, which keeps the wall clock and the taskbar bar current between events. A reinstall without it drops the key. |
 | `-Subagents` | Installs the agent panel script and its `subagentStatusLine` entry. See [The agent panel](docs/agent-panel.md). |
 | `-Uninstall` | Removes the `statusLine` entry and `~/.claude/statusline.ps1` outright; removes the panel entry and script only when they are this project's. Keeps the font and `statusline.json`. |
 
@@ -130,7 +130,7 @@ merged over yours key by key. Anything missing or invalid falls back to the valu
 | `folder` | `repo`, `leaf` | `owner/name › dir` from the payload's repository, or the directory name alone. |
 | `segments.<name>` | `true`, `false` | Turns a segment off. `time`, the wall clock, is the one that is off by default. |
 | `order`, `rows` | lists of names | The segments of layout `one`, or the two rows of layout `two`. Left out, the script's order applies, new segments included. |
-| `right` | `["time"]` | Segments pushed against the right edge of the first line. The first thing a narrow line loses. |
+| `right` | `["time"]` | Segments pushed against the right edge of the first line. The first whole segments a narrow line loses. |
 | `thresholds` | `{ "warn": 60, "bad": 85 }` | Where the meter and the limits turn yellow and red. A 1M window keeps its own 70 and 90. |
 | `alarm` | `{ "context": 90, "limits": 90 }` | Where the model segment itself turns red. `0` turns that alarm off. |
 | `quiet` | `{ "cost": 1.00, "context": 30, "limits": 50 }` | The smallest value a segment is worth showing at. Never hides a warning or an alarm. |
@@ -157,7 +157,7 @@ text — a branch called `機能/x` — is drawn as it arrived.
 
 ```
 Fable 5.1 > ctx 32% ###....... 64k/200k 92% cached > $1.07 > 1h12m | api 38%
-  > +156 -23 > 5h 24% (2h11m) 7d 88% > fast think xhigh NORMAL > dir my-project > ~ main
+  > +156 -23 > 5h 24% = (2h11m) 7d 88% > fast think xhigh NORMAL > dir my-project > ~ main
 ```
 
 `{"palette": "light"}` swaps the colour table for one chosen against white, in any style. Every value
@@ -167,8 +167,9 @@ contrast rules and what `-DetectTheme` reads: [docs/styles-and-palettes.md](docs
 
 ### Taskbar progress
 
-With `"taskbar": true` and a refresh interval, the context percentage is drawn on the window's taskbar
-button in Windows Terminal, green below the `alarm` level and red at it. Off by default because Claude
+With `"taskbar": true` the context percentage is drawn on the window's taskbar button in Windows
+Terminal on every render, green below the `alarm` level and red at it; a refresh interval keeps it
+current while the session sits idle. Off by default because Claude
 Code draws its own turn-progress bar there; set `"terminalProgressBarEnabled": false` in
 `settings.json` to hand the bar over. Details, and how to clear a stuck bar: [docs/taskbar.md](docs/taskbar.md).
 
@@ -176,7 +177,7 @@ Code draws its own turn-progress bar there; set `"terminalProgressBarEnabled": f
 
 | Segment | Icon | Data | Rendering |
 |---|---|---|---|
-| model | <img src="docs/icons/robot.svg" height="18" alt="robot"> | `model.display_name` | Bold cyan; `1M` and a warning on a 1M window; red at the `alarm` level. Never shortened or dropped. |
+| model | <img src="docs/icons/robot.svg" height="18" alt="robot"> | `model.display_name` | Bold cyan; `1M` on a 1M window, a warning once the payload reports `exceeds_200k_tokens`; red at the `alarm` level. Never shortened or dropped. |
 | context | <img src="docs/icons/memory.svg" height="18" alt="memory"> | `context_window.*` | Percent, ten-block bar, used/total, `92% cached`. Green, yellow, red on the thresholds. |
 | cache | <img src="docs/icons/fire.svg" height="18" alt="fire"> | `prompt_cache.*` | `cache 42m`, yellow in the last five minutes; red `cache cold` or `cache off`. |
 | cost | <img src="docs/icons/cash.svg" height="18" alt="cash"> | `cost.total_cost_usd` | `$1.07 (+$0.12)`, the delta from the state file. |
@@ -210,7 +211,8 @@ add a segment or a sample: [docs/testing.md](docs/testing.md).
 ## Troubleshooting
 
 Icons show as boxes: the terminal font is not a Nerd Font. Set one, or put `"style": "ascii"` in
-`statusline.json` and rerun `.\install.ps1 -Subagents` if you use the agent panel.
+`statusline.json` and run `.\install.ps1` again if you use the agent panel, so the panel's command
+picks the style up.
 
 A non-English branch or folder name comes out as `µ⌐ƒΦâ╜/x`: you are running an old copy. Reinstall,
 with `-Subagents` if you use the panel; nothing else needs setting.
@@ -251,8 +253,9 @@ Get-ChildItem *.ps1, docs\*.ps1, tools\*.ps1 | ForEach-Object { Invoke-ScriptAna
 
 Some checks are load-sensitive ([#94](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/94),
 [#99](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/99),
-[#102](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/102)); re-run a failing
-check alone before reading it as a regression. Adding a segment or a sample, and regenerating the
+[#102](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/102)): a child render
+that misses its 250 ms config budget draws the defaults and fails a random matrix cell. Re-run a
+failing check alone before reading it as a regression. Adding a segment or a sample, and regenerating the
 screenshots, is described in [docs/testing.md](docs/testing.md). Commits are scanned for secrets with
 [gitleaks](https://github.com/gitleaks/gitleaks); `winget install Gitleaks.Gitleaks` and
 `git config core.hooksPath .githooks` enable the pre-commit hook.

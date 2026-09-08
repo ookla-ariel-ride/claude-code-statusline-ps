@@ -596,8 +596,8 @@ feature: plain-style `track` and `cached` markers use SGR 90, the terminal's own
 some dark schemes draw nearly invisible (#88); six of the light palette's block-background pairs are
 isoluminant, so the arrow between them vanishes (#89); the diagnostics log can outgrow its cap while
 another render holds the rollover lock (#93); two more test families fail under parallel load rather
-than on a defect (#94), and a parallel suite run can trip the 250 ms user-config clock and fail random
-matrix cells (#99); and a clock seam through `statusline.ps1` would make the screenshots and every
+than on a defect (#94), the git-cache stamp tests do the same (#102), and a parallel suite run can trip
+the 250 ms user-config clock and fail random matrix cells (#99); and a clock seam through `statusline.ps1` would make the screenshots and every
 clock-relative segment reproducible (#98). A registry refactor that let the two scripts share segment
 builders would remove the copied helpers in `subagent-statusline.ps1`; it is not worth it for fifteen
 short functions and a drift test. How the backlog was ordered, for the record:
