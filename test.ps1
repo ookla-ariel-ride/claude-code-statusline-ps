@@ -314,7 +314,7 @@ function Get-SubagentReply([string[]] $Lines) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Open-SharedConfigFile', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Open-SharedConfigFile', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent', 'Get-StatusNow', 'Get-StatusClock'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -4707,6 +4707,74 @@ $paceEnd = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 50
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":55,"resets_at":' + $paceEnd + '}}')) $paceCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 55% $paceFlat" 'limits at the end of a window: the arrow with no countdown behind it'
 Confirm-Equal $seg.Short "$iconLimit 5h 55%" 'limits at the end of a window: a short form exists purely to drop the arrow'
+
+Write-Host '== unit: clock seam' -ForegroundColor Cyan
+# statusline.ps1 reads the wall clock once, at the top, and threads that one reading to the four things
+# on a line that move with it: the cache countdown, the rate-limit countdown, the pace arrow's position
+# in the window, and the `time` segment. CLAUDE_STATUSLINE_NOW replaces the reading. Everything above
+# this section deliberately runs on the real clock, the way production does; this section is the only
+# one that pins it, and it is what makes the two README screenshots regenerable to the same bytes.
+#
+# The pinned instant is eight months in the past, and that is deliberate: a caller that stopped
+# threading the reading and fell back to its own clock would measure these expiries as long gone, so
+# every assertion below fails loudly rather than agreeing with a fresh reading by luck.
+$clockPin = '2026-01-15T14:05:00+00:00'
+$clockPinAt = [DateTimeOffset]::Parse($clockPin, [System.Globalization.CultureInfo]::InvariantCulture)
+$clockPinEpoch = $clockPinAt.ToUnixTimeSeconds()
+Confirm-Equal $clockPinEpoch 1768485900L 'clock seam: the pinned instant is the epoch every case below is built from'
+# The override is refused unless it carries an offset, because a wall clock without a zone is not
+# reproducible - which is the whole point - and [DateTimeOffset]::TryParse would silently supply the
+# MACHINE'S offset for a value that left it out.
+Confirm-True ($null -eq (Get-StatusNow $null)) 'clock seam: no override is no reading'
+Confirm-True ($null -eq (Get-StatusNow '')) 'clock seam: an empty override is no reading'
+Confirm-True ($null -eq (Get-StatusNow '   ')) 'clock seam: a whitespace-only override is no reading'
+Confirm-Equal ((Get-StatusNow $clockPin).ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: an ISO-8601 instant with an offset is the instant it names'
+Confirm-Equal ((Get-StatusNow $clockPin).Offset.TotalMinutes) 0.0 'clock seam: and it keeps the offset it carried, not the machine''s'
+Confirm-Equal ((Get-StatusNow $clockPin).ToString('HH\:mm')) '14:05' 'clock seam: the wall clock of a +00:00 instant is its UTC time in any zone'
+Confirm-Equal ((Get-StatusNow "  $clockPin`t").ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: surrounding whitespace is trimmed before the value is read'
+Confirm-Equal ((Get-StatusNow '2026-01-15T14:05:00Z').ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: Z is an offset'
+Confirm-Equal ((Get-StatusNow '2026-01-15T14:05:00.1234567Z').ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: a fractional second is allowed and floors to the same epoch'
+Confirm-Equal ((Get-StatusNow '2026-01-15T09:05:00-05:00').ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: a negative offset names the same instant'
+Confirm-True ($null -eq (Get-StatusNow '2026-01-15T14:05:00-15:00')) 'clock seam: an offset no zone has is refused by the parse the pattern hands it to'
+# THE ZONE RULE, stated as two assertions: the offset in the string is the zone the wall clock is drawn
+# in, and two spellings of one instant agree on every countdown while printing their own local times.
+Confirm-Equal ((Get-StatusNow '2026-01-15T16:05:00+02:00').ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: +02:00 at 16:05 is the same instant as +00:00 at 14:05'
+Confirm-Equal ((Get-StatusNow '2026-01-15T16:05:00+02:00').ToString('HH\:mm')) '16:05' 'clock seam: and its wall clock is 16:05, because the offset it carries is the zone'
+foreach ($bad in @(
+        @{ Label = 'no offset at all'; Value = '2026-01-15T14:05:00' }
+        @{ Label = 'epoch seconds'; Value = '1768485900' }
+        @{ Label = 'a date with no time'; Value = '2026-01-15' }
+        @{ Label = 'no seconds'; Value = '2026-01-15T14:05Z' }
+        @{ Label = 'a space where the T belongs'; Value = '2026-01-15 14:05:00Z' }
+        @{ Label = 'an offset with no colon in it'; Value = '2026-01-15T14:05:00+0000' }
+        @{ Label = 'a day that is not in the month'; Value = '2026-02-30T14:05:00Z' }
+        @{ Label = 'an hour that is not on the clock'; Value = '2026-01-15T25:05:00Z' }
+        @{ Label = 'a minute that is not on the clock'; Value = '2026-01-15T14:75:00Z' }
+        @{ Label = 'a word'; Value = 'now' }
+        @{ Label = 'a good value with something after it'; Value = '2026-01-15T14:05:00Z and then some' }
+        @{ Label = 'a good value on the first of two lines'; Value = "2026-01-15T14:05:00Z`n2026-01-15T14:05:00Z" })) {
+    Confirm-True ($null -eq (Get-StatusNow $bad.Value)) "clock seam: $($bad.Label) is refused, not repaired"
+}
+# With no reading taken - which is every other section of this file, and no render at all - the clock is
+# the machine's, so a lifted builder measures a countdown the way production does.
+Confirm-True ($null -eq $script:renderNow) 'clock seam: this file takes no reading of its own, so the sections above run on the real clock'
+Confirm-True ((((Get-StatusClock) - [DateTimeOffset]::Now).Duration().TotalSeconds) -lt 5) 'clock seam: with no reading taken the clock is this machine''s'
+# The four call sites, through the builders the render loop actually calls. A builder that stopped
+# threading the reading falls back to the real clock, where every one of these expiries is months past.
+try {
+    $script:renderNow = $clockPinAt
+    Confirm-Equal (Get-TimeSegment).Text "$iconTime 14:05" 'clock seam: the wall clock segment draws the pinned instant'
+    $clockPinCache = Get-CacheSegment (Get-JsonPayload 'prompt_cache' ('{"warm":true,"expires_at":' + ($clockPinEpoch + 2550) + '}'))
+    Confirm-Equal $clockPinCache.Text "$iconCache cache 42m" 'clock seam: the cache countdown is measured against the pinned instant'
+    $clockPinLimits = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":23.5,"resets_at":' + ($clockPinEpoch + 4350) + '}}')) $quietOff
+    Confirm-Equal (ConvertTo-PlainText $clockPinLimits.Text) "$iconLimit 5h 24% $paceFlat (1h12m)" 'clock seam: the rate-limit countdown and the pace arrow are measured against it too'
+    # One reading and not two: the countdown and the arrow beside it come out of the same instant, so a
+    # render can never print a minute the projection disagrees with.
+    Confirm-Equal (Get-CacheSecondsLeft ($clockPinEpoch + 2550) $clockPinEpoch) 2550 'clock seam: the seconds-left helper takes the reading it is given'
+    Confirm-Equal (TimeLeft ($clockPinEpoch + 4350) $clockPinEpoch) ' (1h12m)' 'clock seam: TimeLeft takes the reading it is given'
+    Confirm-Equal (Get-PaceArrow ($clockPinEpoch + 4350) 23.5 $clockPinEpoch).Arrow $paceFlat 'clock seam: the pace arrow takes the reading it is given'
+} finally { $script:renderNow = $null }
+Confirm-True ($null -eq $script:renderNow) 'clock seam: the reading is put back, so the sections below run on the real clock again'
 
 Write-Host '== unit: badges' -ForegroundColor Cyan
 # $badgeNameCells and $defaultEffort are script-level constants in statusline.ps1 and the builder closes
@@ -9453,6 +9521,65 @@ $rowTwo = Invoke-StatusLine $samplePayloads['01-main-clean.json'] $rowTwoRight 1
 Confirm-True ($rowTwo.Err.Count -eq 0) 'right render row two: stderr empty'
 Confirm-Equal ($rowTwo.Lines -join "`n") ($twoNone.Lines -join "`n") 'right render row two: a group naming a row-two segment belongs to row one and so changes nothing'
 Confirm-True ((Measure-VisibleWidth $rowTwo.Lines[1]) -lt 119) 'right render row two: row two is not aligned to the width by a group that named one of its segments'
+
+Write-Host ''
+Write-Host '== render: the pinned clock' -ForegroundColor Cyan
+# The seam through a whole child render, which is the case docs/render-screenshot.ps1 depends on and
+# the unit section above cannot reach: the override has to survive being read from the environment by
+# another process, and the figures it pins have to come out of the same render the screenshot captures.
+# The payload is the screenshot's own - sample 06, with the two expiries built from the pinned instant
+# the way render-screenshot.ps1 builds them - so this section fails if that image stops being
+# reproducible, rather than the diff being noticed months later.
+$pinInstant = '2026-01-15T14:05:00+00:00'
+$pinEpoch = [DateTimeOffset]::Parse($pinInstant, [System.Globalization.CultureInfo]::InvariantCulture).ToUnixTimeSeconds()
+$pinPayloadObj = $samplePayloads[$sample06.Name] | ConvertFrom-Json -AsHashtable
+$pinPayloadObj.rate_limits.five_hour.resets_at = $pinEpoch + 4350
+$pinPayloadObj.prompt_cache = @{ warm = $true; expires_at = $pinEpoch + 2550 }
+$pinPayload = $pinPayloadObj | ConvertTo-Json -Depth 5
+$pinConfig = Write-TempConfig 'clock-pinned.json' '{ "layout": "two", "style": "plain", "segments": { "time": true } }'
+$oldPinNow = $env:CLAUDE_STATUSLINE_NOW
+try {
+    $env:CLAUDE_STATUSLINE_NOW = $pinInstant
+    $pinned = Invoke-StatusLine $pinPayload $pinConfig 0
+    Confirm-True ($pinned.ExitCode -eq 0) "pinned clock: exit code $($pinned.ExitCode)"
+    Confirm-True ($pinned.Err.Count -eq 0) "pinned clock: stderr empty, got '$($pinned.Err -join ' | ')'"
+    $pinnedText = ConvertTo-PlainText ($pinned.Lines -join "`n")
+    Confirm-True ($pinnedText.Contains('cache 42m')) "pinned clock: the cache countdown is the pinned 42m, got '$pinnedText'"
+    Confirm-True ($pinnedText.Contains('(1h12m)')) "pinned clock: the rate-limit countdown is the pinned 1h12m, got '$pinnedText'"
+    Confirm-True ($pinnedText.Contains($paceFlat)) 'pinned clock: the pace arrow is the flat one the pinned window projects'
+    Confirm-True ($pinnedText.Contains("$iconTime 14:05")) "pinned clock: the wall clock is 14:05 in any zone, got '$pinnedText'"
+    # The same render twice is the property the screenshots need, stated as an assertion: two child
+    # processes started seconds apart print the same bytes, which is what could not be said before.
+    $pinnedAgain = Invoke-StatusLine $pinPayload $pinConfig 0
+    Confirm-Equal ($pinnedAgain.Lines -join "`n") ($pinned.Lines -join "`n") 'pinned clock: two renders of one payload under one pinned instant are byte for byte the same'
+    # Garbage in the variable is ignored, which has to mean "the machine's clock", not "a zero epoch"
+    # and not "no line at all". Checked on the wall clock, read either side of the render: the only way
+    # it matches neither is a render that crossed two minute boundaries.
+    foreach ($junk in @('not a time', '1768485900', '2026-01-15T14:05:00')) {
+        $env:CLAUDE_STATUSLINE_NOW = $junk
+        $before = Get-Date
+        $junked = Invoke-StatusLine $pinPayload $pinConfig 0
+        $after = Get-Date
+        $junkText = ConvertTo-PlainText ($junked.Lines -join "`n")
+        Confirm-True ($junked.Err.Count -eq 0) "pinned clock: '$junk' writes nothing to stderr"
+        Confirm-True (-not $junkText.Contains("$iconTime 14:05") -or $before.ToString('HH\:mm') -eq '14:05') "pinned clock: '$junk' is not read as the pinned instant"
+        Confirm-True ($junkText.Contains("$iconTime $($before.ToString('HH\:mm'))") -or $junkText.Contains("$iconTime $($after.ToString('HH\:mm'))")) "pinned clock: '$junk' falls back to this machine's clock, got '$junkText'"
+    }
+    # And unset is the production path: the same fallback, with nothing in the environment at all.
+    Remove-Item Env:CLAUDE_STATUSLINE_NOW -ErrorAction SilentlyContinue
+    $before = Get-Date
+    $loose = Invoke-StatusLine $pinPayload $pinConfig 0
+    $after = Get-Date
+    $looseText = ConvertTo-PlainText ($loose.Lines -join "`n")
+    Confirm-True ($loose.Err.Count -eq 0) 'pinned clock: an unset variable writes nothing to stderr'
+    Confirm-True ($looseText.Contains("$iconTime $($before.ToString('HH\:mm'))") -or $looseText.Contains("$iconTime $($after.ToString('HH\:mm'))")) "pinned clock: unset is this machine's clock, got '$looseText'"
+    # The expiries are months past on the real clock, so the two countdowns the pin produced are gone.
+    # This is the assertion that says the pinned figures above really came from the variable.
+    Confirm-True (-not $looseText.Contains('cache 42m')) 'pinned clock: unset, the pinned cache countdown is not on the line'
+    Confirm-True (-not $looseText.Contains('(1h12m)')) 'pinned clock: unset, the pinned rate-limit countdown is not on the line'
+} finally {
+    if ($null -ne $oldPinNow) { $env:CLAUDE_STATUSLINE_NOW = $oldPinNow } else { Remove-Item Env:CLAUDE_STATUSLINE_NOW -ErrorAction SilentlyContinue }
+}
 
 # The taskbar sequence through the whole script. Every check here is against a second render of the
 # same payload with the key off, so what is pinned is "the sequence and nothing else changed" rather

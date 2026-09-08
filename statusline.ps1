@@ -344,6 +344,74 @@ function Test-StatusDiagFlag {
 }
 $script:diagOn = Test-StatusDiagFlag
 
+# ---- The clock, read once ----
+# Four things on a rendered line move with the wall clock and with nothing else: the prompt cache
+# countdown, the rate-limit countdown, where the pace arrow sits in the five-hour window, and the
+# `time` segment's HH:mm. Each of them used to read its own clock at the moment it was built -
+# Get-CacheSecondsLeft, TimeLeft and Get-PaceArrow through the default on their $Now parameter,
+# Get-TimeSegment through a bare Get-Date - so one render measured its figures against several
+# readings taken milliseconds apart, and docs/render-screenshot.ps1 could never regenerate a PNG to
+# the same bytes twice: it built the payload's expiries against ITS clock and the child process a
+# second or two later measured them against its own, which is enough to cross a minute boundary, and
+# the wall clock in the two-line shot was simply whatever time the capture happened at. Reading once,
+# here, and threading that one value to all four makes a render a function of its payload, its config
+# and this value, and nothing else.
+#
+# CLAUDE_STATUSLINE_NOW replaces the reading, and is read exactly once, here, the way
+# CLAUDE_STATUSLINE_DEBUG is. It is for the screenshot renderer and for the tests; nothing in normal
+# use sets it, and with it unset this is the same clock the four call sites each read on their own
+# before, so what production prints is unchanged byte for byte.
+#
+# THE VALUE MUST CARRY AN OFFSET, AND THAT IS THE ZONE RULE: an ISO-8601 instant ending in Z, or in
+# +hh:mm / -hh:mm. `time` prints a wall clock, and a wall clock without a zone is not a time anyone
+# can reproduce - the same instant is 14:05 on one machine and 09:05 on another, which is the whole
+# thing this seam exists to stop. The offset in the string IS the zone the wall clock is printed in:
+# 2026-01-15T14:05:00+00:00 prints 14:05 and 2026-01-15T16:05:00+02:00 prints 16:05, on any machine in
+# any zone, and the two are the same instant so every countdown on the line is identical between them.
+# A value with no offset, an epoch count, or anything else at all is refused and the machine's own
+# clock is used - the same answer an unset variable gets. Refusing rather than repairing is the rule
+# every payload number in this script already follows, and guessing a zone is the one repair that
+# would quietly reintroduce the defect.
+function Get-StatusNow([string] $Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+    $text = $Value.Trim()
+    # The pattern is the validation and TryParse below is only the parse, and the order matters: given
+    # a string with no offset, [DateTimeOffset]::TryParse does not refuse it, it SUPPLIES THE MACHINE'S
+    # OWN OFFSET, which is the one answer this must never give. The pattern is what makes the offset
+    # mandatory; everything TryParse is left to decide - a 31st of February, a 25th hour, a 61st
+    # minute - is a real calendar question the pattern has no business answering.
+    # \z and not $, which in .NET also matches in front of a newline at the end of the string: a value
+    # carrying a second line would otherwise be validated on its first and parsed as a whole.
+    if ($text -notmatch '\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,7})?(Z|[+-]\d{2}:\d{2})\z') { return $null }
+    $parsed = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse($text, [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::None, [ref] $parsed)) { return $null }
+    return $parsed
+}
+
+# The one reading - or the machine's clock for a caller that has not taken one. In this script nobody
+# is in that position, because the assignment below runs before any builder is defined and before any
+# payload is read; the fallback is for test.ps1, which lifts these builders out one at a time and runs
+# most of them against the real clock exactly as production does, and it is what keeps a lifted
+# builder honest rather than measuring a countdown against a zero epoch.
+function Get-StatusClock() {
+    if ($script:renderNow -is [DateTimeOffset]) { return $script:renderNow }
+    return [DateTimeOffset]::Now
+}
+$script:renderNow = Get-StatusNow $env:CLAUDE_STATUSLINE_NOW
+if ($null -eq $script:renderNow) {
+    # A variable that was set and then refused earns a line, because the symptom - a screenshot that
+    # still moves between runs - looks exactly like the seam not working at all. The value came from
+    # the environment and can be any length, so it is bounded here rather than trusted; Write-StatusDiag
+    # folds the newlines a record must not carry.
+    if ($script:diagOn -and $env:CLAUDE_STATUSLINE_NOW) {
+        $bad = [string] $env:CLAUDE_STATUSLINE_NOW
+        if ($bad.Length -gt 64) { $bad = $bad.Substring(0, 64) }
+        Write-StatusDiag "clock: CLAUDE_STATUSLINE_NOW refused (wants an ISO-8601 instant carrying an offset), got '$bad'"
+    }
+    $script:renderNow = [DateTimeOffset]::Now
+}
+
 # The built-in code point of every glyph the segments use, keyed by the name the icons key of
 # statusline.json takes: the $icon* constant minus its prefix, lower-cased. The constants themselves
 # are assigned from Get-IconSet once the config is read, so an override is in place before any builder runs.
@@ -2524,11 +2592,13 @@ function Get-ContextSegment($d, $cfg) {
 # one renders as a nonsense "(26781d)". Clamping any of these to a boundary would put a number on the
 # line that reads as fact; refusing leaves the caller to say "warm, and I cannot tell you how long",
 # which is the honest answer and the one an absent field already gets.
-# $Now is the current epoch and defaults to the clock, so no caller passes one. It exists for the tests,
-# the way Get-PaceArrow's does: an epoch derived from an earlier reading of the clock is one second out
-# whenever the second ticks in between, which is enough to move a case off the boundary it was written
-# for. Both guards run before the [int] cast, which is what keeps the cast in range: the ceiling caps
-# the top at 86400 and refusing an expiry of 0 or less caps the bottom at -$Now.
+# $Now is the current epoch. Get-CacheSegment passes the render's one reading (see Get-StatusClock),
+# so this countdown and the rate-limit one beside it are measured against the same instant and a
+# screenshot can be regenerated to the same bytes; the default is the clock, for the tests, which lift
+# this out and call it directly, and it is what an epoch derived from an earlier reading would drift
+# from - one second out whenever the second ticks in between, enough to move a case off the boundary it
+# was written for. Both guards run before the [int] cast, which is what keeps the cast in range: the
+# ceiling caps the top at 86400 and refusing an expiry of 0 or less caps the bottom at -$Now.
 function Get-CacheSecondsLeft($Value, [long] $Now = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) {
     $at = Get-FiniteNumber $Value
     if ($null -eq $at) { return $null }
@@ -2603,7 +2673,7 @@ function Get-CacheSegment($d) {
     $pc = $d.prompt_cache
     if ($pc -isnot [System.Management.Automation.PSCustomObject]) { return $null }
     $warm = if ($pc.warm -is [bool]) { [bool] $pc.warm } else { $null }
-    $left = Get-CacheSecondsLeft $pc.expires_at
+    $left = Get-CacheSecondsLeft $pc.expires_at (Get-StatusClock).ToUnixTimeSeconds()
     if ($null -eq $warm -and $null -eq $left) { return $null }
     if ($warm -eq $false -or ($null -ne $left -and $left -le 0)) {
         return @{ Name = 'cache'; Text = (Format-Icon $iconCache 'cache cold'); Short = (Format-Icon $iconCache 'cold'); Role = 'bad'; Bold = $false }
@@ -2756,8 +2826,14 @@ function Get-ClockSegment($d, $cfg) {
 # whole segment to go - because it is the one figure on the line that says nothing about the session.
 # The three parameters are what the build loop hands every builder; this one uses none of them, and
 # naming them rather than leaving them in $args is what says so.
+#
+# The reading is the render's one reading rather than a Get-Date of its own (see Get-StatusClock at the
+# head of this file), which is what lets the two-line screenshot be regenerated to the same bytes: this
+# is the segment that used to make that impossible. A DateTimeOffset formats at ITS OWN offset, so an
+# unset CLAUDE_STATUSLINE_NOW leaves this the machine's local time exactly as before, and a pinned
+# instant prints the wall clock of the offset it carries, the same string in any zone.
 function Get-TimeSegment($d, $cfg, $state) {
-    return @{ Name = 'time'; Text = (Format-Icon $iconTime ((Get-Date).ToString('HH\:mm'))); Short = $null; Role = 'dim'; Bold = $false }
+    return @{ Name = 'time'; Text = (Format-Icon $iconTime ((Get-StatusClock).ToString('HH\:mm'))); Short = $null; Role = 'dim'; Bold = $false }
 }
 
 # Lines added/removed this session; shown when either is non-zero. Inline colours keep the dim background intact.
@@ -2787,9 +2863,10 @@ function Get-LinesSegment($d, $cfg) {
 # of them can. The 60-second floor and the 31536000-second (365-day) ceiling are what used to be a
 # separate DateTimeOffset range check plus a TotalMinutes/TotalDays test on the result; bounding $left
 # first means TimeSpan::FromSeconds below is always given a value it can hold, so it is formatting, not
-# guarding. $Now defaults to the clock and exists for the tests, the same reason Get-PaceArrow takes
-# it: a $Now read once and reused stays put while a boundary is checked, where the script's own call
-# reads the clock fresh and only ever drifts towards a shorter countdown.
+# guarding. $Now is the render's one reading, passed by Get-LimitsSegment (see Get-StatusClock), so
+# this countdown, the pace arrow beside it and the cache countdown on the same line are all measured
+# against one instant; the default is the clock, for the tests, which call this directly and want a
+# $Now that stays put while a boundary is checked.
 function TimeLeft([object] $epoch, [long] $Now = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) {
     $sec = Get-FiniteNumber $epoch
     if ($null -eq $sec) { return '' }
@@ -2812,9 +2889,11 @@ function TimeLeft([object] $epoch, [long] $Now = ([DateTimeOffset]::UtcNow.ToUni
 # are tested on the seconds left rather than on the fraction, because a tenth of the window is 16200
 # seconds exactly while 1 - 16200 / 18000 is 0.09999999999999998, which would drop the first honest
 # reading of every window.
-# $Now is the current epoch and defaults to the clock, so no caller passes one. It exists for the tests:
-# an epoch derived from an earlier reading of the clock is one second out whenever the second ticks in
-# between, which is enough to miss both of those limits by exactly the margin a regression would move.
+# $Now is the current epoch, passed by Get-LimitsSegment as the render's one reading (see
+# Get-StatusClock) so the arrow and the countdown beside it project from the same instant. It defaults
+# to the clock for the tests, which call this directly: an epoch derived from an earlier reading of the
+# clock is one second out whenever the second ticks in between, which is enough to miss both of those
+# limits by exactly the margin a regression would move.
 function Get-PaceArrow([object] $resetsAt, [object] $used, [long] $Now = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()), [string] $Style) {
     $reset = Get-FiniteNumber $resetsAt
     $pct = Get-FiniteNumber $used
@@ -2853,6 +2932,9 @@ function Get-LimitsSegment($d, $cfg) {
     $paceAt = -1
     $paceHead = ''
     $paceTail = ''
+    # The render's one reading, taken once for both the countdown and the arrow below: two readings a
+    # few milliseconds apart could put the countdown in one minute and the projection in the next.
+    $now = (Get-StatusClock).ToUnixTimeSeconds()
     # Label, source object, whether the pace arrow and the countdown follow, and whether the figure is a
     # rate-limit window rather than the spend limit, in render order.
     foreach ($row in @(@('5h', $rl.five_hour, $true, $true), @('7d', $rl.seven_day, $false, $true), @('$', $rl.spend_limit, $false, $false))) {
@@ -2879,9 +2961,9 @@ function Get-LimitsSegment($d, $cfg) {
         if ($row[3] -and ($null -eq $windowWorst -or $pct -gt $windowWorst)) { $windowWorst = $pct }
         $tail = ''
         if ($row[2]) {
-            $tail = TimeLeft $row[1].resets_at
+            $tail = TimeLeft $row[1].resets_at $now
             # The raw percentage, not the rounded one: the projection is the arrow's whole point.
-            $pace = Get-PaceArrow $row[1].resets_at $row[1].used_percentage -Style $cfg.Style
+            $pace = Get-PaceArrow $row[1].resets_at $row[1].used_percentage $now -Style $cfg.Style
             if ($pace) { $paceAt = $bits.Count; $paceHead = $bit; $paceTail = $tail }
         }
         $bits.Add("$bit$tail")
