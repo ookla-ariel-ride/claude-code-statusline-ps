@@ -6488,14 +6488,29 @@ Start-Sleep -Seconds 60
         Confirm-Equal $diagRollOutHeld.Count 0 'diag rollover lock: and nothing reaches the pipeline'
         Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover lock: the file the other render is rotating is left alone'
         Confirm-Equal (Get-DiagLogSize) $diagCap 'diag rollover lock: and the full log is left exactly as it was'
-        # The same skip through a whole record, which is where the approximate cap comes from.
+        # The skip says which of its reasons it was, in the words the next record that lands will carry.
+        # Asserted here rather than only through the record below, because "the log did not grow" alone
+        # would pass just as well if the record had been dropped by a spent budget or a stalled size
+        # read, neither of which is what this holder is here to prove.
+        Confirm-Equal $script:diagRollSkip 'another render holds the rollover lock' 'diag rollover lock: the skipped rollover names the holder as the reason (issue #93)'
+        # A record while the lock is held is not by itself a record lost: only one that has no room left
+        # has anything to gain by waiting for the rotation, so with the log well under the cap the lock
+        # is never asked for and the line lands as it always did.
+        Clear-DiagLog
+        Write-StatusDiag 'under the cap while another render is rotating'
+        Confirm-Equal (Get-DiagLine).Count 1 'diag rollover lock: a record with the log under the cap still lands while the lock is held'
+        Write-DiagLogText ('y' * $diagCap)
+        # The same skip through a whole record. Before #93 the line was appended anyway, on the
+        # reasoning that the file was about to shrink under it - which is not so when the holder is a
+        # stalled render or one in another session, and every render on the machine then appended past
+        # the cap for as long as the holder lived. The record is dropped instead.
         $diagLockThrew = $false
         $diagLockOut = @('not run')
         try { $diagLockOut = @(Write-StatusDiag 'another render is rotating') } catch { $diagLockThrew = $true }
         Confirm-True (-not $diagLockThrew) 'diag rollover lock: a record whose rollover is taken does not throw either'
         Confirm-Equal $diagLockOut.Count 0 'diag rollover lock: and that record reaches the pipeline with nothing'
         Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover lock: the record did not roll the log either'
-        Confirm-True ((Get-DiagLogSize) -gt $diagCap) 'diag rollover lock: the line is appended anyway rather than waited for, which is what makes the cap approximate'
+        Confirm-Equal (Get-DiagLogSize) $diagCap 'diag rollover lock: and the record is dropped rather than appended past the cap (issue #93)'
     } finally {
         # Killed, not asked to let go: a process that never reaches its own Dispose call is the case a
         # stale lock would show up in, if one could.
@@ -6511,6 +6526,15 @@ Start-Sleep -Seconds 60
     Write-StatusDiag 'the other render was killed'
     Confirm-True (Test-Path -LiteralPath $diagRolled) 'diag rollover lock: once the lock is free the rollover happens'
     Confirm-Equal (Get-DiagLine).Count 1 'diag rollover lock: and the fresh log holds only the new record'
+    # What was lost in the meantime is in that record, so the hole the drop above left in the log says
+    # it is a hole and why, rather than reading as a stretch where this process had nothing to say.
+    $diagAfterLock = (Get-DiagLine)[0]
+    Confirm-True ($diagAfterLock.Contains('[1 record dropped at the cap: another render holds the rollover lock]')) "diag rollover lock: and it carries the record that was dropped and the reason (issue #93), got '$diagAfterLock'"
+    # Carried once, not for the rest of the process: the count is what has been lost since the last
+    # record that landed, so a record that lands clears it.
+    Write-StatusDiag 'and nothing was dropped after that'
+    Confirm-Equal (Get-DiagLine).Count 2 'diag rollover lock: the next record lands in the same fresh log'
+    Confirm-True (-not ((Get-DiagLine)[1].Contains('dropped at the cap'))) 'diag rollover lock: and carries no note, because the record before it cleared the count'
     Clear-DiagLog
     Clear-DiagRollover
 

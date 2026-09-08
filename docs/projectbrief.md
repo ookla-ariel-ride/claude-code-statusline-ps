@@ -435,8 +435,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   filesystem calls - the size the rollover decision needs, the append open, and the close that actually
   writes - go to the thread pool and are waited on for what is left of one 250 ms clock, the same shape
   the project config read uses. A record that cannot be written inside it is dropped, which is the
-  trade #43 already made when it took a zero wait on the rollover lock and an approximate cap over
-  guaranteed ones. That includes the rollover: it reads the size again with the lock held, because
+  trade #43 already made when it took a zero wait on the rollover lock over a guaranteed rotation. That includes the rollover: it reads the size again with the lock held, because
   another render may have rolled the file already, and that second read goes to the pool under the same
   clock as the first. Reading it straight from a `FileInfo` there, as it once did, put an unbounded
   filesystem call back on the render's thread and made every other bound in the function moot.
@@ -447,9 +446,11 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   renamed on - reaching that point means both size reads answered, and answered briskly. Below the
   reserve the record is dropped, unrolled and unwritten. What that leaves, plainly: while a filesystem
   is slow enough to eat the reserve the log stops being written rather than growing, and it sits at its
-  cap until a render with room to spare rolls it; it heals on its own once the filesystem does. The cap
-  was already approximate because two renders can overlap, and this is a second reason - a rollover
-  skipped after its size read timed out can leave the file a little over it.
+  cap until a render with room to spare rolls it; it heals on its own once the filesystem does. That is
+  the same answer a rollover that is entered and cannot take the lock now gets (#93), so the reserve is
+  one more road to it rather than a hole beside it. The reserve's drop is the one not counted into the
+  note that answer leaves: letting how briskly a filesystem answered decide the text of a later record
+  would put timing inside the log's contents, which every check on this file is built to keep out.
   `Read-BoundedFileText` writes no record at all: it records the
   reason and `Merge-StatusConfigFile` writes it once the read has returned and its clock has stopped,
   because a size probe, a rename, an open and a close inside that clock would be exactly the unbounded
@@ -471,10 +472,14 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   One record is cut at 1000 characters, so no single reason can outgrow the cap by itself. The move is
   taken under an exclusive lock on a sibling `.lock` file with a zero wait, and the size is read again
   while it is held, so two renders cannot rotate over each other's archive; one that cannot take the
-  lock at once skips the rollover and appends. Nothing waits, and the append itself is unlocked, which
-  makes the cap approximate rather than exact: overlapping renders can leave the file a little over it
-  or lose a line. That is the right trade for a log that must never delay a render and is off by
-  default. Also unlike the mutex this replaced (#49): the lock is scoped by the path rather than a
+  lock at once skips the rollover and, with the log already full, drops its record rather than
+  appending past the cap, carrying the count and the reason into the next record it does land (#93).
+  Nothing waits. Appending through a held lock, as it did before #93, made the cap a target and not a
+  ceiling: a holder can be a stalled render or one in another session or another user's account, and
+  every render on the machine appended past the cap for as long as it lived. What is left of the
+  approximation is the unlocked append - renders that each measure room at the same instant all write,
+  so the file can end over the cap by up to one record apiece. That is the right trade for a log that
+  must never delay a render and is off by default. Also unlike the mutex this replaced (#49): the lock is scoped by the path rather than a
   machine- or session-wide name, a killed render's handle is released by the kernel on process exit
   with no stale lock left behind, and a lock file some other user cannot open at all - not merely held,
   but permanently unopenable - is read as a structural failure that drops the record rather than as
@@ -549,7 +554,9 @@ number guards, `Get-PayloadText` and `Get-PayloadPercent`, and the model segment
 negative literal in the suite is parenthesised, with an AST check to keep it so (#62). The user's
 `statusline.json`, the git cache entry and the state file are read through the bounded reader with
 encoding detection (#48). The diagnostics rollover guard is a lock file beside the log rather than a
-named mutex, which was session-scoped on Unix (#49). The timing tests inject their clocks instead of
+named mutex, which was session-scoped on Unix (#49), and a render that cannot take that lock drops its
+record instead of appending past the cap, so a stalled holder can no longer grow the log without bound
+(#93). The timing tests inject their clocks instead of
 racing them (#63). The installer's backups live at project-owned names and are provenance-checked
 (#52). The screenshots are regenerated from the shipped samples (#77).
 
@@ -594,8 +601,7 @@ racing them (#63). The installer's backups live at project-owned names and are p
 The feature backlog is done. What remains open are limits recorded under review, none of them a
 feature: plain-style `track` and `cached` markers use SGR 90, the terminal's own `brightBlack`, which
 some dark schemes draw nearly invisible (#88); six of the light palette's block-background pairs are
-isoluminant, so the arrow between them vanishes (#89); the diagnostics log can outgrow its cap while
-another render holds the rollover lock (#93); two more test families fail under parallel load rather
+isoluminant, so the arrow between them vanishes (#89); two more test families fail under parallel load rather
 than on a defect (#94), the git-cache stamp tests do the same (#102), and a parallel suite run can trip
 the 250 ms user-config clock and fail random matrix cells (#99); and a clock seam through `statusline.ps1` would make the screenshots and every
 clock-relative segment reproducible (#98). A registry refactor that let the two scripts share segment

@@ -29,11 +29,15 @@ you open to read should not be able to clear your screen. The log rolls over int
 `claude-statusline-diag.log.1` once it would pass 4 MB, so
 leaving the variable set costs two files of that size at most, plus a small `.lock` file kept beside
 the log to serialise a rollover against another render's — left behind by design rather than deleted
-on release, since deleting it would race a process already waiting to open it. Treat the 4 MB as
-approximate: the log is best-effort and never waits on anything, so two renders that overlap can leave
-the file a little over the cap, or lose one of their lines to each other. Rolling over means renaming,
-and a rename is the one thing here that cannot be put behind the deadline, so it is only attempted
-when the folder has just answered two size questions quickly. If it has not — a share gone slow — the
-record is dropped and the log sits at its cap until a render finds the folder responsive again, which
-it does on its own. Unset the variable when you are done (`0`,
+on release, since deleting it would race a process already waiting to open it. The log never waits on
+anything, so a render that finds that lock held by another one skips the rollover; when the log is
+already full, it drops its record rather than appending past the cap, and says how many it dropped and
+why in the next record it does get down (`[2 records dropped at the cap: another render holds the
+rollover lock]`). Rolling over means renaming, and a rename is the one thing here that cannot be put
+behind the deadline, so it is only attempted when the folder has just answered two size questions
+quickly. If it has not — a share gone slow — the record is dropped the same way and the log sits at its
+cap until a render finds the folder responsive again, which it does on its own. What is left of the
+4 MB being approximate is small: the append itself is not locked, so renders that each measure room at
+the same instant all write, and the file can end up over the cap by up to one record each. Unset the
+variable when you are done (`0`,
 `false`, `no` and `off` also count as off) and delete all three files.

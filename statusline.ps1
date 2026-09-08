@@ -72,8 +72,9 @@ function Read-StdinText() {
 # to stay one line. Nothing here reaches the pipeline, so a call can sit in front of a return without
 # changing what the caller returns.
 # The log is rolled over rather than left to grow, and one record is bounded so that a reason of any
-# length cannot set the size of the file on its own. The 4 MB cap is a target rather than a promise;
-# Invoke-StatusDiagRollover has the reason why.
+# length cannot set the size of the file on its own. The 4 MB cap holds even when the rollover cannot:
+# a record with no room left and no rotation to land after is dropped rather than appended past it, and
+# counted into the next record that does land. Invoke-StatusDiagRollover has the reasoning.
 
 # Moves a log with no room left for the next record over claude-statusline-diag.log.1, so a variable
 # left set in a profile costs two files of the cap's size at most rather than the temp volume.
@@ -81,13 +82,24 @@ function Read-StdinText() {
 # under an exclusive lock on Path.lock, opened with FileShare.None, and the size is read again with
 # the lock held: the second render then finds the small file the first one left and does nothing,
 # rather than moving that over the archive the first one just made. The wait is zero. A render that
-# finds the lock file already open elsewhere skips the rollover and appends, because the file it
-# would have moved is about to shrink under it anyway, so nothing here ever waits on another process
-# - which is the point of a log that must not delay a render. The append itself is not locked at all.
-# That leaves the cap approximate: two renders that overlap can leave the file a little over it, or
-# lose a line to each other, which is the right trade for a diagnostic that is off by default and
-# read by a person. Anything that throws is Write-StatusDiag's to swallow, and nothing here reaches
-# the pipeline.
+# finds the lock file already open elsewhere skips the rollover rather than waiting for it, so nothing
+# here ever waits on another process - which is the point of a log that must not delay a render.
+# What the caller then does with that skip is the other half of the trade, and it was the wrong half
+# until #93: it appended anyway, on the reasoning that the file was about to shrink under it. It is
+# not, when the holder is a render that has stalled, or one in another session or another user's
+# account - and every render on the machine then appended past the cap for as long as that lasted,
+# the log growing without bound in exactly the case the cap exists for. So a skip drops the record
+# instead. $script:diagRollSkip is how a skip is said: a script variable rather than a return value,
+# because this function is called as a bare statement from a script whose stdout is the status line
+# itself, so a returned value would print itself on the line the first time a caller forgot to capture
+# it. Losing a record to a holder is the same trade every other call in this file makes with a
+# filesystem that will not answer, and the right one for a diagnostic that is off by default and read
+# by a person - the more so because the caller says how many were lost, and why, in the next record it
+# does land.
+# The append itself is still not locked, which is what is left of the old approximation: renders that
+# each measure room for themselves at the same instant all append, so the file can pass the cap by up
+# to one record apiece. What it can no longer do is go on growing for as long as somebody holds a lock.
+# Anything that throws is Write-StatusDiag's to swallow, and nothing here reaches the pipeline.
 # $TimeoutMs is what is left of the record's clock, and now covers opening the lock as well as the
 # size read: both are filesystem calls, dispatched to the pool and bounded like every other one here.
 # The rename is the one call that stays unbounded; the caller decides whether the budget can afford
@@ -132,6 +144,11 @@ function Read-StdinText() {
 # it leaves behind.
 function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [int] $TimeoutMs) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    # Why the log was left over its cap, or $null when it was not left that way at all - rolled here,
+    # rolled by whoever held the lock a moment before, or gone from under both. The caller reads it
+    # immediately after the call and nowhere else, so it cannot be read stale; it is cleared here so
+    # that it could not be even if it were.
+    $script:diagRollSkip = $null
     $call = Get-StatusDiagDelegate $Path
     if ($null -eq $script:diagPendingLocks) { $script:diagPendingLocks = [System.Collections.Generic.List[object]]::new() }
     for ($i = $script:diagPendingLocks.Count - 1; $i -ge 0; $i--) {
@@ -147,30 +164,37 @@ function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [i
     }
     while ($script:diagPendingLocks.Count -gt 8) { $script:diagPendingLocks.RemoveAt(0) }
     $left = $TimeoutMs - [int] $sw.ElapsedMilliseconds
-    if ($left -le 0) { return }
+    if ($left -le 0) { $script:diagRollSkip = 'the record budget was spent before the rollover lock was tried'; return }
     $open = [System.Threading.Tasks.Task]::Run($call.Lock)
     if ([System.Threading.Tasks.Task]::WaitAny(@($open), $left) -lt 0) {
         $script:diagPendingLocks.Add($open)
+        $script:diagRollSkip = 'the rollover lock did not open inside the record budget'
         return
     }
     if (-not $open.IsCompletedSuccessfully) {
         # Held elsewhere is IOException on every platform this was checked on - Windows, and .NET
         # Core 3.1 and .NET 8 on Linux - and nothing else here throws that from a plain OpenWrite:
-        # no lock, no rollover, and the caller appends anyway, the zero-wait skip-on-contention trade
-        # #43 chose. Anything else - chiefly UnauthorizedAccessException, a lock file some other user
-        # left behind that this one cannot open at all, permanently rather than for as long as a
-        # holder lives - is a structural failure the same as a directory occupying .log.1, and is let
-        # through so the whole record is dropped rather than appended past the cap forever.
-        if ($open.Exception.InnerException -is [System.IO.IOException]) { return }
+        # no lock, no rollover, and no wait either, the zero-wait skip-on-contention trade #43 chose.
+        # The caller drops the record on the strength of the answer below (#93). Anything else -
+        # chiefly UnauthorizedAccessException, a lock file some other user left behind that this one
+        # cannot open at all, permanently rather than for as long as a holder lives - is a structural
+        # failure the same as a directory occupying .log.1, and is let through so the whole record is
+        # dropped by the caller's catch rather than appended past the cap forever.
+        if ($open.Exception.InnerException -is [System.IO.IOException]) {
+            $script:diagRollSkip = 'another render holds the rollover lock'
+            return
+        }
         throw $open.Exception.InnerException
     }
     $lock = $open.Result
     try {
         $left = $TimeoutMs - [int] $sw.ElapsedMilliseconds
-        if ($left -le 0) { return }
+        if ($left -le 0) { $script:diagRollSkip = 'the record budget was spent with the rollover lock held'; return }
         $size = [System.Threading.Tasks.Task]::Run($call.Length)
-        if ([System.Threading.Tasks.Task]::WaitAny(@($size), $left) -lt 0) { return }
-        # A faulted size is a file that is not there, so there is nothing to move.
+        if ([System.Threading.Tasks.Task]::WaitAny(@($size), $left) -lt 0) { $script:diagRollSkip = 'the size read inside the rollover did not answer'; return }
+        # A faulted size is a file that is not there, so there is nothing to move - and nothing for the
+        # caller to be held back by either, which is why these two leave the skip unset: the log is not
+        # over its cap when this returns, whoever it was that emptied it.
         if (-not $size.IsCompletedSuccessfully) { return }
         # Still over the cap with the lock held, so the render that would have rolled it has not.
         if ($size.Result + $Need -le $Cap) { return }
@@ -266,6 +290,17 @@ function Write-StatusDiag([string] $Reason) {
         # past 1000 characters is cut and marked. The cut comes after the escaping, so a reason made
         # long by notation is cut too and nothing can outgrow the cap by being escaped.
         if ($text.Length -gt 1000) { $text = $text.Substring(0, 1000) + ' [cut]' }
+        # What this process dropped at the cap since it last got a record down, carried by the first one
+        # that lands after them, so that a hole in the log says it is a hole and why rather than reading
+        # as a stretch where nothing happened. After the cut, so the note is never the part cut off, and
+        # in $text before $need is measured, so the bytes it adds are counted against the cap like the
+        # rest of the line. A render writes one record and exits, so it carries a note only when the
+        # same render was refused earlier in its own run; a process that drops and never writes again
+        # takes the count with it, and the only cheaper place to have put it is the very file that was
+        # full and locked at the time.
+        if ($script:diagDropped) {
+            $text += " [$($script:diagDropped) record$(if ($script:diagDropped -ne 1) { 's' }) dropped at the cap: $($script:diagDropWhy)]"
+        }
         $line = "$stamp $PID $text`n"
         $need = [System.Text.UTF8Encoding]::new($false).GetByteCount($line)
         $call = Get-StatusDiagDelegate $path
@@ -292,11 +327,26 @@ function Write-StatusDiag([string] $Reason) {
             #
             # What that leaves, said plainly: while a filesystem is slow enough to eat the reserve, the
             # log stops being written rather than growing, and it sits at its cap until a render with
-            # room to spare rolls it. It heals on its own once the filesystem does. The cap was already
-            # approximate because two renders can overlap; this is a second reason, and a skipped
-            # rollover whose size read timed out can leave the file a little over it.
+            # room to spare rolls it. It heals on its own once the filesystem does. That is the same
+            # answer a rollover that is entered and cannot take the lock gets just below, so the reserve
+            # is one more road to it rather than a hole beside it. This drop is not counted into the
+            # note the one below leaves, though: how briskly a filesystem answered would then decide the
+            # text of a later record, and putting timing inside the log's contents is the one thing
+            # every check on this file is built to avoid.
             if ($left -lt $limit.RolloverMs) { return }
             Invoke-StatusDiagRollover $path $need 4MB ([int] $left)
+            # The rollover was skipped and the log is still full, so this record is dropped rather than
+            # appended past the cap (#93). Dropping is what makes the cap a ceiling: a holder can be a
+            # render in another session or another user's account and can hold for as long as it lives,
+            # and appending through that is unbounded growth, where dropping through it costs the
+            # records that fell in the window and nothing else. The count and the reason are kept for
+            # the next record this process gets down; a render that has no next record is one line of a
+            # log that is off by default, which is the trade every other bounded call here makes too.
+            if ($script:diagRollSkip) {
+                $script:diagDropped = 1 + [int] $script:diagDropped
+                $script:diagDropWhy = $script:diagRollSkip
+                return
+            }
             $left = $budget - $sw.ElapsedMilliseconds
         }
         if ($left -le 0) { return }
@@ -307,6 +357,11 @@ function Write-StatusDiag([string] $Reason) {
         # Into the writer's buffer, which is memory: a record is far shorter than the buffer, so nothing
         # reaches the disk until the close below.
         $writer.Write($line)
+        # The note this record may have carried has been handed on, so the count starts again. Here
+        # rather than after the close: the line is in the writer's buffer, and a close that this call
+        # stops waiting for is still finished by a pool thread a beat later, so the bytes land either
+        # way. A close that never happens at all is a process that has gone, taking the count with it.
+        $script:diagDropped = 0
     } catch { $null = $_ } finally {
         # The close is what actually writes, so unlike the config read's close it is waited on - a record
         # nobody waited for could not be read back by the next line of a test or the next render. It is
