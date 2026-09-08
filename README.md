@@ -10,55 +10,42 @@ A PowerShell status line for [Claude Code](https://code.claude.com) on Windows. 
 
 Left to right: model, context meter, cache warmth, cost, session clock, lines changed, rate limits,
 session badges, the pull request, folder, and the branch with its change counts — the eleven segments
-that ship on by default. Each segment starts with a Nerd Font icon, which GitHub cannot show in text,
-so the rest of this file names the icons instead.
+that ship on by default.
 
 ![Two-line powerline layout](docs/statusline-two-line.png)
 
-The same data in the two-line powerline layout, with the twelfth segment - the wall clock, off by
-default - turned on too, so this is the one image that shows every segment at once. Both come from
-one script; a small JSON file picks the layout, the style, and which segments are on.
+The same data in the two-line powerline layout, with the twelfth segment, the wall clock, turned on.
 
 ## About
 
 Claude Code can hand its status bar to any command that reads a JSON payload on stdin and prints a
-line. The examples in its docs are bash scripts. This one is PowerShell 7. It needs a Nerd Font, or
-the `ascii` style where the font is not yours to set, and nothing else, and it installs into your
-user settings with one command. It shows the numbers you
-would otherwise have to go looking for: how full the context window is, what the session has cost,
-how close you are to a rate limit, and which modes are on.
+line. The examples in its docs are bash scripts. This one is PowerShell 7. It shows the numbers you
+would otherwise go looking for: how full the context window is, what the session has cost, how close
+you are to a rate limit, and which modes are on. It installs into your user settings with one command.
 
 ## Features
 
-- Context meter with a ten-block bar, percent, and used/total tokens. Green, then yellow, then red. A quieter `92% cached` after the counts says how much of the turn's input the prompt cache served, so a number that falls after an edit to a large file tells you why a small turn cost several cents.
-- Prompt cache warmth as `cache 42m`, yellow inside the last five minutes and a red `cache cold` once the window has lapsed, so you know whether to send a cheap keep-alive turn or take a break. A cache miss costs real money and real latency. The segment is not there at all on Claude Code versions that do not send the block.
-- Rate limits for the 5-hour and 7-day windows, with a countdown to the next 5-hour reset, and the spend limit when Claude Code reports one (accounts behind a Claude apps gateway with a spend limit).
-- Session cost and lines added or removed.
-- A session clock, `1h12m · api 38%`: how long you have actually been at this, and how much of it was spent waiting on the model rather than on everything around it. Dim, with no thresholds — a long session is not an error.
-- Badges for fast mode, extended thinking, effort level, and vim mode, then the custom agent driving the thread and the name given to the session. They disappear when nothing is on.
-- The branch's pull request as `#12`, green when approved and red when changes are requested. Ctrl-click it in Windows Terminal to open the PR.
-- Folder and git branch, with a home glyph on `main` and a pencil when the tree is dirty. Branch state comes from `git status` in the current directory, cached for a few seconds so most renders never start git. Ctrl-click the folder to open the directory, or the branch to open it on the repository host.
-- Counts beside the branch name: `↑N` `↓N` commits ahead of or behind the upstream, `+N` staged, `~N` changed, `?N` untracked, and the conflict triangle with a count when files are in conflict. See [Branch counts](#branch-counts).
-- A fork glyph and the worktree name beside the branch when the session is in a git worktree, so a window on `wt-review` is not mistaken for the main checkout. See [Worktree name](#worktree-name).
-- One line or two, plain separators or powerline blocks, and any segment switched off, all from `statusline.json`.
-- Every glyph has an ASCII stand-in: `"style": "ascii"` draws the whole line out of plain characters and keeps the colours, for a terminal whose font you cannot change. See [ASCII style](#ascii-style).
-- A light palette for a pale terminal background: `"palette": "light"` swaps every colour on the line for one that reads on white, in any of the three styles. `.\install.ps1 -DetectTheme` reads Windows Terminal's colour scheme and sets the key for you, or tells you it could not. See [Light palette](#light-palette).
-- Optionally, the context percentage on the window's taskbar button in Windows Terminal, so a full window is visible while Claude Code is minimised. Off by default; see [Taskbar progress](#taskbar-progress).
-- A matching line for each running subagent in the agent panel, with `.\install.ps1 -Subagents`, in the same style and palette as the bar. See [Subagent status line](#subagent-status-line).
-- A wall clock, off by default, and a `right` list that pushes any segments you name against the right edge of the first line — the time on the right of the prompt, the way a shell does it. See [Width fitting](#width-fitting) for what a narrow terminal does with it.
-- Fits the terminal width. A line that is too long first loses detail from the cost, limits, cache, context, branch, folder, badges and clock segments, then the right group, then whole segments from the right, so lines stop wrapping in normal use.
-- If a field is missing from the payload, the script drops that segment. If the payload will not parse, it still prints the model glyph.
-- Icons come from Unicode code points rather than pasted characters, so the file's own encoding cannot corrupt them.
-- The payload is decoded as UTF-8 whatever the console's code page is, so a branch, folder, model, agent or session name that is not English renders as it was sent rather than as mojibake.
-- No modules to install. PowerShell 7 and a Nerd Font are the whole dependency list, and the `ascii` style drops the font.
+- Context meter: a ten-block bar, the percentage, used/total tokens, and how much of the turn the prompt cache served (`92% cached`).
+- Prompt cache warmth as `cache 42m`, yellow in the last five minutes, red `cache cold` once it lapses.
+- Rate limits for the 5-hour and 7-day windows, a countdown to the next reset, a pace arrow, and the spend limit when Claude Code reports one.
+- Session cost with the change since the last turn, lines added and removed, and a session clock with the share spent waiting on the model.
+- Badges for fast mode, extended thinking, effort level and vim mode, then the custom agent and the session name.
+- The pull request as `#12`, green when approved, red when changes are requested. Ctrl-click opens it.
+- Folder and branch, with a home glyph on `main`, a pencil when the tree is dirty, ahead/behind and file counts, and the worktree name. Both are ctrl-clickable.
+- One line or two, plain separators or powerline blocks, any segment off, a `right` group, and a wall clock — all from `statusline.json`. A repository can pin its own layout.
+- `"style": "ascii"` draws the whole line in plain characters for a terminal whose font you cannot change; `"palette": "light"` recolours it for a pale background.
+- A matching row for each subagent in the agent panel, and optionally the context percentage on the taskbar button.
+- Fits the terminal width by shedding detail, then the right group, then whole segments, so lines stop wrapping.
+- Payload decoded as UTF-8 whatever the console code page, so non-English names render as sent. Missing fields drop their segment; a payload that will not parse still prints the model glyph.
+- No modules. PowerShell 7 and a Nerd Font are the whole dependency list, and `ascii` drops the font.
 
 ## Requirements
 
 - Windows 10 or 11
 - [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows) on your `PATH` as `pwsh`
 - Claude Code
-- A [Nerd Font](https://www.nerdfonts.com/) in your terminal. The installer can set up JetBrainsMono Nerd Font for you. Where the font is not yours to set, `"style": "ascii"` needs none — see [ASCII style](#ascii-style).
-- `git` on your `PATH` if you want the branch segment. Without it the segment is skipped and everything else still renders.
+- A [Nerd Font](https://www.nerdfonts.com/) in your terminal, or `"style": "ascii"` where the font is not yours to set. The installer can set up JetBrainsMono Nerd Font for you.
+- `git` on your `PATH` for the branch segment. Without it that segment is skipped and the rest renders.
 
 ## Installation
 
@@ -70,249 +57,46 @@ cd claude-code-statusline-ps
 
 Restart Claude Code, or wait for its next status refresh.
 
-### What the installer does
+The installer copies `statusline.ps1` and, unless one is already there, `statusline.json` into
+`~/.claude`, and adds a `statusLine` entry to `~/.claude/settings.json` with every other key kept and
+the previous version backed up beside it. The switches:
 
-- Copies `statusline.ps1` to `~/.claude/statusline.ps1`.
-- Copies `statusline.json` to `~/.claude/statusline.json` unless one is already there. If the repo copy is missing it warns and carries on. The script has the same defaults built in.
-- Adds a `statusLine` entry to your user-level `~/.claude/settings.json`. It keeps every other key and keeps a copy of the previous version first, at a project-owned backup name rather than the generic `settings.json.bak` (see [Uninstall](#uninstall)).
-- Sets `hideVimModeIndicator` inside that entry. The badges segment already shows the vim mode, so Claude Code's own indicator would be the same word twice on one bar.
-- With `-RefreshInterval <seconds>`, sets `refreshInterval` inside that entry so Claude Code re-renders the line on a timer as well as on events. Without the switch the key is not written. A value below 1 is refused and nothing is written.
-- With `-Subagents`, also copies `subagent-statusline.ps1` to `~/.claude/` and adds a `subagentStatusLine` entry. See [Subagent status line](#subagent-status-line).
-- With `-Style plain|powerline|ascii` or `-Palette dark|light`, writes that key into `~/.claude/statusline.json`, keeping every other key, and carries the same value into the `subagentStatusLine` command. Leave them out and both come from the file as it already stands.
-- With `-InstallFont`, installs JetBrainsMono Nerd Font through winget. Expect one elevation prompt.
-- With `-ConfigureWindowsTerminal`, sets Windows Terminal's default font to `JetBrainsMono NF` and keeps a copy of its settings first, the same project-owned backup treatment as `settings.json` gets.
-- With `-DetectTheme`, reads Windows Terminal's default colour scheme and writes `"palette": "dark"` or `"palette": "light"` into `~/.claude/statusline.json`, keeping every other key. It prints the scheme it found, that scheme's background and the palette it chose. When it cannot tell — no Windows Terminal, no default profile, a scheme it has no background for, or a profile set to follow the OS light/dark theme — **it writes nothing and says why**, because the palette already defaults to `dark` and a wrong guess of `light` would leave the line unreadable. `-Palette` outranks it, and it still prints what it found. Without any of the three, `statusline.json` is not touched. See [Light palette](#light-palette).
+| Switch | What it does |
+|---|---|
+| `-InstallFont` | Installs JetBrainsMono Nerd Font through winget. Expect one elevation prompt. |
+| `-ConfigureWindowsTerminal` | Sets Windows Terminal's default font to `JetBrainsMono NF`, backing its settings up first. |
+| `-DetectTheme` | Reads Windows Terminal's colour scheme and writes `palette` into `statusline.json`. When it cannot tell, it writes nothing and says why. |
+| `-Style plain\|powerline\|ascii`, `-Palette dark\|light` | Writes that key into `statusline.json` and carries it into the agent panel's command. |
+| `-RefreshInterval <seconds>` | Re-renders on a timer as well as on events. Needed for the wall clock and the taskbar bar; a reinstall without it drops the key. |
+| `-Subagents` | Installs the agent panel script and its `subagentStatusLine` entry. See [The agent panel](docs/agent-panel.md). |
+| `-Uninstall` | Removes the entries and the scripts, keeps the font and `statusline.json`, and leaves any file that is not this project's alone. |
 
-The settings entry it writes after `.\install.ps1 -RefreshInterval 10`:
+Any Nerd Font works. In VS Code, ConEmu or another terminal, set the font yourself and skip
+`-ConfigureWindowsTerminal`. What each switch writes, the settings entry, the backup names and the
+ownership rules are in [docs/installer.md](docs/installer.md).
 
-```json
-"statusLine": {
-  "type": "command",
-  "command": "pwsh -NoProfile -NoLogo -NonInteractive -File \"C:/Users/<you>/.claude/statusline.ps1\"",
-  "padding": 0,
-  "hideVimModeIndicator": true,
-  "refreshInterval": 10
-}
-```
-
-The path uses forward slashes on purpose. Claude Code may run the command through Git Bash, which
-strips backslashes. It is double-quoted for the same kind of reason: a profile with a space in it,
-such as `C:/Users/Jane Doe`, would otherwise end the `-File` argument at the space. See
-[Subagent status line](#subagent-status-line) for the one case the quoting cannot cover.
-
-`refreshInterval` is what keeps a clock, or a taskbar bar driven by the context percentage, moving
-between events. Nothing that is drawn on the line itself needs it, so the installer only writes it when
-asked; the one feature that does want it is [Taskbar progress](#taskbar-progress). A reinstall without
-the switch writes an entry without the key. Pass the switch again to keep it.
-
-`-SettingsPath <file>` changes only which settings file is edited. The `statusline.ps1` and
-`statusline.json` copies, and the delete on `-Uninstall`, still use `~/.claude`. It exists for the
-test suite, which points it into a temp folder.
-
-### Subagent status line
+### The agent panel
 
 ```powershell
 .\install.ps1 -Subagents
 ```
 
-Claude Code shows a panel of the subagents a session is running, and `subagentStatusLine` is a second
-command that draws the row for each of them. `subagent-statusline.ps1` prints one short line per
-subagent in the same visual language as the main bar: the robot glyph, the agent's name, and how full
-its context window is.
+Claude Code shows a panel of the subagents a session is running. `subagent-statusline.ps1` draws one
+row per subagent: the robot glyph, the agent's name, and how full its context window is.
 
 ```
 󰚩 Explore  24%  48k
 󰚩 general-purpose  91%  182k
 ```
 
-The contract is not the one the main status line uses. Claude Code runs the command once for the
-whole panel, hands it every live row in a single payload, and expects one JSON object per line back,
-`{"id": ..., "content": ...}`, keyed by the task id. So the script loops over `tasks` and answers for
-each one. A row that cannot be rendered falls back to the glyph alone; a payload that will not parse
-prints nothing, because a bare glyph is not JSON and the panel would only log it and drop it.
-
-The identity is the agent's registered name, or its label, description or type when there is no name.
-The progress is the context percentage, coloured green, yellow and red on the same 60 and 85 bands the
-context segment uses, 70 and 90 on a 1M window, then the token count. A task with no window size shows
-its status word instead. When the payload's `columns` value leaves too little room, the name is
-clipped with an ellipsis before any figure is dropped, and the glyph is never dropped, so a row never
-wraps the panel. A `columns` of exactly `0` is the panel saying it has no room at all, and nothing is
-printed for it; a `columns` that is missing or malformed says nothing about the width, so the row
-renders in full and the terminal decides.
-
-There is no config file and no git probe: a panel row is not a full-width bar, and a git probe per row
-per tick is too much for something that ticks every five seconds.
-
-#### Style and palette in the panel
-
-The panel has no config file to read — the command runs once per tick for the whole panel, and that
-read is exactly what the status line's own config path had to be bounded and made cheap to survive. So
-the two settings that decide how a row is *drawn* ride on the command instead, and the installer bakes
-in the pair the status line itself will use:
-
-```json
-"subagentStatusLine": {
-  "type": "command",
-  "command": "pwsh -NoProfile -NoLogo -NonInteractive -File \"C:/Users/<you>/.claude/subagent-statusline.ps1\" -Style ascii -Palette light"
-}
-```
-
-`-Style` takes the same three values as the `style` key and `-Palette` the same two as `palette`.
-`ascii` draws the row's glyph and the tail on a clipped name in printable ASCII — `@ Explore  24%  48k`
-rather than `󰚩 Explore  24%  48k` — and `light` swaps the colour numbers for the light table's, so a
-pale terminal gets a readable panel under its readable bar. `plain` and `powerline` draw the same row:
-the panel has no separators between segments, which is the whole of what `powerline` changes on the
-main line, and it accepts the value anyway so the installer can pass `style` through unchanged.
-
-Where the pair comes from, highest first: `-Style` and `-Palette` on the installer, then the palette
-`-DetectTheme` worked out, then the `style` and `palette` already in `~/.claude/statusline.json`, then
-`plain` and `dark`. So editing `statusline.json` and running `.\install.ps1` again is what carries a
-change into the panel — any run of it, not only `-Subagents`: the installer refreshes a panel entry it
-recognises as its own, and `-Subagents` is only what creates one. It is fixed until then, which is the
-shape of the setting rather than a shortcut: a font belongs to the terminal and a background to its
-colour scheme, and neither of those changes between sessions.
-
-**Two things in that file the panel does not follow.** The installer reads the literal `style` and
-`palette` keys of your own `~/.claude/statusline.json`. A [preset](#presets) stands for a style without
-naming one, so it does not reach the panel; and a repository's own `.claude/statusline.json`, which the
-status line merges over yours per project (see [Configuration](#configuration)), does not either. Today the first
-changes nothing that is drawn, because all three presets name `plain` or `powerline` and the panel
-draws those the same. The second cannot be followed at all: one command serves the whole session, so
-there is no per-project answer for it to carry. Name `style` and `palette` in your own file if you want
-the panel to follow them. The same read also ignores a `statusline.json` over 64 KiB — so does the
-status line, so both fall back to the defaults together.
-
-**The command line is the installer's, not a place to configure this.** Change `style` or `palette` in
-`statusline.json` and run the installer again. Editing the command by hand has two failure modes the
-panel cannot defend against: an argument left half-typed — `-Style` with nothing after it — fails
-PowerShell's parameter binding *before* the script runs, so its error goes where the panel expects JSON
-and **every row goes blank**, not just the one argument; and an entry edited into a shape the installer
-does not recognise is one `-Uninstall` walks past and leaves behind.
-
-A value the panel does not know — from a command line edited by hand — falls back to the default and
-the row still renders. There is no `ValidateSet` on those parameters on purpose: a binding failure
-would print a PowerShell error where the panel expects JSON, and take every row down with it rather
-than the one argument that was mistyped.
-
-The entry the installer writes with no switches, and with `statusline.json` at its shipped values:
-
-```json
-"subagentStatusLine": {
-  "type": "command",
-  "command": "pwsh -NoProfile -NoLogo -NonInteractive -File \"C:/Users/<you>/.claude/subagent-statusline.ps1\" -Style plain -Palette dark"
-}
-```
-
-Both arguments are always written, defaults included: the command then says what the panel draws
-rather than leaving it to whatever the panel's own defaults happen to be in a later version.
-
-`padding` and `hideVimModeIndicator` are left out on purpose: the setting's schema is `type` and
-`command` only. The path is double-quoted, and so is the one in the `statusLine` entry, because a
-profile such as `C:/Users/Jane Doe` would otherwise end the `-File` argument at the space and the
-command would never run. Double quotes are the one form both cmd and Git Bash honour, and every
-character Windows forbids in a path is one that could break out of them. A `$` or a backtick is legal
-in a Windows path and still expands inside Git Bash's double quotes, so the installer warns about
-those two rather than writing a command that quietly does the wrong thing.
-
-`tools/capture-stdin.ps1` is there if you want to see a payload for yourself. Point
-`subagentStatusLine` at it instead, run a session with a few subagents, and read the file it appends
-to. It prints nothing on stdout, so the panel renders as if the key were not set.
-
-It is bounded in three places, because a capture command left in place ticks every five seconds
-forever. Stdin is read to a ceiling rather than to the end, so one enormous payload cannot be pulled
-into memory whole. The record is then cut to fit `-MaxBytes` (1 MiB by default) on its own, with
-` ...[truncated]` marking where. And the file is rotated over a single `.1` sibling when what is
-already there plus this record would go over, so each of the two generations stays at or under the cap
-rather than one of them ending up above it. The append runs under a lock on a `.lock` sibling so two
-ticks cannot interleave a rotation with an append; a tick that cannot get the lock drops its payload.
-If a write fails, the reason goes to stderr and to a `.error` sidecar once, and capture stops until
-you delete that sidecar.
-
-### Other terminals
-
-Any Nerd Font works. If you run Claude Code inside VS Code, ConEmu, or another terminal, set that
-terminal's font to a Nerd Font yourself and skip `-ConfigureWindowsTerminal`.
-
-### Uninstall
-
-```powershell
-.\install.ps1 -Uninstall
-```
-
-This removes the whole `statusLine` entry, `hideVimModeIndicator` and `refreshInterval` with it, and
-deletes `~/.claude/statusline.ps1`. Fonts and `~/.claude/statusline.json` stay.
-
-It removes `subagentStatusLine` and `~/.claude/subagent-statusline.ps1` too, without needing
-`-Subagents` again, but only when they are this project's. The subagent line is opt-in, so those two
-names may well be something you set up yourself.
-
-The key counts as ours only when the whole `command` is the form the installer writes: `pwsh`, then
-only the switches it passes, then `-File`, then one more argument that *is* the path to
-`~/.claude/subagent-statusline.ps1`, and after it only the panel's own `-Style` and `-Palette` — each
-at most once, in either order, with a value the panel has — and then the end of the command. A command
-that merely mentions that path somewhere — as an argument to a wrapper, in a comment, behind a `&` — is
-not ours and is kept, because it never runs our script. So is one that runs our script with anything
-else attached: `-Style neon`, a second `-Style`, a `-Style` with nothing after it, or any switch this
-installer does not write. An entry written before the arguments existed, with nothing after the path,
-is still recognised.
-
-The file counts as ours only when the marker line `# claude-code-statusline-ps:subagent-statusline`
-appears as a whole line of its own within the first ten lines. The token turning up inside some other
-line, in a string literal or in a trailing comment does not count.
-
-`-Subagents` applies the same rule on the way in: it refuses to install over a
-`~/.claude/subagent-statusline.ps1` that is not ours, rather than overwriting it. When it does replace
-one of ours it keeps the previous version as `~/.claude/.claude-code-statusline-ps.subagent-rollback.ps1`
-— a name carrying this project's id, not a `.bak` beside the script, because a `.bak` is a name your
-own tooling might already be using and this file is written and deleted without being asked. Even at
-that name the marker is checked before it is overwritten or removed, so a file there that is not ours
-survives both a reinstall and an uninstall.
-
-Both entries leave in one write, so the backup below still holds them as they were. Every settings
-write runs under an exclusive lock on `settings.json.lock`, goes to a uniquely named file beside the
-real one, and is then moved over it.
-
-That backup is not `settings.json.bak` either, for the same reason the subagent rollback copy is not
-`subagent-statusline.ps1.bak`: that name is one your own tooling might already be using for the same
-file, and every settings write overwrites it without being asked. It is kept instead at
-`settings.json.claude-code-statusline-ps-rollback`, and JSON has no comment syntax to carry a marker
-line the way a `.ps1` file does, so the marker lives beside it — a small `.sha256` sidecar recording the
-hash of the backup this installer last wrote. Before that backup is ever overwritten, the sidecar is
-checked against the backup file's actual content; a mismatch or a missing sidecar means the file at that
-name is not this installer's, and it is left alone with a warning naming why, rather than replaced. (A
-sidecar with no backup beside it is not the same thing: nothing else ever writes that exact name, so a
-leftover one — from a backup deleted by hand, say — does not block the next write.) The backup itself is
-written to a temporary sibling and hashed before it ever takes the real name, and a write that fails
-partway leaves the previous backup exactly as it was rather than a half-replaced one. `-Uninstall`'s own
-settings write leaves a backup the same way, and names it in the output alongside the kept
-`statusline.json`.
-
-The settings write itself goes ahead either way — losing the ability to roll back is a smaller harm than
-overwriting a file that was never this installer's. `-ConfigureWindowsTerminal` backs up Windows
-Terminal's `settings.json` the same way, at `settings.json.claude-code-statusline-ps-rollback` beside it,
-in place of the old `settings.json.bak-before-nerdfont` — but there the font change itself is refused,
-not merely warned about, when that backup cannot be taken: a font with no way back is not something this
-installer offers silently.
-
-What that gets you, stated no more strongly than it holds. An interrupted or failed write leaves the
-previous settings intact rather than a truncated file. The lock serialises this installer against
-anything else that takes the same lock, and does nothing about a writer that does not take it, because
-a cooperative lock cannot exclude a process that ignores it. The file is compared with what the
-installer read twice — when the lock is taken, and again immediately before the rename — so a change
-that lands before that second check is refused. A change that lands in the gap between that check and
-the rename, which only a writer ignoring the lock can manage, is replaced; the content it replaced is in
-that backup, when there was one to take and the backup name was this installer's to write. Closing that
-gap would need a compare-and-swap the filesystem does not offer, or a lock every writer honours.
-
-An installer from before this backup name changed may have left a `settings.json.bak` or a
-`settings.json.bak-before-nerdfont` behind. Neither is read, written or deleted by this version — they
-are not part of any restore path, only ever a copy for you to look at by hand — so they are simply left
-where they are; delete them yourself once you no longer need them.
+The panel reads no config file, so its style and palette ride on the command the installer writes,
+taken from your own `statusline.json`. Change the key and run the installer again to carry it into the
+panel. The contract, the precedence, and what the panel does not follow are in
+[docs/agent-panel.md](docs/agent-panel.md).
 
 ## Configuration
 
-The script reads `statusline.json` from its own folder, so after installing that is
-`~/.claude/statusline.json`. The installed file holds the defaults:
+The script reads `~/.claude/statusline.json`. The installed file holds the defaults:
 
 ```json
 {
@@ -326,762 +110,129 @@ The script reads `statusline.json` from its own folder, so after installing that
   "thresholds": { "warn": 60, "bad": 85 },
   "alarm": { "context": 90, "limits": 90 },
   "icons": {},
-  "git": {
-    "timeoutMs": 1500,
-    "cacheSeconds": 5,
-    "cache": true
-  },
+  "git": { "timeoutMs": 1500, "cacheSeconds": 5, "cache": true },
   "segments": {
-    "model": true,
-    "context": true,
-    "cache": true,
-    "cost": true,
-    "clock": true,
-    "lines": true,
-    "limits": true,
-    "badges": true,
-    "pr": true,
-    "folder": true,
-    "branch": true
+    "model": true, "context": true, "cache": true, "cost": true, "clock": true, "lines": true,
+    "limits": true, "badges": true, "pr": true, "folder": true, "branch": true
   }
 }
 ```
 
-The file leaves `order` and `rows` out on purpose: without them the segments come in the script's own
-order, and a segment added by a later release appears on its own. The installer keeps an existing
-`statusline.json`, so a file that spells the order out would pin it. `quiet` and `right` are left out
-for the same reason: every threshold in `quiet` defaults to zero, which hides nothing, and `right`
-defaults to empty, which moves nothing. `segments` lists eleven names and not twelve because the
-twelfth, `time`, is the one segment that is off by default — writing it in with a `false` beside it
-would say the file had an opinion about it, and it does not.
-
-A repository can pin its own look. When the payload names a project directory, the script reads
-`<project>\.claude\statusline.json` as well and merges it over the user file. The merge is per key, so
-a project file of `{"layout": "two"}` keeps every user segment toggle, and one of
-`{"segments": {"cost": false}}` turns off cost and leaves the other nine alone. Precedence runs
-built-in defaults, user file, project file, and a value the project file gets wrong falls back to the
-value beneath it rather than to the built-in default. A project with no `.claude\statusline.json`
-changes nothing, and so does an unreadable one. `-Config <path>` is the exception: it replaces the user
-file and skips the project file, so a render with it is the same whatever directory the payload names.
-
-The agent panel follows none of this. It takes its style and palette as arguments the installer bakes
-in from your **own** file, so a project file changes the bar in that repository and leaves the panel
-where it was. See [Style and palette in the panel](#style-and-palette-in-the-panel).
+A config needs only the keys it changes. A repository can add its own `.claude/statusline.json`,
+merged over yours key by key. Anything missing or invalid falls back to the value beneath it, silently.
 
 | Key | Values | What it does |
 |---|---|---|
-| `preset` | `minimal`, `cost`, `full` | A name for a layout, a style and the whole set of segment toggles, listed below. Every other key in the same file is applied over it, so a preset is a starting point rather than a lock. A name none of the three has, or a value that is not a string, changes nothing. |
-| `layout` | `one`, `two` | `two` puts model, folder, branch, pr, badges and time on the first line and context, cache, limits, cost, clock and lines on the second, unless `rows` says otherwise. |
-| `style` | `plain`, `powerline`, `ascii` | `plain` is coloured text with a dim chevron between segments. `powerline` is coloured blocks joined by solid arrows. `ascii` is `plain` with every character drawn from printable ASCII and a `>` between segments, for a terminal whose font you cannot change. See [ASCII style](#ascii-style). |
-| `palette` | `dark`, `light` | Which colour table the line is drawn with. `dark` is what the line has always been and stays the default, so nothing changes until you ask. `light` swaps every colour for one that reads on a pale background. **This is a separate key from `style`, not a fourth style**: `style` is the shape of the line and `palette` is the colours it is drawn in, so all six pairings work — `ascii` with `light` is the ASCII characters in the light colours. `.\install.ps1 -DetectTheme` can set it for you. See [Light palette](#light-palette). |
-| `folder` | `repo`, `leaf` | `repo` shows `owner/name` from `workspace.repo` when the payload has one, with the current directory's name after a `›` when it differs from the project root. `leaf` always shows the directory name alone. |
-| `segments.<name>` | `true`, `false` | `false` hides that segment. The names are the ones in the file above, plus `time`, the wall clock, which is the one segment off by default and so is not written there; `segments.pr` is the pull-request link. |
-| `state` | `true`, `false` | `false` stops the script writing a state file for the session. |
-| `links` | `true`, `false` | `false` turns off the OSC 8 hyperlinks on the folder, branch and pull-request segments. One key covers all three, because the reason to turn them off is never a segment: it is a terminal that prints the escape as text instead of rendering or swallowing it. The links add no width, so the line fits the same either way. |
-| `taskbar` | `true`, `false` | `true` draws the context percentage on the window's taskbar button, so how full the window is stays readable while Claude Code is minimised. Green below the `alarm` level and red at or above it, using the same alarm the model segment uses, so a rate limit at its level colours the bar too while the number stays the context window's. A render with no percentage to show — a session before its first API response, or a payload the script could not read — clears the bar rather than leaving the last one lit. Set it in your own `statusline.json` rather than a project's: a payload that will not parse names no project directory, so a project-only value is not read on the one render that most needs to clear the bar. Off by default, and see [Taskbar progress](#taskbar-progress) below before turning it on: Claude Code writes to the same taskbar button. |
-| `order` | `["model", "branch", "context"]` | The segments of layout `one`, left to right. A segment left out is not shown, an unknown name is skipped, a repeat keeps its first place. Left out altogether, as the installed file leaves it, the segments come in the script's order, new ones included. An empty list, a list naming no segment, or anything that is not a list does the same. |
-| `rows` | `[["model", "branch"], ["context", "cost"]]` | The two lines of layout `two`, with the same rules per row. A segment named on the first row is not repeated on the second, and a row may be empty. Left out, the script's own two rows apply, new segments included. Anything but exactly two lists, or two lists naming no segment, does the same. |
-| `right` | `["time"]` | The segments pushed flush against the right edge of the **first** line, in the order given, with spaces filling the gap. Everything else stays packed against the left. Empty by default, and empty means the line you already have — no padding is added to a line with nothing to push against. The names are read like `order`'s: unknown skipped, repeats keep their first place, and a name whose segment is switched off simply leaves the group empty. Unlike `order` and `rows` an empty list is *kept* rather than falling back, so a project file can take back a group the user file asked for. Row two of layout `two` is never aligned, and with `COLUMNS` unset there is no width to align to, so the named segments render inline in their ordinary places. **A right group is the first thing a narrow line loses**: see [width fitting](#width-fitting) below. |
-| `thresholds` | `{ "warn": 20, "bad": 40 }` | Where the context meter and the rate limits turn yellow and red: whole numbers from 0 to 100 (`20` or `20.0`, not `20.5`), `warn` no higher than `bad`. Either value wrong keeps both as they were: the user file's pair under a bad project file, or the built-in 60 and 85. A 1M window keeps its own 70 and 90. |
-| `alarm` | `{ "context": 90, "limits": 90 }` | Where the model segment itself turns red: `context` is read against `context_window.used_percentage` and `limits` against the higher of the 5-hour and 7-day figures. Whole numbers, each read on its own, so a file naming one leaves the other at 90. `0` turns that alarm off, a negative counts as `0`, and a number above 100 is kept as written and fires only if the payload reports a figure that high — which a context window never does, since the meter clamps to 100, and a rate limit can, since a limit really at 105% is left unclamped to say so. The spend limit is a billing ceiling rather than a rate and raises no alarm; neither does a percentage that is missing or null, which is what a session sends before its first API response. What is compared is the whole number the segments print, rounded half to even, so the meter and the model can never disagree about whether 90% has been reached: at 89.6 the meter reads 90% and the alarm fires. The alarm reads the percentage whatever the window size, so on a 1M window it fires at the same figure as the window's own fixed 90 band. |
-| `quiet` | `{ "cost": 1.00, "context": 30, "limits": 50 }` | The smallest value a segment is worth showing at: dollars for `cost`, percent for `context`, and percent for `limits` against the larger of the 5-hour and 7-day figures (the spend limit is not one of them, and a payload carrying only a spend limit is never hidden here). Below it the segment is not built at all, so it takes no room and has nothing to shed at a narrow width. **Quiet never hides a segment that is carrying a warning, an error or an alarm**: a context meter or a limits segment already yellow or red stays whatever the threshold says, so does a 5-hour figure whose pace arrow projects an overrun — which is the case that matters most, because a low percentage early in a window is exactly the one that projects red — and so does a figure at or above its `alarm` level, since `alarm` may be set below `thresholds.warn` and a red model segment with no number under it explains nothing. `cost` has no warning state of its own and no alarm is read against a dollar figure, so there its threshold is the whole story. Fractions are allowed, a negative counts as zero, and the test is on the raw figure rather than the printed one, so `"cost": 1.00` hides a cost of 0.996 even though it would have printed `$1.00`. The default is `0` everywhere, which hides nothing; a value that is not a number leaves that one name at `0` and the other two alone. There is deliberately no `quiet.cache`: three of that segment's four states are the warning, and the fourth is a countdown whose whole value is being on the line before it turns yellow, so there is no boring number there for a threshold to hide. |
-| `icons` | `{ "model": "F0E7", "home": "U+2302" }` | Swaps a glyph for the code point given as hex, with `U+` or `0x` and leading zeros allowed in front. Names: `model`, `context`, `cache`, `cost`, `clock`, `time`, `folder`, `chevron`, `branch`, `worktree`, `home`, `dirty`, `ahead`, `behind`, `conflict`, `pr`, `lines`, `limits`, `fast`, `think`, `effort`, `vim`, `agent`, `session`. A name the list does not have, or a value that is not a single printable glyph, keeps the built-in one. To count as a glyph a code point has to be inside Unicode, not a surrogate half and not a noncharacter, one or two cells wide, and none of: a control (`A` is a newline, `1B` a bare escape), a format character (`202E` is a right-to-left override, `200D` a zero-width joiner), a line or paragraph separator, a space, or a combining mark. Private use is where the Nerd Font glyphs live, so it is allowed. Ignored entirely under `"style": "ascii"`, which promises that every glyph the script chooses is printable ASCII and a code point is the one thing that cannot keep it. |
-| `git.timeoutMs` | `100` to `10000` | How long the branch segment waits for `git status`, in milliseconds, before it gives up and leaves the segment out. A value outside the range is clamped to it. |
-| `git.cacheSeconds` | `0` to `300` | How long a `git status` result is reused for, in seconds, before git is asked again. `0` asks git on every render. Clamped like `timeoutMs`. |
-| `git.cache` | `true`, `false` | `false` asks git on every render, whatever `cacheSeconds` says. |
+| `preset` | `minimal`, `cost`, `full` | A named layout, style and segment set. Every other key in the file is applied over it. |
+| `layout` | `one`, `two` | One line, or model/folder/branch/pr/badges on the first and the figures on the second. |
+| `style` | `plain`, `powerline`, `ascii` | Coloured text with a chevron, coloured blocks with arrows, or printable ASCII throughout. |
+| `palette` | `dark`, `light` | The colour table, separate from `style`; all six pairings work. |
+| `folder` | `repo`, `leaf` | `owner/name › dir` from the payload's repository, or the directory name alone. |
+| `segments.<name>` | `true`, `false` | Turns a segment off. `time`, the wall clock, is the one that is off by default. |
+| `order`, `rows` | lists of names | The segments of layout `one`, or the two rows of layout `two`. Left out, the script's order applies, new segments included. |
+| `right` | `["time"]` | Segments pushed against the right edge of the first line. The first thing a narrow line loses. |
+| `thresholds` | `{ "warn": 60, "bad": 85 }` | Where the meter and the limits turn yellow and red. A 1M window keeps its own 70 and 90. |
+| `alarm` | `{ "context": 90, "limits": 90 }` | Where the model segment itself turns red. `0` turns that alarm off. |
+| `quiet` | `{ "cost": 1.00, "context": 30, "limits": 50 }` | The smallest value a segment is worth showing at. Never hides a warning or an alarm. |
+| `icons` | `{ "home": "U+2302" }` | A code point per glyph name. Ignored under `ascii`. |
+| `state`, `links`, `taskbar` | `true`, `false` | The per-session state file, the OSC 8 hyperlinks, and the taskbar bar (off by default). |
+| `git.timeoutMs`, `git.cacheSeconds`, `git.cache` | `100`–`10000`, `0`–`300`, boolean | How long to wait for `git status`, how long to reuse its answer, and whether to. |
 
-### How the config files are read
+Presets: `minimal` is model, context, folder and branch; `cost` adds cache, cost, clock, lines and
+limits; `full` is everything on two powerline rows. The whole file can be `{"preset": "minimal"}`.
 
-**Both config files are read under the same budget: 64 KiB and 250 ms.** One clock covers every step of
-one file — the open, the size, each read and the close at the end — and it starts before the first
-filesystem call. The clock is per file, and the two are read one after the other, so a machine where
-both are unreachable spends up to 500 ms and not 250. If the budget goes by the attempt is abandoned and
-the config beneath it stands, silently, the way a bad value does. Silently on the line, that is — every
-one of those refusals names itself in the diagnostics log below, so a config that is being ignored can
-say why. The budget is not a judgement about who wrote the file: it is about a filesystem that does not
-answer, and a home directory on a dead network share hangs a render exactly the way a project directory
-on one does.
+When a line is too long it loses detail first (the cost delta, the limits countdown, the branch
+counts, and so on), then the right group, then whole segments from the right. The model segment
+always stays, and turns red at the `alarm` level so a full window is visible at any width.
 
-**What a miss looks like on screen: that render draws the built-in defaults.** There is no cache of the
-last config that worked, so if your own `statusline.json` takes longer than 250 ms to read — an
-anti-virus scan of a file just saved, a cloud-sync client hydrating it, a disk spinning up — that one
-render is a plain, one-row line, and the next one is back to normal. A visible flicker is the price of
-never waiting; a render that hangs would have cost the line altogether.
+Every key in full, how the two config files are read (each under a 64 KiB and 250 ms budget), the
+fitting order, the state file and the git cache: [docs/configuration.md](docs/configuration.md).
 
-What separates the two files is trust, and it comes to one extra check. The project file arrives with
-the repository rather than from you, so it is opened first and then judged by the handle: a handle that
-cannot seek is a device or a pipe rather than a file, and the size that has to fit under 64 KiB is the
-one the handle reports, not one read off the path beforehand. A link or another reparse point is refused
-as well. Your own file skips only that last check, so a `statusline.json` symlinked out of a dotfiles
-repository still loads — you chose that link, and a repository did not.
+### Styles and palettes
 
-Your file is read as bytes rather than through `Get-Content`, and the bytes are decoded by the same
-class `Get-Content` decodes with, so the answer is the same one: UTF-8 with or without a mark, UTF-16 in
-either byte order, UTF-32 in either byte order, and no mark means UTF-8. A config saved as UTF-16 by an
-editor keeps working. This is why the file was left unbounded when the project file was bounded, and it
-is what closing that gap needed first. A file another program is holding open *for writing* — an editor
-between its truncate and its flush, a sync client — is read too, rather than being refused for the
-moment that program holds it.
-
-A relative `-Config` path means what PowerShell means by it, not what the process working directory
-means: those two part company after a `Set-Location`, so the path is resolved against your session
-before anything opens it. A path PowerShell cannot resolve at all falls back to the built-in defaults
-and says so in the log.
-
-A project directory with no `.claude\statusline.json` — the usual case if you keep no per-project
-config — costs one attempted open on the thread pool and nothing else: no attribute probe, no read and
-no close. It is not free, and cannot be: the deadline is the reason the open is dispatched rather than
-made here, and a cheaper check made first would either block on the render's own thread or cost a
-dispatch of its own and reopen the gap between asking about a name and opening it. Your own file costs
-an open, a size and two reads on every render, which is what reading it has always cost. `test.ps1`
-counts those operations rather than timing them, so the shape is pinned and the count cannot drift.
-
-What that buys is a bound on these two reads, not on the machine. Abandoning is literal: a thread can
-stay stuck behind a hung open until the process exits, and a file left open that way is not closed on
-the way out, because closing it would wait on the same thing. The status line renders and exits without
-either. What the bound still does not cover, said plainly rather than rounded off: a filesystem sick
-enough to hang calls these reads never make can hold a render up somewhere else. Every other filesystem
-call a render can make is audited in a comment beside `Read-BoundedFileText` in `statusline.ps1`, with a
-decision recorded for each. The diagnostics log has a clock of its own. The probe cache entry and the
-session state file are read under the config budget, because each was one existence test and one read —
-the same shape, so the same fix. `git status` is a child process under its own timeout — which covers
-the child, and not the `Test-Path` and the walk for a `.git` directory that come before it. Those and
-the ref stamps are deliberately unbounded: they are many calls of several shapes rather than the one
-open and one read a config takes, so a budget there would cost more than the case it guards. That is a
-decision about cost and not a claim that they cannot hang — a project directory on a dead share can hold
-a render up in the walk before the git timeout applies to anything.
-
-### Width fitting
-
-Claude Code sets `COLUMNS` before running the script, and the line is fitted to one column less than
-that so the terminal never sits on a pending wrap. Too long a line loses things in three stages, and
-never in a different order:
-
-1. **Detail.** Segments with a short form swap to it, in this order: cost, limits, cache, context,
-   branch, folder, badges, clock. What each one sheds: cost loses the per-turn delta; limits keeps
-   only the figure that drives its colour (the worst one when it is yellow or red, otherwise the
-   first one present) and drops the countdown and the pace arrow; cache loses the word and keeps the
-   glyph and the value; context loses the token counts and the cached share; branch loses every
-   count and the worktree name; folder keeps the repository name alone; badges keeps the mode badges
-   and sheds the agent and session names; the clock loses its `api` share.
-   This reaches into the right group too — a short form is detail shed, and which side of the line the
-   segment sits on says nothing about whether that detail is worth losing.
-2. **The right group**, last name in the list first, until it is empty or the two groups fit with at
-   least one space between them. A segment pushed to the edge is decoration, so the whole group goes
-   before one packed segment does — and it goes rather than moving back inline, since re-inlining it
-   would make the line wider. This is the trade to know about before setting `right`: on a narrow
-   terminal, or a busy line, the clock is the first thing you stop seeing.
-3. **Whole segments** from what is left, in this order: time, lines, clock, cache, badges, cost,
-   limits, pr, folder, branch, context.
-
-The model segment is never shortened and never dropped, which is why the `alarm` colour rides on it: at
-any width there is still a red line saying the window is full. If it will not fit on its own it
-overflows, because a status line with nothing on it says less than one that is too long.
-
-With `COLUMNS` unset none of this runs — nothing is measured, nothing is shed, and there is no right
-group either, so every segment renders inline in its ordinary place.
-
-### Presets
-
-Turning five segments off by hand is the first edit most people make, so the three usual shapes have
-names. The whole file can be `{"preset": "minimal"}`.
-
-A preset sets a style without naming one, and the installer reads the `style` key rather than the
-preset, so a preset does not reach the agent panel. It makes no visible difference today — all three
-name `plain` or `powerline`, which the panel draws identically — but name `style` yourself if you want
-to be sure. See [Style and palette in the panel](#style-and-palette-in-the-panel).
-
-| Preset | Layout | Style | Segments on |
-|---|---|---|---|
-| `minimal` | `one` | `plain` | model, context, folder, branch |
-| `cost` | `one` | `plain` | model, context, cache, cost, clock, lines, limits |
-| `full` | `two` | `powerline` | all twelve, the wall clock included |
-
-`minimal` answers which model, how full and where am I, and nothing else. `cost` is the spend line,
-for watching a budget or a rate limit. `full` is everything, split across two rows.
-
-A preset is expanded before the rest of the file it appears in, whatever order the keys are written
-in, so anything beside it wins: `{"preset": "minimal", "style": "powerline"}` is the minimal segment
-set in powerline blocks, and `{"preset": "cost", "segments": {"branch": true}}` is the spend line with
-the branch put back. It sets nothing but the layout, the style and the toggles — `order`, `rows`,
-`thresholds`, `icons`, `state` and the `git` block are untouched. A preset in a project file sits
-where any other project key sits, so it is written over the user file whole; a preset in the user file
-is a base for the project file to change.
-
-### ASCII style
-
-Every icon on the line is a Nerd Font code point, so on a terminal without one the line is a row of
-boxes. `{"style": "ascii"}` draws every glyph the script chooses in printable ASCII instead and keeps
-every colour, for the VS Code terminal, a session over SSH, or anywhere the font is not yours to
-change.
+`{"style": "ascii"}` draws every glyph the script chooses in printable ASCII and keeps every colour,
+for the VS Code terminal, a session over SSH, or anywhere the font is not yours to change. Your own
+text — a branch called `機能/x` — is drawn as it arrived.
 
 ```
 Fable 5.1 > ctx 32% ###....... 64k/200k 92% cached > $1.07 > 1h12m | api 38%
   > +156 -23 > 5h 24% (2h11m) 7d 88% > fast think xhigh NORMAL > dir my-project > ~ main
 ```
 
-The rule for each stand-in, in order: nothing at all where what follows already names the segment; a
-mark ASCII already uses for the thing where there is one; otherwise the shortest lower-case
-abbreviation, cut to a single letter where the segment's own text carries the word.
-
-| Element | Nerd Font | ASCII |
-|---|---|---|
-| model, cost, clock, time, lines, limits, effort, vim | robot, cash, stopwatch, wall clock, code, tachometer, speedometer, vim | nothing — the name, the `$1.07`, the `1h12m`, the `14:05`, the `+156 -23`, the `5h 24%`, the level and the mode say it |
-| context | memory | `ctx` |
-| context bar, filled and empty | `█` `░` | `#` `.` |
-| cache | fire | `c` |
-| folder | folder | `dir` |
-| owner/name to leaf | `›` | `/` |
-| branch | branch | `b` |
-| main or master | home | `~` |
-| dirty tree | pencil | `*` |
-| worktree | fork | `wt` |
-| ahead, behind | `↑` `↓` | `^` `v` |
-| conflicts, past 200k | warning triangle | `!` |
-| pull request | pull request | `pr` |
-| fast mode, thinking | bolt, brain | `fast`, `think` |
-| agent, session name | user, tag | `@`, `#` |
-| removed lines | `−` | `-` |
-| clock's api share | `·` | `\|` |
-| pace on track, overrunning | `→` `↑` | `=` `^` |
-| clipped name | `…` | `.` |
-| between segments | dim chevron in `plain`, solid arrow in `powerline` | `>` |
-| subagent panel row | robot | `@` |
-
-Two things follow from ASCII being the promise rather than "no Nerd Font". Everything the script
-chooses is drawn from U+0020 to U+007E, which is both the range every font has and the range every
-terminal draws one cell wide — the second half matters, because the width fitting counts a meter block
-or an arrow as one column and some terminals draw them as two. And an `icons` override is a code point,
-so it is ignored in this style; set the style back to `plain` if you want your own glyph. Colours,
-thresholds, layout, segment order and fitting are exactly as they are in `plain`.
-
-**Your own text is left alone.** The branch, the folder, the repo owner, the model name and the agent
-and session names come from the payload and are drawn as they arrived, in this style as in the other
-two — so a branch called `機能/x` renders `b 機能/x`, not `b ????`. This style replaces the glyphs
-*the script picked*, which live in the private use area and need a font your terminal may not have. A
-Japanese branch name needs a Japanese font, which most terminals do have, and it is your data either
-way: a name shown as boxes at least tells you a font is missing, where one silently transliterated
-tells you nothing and cannot be read back.
-
-**The agent panel too, at install time.** The panel reads no config file, so `.\install.ps1 -Subagents`
-puts `-Style ascii` on the command it writes when that is what the status line is set to. A panel row
-has only two characters of its own — the robot glyph and the tail on a clipped name — and they become
-`@` and `.`. The `@` is this table's own mark for a person driving a thread, which is what a panel row
-is; the `model` row above is empty for a reason that does not hold there, because on the main line the
-model's name follows the glyph and on a panel row the glyph is the one thing that always survives. See
-[Style and palette in the panel](#style-and-palette-in-the-panel).
-
-### Light palette
-
-The colours the line has always used are chosen for a dark terminal. On a pale background a bright
-cyan model name is barely there and the dim grey chevron is close to invisible. `{"palette": "light"}`
-swaps the whole table for one chosen against white.
-
-```json
-{ "palette": "light" }
-```
-
-`palette` and `style` are separate keys because they answer separate questions. `style` is the
-**shape** of the line — coloured words with a chevron, solid blocks with arrows, or the same shape in
-characters any font has. `palette` is the **colour numbers** those shapes are drawn with, and the only
-thing it depends on is whether the terminal's background is dark or light. All six pairings are real
-configurations:
-
-| | `dark` | `light` |
-|---|---|---|
-| `plain` | what the line has always been | the same chevron, in colours that read on white |
-| `powerline` | near-white text on saturated blocks | near-black text on pale blocks |
-| `ascii` | the ASCII characters, dark colours | the ASCII characters, light colours |
-
-`ascii` with `light` needs no special case in either direction: a colour code is digits and
-semicolons, so a palette can never put a non-ASCII character on the line, and the ASCII style never
-touches a colour.
-
-**How the colours were chosen, and how to check them.** The light table is not the dark one with
-darker numbers. Every value in it is an xterm 256-colour index picked to clear a contrast ratio, and
-the ratios are checked by arithmetic in `test.ps1` rather than by eye — an index is turned into its hex, and the hex
-into a [WCAG 2.1](https://www.w3.org/TR/WCAG21/#dfn-relative-luminance) contrast ratio, by code that
-shares nothing with the script. **Both tables are measured**, and where a bar is asserted for only one
-of them the table below says so and why. Two of the rules are not contrast ratios at all but
-straight-line distances in sRGB, because a ratio cannot answer the question they ask — see the note
-under the table.
-
-| Rule | Bar | Light table | Dark table |
-|---|---|---|---|
-| A plain-style colour against the terminal's background | 4.5:1 on `#FFFFFF` **and** on an off-white `#F5F5F5` | worst 5.25 (`warn`) | not asserted — the plain codes are the basic sixteen, and what those look like is the terminal's to say |
-| A powerline block's own text against its own background | 4.5:1 | worst 10.40 (`folder`) | worst 4.70 (`ok`); `model` is 4.13 and exempt by name, older than the rule |
-| A block's background against the terminal's background — the trailing arrow paints it as a *foreground*, and every block edge is that boundary | 1.7:1 | worst 1.75 (`bad`) | worst 2.01 (`dim`) against Campbell |
-| The arrow *between* two blocks — one block's background painted on the next one's | 1.10:1 in luminance and 40 apart in sRGB, over every ordered pair | 40.3 apart; the luminance half is **not** asserted, and `ok`/`warn` is 1.00 — a real gap, tracked separately | worst 1.104 and 40.0 |
-| An inline marker (`+156`, `92% cached`, `1M`, `↑2`) against the background of the block it sits in | 3:1 | worst 3.48 | worst 3.01 |
-| The same marker against that block's **own text**, which it sits beside | 85 apart in sRGB | worst 95.0 | worst 89.6 |
-| An inline marker on the terminal's background in plain style | 4.5:1 | worst 7.03 | not asserted, same reason as the first rule |
-
-**Why two of those bars are distances and not ratios.** An inline marker sits inside a block, so it has
-two neighbours: the block's background behind it, and the block's own text beside it. On a dark block
-those two pull against each other. Clearing 3:1 against the `model` block means the marker's relative
-luminance has to be above 0.71 — and the block's text is white, luminance 1.0. So every colour that is
-readable there is within 1.38:1 of the text, and no luminance bar can tell "readable and distinct" from
-"readable and indistinguishable from the figure it qualifies". What separates them is hue, which a
-distance measures and a ratio does not. That is why the dark table's quiet markers are pale cyans
-rather than greys, and why `−N` is a warm apricot rather than red: with red at full, green has to reach
-215 before the luminance is high enough to be legible on that block, and `#FFD787` is the reddest
-colour that exists up there. A true red survives inside the light `warn` block, where the block is
-light and its text is black, so the marker can go dark instead — which is the same reason each marker
-carries two colours and the block's own text colour picks between them.
-
-The plain-style colours are 256-colour codes rather than the basic sixteen on purpose. The sixteen are
-whatever your terminal's scheme says they are, which is the thing that goes wrong on a light theme in
-the first place; a table that cannot say what a colour looks like cannot promise it is readable.
-
-To check a value by hand: the indices 16–231 are a 6×6×6 cube on the levels 0, 95, 135, 175, 215, 255
-(so index `24` is `16 + 0×36 + 1×6 + 2`, giving `#005F87`), and 232–255 are a grey ramp at `8 + 10n`.
-Put the hex into any contrast checker against `#FFFFFF`.
-
-**Letting the installer decide.** `.\install.ps1 -DetectTheme` reads Windows Terminal's
-`settings.json`, follows `defaultProfile` to a profile, that profile's `colorScheme` to a scheme, and
-the scheme to its `background`, then computes the background's relative luminance and writes `light`
-above 0.5 and `dark` below. Every scheme Windows Terminal ships is under 0.05 or over 0.85, so the cut
-sits in an empty band.
-
-**That is a read of a configuration file, not a look at your screen.** Terminals
-do not reliably report their own background — `COLORFGBG` is not universal and an OSC 11 query needs a
-reply that may never come — so there is nothing here to probe. If you run Claude Code in conhost, in
-VS Code, over SSH, or in a Windows Terminal profile that is not the default one, `-DetectTheme` has
-read a file about a different terminal. That is why it prints the scheme name it found beside the
-palette it chose, and why the answer is one key you can edit.
-
-When any link in the chain is missing it **writes nothing and prints why**:
-
-- no Windows Terminal settings file, or one that will not parse;
-- no `defaultProfile`, or no profile carrying that guid and no `colorScheme` on `profiles.defaults`;
-- a scheme that is neither defined in the file nor one of the nine Windows Terminal ships;
-- a `colorScheme` set to an object with `light` and `dark` members, which means the profile follows
-  the OS theme. Both scheme names are printed. Nothing in the settings file says which is in force, so
-  there is no answer to give, and a coin toss between the readable palette and the unreadable one is
-  worse than leaving the key alone.
-
-Leaving it alone is safe because the palette already defaults to `dark`: a detection that fails
-changes nothing, and the failure is one line of output rather than a line you cannot read.
-
-**The agent panel follows, but only at install time.** `subagent-statusline.ps1` still reads no config
-file — it takes a payload on stdin and answers — so the palette reaches it as a `-Palette` argument the
-installer bakes into the `subagentStatusLine` command, from this same key. That is
-[#78](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/78), which did the same for
-`style`. Change the key by hand and the bar follows on the next render while the panel keeps what it
-was installed with; run `.\install.ps1 -Subagents` again to bring the panel along. See
-[Style and palette in the panel](#style-and-palette-in-the-panel).
+`{"palette": "light"}` swaps the colour table for one chosen against white, in any style. Every value
+in both tables is held to a measured contrast floor by the test suite. `.\install.ps1 -DetectTheme`
+reads Windows Terminal's scheme and sets the key, or says why it could not. The stand-in table, the
+contrast rules and what `-DetectTheme` reads: [docs/styles-and-palettes.md](docs/styles-and-palettes.md).
 
 ### Taskbar progress
 
-Windows Terminal draws a progress bar on the window's taskbar button when a program writes the OSC 9;4
-escape sequence. With `"taskbar": true` the status line writes the context percentage there on every
-refresh, so how full the window is stays readable with Claude Code minimised — green below the `alarm`
-level, red at or above it.
-
-It is off by default because Claude Code writes the same sequence itself. There is one bar per window,
-so with both writers on they overwrite each other: Claude Code fills it while a turn runs, the status
-line puts the context percentage back on its next refresh, and Claude Code's clear at the end of a turn
-wipes the context bar until the refresh after that. Pick one. To pick this one, in `settings.json`:
-
-```json
-{
-  "terminalProgressBarEnabled": false,
-  "statusLine": {
-    "type": "command",
-    "command": "pwsh -NoProfile -NoLogo -NonInteractive -File \"C:/Users/<you>/.claude/statusline.ps1\"",
-    "padding": 0,
-    "hideVimModeIndicator": true,
-    "refreshInterval": 10
-  }
-}
-```
-
-and `"taskbar": true` in `statusline.json`. `.\install.ps1 -RefreshInterval 10` writes the
-`statusLine` entry above; `terminalProgressBarEnabled` is Claude Code's own key and the installer does
-not touch it. The refresh interval — seconds — is what keeps the bar current while the session sits
-idle; without it the bar only moves when something else redraws the line. Anyone who prefers Claude
-Code's turn-progress bar leaves `taskbar` at `false` and changes nothing.
-
-A bar the status line has drawn stays on the taskbar until something draws over it — that is how the
-sequence works, and it is why a render with no percentage to show writes a clear rather than nothing.
-And for the same reason, turning the key back off does not put the taskbar back: the last bar drawn is
-still there. Closing the window clears it, and so does one line in the same terminal:
-
-```powershell
-Write-Host "`e]9;4;0;0`a" -NoNewline
-```
-
-Turn it on in your own `~/.claude/statusline.json` rather than in a project's
-`.claude/statusline.json`. The taskbar belongs to the window, not to the repository, so a project
-deciding what your taskbar does is a stranger arrangement than a project pinning its own layout. There
-is a concrete difference too. When Claude Code hands the script something that is not JSON, the payload
-names no project directory, so the project file is not read on that render — a rule older than this key
-that every project-only value has always been subject to. Enabled only in a project file, that render
-writes no clear and the last bar drawn stays lit until the next payload that parses, which is the next
-event or the next `refreshInterval` tick. It lasts longer than that only if every payload after it also
-fails to parse, and by then the line itself has been reduced to the model glyph and the word `claude`,
-which is the visible half of the same fault. Enabled in the user file, that render clears the bar like
-any other, because the user file is read whatever the payload turns out to be.
-
-A terminal that does not know OSC 9;4 — Windows Terminal is the one that does; most others ignore it —
-shows nothing at all rather than stray characters, because an unknown OSC string is swallowed up to its
-terminator. The sequence is never counted as visible width, so the line is fitted and clipped exactly
-as it is with the key off.
-
-A config only needs the keys it changes. This one puts the branch beside the model, colours the
-meter early and uses a house glyph on `main`:
-
-```json
-{
-  "layout": "two",
-  "rows": [["model", "branch"], ["context", "limits", "cost"]],
-  "thresholds": { "warn": 40, "bad": 70 },
-  "icons": { "home": "U+2302" }
-}
-```
-
-A segment that is toggled off, or that the active layout's list does not name (`order` for layout
-`one`, `rows` for layout `two`), is not built at all: leave `branch` out and the script never runs
-`git status`.
-
-With `badges` off the vim mode is shown nowhere, because the installer sets `hideVimModeIndicator`
-and that hides Claude Code's own indicator. If that matters, remove `hideVimModeIndicator` from the
-`statusLine` entry in `settings.json` by hand.
-
-Anything missing or invalid falls back to its default without a message, so a typo cannot blank
-the status line. Delete the file to get the defaults back. `docs/statusline-two-line.json` is the
-config behind the second screenshot.
-
-Every render is a new process that sees only the current payload. So that a later render can tell
-what changed, the script keeps one small JSON file per session in `claude-statusline-state` under
-your temp folder (`%TEMP%` on Windows, `~/.claude/statusline-state` when there is no temp folder).
-The file is named after the session id and holds numbers only: the last cost, input and output token
-totals, context and 5-hour usage percentages, and up to twenty timestamped cost readings. No prompt
-text, path or file name is written. Files not touched for a day are deleted on a later render. A
-payload that does not carry the cost or the token totals leaves the stored ones alone, so a figure is
-never replaced by nothing; the two percentages are read fresh each render and are simply absent when
-the payload is silent, because a carried-forward percentage would say something false about now.
-The cost segment uses it, for the change since the previous render: the file is read once, before the
-line is built, and written after it is printed. Set `state` to `false` and the script neither reads nor
-writes it, and the cost segment shows the session total alone. Upgrading over an existing
-`statusline.json` leaves that file alone, so a config without a `state` key gets the default, which is
-on. `.\install.ps1 -Uninstall` prints where the files are
-so you can delete the folder. The same goes for the `pr` segment: an existing `statusline.json`
-without a `pr` key shows it; add `"pr": false` under `segments` to turn it off.
-
-The branch segment keeps the last `git status` answer for each repository in `claude-statusline`
-under the same temp folder (`TMPDIR` or the runtime's temp path when there is no `TEMP`), one small
-JSON file per repository named by a hash of its path, and reuses it for `git.cacheSeconds` while the
-repository's git directory is unchanged: the timestamps of `.git` itself, of `index`, `HEAD`,
-`ORIG_HEAD`, `FETCH_HEAD`, `MERGE_HEAD`, `packed-refs`, `logs/HEAD`, `config` and `info/exclude`,
-and of every directory under `refs` (up to 256 of them; a repository with more is not cached). A
-commit, checkout, add, reset, merge, fetch or push moves one of those, so it shows straight away, and
-so does a change to the repository's own config or exclude file; an edit or a new file in the work
-tree does not, and neither does a change to your global git config or `core.excludesFile`, so those
-can lag by up to five seconds. A worktree or a submodule, where `.git` is a file, is cached under its own
-path, with its main repository's refs counted too. A `git status` that failed or timed out is
-remembered for the same lifetime, so a slow repository pays the wait once per lifetime, not once per
-render. A `statusline.json` from before this cache has no `git` block and gets the defaults: the
-cache on, five seconds, a 1.5 second timeout. Add `"git": { "cache": false }` to turn it off.
-
-Claude Code tells the script the terminal width, and a line that is too long is shortened in a fixed
-order: detail first, then the right group, then whole segments. [Width fitting](#width-fitting) above
-lists the order. The model segment always stays.
-
-When no segment can be built at all — a payload with nothing in it, or an `order` naming only
-segments the payload cannot fill — the script prints the model glyph and the word `claude` in place
-of the model segment. The same line stands in when Claude Code sends something that is not JSON at
-all. Both follow the same two keys the model segment itself does: with `"segments": {"model":
-false}`, or with an `order` or `rows` that leave `model` out, there is no model segment to stand in
-for and the script prints nothing. A `statusline.json` that cannot be parsed leaves the built-in
-defaults, which do show the line, so a broken config still says something. An empty line is not an
-empty session: the state file is written from the payload either way, so a config that shows nothing
-still records what the session spent.
+With `"taskbar": true` and a refresh interval, the context percentage is drawn on the window's taskbar
+button in Windows Terminal, green below the `alarm` level and red at it. Off by default because Claude
+Code draws its own turn-progress bar there; set `"terminalProgressBarEnabled": false` in
+`settings.json` to hand the bar over. Details, and how to clear a stuck bar: [docs/taskbar.md](docs/taskbar.md).
 
 ## What each segment shows
 
 | Segment | Icon | Data | Rendering |
 |---|---|---|---|
-| model | <img src="docs/icons/robot.svg" height="18" alt="robot"> `nf-md-robot` | `model.display_name`, `context_window.context_window_size`, `exceeds_200k_tokens`, `context_window.used_percentage`, `rate_limits.five_hour`, `seven_day` | Bold cyan. `display_name` goes through the same guard as the branch and repository names, so a right-to-left override or other invisible reordering character in it costs the character rather than the line - but unlike every other guarded field, an unusable name here (a number, a boolean, a blank string, or none at all) falls back to the word `claude` rather than dropping the segment: this is the one segment that is never shortened and never dropped, because the alarm rides on it, and a payload field is not allowed to be the reason a real alarm goes unseen. On a 1M window `1M` follows the name in a brighter cyan, then a warning triangle when Claude Code reports `exceeds_200k_tokens` as true. The whole segment turns red once the context window or a rate limit reaches the `alarm` percentage, 90 unless the config moves it. The text does not change otherwise: at any width, and on either row of layout two, a full context window is still visible as a red line |
-| context | <img src="docs/icons/memory.svg" height="18" alt="memory"> `nf-md-memory` | `context_window.*` | Percent, ten-block bar, used/total tokens, then a quieter `92% cached`. Green below 60%, yellow below 85%, red above, or the `thresholds` from the config. On a 1M window the cut-offs are 70% and 90% whatever the config says, so red still means about 100k tokens left. The cached share is `cache_read_input_tokens` over the whole of `current_usage`, absent on older Claude Code versions and before the first API response, and it goes when the token counts go. A block with a negative count is refused rather than repaired, so a malformed payload shows no share instead of a made-up one |
-| cache | <img src="docs/icons/fire.svg" height="18" alt="fire"> `nf-md-fire` | `prompt_cache.warm`, `expires_at`, `caching_observed`, `requests` | `cache 42m` in green while the prompt cache has time on it, `cache 4m` in yellow inside the last five minutes, `cache <1m` under a minute. Red `cache cold` when `warm` is false or the expiry has already passed — the timestamp wins over a `warm` beside it that disagrees. Red `cache off` when `caching_observed` is false with at least three requests behind it, which is the client saying it has asked for caching and never seen it work; that is checked before the countdown, since a cache that is not working still carries an expiry and printing it would be the most reassuring thing on the line at the moment it is least true. `cache warm` with no figure when the cache is alive but the expiry is missing or is not one this script will believe: `expires_at` is treated as epoch seconds, divided by 1000 first when it is past 1e12, and a value of zero or less, or more than a day out, is refused rather than clamped, so a nonsense field costs the countdown and not the truth. The whole segment is absent on Claude Code before 2.1.251 and in the first turns of a session, before the block arrives. The countdown is a snapshot of when the payload arrived and only ticks on its own with `statusLine.refreshInterval` set |
-| cost | <img src="docs/icons/cash.svg" height="18" alt="cash"> `nf-md-cash` | `cost.total_cost_usd`, `cost_usd` from the session state file | Dimmed, two decimals, with the change since the previous render in parentheses: `$1.07 (+$0.12)`. The suffix is there only when the total rose by at least a cent, so most renders show the total alone, and so does the first render of a session, one with no state file, and one where `state` is off. With `statusLine.refreshInterval` set the command re-runs on a timer, and a render with no turn behind it has nothing to add. The delta is the first detail the width fitting sheds |
-| clock | <img src="docs/icons/timer-outline.svg" height="18" alt="stopwatch"> `nf-md-timer_outline` | `cost.total_duration_ms`, `cost.total_api_duration_ms` | `1h12m · api 38%`: how long the session has been running, and how much of that went on waiting for the model. Dimmed, with no colour bands — a long session is not an error. Under a minute reads `<1m`, under an hour `12m`, and an hour or more `1h12m` with the minutes zero-padded. The separator is a middle dot rather than a dash, because a dash beside a percentage reads as a range. The api share is the last detail the width fitting sheds and the segment is the third whole one it drops, behind the wall clock and lines. Both fields are optional and older Claude Code versions send neither: no `total_duration_ms` means no segment, and no `total_api_duration_ms` means the elapsed time on its own, with no dot and no `api` part. A duration that could not be true is refused rather than repaired — a negative or absurd total leaves the segment out, and an api time longer than the session has existed leaves the elapsed time standing alone rather than printing a confident `api 100%` |
-| time | <img src="docs/icons/clock-outline.svg" height="18" alt="clock"> `nf-md-clock_outline` | none — the machine clock | `14:05`: the local time of day, 24 hour, the way a shell prompt puts the time on the right. Dimmed, with no colour bands. **Off by default**, and the only segment that is: it is the one figure on the line that says nothing about the session, so it is also the first whole segment the width fitting drops. Set `"segments": {"time": true}` to turn it on and `"right": ["time"]` to push it to the edge. **It needs `statusLine.refreshInterval`.** The payload carries no timestamp, so this reads the machine clock at the moment the script runs; without a refresh interval the script only runs on Claude Code's events, and an idle session shows the time of the last one. Not to be confused with the clock segment above it, which is how long the session has run: two times, two glyphs, and a session that has run `1h12m` says nothing about whether it is now 09:14 or 23:47 |
-| lines | <img src="docs/icons/code.svg" height="18" alt="code"> `nf-fa-code` | `cost.total_lines_added`, `total_lines_removed` | `+N` green, `−N` in the `removed` colour. Hidden when both are zero |
-| limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> `nf-fa-tachometer` | `rate_limits.five_hour`, `seven_day`, `spend_limit` | `5h 24% → (1h12m) 7d 41% $ 62%`. Coloured by the worst of the figures, with the 60% and 85% bands, or the config's `thresholds`, whatever the window size. The countdown is omitted once the reset time has passed, once it is more than a year out, or when the reset value itself is not a usable date at all — a numerically absurd `resets_at` used to throw and take the whole segment down with it, and a five-digit day count is not a countdown anyone reads either way, so both now render nothing rather than either. A `used_percentage` that is not a real number — a string, a boolean, `null` — leaves that one figure off the line rather than the whole segment: a payload with a bad 5-hour figure and a good 7-day one still shows the 7-day figure, and a payload with nothing usable at all shows nothing. The arrow after the 5-hour figure paces it against how much of the five-hour window has gone: `→` while carrying on at this rate still lands inside the window, `↑` once it would overrun, and a red `↑` once the projection reaches 120%. There is no arrow in the first half hour of a window, where the projection swings on a single busy minute, nor after the reset time, nor before anything has been used. Only the 5-hour figure gets one; a week is too long to pace from one payload. The `$` figure is the spend limit. Claude Code sends it only behind a Claude apps gateway with a spend limit, and only from 2.1.251 on |
-| badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> fast, <img src="docs/icons/brain.svg" height="18" alt="brain"> thinking, <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> effort, <img src="docs/icons/vim.svg" height="18" alt="vim"> vim, <img src="docs/icons/user.svg" height="18" alt="user"> agent, <img src="docs/icons/tag.svg" height="18" alt="tag"> session | `fast_mode`, `thinking.enabled`, `effort.level`, `vim.mode`, `agent.name`, `session_name` | Dimmed glyphs. The four mode badges come first, then the custom agent driving the main thread and the name given to the session, which change far less often. Effort is hidden at `high`, compared case-insensitively but not by culture, so `HIGH` is still the default and `xhigh` is still a badge. `fast_mode` and `thinking.enabled` are read with a strict boolean type check, the same one `exceeds_200k_tokens` uses, so the string `"true"` or the number `1` is not a mode either - only PowerShell's own `$true`/`$false`, which is what a real payload sends. The other four fields go through the same text guard as the branch and repository names: anything that is not real, visible text is not a badge at all, and a right-to-left override or other invisible reordering character costs the character rather than the badge or the segment. A name wider than 20 cells is cut and ends in `…`, measured in cells so a name in wide characters is cut where it draws rather than where it counts. The short form is the mode badges alone, so a narrow line sheds the agent and the session before the whole segment goes. The segment is hidden when none of the six is there, which now includes a plain unnamed session with every mode off. `session_id` is not shown: it is a UUID and says nothing at a glance |
-| pr | <img src="docs/icons/pull-request.svg" height="18" alt="pull request"> `nf-oct-git_pull_request` | `pr.number`, `pr.url`, `pr.review_state` | `#12`, wrapped in an [OSC 8 hyperlink](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda) to `pr.url` so ctrl-click in Windows Terminal opens it. Green when the review state is `approved`, red on `changes_requested`, dim otherwise. Hidden when the payload has no `pr` object or no whole, positive number in it; a `url` that is not `http` or `https` leaves the text unlinked, and so does `"links": false` |
-| folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> `nf-fa-folder_open` | `workspace.repo`, `workspace.project_dir`, `workspace.current_dir` | Blue. `owner/name` when the payload names the repository, then `›` and the directory name when it differs from the project root. Without a repository, the directory name alone. The short form is the repository name. The whole text is wrapped in an OSC 8 hyperlink to `current_dir` as a `file:` URL, so ctrl-click opens the directory; a relative or UNC `current_dir` is left unlinked, and `"links": false` turns the link off |
-| branch | <img src="docs/icons/home.svg" height="18" alt="home"> on `main`/`master`, <img src="docs/icons/branch.svg" height="18" alt="branch"> elsewhere, <img src="docs/icons/fork.svg" height="18" alt="fork"> `nf-md-source_fork` in a worktree, <img src="docs/icons/pencil.svg" height="18" alt="pencil"> when dirty | `git status --porcelain=v1 --branch` run in `workspace.current_dir`, `worktree.name`, `worktree.path`, `workspace.git_worktree` | Magenta when clean, yellow with the pencil when the tree has changes. The worktree name follows the branch name, then the counts described below, then the pencil. Shows `detached` on a detached HEAD. The whole text is wrapped in an OSC 8 hyperlink when the payload names the repository: on `github.com` the branch page, `https://github.com/<owner>/<name>/tree/<branch>`, and on any other host the repository home, since GitLab, Bitbucket and the rest each spell a branch path differently and a wrong guess is a 404. No `workspace.repo`, a detached HEAD, or `"links": false` leaves the text unlinked |
-| separator | <img src="docs/icons/chevron.svg" height="18" alt="chevron"> in `plain`, <img src="docs/icons/arrow.svg" height="18" alt="arrow"> in `powerline` | none | Dim chevron between segments, or a solid arrow coloured to blend the neighbouring blocks |
+| model | <img src="docs/icons/robot.svg" height="18" alt="robot"> | `model.display_name` | Bold cyan; `1M` and a warning on a 1M window; red at the `alarm` level. Never shortened or dropped. |
+| context | <img src="docs/icons/memory.svg" height="18" alt="memory"> | `context_window.*` | Percent, ten-block bar, used/total, `92% cached`. Green, yellow, red on the thresholds. |
+| cache | <img src="docs/icons/fire.svg" height="18" alt="fire"> | `prompt_cache.*` | `cache 42m`, yellow in the last five minutes; red `cache cold` or `cache off`. |
+| cost | <img src="docs/icons/cash.svg" height="18" alt="cash"> | `cost.total_cost_usd` | `$1.07 (+$0.12)`, the delta from the state file. |
+| clock | <img src="docs/icons/timer-outline.svg" height="18" alt="stopwatch"> | `cost.total_duration_ms`, `total_api_duration_ms` | `1h12m · api 38%`, dim, no bands. |
+| time | <img src="docs/icons/clock-outline.svg" height="18" alt="clock"> | the machine clock | `14:05`. Off by default; needs a refresh interval. |
+| lines | <img src="docs/icons/code.svg" height="18" alt="code"> | `cost.total_lines_*` | `+N` green, `−N` in the `removed` colour. Hidden at zero. |
+| limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> | `rate_limits.*` | `5h 24% → (1h12m) 7d 41% $ 62%`, coloured by the worst figure, with a pace arrow. |
+| badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> <img src="docs/icons/brain.svg" height="18" alt="brain"> <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> <img src="docs/icons/vim.svg" height="18" alt="vim"> <img src="docs/icons/user.svg" height="18" alt="user"> <img src="docs/icons/tag.svg" height="18" alt="tag"> | `fast_mode`, `thinking`, `effort`, `vim`, `agent`, `session_name` | Dim glyphs; hidden when nothing is on. |
+| pr | <img src="docs/icons/pull-request.svg" height="18" alt="pull request"> | `pr.*` | `#12`, linked; green approved, red changes requested. |
+| folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> | `workspace.*` | Blue `owner/name › dir`, linked to the directory. |
+| branch | <img src="docs/icons/home.svg" height="18" alt="home"> <img src="docs/icons/branch.svg" height="18" alt="branch"> <img src="docs/icons/fork.svg" height="18" alt="fork"> <img src="docs/icons/pencil.svg" height="18" alt="pencil"> | `git status` | Magenta clean, yellow dirty; worktree name, `↑N` `↓N` `+N` `~N` `?N` counts, conflicts; linked to the branch page. |
 
-A dim <img src="docs/icons/chevron.svg" height="14" alt="chevron"> separates the segments in plain
-style; powerline style joins the coloured blocks with a solid
-<img src="docs/icons/arrow.svg" height="14" alt="arrow">. The icon images are SVG outlines
-extracted from JetBrainsMono Nerd Font by `docs/render-icons.ps1`, because
-GitHub cannot render the font itself. Icon names are from the
-[Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet). Field names follow the
+The full rules for every segment, the branch counts and the worktree name are in
+[docs/segments.md](docs/segments.md). Icon names follow the
+[Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet) and field names the
 [Claude Code status line reference](https://code.claude.com/docs/en/statusline).
 
-### Branch counts
-
-Claude Code's payload carries no git data, so the script runs one `git status` in the working
-directory and reads everything below from its output. A count of zero is left out, so a clean,
-synced branch shows only the icon and the name.
-
-| Marker | Meaning | Notes |
-|---|---|---|
-| `↑N` | Commits ahead of the upstream | Hidden when the branch has no upstream or the upstream is gone |
-| `↓N` | Commits behind the upstream | Same |
-| `+N` | Staged files | |
-| `~N` | Files changed in the work tree | Modified, deleted, type-changed, or added with `git add -N`. A file that is staged and then edited again counts in both `+N` and `~N` |
-| `?N` | Untracked entries | Git reports a new directory as one entry, however many files it holds |
-| `nf-fa-exclamation_triangle` `N` | Files in conflict | The `removed` colour, the same one `-N` takes in the lines segment: a true red inside the yellow `warn` block, a warm apricot inside a dark one |
-
-The counts render in the quiet `track` colour, in that order, after the branch name and before the pencil. If the line is
-too wide for the terminal they are the third thing shed, after the limits and context detail and
-before any whole segment goes, leaving the icon, the name and the pencil.
-
-The `git status` call is the one the script already made for the pencil, so the counts cost no
-extra process. If a payload does include a `git` object with `branch` and `status`, as the test
-samples do, the script reads the branch and the four file counts from it instead and shows no
-arrows. A `git` object with an empty branch name shows nothing.
-
-### Worktree name
-
-When the session is in a git worktree, the branch segment carries a fork glyph
-(<img src="docs/icons/fork.svg" height="14" alt="fork"> `nf-md-source_fork`) and the worktree's name
-after the branch name, so the segment reads branch glyph, `feature/x`, fork glyph, `wt-review`, then
-the counts and the pencil. Sessions outside a worktree print what they always printed.
-
-The name comes from the payload, not from git, so it costs no extra work: `worktree.name` when
-Claude Code sends one, otherwise the last segment of `worktree.path` when `workspace.git_worktree` is
-true. In a worktree that gives neither, the glyph stands on its own. The name goes through the same
-guard as the branch and repository names: a directory named with an escape sequence in it is refused
-outright, and the invisible characters that reorder a line rather than break it - a right-to-left
-override, a directional isolate, a zero-width joiner - are taken out of the name instead, so one of
-them costs the character and not the badge. A name with nothing visible left in it is not a name, and
-falls through to the path leaf, then to the glyph on its own, the same as a blank one.
-
-The badge is not in the segment's short form. On a narrow line it is shed with the counts, leaving
-the icon, the branch name and the pencil, before any whole segment is dropped. `segments.branch` in
-`statusline.json` turns the badge off with the rest of the segment; there is no key of its own,
-because the name only ever appears beside a branch.
-
 ## Test without Claude Code
-
-`test.ps1` runs in groups, unit checks first. Those call the script's helper functions directly (width
-measurement, config parsing, the segment table, rendering, width fitting, the context meter, the
-limits, `git status` parsing, the payload counts, the branch and pr segments, the state file, the
-git cache, and the count of filesystem operations a config read costs for each shape of payload —
-counted rather than timed, so it is deterministic). The git group runs the branch fallback against
-temporary repositories: clean, dirty, unborn, detached, one commit ahead, one behind, a mixed tree
-with a staged, a modified and an
-untracked file, a fake `git` that fails and one that hangs, then the cache end to end: a second
-render with a failing `git` on `PATH`, a fetch from a bare remote, a push, a worktree. The state
-group writes and reads session files in a temp folder. The install group runs `install.ps1` with
-`USERPROFILE` and `-SettingsPath` pointed into a temp folder: a fresh settings file, an existing one
-with unrelated keys, `-RefreshInterval`, a refused value, and `-Uninstall`. It checks afterwards
-that the real `~/.claude` files were not touched. `-DetectTheme` is covered twice over: the settings
-walk and the luminance arithmetic are lifted out of `install.ps1` and run against temp Windows
-Terminal settings files — a user-defined scheme, a built-in one, a redefined built-in, a scheme on
-`profiles.defaults`, the older flat `profiles` list, a profile that follows the OS theme, and eleven
-ways the chain can break — and then the switch itself runs with both `USERPROFILE` and `LOCALAPPDATA`
-redirected, so a light scheme writes `"palette": "light"`, Campbell writes `dark`, and a missing,
-broken, unknown or OS-following scheme leaves `statusline.json` byte for byte as it was. The light
-palette's own group recomputes every contrast ratio in both tables from the xterm colour cube, and
-holds each of them to a 3:1 floor for every inline marker inside every block it can be drawn in. The subagent group pipes every payload in
-`samples/subagent/` through `subagent-statusline.ps1` and reads the replies the way the panel does:
-each line must be an object with a string `id` and a string `content`, every id must belong to a task
-in the payload, every row must be one line carrying that style's own glyph, and it must fit the
-payload's `columns` down to a single column — all of it once per `-Style` × `-Palette` pairing, the way
-the main matrix runs styles and palettes. It also checks that malformed, empty, array-shaped and
-task-less payloads print nothing and still exit 0, that an argument value the panel does not know falls
-back to the default row instead of throwing, and that the helpers `subagent-statusline.ps1`
-copies out of `statusline.ps1` are still the same text in both files. Its own install cases run
-`install.ps1 -Subagents` and `-Uninstall` against a second temp home. The ownership rules are checked
-against the forms that must not count as ours as well as the ones that must: a command that carries
-the path as a wrapper argument or in a trailing comment, one with something chained after it, one
-using `-Command`, one carrying a switch or a value the installer never writes, and a file where the
-marker token appears only inside another line, in a string
-literal, in a trailing comment or below the header window. Beyond that: an install over a file that is
-not ours is refused and changes nothing, a profile whose path holds a space and an `&` produces a
-command that really runs under cmd, a settings write that cannot complete leaves the old file intact
-and no temporary file behind, a file changed between the read and the write is refused, a second
-installer holding the lock makes this one write nothing, a `subagent-statusline.ps1.bak` and a file at
-the rollback name that this project did not write both survive a reinstall and an uninstall, a foreign
-file at `settings.json`'s own backup name or Windows Terminal's survives an install and an uninstall the
-same way, the settings write it would have backed up still goes through, and the capture helper bounds a
-single payload larger than its own cap. The render matrix pipes every payload in
-`samples/` through the script for each of seven configs (both layouts and styles, model only, a
-reversed `order`, swapped `rows`) at each width:
 
 ```powershell
 .\test.ps1                                # full run, about twelve minutes on a quiet machine
 .\test.ps1 -Columns 80                    # one width instead of 120, 60, 20 and unset
 .\test.ps1 -Config .\statusline.json      # one config instead of the seven
-.\test.ps1 -Raw                           # show ANSI escapes as <ESC>
-```
-
-Every render must exit 0 with nothing on stderr, print the number of lines its layout allows, and fit
-the terminal width. At a set width a segment with a short form (limits, context, branch, folder,
-badges) must be whole, shortened, or gone, never half shed. At the unset width the matrix also checks
-content: each segment the sample and config enable must appear on its row, in the configured order,
-with its glyph and value, disabled segments must not, and the separators must match the style. Those
-content checks only run when `-Columns` includes `0`, which the default does. The `ascii` style gets a
-pass of its own rather than an eighth config: every sample once at the unset width, against its own
-marker table, plus the assertion the matrix cannot make — that every non-ASCII character on the line
-came from the payload, and that no stand-in left an empty space behind it. One more render puts a
-non-English name in every text field the line can draw from and pins the set exactly: the only
-characters outside ASCII are the ones the payload supplied, which is what says the style replaced the
-script's glyphs and nothing of the user's. A few renders after the
-matrix run with no `-Config` at all: they point a payload at a temp project directory and check that
-its `.claude\statusline.json` reaches the line, that a broken one does not, and that `-Config` ignores
-it. The taskbar sequence is checked by rendering each payload twice, once with `"taskbar": true` and
-once with it off, and comparing the two: the key off must write no sequence at all, the key on must
-write exactly one, at the very front, with every byte behind it and every line's measured width
-unchanged. A payload that will not parse, a render with no line in it and a render at 92% each get a
-case of their own. The script exits non-zero if any check fails. Each render takes about 400 ms,
-nearly all of it `pwsh` start-up.
-
-The tests never touch your own repositories. They point `GIT_CEILING_DIRECTORIES` at the temp
-folder and pass an empty global git config, so the results do not depend on the machine.
-
-To try a payload of your own:
-
-```powershell
 Get-Content my-payload.json -Raw | pwsh -NoProfile -File .\statusline.ps1
-Get-Content my-payload.json -Raw | pwsh -NoProfile -File .\statusline.ps1 -Config .\docs\statusline-two-line.json
-Get-Content .\samples\subagent\01-two-agents.json -Raw | pwsh -NoProfile -File .\subagent-statusline.ps1
-Get-Content .\samples\subagent\01-two-agents.json -Raw | pwsh -NoProfile -File .\subagent-statusline.ps1 -Style ascii -Palette light
+Get-Content .\samples\subagent\01-two-agents.json -Raw | pwsh -NoProfile -File .\subagent-statusline.ps1 -Style ascii
 ```
 
-## Customise
-
-Segment order, the two rows, the colour cut-offs and the glyphs are `statusline.json` keys, described
-under Configuration. What is left sits at the top of `statusline.ps1`:
-
-- `Get-IconDefault` holds the built-in code point of every glyph, under the name the `icons` key takes. The [Nerd Font cheat sheet](https://www.nerdfonts.com/cheat-sheet) lists alternatives. `Get-IconAscii` holds the ASCII stand-in for each of the same names, and `Get-MarkSet` the characters that are not icons — the meter cells, the minus, the clock's separator, the pace arrows and a clipped name's tail.
-- How long the branch segment waits for `git status` is `git.timeoutMs` in `statusline.json`, not a constant in the script.
-- `$defaultEffort` is the level at which the effort badge is hidden.
-- The 70% and 90% cut-offs of a 1M window are passed by the context block to `Get-ThresholdRole`; `thresholds` does not move them. The `alarm` percentages are separate from both: `Test-AlarmState` reads the payload directly, so it does not care about the window size or about which segments are switched on.
-- `Get-WholePercent` is the one rule that turns a payload figure into the percentage on the line. The context meter, the limits figures, the cached share, the colour bands and the alarms all go through it, so a fractional percentage cannot print as 90% in one segment and count as 89% in another. It rounds half to even, which is what the casts it replaced already did. The cached share is computed from token counts rather than read as a percentage, and it still goes through the same rule: it prints beside the meter's own percentage, and two rounding rules on one segment is the disagreement this function exists to rule out.
-- `Get-Palette` holds the colours for both palettes; `ascii` uses the same ones role for role. `subagent-statusline.ps1` carries its own copy of it and of `Get-MarkSet`, pinned to these by the drift gate, and takes the style and the palette as `-Style` and `-Palette` arguments because it has no config file to read.
-- `Get-SegmentRegistry` is the segment table. Its array order is the default `order`, `Row` and `RowRank` give the default `rows`, `Default` says whether a segment is on before any config is read, and `ShrinkRank` and `DropRank` set the fitting order, which the config does not change. What the config does change is which segments leave that order for the right edge, under `right`.
+The suite never touches your own repositories or your real `~/.claude`. What it covers, and how to
+add a segment or a sample: [docs/testing.md](docs/testing.md).
 
 ## Troubleshooting
 
-Icons show as boxes or question marks: the terminal font is not a Nerd Font. Set it to
-`JetBrainsMono NF` or any other Nerd Font. Where the font is not yours to change — the VS Code
-terminal, a session over SSH — put `"style": "ascii"` in `statusline.json` instead and the same line
-is drawn out of plain ASCII, colours and all. See [ASCII style](#ascii-style). Reinstall with
-`.\install.ps1 -Subagents` afterwards if you use the agent panel: it reads no config file, so the style
-reaches it as an argument on the command the installer writes.
+Icons show as boxes: the terminal font is not a Nerd Font. Set one, or put `"style": "ascii"` in
+`statusline.json` and rerun `.\install.ps1 -Subagents` if you use the agent panel.
 
-A branch or folder name that is not English comes out as `µ⌐ƒΦâ╜/x` or `funci├│n`: that was a defect
-in the status line itself and is fixed. Claude Code sends the payload as UTF-8, and both scripts now
-decode stdin as UTF-8 explicitly, whatever the console's input code page happens to be — 437 on an
-ordinary Windows console, or the machine's OEM code page in a console the host makes fresh for the
-render. Nothing needs setting: no `chcp`, no `[Console]::InputEncoding`, no beta UTF-8 option in
-Windows. If you still see it, you are running an older copy — reinstall with `.\install.ps1`, and with
-`.\install.ps1 -Subagents` as well if you use the agent panel, since the panel's script is only
-installed under that switch and carries the same read path. A name whose characters your terminal font
-has no glyph for is the other symptom and a different problem; see the boxes-and-question-marks entry
-above.
+A non-English branch or folder name comes out as `µ⌐ƒΦâ╜/x`: you are running an old copy. Reinstall,
+with `-Subagents` if you use the panel; nothing else needs setting.
 
-The status line is blank: run `.\test.ps1` to confirm the script works, then check that `pwsh` is on
-your `PATH` and that the `command` path in `settings.json` exists.
+The status line is blank: run `.\test.ps1`, then check that `pwsh` is on your `PATH` and that the
+`command` path in `settings.json` exists.
 
-No branch segment: the script runs `git status` in the session's working directory. Check that
-`git` is on your `PATH` and that the directory is inside a repository. If `git status` takes longer
-than 1.5 seconds the segment is skipped for that refresh; `git.timeoutMs` in `statusline.json`
-raises the limit for a large repository or a slow disk.
+No branch segment: `git` is not on your `PATH`, the directory is not in a repository, or `git status`
+took longer than `git.timeoutMs` (1.5 s). A segment a few seconds behind is the cache: `git.cacheSeconds`
+shortens it, `"cache": false` turns it off. No arrows means no upstream; `git branch -u origin/<branch>`
+sets one. `?1` for a folder of new files is git counting the directory as one entry.
 
-The branch segment is a few seconds behind: that is the cache. The last `git status` answer for
-each repository sits in `%TEMP%\claude-statusline\` and is reused for five seconds unless something
-under `.git` changes (a commit, checkout, add, reset, merge, fetch or push all count, and so does an
-edit to `.git/config` or `.git/info/exclude`), so an edit or a new file in the work tree, or a change
-to your global git config or `core.excludesFile`, can take up to five seconds to show.
-`git.cacheSeconds` shortens the window, `0` or `"cache": false` turns it off. The folder is safe to
-delete at any time; the next render writes it again, and entries not written for a day are swept.
+Colours look washed out on a pale terminal: `"palette": "light"`, or `.\install.ps1 -DetectTheme`.
 
-No arrows after the branch name: the branch has no upstream, or the upstream branch was deleted.
-`git branch -u origin/<branch>` sets one.
+`]8;;` or a URL printed as text: the terminal does not know OSC 8 hyperlinks. Set `"links": false`.
+Ctrl-click on the branch opening the repository home rather than the branch is expected off `github.com`.
 
-`?1` for a folder full of new files: git reports an untracked directory as a single entry. The
-count is of entries, not files.
+The taskbar bar flickers or sticks: both writers are on, or the last bar drawn is still there. See
+[docs/taskbar.md](docs/taskbar.md).
 
-The line still wraps: the script measures width with a small approximation. Wide glyphs or emoji
-in a folder or branch name can be counted short on some terminals. At very narrow widths the model
-segment prints even when it does not fit.
-
-Colours look washed out, or the chevron between segments is invisible: the default colours are chosen
-for a dark terminal. Set `"palette": "light"` in `statusline.json`, or run `.\install.ps1 -DetectTheme`
-to have it read Windows Terminal's colour scheme and set the key for you. See
-[Light palette](#light-palette). The agent panel follows the same key: it reads no config file, so
-the installer bakes the palette into the command it writes - rerun `.\install.ps1` after changing the
-key and the panel comes along. See [Style and palette in the panel](#style-and-palette-in-the-panel).
-
-`]8;;` or a URL printed as text on the line: the terminal does not understand OSC 8 hyperlinks and does
-not swallow them either. Set `"links": false` in `statusline.json` and the folder, branch and
-pull-request segments render as plain text. Windows Terminal and the VS Code terminal both render them,
-and most others ignore them silently, so this is the third kind of terminal.
-
-Ctrl-click on the branch opens the wrong page: the link goes to the branch page only on `github.com`.
-Every other host gets the repository home instead, because GitLab, Bitbucket, Gitea and Azure DevOps
-each spell a branch path differently and a wrong guess is a 404. The folder link opens the session's
-current directory; a relative or UNC `current_dir` is left unlinked rather than guessed at.
-
-The taskbar bar flickers, or keeps going back to Claude Code's turn progress: both writers are on.
-Set `"terminalProgressBarEnabled": false` in `settings.json`, or `"taskbar": false` in
-`statusline.json`; see [Taskbar progress](#taskbar-progress). A bar that is stuck after turning
-`taskbar` off is the last one the status line drew — close the window, or run
-``Write-Host "`e]9;4;0;0`a" -NoNewline`` in that terminal.
-
-The bar is stuck on an old percentage: it clears itself on the next render whose payload parses, so
-this means every render since has been given something that is not JSON — the line beside it will have
-been reduced to the model glyph and the word `claude`. If the bar is stale and the line is not, the key
-is set in a project's `.claude/statusline.json` rather than in your own; move it, and see
-[Taskbar progress](#taskbar-progress) for why that matters.
-
-Nothing to go on: the git probe, the probe cache, the project config read and the state file swallow
-every failure, so a missing branch segment, a project config that never seems to apply, or a cache
-that never seems to hit leaves nothing behind to look at. Set `CLAUDE_STATUSLINE_DEBUG` to `1` and
-each swallowed failure, each cache hit and miss, each refused config and each state read and write
-appends a line to `claude-statusline-diag.log` in your temp folder:
-
-```text
-2026-09-03T09:14:02.118Z 24880 git cache: miss (no entry yet)
-2026-09-03T09:14:02.402Z 24880 git probe: git exited 128
-2026-09-03T09:14:02.409Z 24880 config read: D:\repo\.claude\statusline.json was not read: it is 91204 bytes, over the 65536 byte cap
-2026-09-03T09:14:02.415Z 24880 state: written (C:\Users\jim\AppData\Local\Temp\claude-statusline-state\abc.json)
-```
-
-A `statusline.json` that is not applied says which of the refusals it hit — it could not be opened,
-the handle is not an ordinary file, it is a link or a reparse point (the project's file only), it is
-over the byte cap, the deadline was spent, the file is empty, or it would not parse — so "why is my
-config being ignored?" has an answer in the log rather than needing the script edited. Both files
-report this way; the path in the line says which one it was.
-
-The printed line is the same either way, and a log that cannot be written is as silent as the failure
-it records. Writing a record is itself bounded: your temp folder is a filesystem like any other and
-can be a share that stalls, so each record gets a quarter of a second and is dropped if it cannot be
-written in that. A missing line is better than a status line that waits. Anything in a reason that a
-terminal would act on rather than show — an escape, a format character — is written as `<U+001B>`
-notation, because a repository's own config file can put text into a parser's error message, and a log
-you open to read should not be able to clear your screen. The log rolls over into
-`claude-statusline-diag.log.1` once it would pass 4 MB, so
-leaving the variable set costs two files of that size at most, plus a small `.lock` file kept beside
-the log to serialise a rollover against another render's — left behind by design rather than deleted
-on release, since deleting it would race a process already waiting to open it. Treat the 4 MB as
-approximate: the log is best-effort and never waits on anything, so two renders that overlap can leave
-the file a little over the cap, or lose one of their lines to each other. Rolling over means renaming,
-and a rename is the one thing here that cannot be put behind the deadline, so it is only attempted
-when the folder has just answered two size questions quickly. If it has not — a share gone slow — the
-record is dropped and the log sits at its cap until a render finds the folder responsive again, which
-it does on its own. Unset the variable when you are done (`0`,
-`false`, `no` and `off` also count as off) and delete all three files.
+Nothing to go on: set `CLAUDE_STATUSLINE_DEBUG=1` and every swallowed failure, cache miss and refused
+config writes a line to `claude-statusline-diag.log` in your temp folder. See
+[docs/diagnostics.md](docs/diagnostics.md).
 
 ## Contributing
 
@@ -1093,83 +244,22 @@ Install-Module PSScriptAnalyzer -Scope CurrentUser
 Get-ChildItem *.ps1, docs\*.ps1, tools\*.ps1 | ForEach-Object { Invoke-ScriptAnalyzer -Path $_.FullName -Settings .\PSScriptAnalyzerSettings.psd1 }
 ```
 
-The suite takes about twelve minutes alone and much longer beside other work, and some of it is
-load-sensitive: the child renders in the sample matrix read the test config under the script's own
-250 ms budget, so a loaded machine can make one render draw the defaults and fail a random cell
-([#99](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/99)); the diagnostics
-record budget and the render-cost delegate ([#94](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/94))
-and the git-cache stamp tests ([#102](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/102))
-can go the same way. Re-run a failing check alone before reading it as a regression.
-
-The analyzer settings exclude the Write-Host rule, which a status line cannot avoid, and the
-positional-parameters rule, because the script and its tests call their own small helpers
-positionally. If you add a segment or a sample, add a payload to `samples/` and give it a row in the
-`$sampleSegments` and `$sampleMarkers` tables in `test.ps1` (which segments it shows, and the glyph
-and value to look for). A sample without those rows fails the run by name. A sample with a segment
-that has a short form, such as a branch with counts or a folder with a repository, also needs an
-entry in `$sampleShortForms`, the full and shortened text the matrix accepts at a set width, unless
-its full text cannot fit at 120 columns, as sample 06's limits line does with every badge on.
-A sample whose percentages reach the `alarm` level needs its name in `$alarmSamples` as well: the
-markers are plain text and cannot see a colour, so that list is what tells the matrix whether the
-model segment should be red or cyan, and it checks both.
-Then regenerate the screenshots at the top of this file with
-`pwsh docs/render-screenshot.ps1` and
-`pwsh docs/render-screenshot.ps1 -Config docs/statusline-two-line.json -Out docs/statusline-two-line.png`.
-Both PNGs are regenerated by hand rather than in CI, and not byte-for-byte reproducible between runs:
-the two-line shot turns the `time` segment on to show all twelve segments, and `Get-TimeSegment` reads
-the wall clock directly with no way to pin it, so that image always shows whatever time it was captured
-at.
-
-Commits are scanned for secrets with [gitleaks](https://github.com/gitleaks/gitleaks), both in CI
-and through a pre-commit hook. To enable the hook in your clone:
-
-```powershell
-winget install Gitleaks.Gitleaks
-git config core.hooksPath .githooks
-```
+Some checks are load-sensitive ([#94](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/94),
+[#99](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/99),
+[#102](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/102)); re-run a failing
+check alone before reading it as a regression. Adding a segment or a sample, and regenerating the
+screenshots, is described in [docs/testing.md](docs/testing.md). Commits are scanned for secrets with
+[gitleaks](https://github.com/gitleaks/gitleaks); `winget install Gitleaks.Gitleaks` and
+`git config core.hooksPath .githooks` enable the pre-commit hook.
 
 ## Roadmap
 
-Done so far:
-
-- [x] Query git directly for branch and dirty state
-- [x] Optional two-line layout and powerline style
-- [x] Ahead and behind counts on the branch
-- [x] Staged, changed, untracked and conflict counts on the branch
-- [x] `1M` marker and past-200k warning on the model segment, wider colour bands for a 1M window
-- [x] Spend limit beside the rate limits
-- [x] `owner/name` in the folder segment
-- [x] Installer switch for the refresh interval
-- [x] Per-session state file, so a later render can see what changed
-- [x] Pull-request segment with a clickable link
-- [x] Segment order, rows, colour cut-offs and glyphs as `statusline.json` keys
-- [x] Cached `git status` with a configurable timeout
-- [x] Optional diagnostics log behind `CLAUDE_STATUSLINE_DEBUG`
-- [x] Pace arrow on the 5-hour rate limit
-- [x] Per-project `statusline.json` merged over the user file
-- [x] A subagent status line for the agent panel, installed with `-Subagents`
-- [x] `-Style` and `-Palette` on the subagent panel, baked into the command by the installer
-- [x] Named presets: `minimal`, `cost` and `full` under one `preset` key
-- [x] Worktree name beside the branch
-- [x] Cost per turn beside the session total, from the state file
-- [x] Prompt cache warmth and the time left on it
-- [x] Session clock with the share of it spent waiting on the API
-- [x] Ctrl-clickable folder and branch, under a `links` key
-- [x] Context percentage on the taskbar button, behind a `taskbar` key
-- [x] An `ascii` style that needs no Nerd Font
-- [x] A right-aligned group under a `right` key, and a wall-clock segment to put in it
-- [x] A light palette under a `palette` key, and `-DetectTheme` to set it from Windows Terminal's scheme
-- [x] The payload decoded as UTF-8 whatever the console code page, so non-English names render as sent
-- [x] Both config files, the git cache and the state file read under one bounded, encoding-aware reader
-- [x] Installer backups at project-owned names with their provenance checked before they are touched
-- [x] Screenshots regenerated from the shipped samples, showing every segment
-
-[The open issues](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues) hold what comes
-next. None is a feature; each records a limit found under review and what closing it would take:
-plain-style markers that use the terminal's own `brightBlack` (#88), six light-palette block pairs whose
-joining arrow disappears (#89), a diagnostics log that can outgrow its cap while another render holds
-the lock (#93), test families that fail under parallel load rather than on a defect (#94, #99), and a
-clock seam so the screenshots regenerate to the same bytes (#98).
+The feature backlog is done. [The open issues](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues)
+record limits found under review: plain-style markers that use the terminal's own `brightBlack`
+(#88), six light-palette block pairs whose joining arrow disappears (#89), a diagnostics log that can
+outgrow its cap while another render holds the lock (#93), test families that fail under parallel
+load (#94, #99, #102), and a clock seam so the screenshots regenerate to the same bytes (#98). The
+design record is [docs/projectbrief.md](docs/projectbrief.md).
 
 ## License
 
