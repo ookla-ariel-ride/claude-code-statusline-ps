@@ -2532,7 +2532,8 @@ Confirm-Equal $pal.Roles.warn.Sgr '33' 'palette warn sgr'
 Confirm-Equal $pal.Roles.warn.Fg 16 'palette warn fg'
 Confirm-Equal $pal.Roles.branch.Bg 90 'palette branch bg'
 Confirm-Equal $pal.Inline.added.Light 46 'palette inline added fg on a light-inked block'
-Confirm-Equal $pal.Inline.cached.Sgr '90' 'palette inline cached sgr'
+Confirm-Equal $pal.Inline.cached.Sgr '38;5;246' 'palette inline cached sgr'
+Confirm-Equal $pal.Inline.track.Sgr '38;5;246' 'palette inline track sgr'
 Confirm-Equal $pal.Inline.cached.Light 86 'palette inline cached fg on a light-inked block'
 # One palette table as a single sorted string, so two tables compare as text whatever order a
 # hashtable happens to enumerate its keys in.
@@ -2782,8 +2783,44 @@ foreach ($i in $inlineNames) {
     Confirm-True ($null -ne $idx) "light palette: inline $i names a 256-colour index"
     if ($null -ne $idx) {
         $w = Get-ContrastRatio (Get-XtermRgb $idx) $groundWhite
+        $pale = Get-ContrastRatio (Get-XtermRgb $idx) $groundPale
         if ($w -lt $worstInlineWhite) { $worstInlineWhite = $w }
+        if ($pale -lt $worstInlineWhite) { $worstInlineWhite = $pale }
         Confirm-True ($w -ge 4.5) ("light inline ${i}: colour $idx on white is {0:N2}:1" -f $w)
+        Confirm-True ($pale -ge 4.5) ("light inline ${i}: colour $idx on #F5F5F5 is {0:N2}:1" -f $pale)
+    }
+}
+# 4c. THE PLAIN HALF OF RULE 4, NOW FOR BOTH TABLES (#88). In plain style there is no block: a marker
+#    is drawn on the terminal's own ground beside the segment's own foreground, so half (a) becomes a
+#    ratio against that ground and half (b) has nothing to measure - in the dark table the segment
+#    colour beside it is one of the basic sixteen and has no hex. The dark `track` and `cached` used
+#    to be `90`, bright black, which is the terminal's scheme's to say and so could not be measured
+#    here at all. What that hid: on Solarized Dark, brightBlack #586E75 on a #002B36 ground, the
+#    `92% cached` suffix and the `+3 ~1 ?2` branch counts came out at 2.79:1 - under even the 3:1 bar
+#    a marker clears inside a block, on the shipped default style. Both are 256-colour indices now,
+#    so both tables are held to the same 4.5 the light table's plain markers already were.
+#    TWO GROUNDS EACH, the way rule 1 takes two: white and an off-white for the light table, and for
+#    the dark one Campbell (#0C0C0C, Windows Terminal's default) and Solarized Dark (#002B36). The
+#    Solarized ground is the LIGHTER of the two and therefore the harder one - it is what rules out
+#    245, which clears 5.67 on Campbell and only 4.35 there - and it is the scheme the bug was found
+#    on, so the bar is set by the case that failed rather than by the case that happened to pass.
+#    THE OTHER THREE DARK MARKERS ARE STILL BASIC-SIXTEEN, deliberately: `added` 32, `removed` 31 and
+#    `muted` 22;36 are hues rather than greys, and a scheme's own green is better tuned to that
+#    scheme's ground than any one index picked against two grounds here. The set that IS measurable is
+#    pinned, so converting another marker has to be written down rather than quietly widening a rule.
+$groundSolarized = @(0, 43, 54)   # Solarized Dark's background #002B36
+$darkPlainMeasured = @($inlineNames | Where-Object { $null -ne (Get-SgrColourIndex $dark.Inline[$_].Sgr) } | Sort-Object)
+Confirm-Equal ($darkPlainMeasured -join ',') 'cached,track' 'dark palette: the inline markers whose plain code is a measurable 256-colour index'
+$worstInlineDark = 99.0
+foreach ($i in @('track', 'cached')) {
+    $idx = Get-SgrColourIndex $dark.Inline[$i].Sgr
+    Confirm-True ($null -ne $idx) "dark palette: inline $i names a 256-colour index, not one of the 16 the terminal picks"
+    if ($null -ne $idx) {
+        foreach ($g in @(@{ N = '#0C0C0C'; Rgb = $groundBlack }, @{ N = '#002B36'; Rgb = $groundSolarized })) {
+            $ratio = Get-ContrastRatio (Get-XtermRgb $idx) $g.Rgb
+            if ($ratio -lt $worstInlineDark) { $worstInlineDark = $ratio }
+            Confirm-True ($ratio -ge 4.5) ("dark inline ${i}: colour $idx on $($g.N) is {0:N2}:1" -f $ratio)
+        }
     }
 }
 foreach ($p in @(@{ N = 'light'; T = $light }, @{ N = 'dark'; T = $dark })) {
@@ -2801,7 +2838,7 @@ foreach ($p in @(@{ N = 'light'; T = $light }, @{ N = 'dark'; T = $dark })) {
     }
     Write-Host ("   $($p.N) inline: worst against a background {0:N2}:1 ($worstBlockAt), worst against block text {1:N1} ($worstInkAt)" -f $worstBlock, $worstInk)
 }
-Write-Host ("   light inline on white: worst {0:N2}:1" -f $worstInlineWhite)
+Write-Host ("   inline on the terminal's own ground, plain style: light worst {0:N2}:1, dark worst {1:N2}:1" -f $worstInlineWhite, $worstInlineDark)
 # A contrast floor is only worth having if the colour it names is the one the terminal ends up in, so
 # the ratios above are joined to the bytes here. This one exact string carries all three of the things
 # that could go wrong: the marker is the colour the RIGHT INK COLUMN names, so a block cannot be handed
@@ -3430,7 +3467,7 @@ $plain32 = "$iconCtx 32% $barCache"
 # because Confirm-Equal compares ordinally: a stray format character between the counts and the
 # suffix would slip past a culture comparison.
 $seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500) $cacheCfg
-Confirm-Equal $seg.Text "$plain32$counts32 $esc[90m92% cached$esc[32m" 'context cached 92: the whole rendered text'
+Confirm-Equal $seg.Text "$plain32$counts32 $esc[38;5;246m92% cached$esc[32m" 'context cached 92: the whole rendered text'
 Confirm-Equal $seg.Text "$plain32$counts32 $(Format-Inline 'cached' '92% cached' 'ok' 'plain')" 'context cached 92: the suffix is the cached inline role'
 Confirm-Equal $seg.Short $plain32 'context cached 92: the suffix never reaches Short'
 Confirm-Equal $seg.Role 'ok' 'context cached 92: the suffix does not touch the role'
@@ -3439,7 +3476,7 @@ Confirm-Equal $seg.Text "$plain32$counts32 $esc[38;5;86m92% cached$esc[38;5;231m
 Confirm-Equal $seg.Short $plain32 'context cached 92 in powerline: the suffix never reaches Short'
 # The same payload as JSON: ConvertFrom-Json hands the counts over as Int64 or Double, not Int32.
 $seg = Get-ContextSegment (Get-JsonPayload 'context_window' '{"used_percentage":32,"total_input_tokens":60000,"total_output_tokens":4000,"context_window_size":200000,"current_usage":{"input_tokens":2000,"cache_creation_input_tokens":3000,"cache_read_input_tokens":57500}}') $cacheCfg
-Confirm-Equal $seg.Text "$plain32$counts32 $esc[90m92% cached$esc[32m" 'context cached 92: a payload parsed from JSON renders the same text'
+Confirm-Equal $seg.Text "$plain32$counts32 $esc[38;5;246m92% cached$esc[32m" 'context cached 92: a payload parsed from JSON renders the same text'
 
 # The share goes through Get-WholePercent, the one rule behind every percentage this script prints,
 # so it rounds half to even like the meter beside it: 92.5 gives 92 and 97.5 gives 98.
@@ -3486,14 +3523,14 @@ foreach ($row in @(
 # These two rows sit either side of that boundary. The comment above Get-CacheShare once claimed the
 # result was in range by arithmetic and no test covered the range, which is how it shipped.
 $seg = Get-ContextSegment (Get-CachePayload 1 0 1e307) $cacheCfg
-Confirm-Equal $seg.Text "$plain32$counts32 $esc[90m100% cached$esc[32m" 'context cached: a read past the overflow boundary still divides to 100, not to the Int32 ceiling'
+Confirm-Equal $seg.Text "$plain32$counts32 $esc[38;5;246m100% cached$esc[32m" 'context cached: a read past the overflow boundary still divides to 100, not to the Int32 ceiling'
 $seg = Get-ContextSegment (Get-CachePayload 1 0 1e306) $cacheCfg
-Confirm-Equal $seg.Text "$plain32$counts32 $esc[90m100% cached$esc[32m" 'context cached: and just under the boundary, unchanged'
+Confirm-Equal $seg.Text "$plain32$counts32 $esc[38;5;246m100% cached$esc[32m" 'context cached: and just under the boundary, unchanged'
 
 # Short is what stage 1 of the fitting swaps in, so a segment carrying a suffix has to have one even
 # when the payload gives it no token counts at all. Without this the suffix could never be shed.
 $seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500 0) $cacheCfg
-Confirm-Equal $seg.Text "$plain32 $esc[90m92% cached$esc[32m" 'context cached with no token counts: the suffix still renders'
+Confirm-Equal $seg.Text "$plain32 $esc[38;5;246m92% cached$esc[32m" 'context cached with no token counts: the suffix still renders'
 Confirm-Equal $seg.Short $plain32 'context cached with no token counts: there is still a Short form to shed it'
 Confirm-Equal (Get-ContextSegment (Get-CachePayload 0 0 0 0) $cacheCfg).Short $null 'context cached: no counts and no suffix leaves no Short form'
 
@@ -3515,7 +3552,7 @@ foreach ($row in @(
     foreach ($styleName in @('plain', 'powerline')) {
         $roleCfg = @{ Style = $styleName; Thresholds = $row.Bands }
         $seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500) $roleCfg
-        $open = if ($styleName -eq 'plain') { "$esc[90m" } else { "$esc[38;5;$($row.Mark)m" }
+        $open = if ($styleName -eq 'plain') { "$esc[38;5;246m" } else { "$esc[38;5;$($row.Mark)m" }
         $back = if ($styleName -eq 'plain') { "$esc[$($row.Plain)m" } else { "$esc[38;5;$($row.Fg)m" }
         $roleLabel = "context cached on a $($row.Role) meter in $styleName"
         Confirm-Equal $seg.Role $row.Role "${roleLabel}: 32% bands as $($row.Role) here"
@@ -5055,7 +5092,7 @@ Confirm-Equal $seg.Role 'warn' 'branch payload boolean: role'
 
 $seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = ('{"modified":2,"untracked":1}' | ConvertFrom-Json) } }) $branchCfg
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ~2 ?1 $iconDirty" 'branch payload modified and untracked: tilde then question mark'
-Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m~2$esc[33m $esc[90m?1$esc[33m $iconDirty" 'branch payload modified and untracked: counts dim, warn colour restored'
+Confirm-Equal $seg.Text "$iconBranch feature/x $esc[38;5;246m~2$esc[33m $esc[38;5;246m?1$esc[33m $iconDirty" 'branch payload modified and untracked: counts dim, warn colour restored'
 Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch payload modified and untracked: short has no counts'
 $seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = 'modified' } }) $branchCfg
 Confirm-Equal $seg.Text "$iconBranch feature/x $iconDirty" 'branch payload string status: pencil only, no counts'
@@ -5200,7 +5237,7 @@ Confirm-Equal (Get-VisibleWidth $seg.Text) (Get-VisibleWidth "$iconBranch featur
 Confirm-Equal (Measure-VisibleWidth $seg.Text) (Get-VisibleWidth $seg.Text) 'branch link: the script and the test count the same width'
 Confirm-Equal $seg.Role 'branch' 'branch link: the role is untouched'
 $seg = Get-BranchSegment ('{"git":{"branch":"feature/x","status":{"modified":2}},"worktree":{"name":"wt-review"},"workspace":{"git_worktree":true,"repo":{"host":"github.com","owner":"octo","name":"demo"}}}' | ConvertFrom-Json) $branchLinkCfg
-Confirm-Equal $seg.Text "$branchLinkOpen$iconBranch feature/x $iconWorktree wt-review $esc[90m~2$esc[33m $iconDirty${linkClose}" 'branch link: the badge, the counts and the pencil are all inside the one link'
+Confirm-Equal $seg.Text "$branchLinkOpen$iconBranch feature/x $iconWorktree wt-review $esc[38;5;246m~2$esc[33m $iconDirty${linkClose}" 'branch link: the badge, the counts and the pencil are all inside the one link'
 Confirm-Equal $seg.Short "$branchLinkOpen$iconBranch feature/x $iconDirty${linkClose}" 'branch link: the short form is the name and the pencil, linked'
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x $iconWorktree wt-review ~2 $iconDirty" 'branch link: the visible text is what it was without the link'
 $unlinkedBadge = Get-BranchSegment ('{"git":{"branch":"feature/x","status":{"modified":2}},"worktree":{"name":"wt-review"},"workspace":{"git_worktree":true}}' | ConvertFrom-Json) $branchLinkOffCfg
@@ -5240,7 +5277,7 @@ $probePayload = [pscustomobject]@{ workspace = @{ current_dir = 'x' } }
 $script:mockGitBranch = Get-BranchRecord 'feature/x' $false -Ahead 1 -Behind 2
 $seg = Get-BranchSegment $probePayload @{ Git = (Get-DefaultGitConfig) }
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ${iconAhead}1 ${iconBehind}2" 'branch counts: ahead then behind after the name'
-Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m${iconAhead}1$esc[35m $esc[90m${iconBehind}2$esc[35m" 'branch counts: arrows dim, branch colour restored (plain, no style in the cfg)'
+Confirm-Equal $seg.Text "$iconBranch feature/x $esc[38;5;246m${iconAhead}1$esc[35m $esc[38;5;246m${iconBehind}2$esc[35m" 'branch counts: arrows dim, branch colour restored (plain, no style in the cfg)'
 Confirm-Equal $seg.Short "$iconBranch feature/x" 'branch counts: short has no arrows'
 Confirm-Equal $seg.Role 'branch' 'branch counts: role'
 $seg = Get-BranchSegment $probePayload $branchPowerlineCfg
@@ -5258,13 +5295,13 @@ Confirm-Equal $seg.Short "$iconHome main" 'branch zero counts: short is the same
 $script:mockGitBranch = Get-BranchRecord 'feature/x' $true -Ahead 1 -Behind 1
 $seg = Get-BranchSegment $probePayload $branchCfg
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ${iconAhead}1 ${iconBehind}1 $iconDirty" 'branch dirty with counts: pencil last'
-Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m${iconAhead}1$esc[33m $esc[90m${iconBehind}1$esc[33m $iconDirty" 'branch dirty with counts: arrows restore the warn colour'
+Confirm-Equal $seg.Text "$iconBranch feature/x $esc[38;5;246m${iconAhead}1$esc[33m $esc[38;5;246m${iconBehind}1$esc[33m $iconDirty" 'branch dirty with counts: arrows restore the warn colour'
 Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch dirty with counts: short keeps the pencil, drops the arrows'
 Confirm-Equal $seg.Role 'warn' 'branch dirty with counts: role'
 $script:mockGitBranch = Get-BranchRecord 'feature/x' $true -Ahead 1 -Behind 2 -Staged 2 -Modified 1 -Untracked 3 -Conflicts 1
 $seg = Get-BranchSegment $probePayload $branchCfg
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ${iconAhead}1 ${iconBehind}2 +2 ~1 ?3 ${iconConflict}1 $iconDirty" 'branch everything: arrows, staged, modified, untracked, conflict, pencil'
-Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m${iconAhead}1$esc[33m $esc[90m${iconBehind}2$esc[33m $esc[90m+2$esc[33m $esc[90m~1$esc[33m $esc[90m?3$esc[33m $esc[31m${iconConflict}1$esc[33m $iconDirty" 'branch everything: counts dim, conflict red, warn colour restored after each'
+Confirm-Equal $seg.Text "$iconBranch feature/x $esc[38;5;246m${iconAhead}1$esc[33m $esc[38;5;246m${iconBehind}2$esc[33m $esc[38;5;246m+2$esc[33m $esc[38;5;246m~1$esc[33m $esc[38;5;246m?3$esc[33m $esc[31m${iconConflict}1$esc[33m $iconDirty" 'branch everything: counts dim, conflict red, warn colour restored after each'
 Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch everything: short is icon, name, pencil'
 $script:mockGitBranch = Get-BranchRecord 'main' $true -Staged 1 -Modified 2
 $seg = Get-BranchSegment $probePayload $branchCfg
@@ -6715,11 +6752,11 @@ if ($haveGit) {
     $gitCases.Add(@{ Name = 'clean';           Dir = $clean;          Has = "$iconHome main";              Not = $iconDirty; Config = $gitPatient })
     $gitCases.Add(@{ Name = 'dirty tracked';   Dir = $dirtyTracked;   Has = "$iconHome main ~1 $iconDirty";  Raw = "$esc[33m"; Config = $gitPatient })
     $gitCases.Add(@{ Name = 'dirty untracked'; Dir = $dirtyUntracked; Has = "$iconHome main ?1 $iconDirty"; Config = $gitPatient })
-    $gitCases.Add(@{ Name = 'mixed';           Dir = $mixed;          Has = "$iconHome main +1 ~1 ?1 $iconDirty"; Not = $iconConflict; Raw = "$esc[90m+1$esc[33m $esc[90m~1$esc[33m $esc[90m?1$esc[33m"; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'mixed';           Dir = $mixed;          Has = "$iconHome main +1 ~1 ?1 $iconDirty"; Not = $iconConflict; Raw = "$esc[38;5;246m+1$esc[33m $esc[38;5;246m~1$esc[33m $esc[38;5;246m?1$esc[33m"; Config = $gitPatient })
     $gitCases.Add(@{ Name = 'feature';         Dir = $feature;        Has = "$iconBranch feature/x"; Config = $gitPatient })
     $gitCases.Add(@{ Name = 'unborn';          Dir = $unborn;         Has = "$iconHome main";              Not = $iconDirty; Config = $gitPatient })
     $gitCases.Add(@{ Name = 'detached';        Dir = $detached;       Has = "$iconBranch detached"; Config = $gitPatient })
-    $gitCases.Add(@{ Name = 'ahead';           Dir = $ahead;          Has = "$iconBranch topic ${iconAhead}1"; Not = $iconBehind; Raw = "$esc[90m${iconAhead}1$esc[35m"; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'ahead';           Dir = $ahead;          Has = "$iconBranch topic ${iconAhead}1"; Not = $iconBehind; Raw = "$esc[38;5;246m${iconAhead}1$esc[35m"; Config = $gitPatient })
     $gitCases.Add(@{ Name = 'behind';          Dir = $behind;         Has = "$iconHome main ${iconBehind}1";   Not = $iconAhead; Config = $gitPatient })
 }
 $notRepo = Join-Path $tmp 'not-a-repo'; New-Item -ItemType Directory -Force $notRepo | Out-Null
@@ -9600,7 +9637,7 @@ $bogusConfig = Write-TempConfig 'render-palette-bogus.json' '{ "palette": "beige
 $plainConfig = Write-TempConfig 'render-palette-none.json' '{}'
 # Every SGR run the dark table can put on a plain line, so "none of these" is a claim about the whole
 # table rather than about the two codes the issue named.
-$darkPlainCodes = @("$esc[1;36m", "$esc[32m", "$esc[33m", "$esc[31m", "$esc[90m", "$esc[34m", "$esc[35m", "$esc[22;36m")
+$darkPlainCodes = @("$esc[1;36m", "$esc[32m", "$esc[33m", "$esc[31m", "$esc[90m", "$esc[34m", "$esc[35m", "$esc[22;36m", "$esc[38;5;246m")
 foreach ($name in @('01-main-clean.json', '06-limits-badges-lines.json')) {
     $p = $samplePayloads[$name]
     $rLight = Invoke-StatusLine $p $lightConfig 0
