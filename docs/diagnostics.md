@@ -37,3 +37,15 @@ when the folder has just answered two size questions quickly. If it has not — 
 record is dropped and the log sits at its cap until a render finds the folder responsive again, which
 it does on its own. Unset the variable when you are done (`0`,
 `false`, `no` and `off` also count as off) and delete all three files.
+
+## Pinning the clock
+
+`CLAUDE_STATUSLINE_NOW` replaces the wall clock the script reads once per render, so the cache
+countdown, the rate-limit countdown, the pace arrow and the `time` segment all come out the same on
+every run. It takes an ISO-8601 instant that **carries an offset** — `2026-01-15T14:05:00+00:00`, or
+`Z`, or any `±hh:mm` — and that offset is the zone `time` prints its `HH:mm` in, so the same value
+renders the same line on any machine in any zone. Anything else, an epoch count or an instant with no
+offset included, is refused and the machine's own clock is used; with `CLAUDE_STATUSLINE_DEBUG` on, a
+refusal says so in the log. It exists for `docs/render-screenshot.ps1` and the tests, which is why the
+two README screenshots regenerate to the same bytes; leaving it set in a profile would freeze your
+status line's clock at whatever instant it names.
