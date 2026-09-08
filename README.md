@@ -36,7 +36,7 @@ you are to a rate limit, and which modes are on. It installs into your user sett
 - `"style": "ascii"` draws the whole line in plain characters for a terminal whose font you cannot change; `"palette": "light"` recolours it for a pale background.
 - A matching row for each subagent in the agent panel, and optionally the context percentage on the taskbar button.
 - Fits the terminal width by shedding detail, then the right group, then whole segments, so lines stop wrapping.
-- Payload decoded as UTF-8 whatever the console code page, so non-English names render as sent. Missing fields drop their segment; a payload that will not parse still prints the model glyph.
+- Payload decoded as UTF-8 whatever the console code page, so non-English names render as sent. Missing fields drop their segment; a payload that will not parse still prints the model glyph and the word `claude`.
 - No modules. PowerShell 7 and a Nerd Font are the whole dependency list, and `ascii` drops the font.
 
 ## Requirements
@@ -179,16 +179,16 @@ Code draws its own turn-progress bar there; set `"terminalProgressBarEnabled": f
 |---|---|---|---|
 | model | <img src="docs/icons/robot.svg" height="18" alt="robot"> | `model.display_name` | Bold cyan; `1M` on a 1M window, a warning once the payload reports `exceeds_200k_tokens`; red at the `alarm` level. Never shortened or dropped. |
 | context | <img src="docs/icons/memory.svg" height="18" alt="memory"> | `context_window.*` | Percent, ten-block bar, used/total, `92% cached`. Green, yellow, red on the thresholds. |
-| cache | <img src="docs/icons/fire.svg" height="18" alt="fire"> | `prompt_cache.*` | `cache 42m`, yellow in the last five minutes; red `cache cold` or `cache off`. |
+| cache | <img src="docs/icons/fire.svg" height="18" alt="fire"> | `prompt_cache.*` | `cache 42m`, yellow in the last five minutes; `cache warm` when alive with no usable expiry; red `cache cold` or `cache off`. Absent until Claude Code sends the block. |
 | cost | <img src="docs/icons/cash.svg" height="18" alt="cash"> | `cost.total_cost_usd` | `$1.07 (+$0.12)`, the delta from the state file. |
 | clock | <img src="docs/icons/timer-outline.svg" height="18" alt="stopwatch"> | `cost.total_duration_ms`, `total_api_duration_ms` | `1h12m · api 38%`, dim, no bands. |
 | time | <img src="docs/icons/clock-outline.svg" height="18" alt="clock"> | the machine clock | `14:05`. Off by default; needs a refresh interval. |
 | lines | <img src="docs/icons/code.svg" height="18" alt="code"> | `cost.total_lines_*` | `+N` green, `−N` in the `removed` colour. Hidden at zero. |
-| limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> | `rate_limits.*` | `5h 24% → (1h12m) 7d 41% $ 62%`, coloured by the worst figure, with a pace arrow. |
-| badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> <img src="docs/icons/brain.svg" height="18" alt="brain"> <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> <img src="docs/icons/vim.svg" height="18" alt="vim"> <img src="docs/icons/user.svg" height="18" alt="user"> <img src="docs/icons/tag.svg" height="18" alt="tag"> | `fast_mode`, `thinking`, `effort`, `vim`, `agent`, `session_name` | Dim glyphs; hidden when nothing is on. |
+| limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> | `rate_limits.*` | `5h 24% → (1h12m) 7d 41% $ 62%`: the 5-hour figure with a pace arrow and the countdown to its reset, the 7-day figure, and the spend limit when sent. Coloured by the worst figure. |
+| badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> <img src="docs/icons/brain.svg" height="18" alt="brain"> <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> <img src="docs/icons/vim.svg" height="18" alt="vim"> <img src="docs/icons/user.svg" height="18" alt="user"> <img src="docs/icons/tag.svg" height="18" alt="tag"> | `fast_mode`, `thinking`, `effort`, `vim`, `agent`, `session_name` | Dim glyphs, modes first, then the agent and session names cut to 20 cells. Effort is hidden at `high`; the segment is hidden when nothing is on. |
 | pr | <img src="docs/icons/pull-request.svg" height="18" alt="pull request"> | `pr.*` | `#12`, linked; green approved, red changes requested. |
-| folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> | `workspace.*` | Blue `owner/name › dir`, linked to the directory. |
-| branch | <img src="docs/icons/home.svg" height="18" alt="home"> <img src="docs/icons/branch.svg" height="18" alt="branch"> <img src="docs/icons/fork.svg" height="18" alt="fork"> <img src="docs/icons/pencil.svg" height="18" alt="pencil"> | `git status` | Magenta clean, yellow dirty; worktree name, `↑N` `↓N` `+N` `~N` `?N` counts, conflicts; linked to the branch page. |
+| folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> | `workspace.*` | Blue `owner/name › dir` when the payload names a repository, else the directory name; linked to the directory. |
+| branch | <img src="docs/icons/home.svg" height="18" alt="home"> <img src="docs/icons/branch.svg" height="18" alt="branch"> <img src="docs/icons/fork.svg" height="18" alt="fork"> <img src="docs/icons/pencil.svg" height="18" alt="pencil"> | `git status` | Magenta clean, yellow with a pencil when dirty, `detached` on a detached HEAD; then the worktree name, `↑N` `↓N` `+N` `~N` `?N` counts and conflicts. Linked to the branch page on `github.com`, the repository home elsewhere. |
 
 The full rules for every segment, the branch counts and the worktree name are in
 [docs/segments.md](docs/segments.md). Icon names follow the
