@@ -553,6 +553,42 @@ named mutex, which was session-scoped on Unix (#49). The timing tests inject the
 racing them (#63). The installer's backups live at project-owned names and are provenance-checked
 (#52). The screenshots are regenerated from the shipped samples (#77).
 
+
+
+### What has shipped, in order
+
+- [x] Query git directly for branch and dirty state
+- [x] Optional two-line layout and powerline style
+- [x] Ahead and behind counts on the branch
+- [x] Staged, changed, untracked and conflict counts on the branch
+- [x] `1M` marker and past-200k warning on the model segment, wider colour bands for a 1M window
+- [x] Spend limit beside the rate limits
+- [x] `owner/name` in the folder segment
+- [x] Installer switch for the refresh interval
+- [x] Per-session state file, so a later render can see what changed
+- [x] Pull-request segment with a clickable link
+- [x] Segment order, rows, colour cut-offs and glyphs as `statusline.json` keys
+- [x] Cached `git status` with a configurable timeout
+- [x] Optional diagnostics log behind `CLAUDE_STATUSLINE_DEBUG`
+- [x] Pace arrow on the 5-hour rate limit
+- [x] Per-project `statusline.json` merged over the user file
+- [x] A subagent status line for the agent panel, installed with `-Subagents`
+- [x] `-Style` and `-Palette` on the subagent panel, baked into the command by the installer
+- [x] Named presets: `minimal`, `cost` and `full` under one `preset` key
+- [x] Worktree name beside the branch
+- [x] Cost per turn beside the session total, from the state file
+- [x] Prompt cache warmth and the time left on it
+- [x] Session clock with the share of it spent waiting on the API
+- [x] Ctrl-clickable folder and branch, under a `links` key
+- [x] Context percentage on the taskbar button, behind a `taskbar` key
+- [x] An `ascii` style that needs no Nerd Font
+- [x] A right-aligned group under a `right` key, and a wall-clock segment to put in it
+- [x] A light palette under a `palette` key, and `-DetectTheme` to set it from Windows Terminal's scheme
+- [x] The payload decoded as UTF-8 whatever the console code page, so non-English names render as sent
+- [x] Both config files, the git cache and the state file read under one bounded, encoding-aware reader
+- [x] Installer backups at project-owned names with their provenance checked before they are touched
+- [x] Screenshots regenerated from the shipped samples, showing every segment
+
 ## Future work
 
 The feature backlog is done. What remains open are limits recorded under review, none of them a
@@ -560,8 +596,8 @@ feature: plain-style `track` and `cached` markers use SGR 90, the terminal's own
 some dark schemes draw nearly invisible (#88); six of the light palette's block-background pairs are
 isoluminant, so the arrow between them vanishes (#89); the diagnostics log can outgrow its cap while
 another render holds the rollover lock (#93); two more test families fail under parallel load rather
-than on a defect (#94), and a parallel suite run can trip the 250 ms user-config clock and fail random
-matrix cells (#99); and a clock seam through `statusline.ps1` would make the screenshots and every
+than on a defect (#94), the git-cache stamp tests do the same (#102), and a parallel suite run can trip
+the 250 ms user-config clock and fail random matrix cells (#99); and a clock seam through `statusline.ps1` would make the screenshots and every
 clock-relative segment reproducible (#98). A registry refactor that let the two scripts share segment
 builders would remove the copied helpers in `subagent-statusline.ps1`; it is not worth it for fifteen
 short functions and a drift test. How the backlog was ordered, for the record:
