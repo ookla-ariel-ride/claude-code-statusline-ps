@@ -69,7 +69,7 @@ the previous version backed up beside it. The switches:
 | `-Style plain\|powerline\|ascii`, `-Palette dark\|light` | Writes that key into `statusline.json` and carries it into the agent panel's command. |
 | `-RefreshInterval <seconds>` | Re-renders on a timer as well as on events. Needed for the wall clock and the taskbar bar; a reinstall without it drops the key. |
 | `-Subagents` | Installs the agent panel script and its `subagentStatusLine` entry. See [The agent panel](docs/agent-panel.md). |
-| `-Uninstall` | Removes the entries and the scripts, keeps the font and `statusline.json`, and leaves any file that is not this project's alone. |
+| `-Uninstall` | Removes the `statusLine` entry and `~/.claude/statusline.ps1` outright; removes the panel entry and script only when they are this project's. Keeps the font and `statusline.json`. |
 
 Any Nerd Font works. In VS Code, ConEmu or another terminal, set the font yourself and skip
 `-ConfigureWindowsTerminal`. What each switch writes, the settings entry, the backup names and the
@@ -138,8 +138,9 @@ merged over yours key by key. Anything missing or invalid falls back to the valu
 | `state`, `links`, `taskbar` | `true`, `false` | The per-session state file, the OSC 8 hyperlinks, and the taskbar bar (off by default). |
 | `git.timeoutMs`, `git.cacheSeconds`, `git.cache` | `100`–`10000`, `0`–`300`, boolean | How long to wait for `git status`, how long to reuse its answer, and whether to. |
 
-Presets: `minimal` is model, context, folder and branch; `cost` adds cache, cost, clock, lines and
-limits; `full` is everything on two powerline rows. The whole file can be `{"preset": "minimal"}`.
+Presets: `minimal` is model, context, folder and branch; `cost` is model, context, cache, cost, clock,
+lines and limits, with folder and branch off; `full` is everything on two powerline rows. The whole
+file can be `{"preset": "minimal"}`.
 
 When a line is too long it loses detail first (the cost delta, the limits countdown, the branch
 counts, and so on), then the right group, then whole segments from the right. The model segment
@@ -221,6 +222,10 @@ No branch segment: `git` is not on your `PATH`, the directory is not in a reposi
 took longer than `git.timeoutMs` (1.5 s). A segment a few seconds behind is the cache: `git.cacheSeconds`
 shortens it, `"cache": false` turns it off. No arrows means no upstream; `git branch -u origin/<branch>`
 sets one. `?1` for a folder of new files is git counting the directory as one entry.
+
+The line still wraps: width is measured with a small approximation, and wide glyphs or emoji in a
+folder or branch name can be counted short on some terminals. At very narrow widths the model segment
+prints even when it does not fit.
 
 Colours look washed out on a pale terminal: `"palette": "light"`, or `.\install.ps1 -DetectTheme`.
 
