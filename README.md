@@ -25,13 +25,13 @@ you are to a rate limit, and which modes are on. It installs into your user sett
 
 ## Features
 
-- Context meter: a ten-block bar, the percentage, used/total tokens, and how much of the turn the prompt cache served (`92% cached`).
-- Prompt cache warmth as `cache 42m`, yellow in the last five minutes, red `cache cold` once it lapses.
+- Context meter: the percentage, a ten-block bar, the session's used/total context tokens (`64k/200k`), and how much of the current turn's input the prompt cache served (`92% cached`).
+- Prompt cache warmth as `cache 42m`, yellow in the last five minutes; `cache warm` with no expiry; red `cache cold` once it lapses, or `cache off` when caching is not working.
 - Rate limits for the 5-hour and 7-day windows, a countdown to the next reset, a pace arrow, and the spend limit when Claude Code reports one.
 - Session cost with the change since the last turn, lines added and removed, and a session clock with the share spent waiting on the model.
 - Badges for fast mode, extended thinking, effort level and vim mode, then the custom agent and the session name.
 - The pull request as `#12`, green when approved, red when changes are requested. Ctrl-click opens it.
-- Folder and branch, with a home glyph on `main`, a pencil when the tree is dirty, ahead/behind and file counts, and the worktree name. Both are ctrl-clickable.
+- Folder and branch, with a home glyph on `main` or `master`, a pencil when the tree is dirty, ahead/behind and file counts, and the worktree name. Both are ctrl-clickable.
 - One line or two, plain separators or powerline blocks, any segment off, a `right` group, and a wall clock — all from `statusline.json`. A repository can pin its own layout.
 - `"style": "ascii"` draws the whole line in plain characters for a terminal whose font you cannot change; `"palette": "light"` recolours it for a pale background.
 - A matching row for each subagent in the agent panel, and optionally the context percentage on the taskbar button.
@@ -59,20 +59,22 @@ Restart Claude Code, or wait for its next status refresh.
 
 The installer copies `statusline.ps1` and, unless one is already there, `statusline.json` into
 `~/.claude`, and adds a `statusLine` entry to `~/.claude/settings.json` with every other key kept and
-the previous version backed up beside it. The switches:
+the previous version backed up beside it. The entry also sets `padding` to 0 and turns Claude Code's
+own vim indicator off (`hideVimModeIndicator`), because the badges segment draws one. The switches:
 
 | Switch | What it does |
 |---|---|
 | `-InstallFont` | Installs JetBrainsMono Nerd Font through winget. Expect one elevation prompt. |
-| `-ConfigureWindowsTerminal` | Sets Windows Terminal's default font to `JetBrainsMono NF`, backing its settings up first. |
+| `-ConfigureWindowsTerminal` | Sets Windows Terminal's default font to `JetBrainsMono NF`, backing its settings up first; if that backup cannot be taken the font is left alone, with a warning. |
 | `-DetectTheme` | Reads Windows Terminal's colour scheme and writes `palette` into `statusline.json`. When it cannot tell, it writes nothing and says why. |
-| `-Style plain\|powerline\|ascii`, `-Palette dark\|light` | Writes that key into `statusline.json` and carries it into the agent panel's command. |
-| `-RefreshInterval <seconds>` | Re-renders on a timer as well as on events, which keeps the wall clock and the taskbar bar current between events. A reinstall without it drops the key. |
+| `-Style plain\|powerline\|ascii`, `-Palette dark\|light` | Writes that key into `~/.claude/statusline.json` (which must already exist) and carries it into the agent panel's command. Any run refreshes a panel entry this installer wrote. |
+| `-RefreshInterval <seconds>` | Re-renders on a timer as well as on events, which keeps the wall clock and the taskbar bar current between events. Must be 1 or more. A reinstall without it drops the key, with a warning naming the value dropped. |
 | `-Subagents` | Installs the agent panel script and its `subagentStatusLine` entry. See [The agent panel](docs/agent-panel.md). |
 | `-Uninstall` | Removes the `statusLine` entry and `~/.claude/statusline.ps1` outright; removes the panel entry and script only when they are this project's. Keeps the font and `statusline.json`. |
 
 Any Nerd Font works. In VS Code, ConEmu or another terminal, set the font yourself and skip
-`-ConfigureWindowsTerminal`. What each switch writes, the settings entry, the backup names and the
+`-ConfigureWindowsTerminal`. `-SettingsPath <file>` exists for the test suite and only changes which
+settings file is edited. What each switch writes, the settings entry, the backup names and the
 ownership rules are in [docs/installer.md](docs/installer.md).
 
 ### The agent panel
@@ -82,7 +84,8 @@ ownership rules are in [docs/installer.md](docs/installer.md).
 ```
 
 Claude Code shows a panel of the subagents a session is running. `subagent-statusline.ps1` draws one
-row per subagent: the robot glyph, the agent's name, and how full its context window is.
+row per subagent: the robot glyph, the agent's name, how full its context window is and its token
+count, or the task's status word (`running`, `pending`, `completed`) while it reports no figures.
 
 ```
 󰚩 Explore  24%  48k
@@ -124,17 +127,17 @@ merged over yours key by key. Anything missing or invalid falls back to the valu
 | Key | Values | What it does |
 |---|---|---|
 | `preset` | `minimal`, `cost`, `full` | A named layout, style and segment set. Every other key in the file is applied over it. |
-| `layout` | `one`, `two` | One line, or model/folder/branch/pr/badges on the first and the figures on the second. |
+| `layout` | `one`, `two` | One line, or model/folder/branch/pr/badges (and the wall clock, when on) on the first and the figures on the second. |
 | `style` | `plain`, `powerline`, `ascii` | Coloured text with a chevron, coloured blocks with arrows, or printable ASCII throughout. |
 | `palette` | `dark`, `light` | The colour table, separate from `style`; all six pairings work. |
 | `folder` | `repo`, `leaf` | `owner/name › dir` from the payload's repository, or the directory name alone. |
 | `segments.<name>` | `true`, `false` | Turns a segment off. `time`, the wall clock, is the one that is off by default. |
 | `order`, `rows` | lists of names | The segments of layout `one`, or the two rows of layout `two`. Left out, the script's order applies, new segments included. |
 | `right` | `["time"]` | Segments pushed against the right edge of the first line. The first whole segments a narrow line loses. |
-| `thresholds` | `{ "warn": 60, "bad": 85 }` | Where the meter and the limits turn yellow and red. A 1M window keeps its own 70 and 90. |
+| `thresholds` | `{ "warn": 60, "bad": 85 }` | Where the context meter and the rate limits turn yellow and red: whole numbers 0–100, `warn` no higher than `bad`, or the pair is ignored together. The context meter on a 1M window keeps its own 70 and 90. |
 | `alarm` | `{ "context": 90, "limits": 90 }` | Where the model segment itself turns red. `0` turns that alarm off. |
-| `quiet` | `{ "cost": 1.00, "context": 30, "limits": 50 }` | The smallest value a segment is worth showing at. Never hides a warning or an alarm. |
-| `icons` | `{ "home": "U+2302" }` | A code point per glyph name. Ignored under `ascii`. |
+| `quiet` | `{ "cost": 0, "context": 0, "limits": 0 }` | The smallest value a segment is worth showing at; all off by default. `{"cost": 1.00}` hides a cost under a dollar. Never hides a warning or an alarm. |
+| `icons` | `{ "home": "U+2302" }` | A code point per glyph name, as `U+2302`, `0x2302` or `2302`. Ignored under `ascii`. |
 | `state`, `links`, `taskbar` | `true`, `false` | The per-session state file, the OSC 8 hyperlinks, and the taskbar bar (off by default). |
 | `git.timeoutMs`, `git.cacheSeconds`, `git.cache` | `100`–`10000`, `0`–`300`, boolean | How long to wait for `git status`, how long to reuse its answer, and whether to. |
 
@@ -142,9 +145,11 @@ Presets: `minimal` is model, context, folder and branch; `cost` is model, contex
 lines and limits, with folder and branch off; `full` is everything on two powerline rows. The whole
 file can be `{"preset": "minimal"}`.
 
-When a line is too long it loses detail first (the cost delta, the limits countdown, the branch
-counts, and so on), then the right group, then whole segments from the right. The model segment
-always stays, and turns red at the `alarm` level so a full window is visible at any width.
+When a line is too long it loses detail first (the cost delta, the limits countdown, the cache
+segment's word, the context token counts, the branch counts, and so on), then the right group, then
+whole segments in a fixed order: the wall clock, lines, the session clock, cache, badges, cost,
+limits, pr, folder, branch, and the context meter last. The model segment always stays, and turns
+red at the `alarm` level so a full window is visible at any width.
 
 Every key in full, how the two config files are read (each under a 64 KiB and 250 ms budget), the
 fitting order, the state file and the git cache: [docs/configuration.md](docs/configuration.md).
@@ -168,8 +173,9 @@ contrast rules and what `-DetectTheme` reads: [docs/styles-and-palettes.md](docs
 ### Taskbar progress
 
 With `"taskbar": true` the context percentage is drawn on the window's taskbar button in Windows
-Terminal on every render, green below the `alarm` level and red at it; a refresh interval keeps it
-current while the session sits idle. Off by default because Claude
+Terminal on every render: green, or red once the context window or either rate limit reaches its
+`alarm` level (the number is always the context window's). A render that knows no percentage clears
+the bar, and a refresh interval keeps it current while the session sits idle. Off by default because Claude
 Code draws its own turn-progress bar there; set `"terminalProgressBarEnabled": false` in
 `settings.json` to hand the bar over. Details, and how to clear a stuck bar: [docs/taskbar.md](docs/taskbar.md).
 
@@ -177,18 +183,18 @@ Code draws its own turn-progress bar there; set `"terminalProgressBarEnabled": f
 
 | Segment | Icon | Data | Rendering |
 |---|---|---|---|
-| model | <img src="docs/icons/robot.svg" height="18" alt="robot"> | `model.display_name` | Bold cyan; `1M` on a 1M window, a warning once the payload reports `exceeds_200k_tokens`; red at the `alarm` level. Never shortened or dropped. |
-| context | <img src="docs/icons/memory.svg" height="18" alt="memory"> | `context_window.*` | Percent, ten-block bar, used/total, `92% cached`. Green, yellow, red on the thresholds. |
-| cache | <img src="docs/icons/fire.svg" height="18" alt="fire"> | `prompt_cache.*` | `cache 42m`, yellow in the last five minutes; `cache warm` when alive with no usable expiry; red `cache cold` or `cache off`. Absent until Claude Code sends the block. |
+| model | <img src="docs/icons/robot.svg" height="18" alt="robot"> | `model.display_name` | Bold cyan, or the word `claude` when the name is unusable; `1M` on a 1M window, a warning once the payload reports `exceeds_200k_tokens`; red at the `alarm` level. Never shortened or dropped. |
+| context | <img src="docs/icons/memory.svg" height="18" alt="memory"> | `context_window.*` | `32% ███░░░░░░░ 64k/200k 92% cached`: the percentage, a ten-block bar, the session's used/total context tokens (`8.0k` under ten thousand, `1.0M` at a million, the used count alone when the window size is missing), then the share of the current turn's input the prompt cache served — a different thing from the counts beside it. Green, yellow, red on the thresholds. |
+| cache | <img src="docs/icons/fire.svg" height="18" alt="fire"> | `prompt_cache.*` | `cache 42m` (`2h05m`, `<1m`), yellow in the last five minutes; `cache warm` when alive with no usable expiry; red `cache cold` once lapsed or `cache off` when caching is observed not to work. Absent until Claude Code sends the block. |
 | cost | <img src="docs/icons/cash.svg" height="18" alt="cash"> | `cost.total_cost_usd` | `$1.07 (+$0.12)`, the delta from the state file. |
-| clock | <img src="docs/icons/timer-outline.svg" height="18" alt="stopwatch"> | `cost.total_duration_ms`, `total_api_duration_ms` | `1h12m · api 38%`, dim, no bands. |
+| clock | <img src="docs/icons/timer-outline.svg" height="18" alt="stopwatch"> | `cost.total_duration_ms`, `total_api_duration_ms` | `1h12m · api 38%` (`12m`, `<1m`), dim, no bands. |
 | time | <img src="docs/icons/clock-outline.svg" height="18" alt="clock"> | the machine clock | `14:05`. Off by default; needs a refresh interval. |
-| lines | <img src="docs/icons/code.svg" height="18" alt="code"> | `cost.total_lines_*` | `+N` green, `−N` in the `removed` colour. Hidden at zero. |
-| limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> | `rate_limits.*` | `5h 24% → (1h12m) 7d 41% $ 62%`: the 5-hour figure with a pace arrow and the countdown to its reset, the 7-day figure, and the spend limit when sent. Coloured by the worst figure. |
+| lines | <img src="docs/icons/code.svg" height="18" alt="code"> | `cost.total_lines_*` | `+N` green, `−N` in the `removed` colour, always together. Hidden only when both are zero. |
+| limits | <img src="docs/icons/tachometer.svg" height="18" alt="tachometer"> | `rate_limits.*` | `5h 24% → (1h12m) 7d 41% $ 62%`: the 5-hour figure with a pace arrow (`→` on track, `↑` overrunning, red past 120%) and the countdown to its reset (`(3d)` beyond two days), the 7-day figure, and the spend limit when sent. Coloured by the worst figure. |
 | badges | <img src="docs/icons/bolt.svg" height="18" alt="bolt"> <img src="docs/icons/brain.svg" height="18" alt="brain"> <img src="docs/icons/speedometer.svg" height="18" alt="speedometer"> <img src="docs/icons/vim.svg" height="18" alt="vim"> <img src="docs/icons/user.svg" height="18" alt="user"> <img src="docs/icons/tag.svg" height="18" alt="tag"> | `fast_mode`, `thinking`, `effort`, `vim`, `agent`, `session_name` | Dim glyphs, modes first, then the agent and session names cut to 20 cells. Effort is hidden at `high`; the segment is hidden when nothing is on. |
 | pr | <img src="docs/icons/pull-request.svg" height="18" alt="pull request"> | `pr.*` | `#12`, linked; green approved, red changes requested. |
 | folder | <img src="docs/icons/folder-open.svg" height="18" alt="folder"> | `workspace.*` | Blue `owner/name › dir` when the payload names a repository, else the directory name; linked to the directory. |
-| branch | <img src="docs/icons/home.svg" height="18" alt="home"> <img src="docs/icons/branch.svg" height="18" alt="branch"> <img src="docs/icons/fork.svg" height="18" alt="fork"> <img src="docs/icons/pencil.svg" height="18" alt="pencil"> | `git status` | Magenta clean, yellow with a pencil when dirty, `detached` on a detached HEAD; then the worktree name, `↑N` `↓N` `+N` `~N` `?N` counts and conflicts. Linked to the branch page on `github.com`, the repository home elsewhere. |
+| branch | <img src="docs/icons/home.svg" height="18" alt="home"> <img src="docs/icons/branch.svg" height="18" alt="branch"> <img src="docs/icons/fork.svg" height="18" alt="fork"> <img src="docs/icons/pencil.svg" height="18" alt="pencil"> | `git status` | Home glyph on `main` or `master`; magenta clean, yellow with a pencil when dirty, `detached` on a detached HEAD; then the fork glyph and worktree name (the glyph alone when the worktree has no name), `↑N` `↓N` `+N` `~N` `?N` counts, and the conflict triangle with its count. Linked to the branch page on `github.com`, the repository home elsewhere. |
 
 The full rules for every segment, the branch counts and the worktree name are in
 [docs/segments.md](docs/segments.md). Icon names follow the
@@ -220,10 +226,11 @@ with `-Subagents` if you use the panel; nothing else needs setting.
 The status line is blank: run `.\test.ps1`, then check that `pwsh` is on your `PATH` and that the
 `command` path in `settings.json` exists.
 
-No branch segment: `git` is not on your `PATH`, the directory is not in a repository, or `git status`
-took longer than `git.timeoutMs` (1.5 s). A segment a few seconds behind is the cache: `git.cacheSeconds`
-shortens it, `"cache": false` turns it off. No arrows means no upstream; `git branch -u origin/<branch>`
-sets one. `?1` for a folder of new files is git counting the directory as one entry.
+No branch segment: `segments.branch` is off or `order`/`rows` leaves it out, `git` is not on your
+`PATH`, the directory is not in a repository, or `git status` took longer than `git.timeoutMs`
+(1.5 s). A segment a few seconds behind is the cache: `git.cacheSeconds` shortens it, `"cache": false`
+turns it off. No `↑`/`↓` arrows means the branch has no upstream; `git branch -u origin/<branch>` sets
+one. `?1` for a folder of new files is git counting the directory as one entry.
 
 The line still wraps: width is measured with a small approximation, and wide glyphs or emoji in a
 folder or branch name can be counted short on some terminals. At very narrow widths the model segment
