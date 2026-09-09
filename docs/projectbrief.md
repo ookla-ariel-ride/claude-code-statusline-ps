@@ -479,7 +479,13 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   every render on the machine appended past the cap for as long as it lived. What is left of the
   approximation is the unlocked append - renders that each measure room at the same instant all write,
   so the file can end over the cap by up to one record apiece. That is the right trade for a log that
-  must never delay a render and is off by default. Also unlike the mutex this replaced (#49): the lock is scoped by the path rather than a
+  must never delay a render and is off by default. The note the drop leaves is bounded by the process
+  that took it, which the review of #93 read as the fix's weak point and which is recorded here rather
+  than engineered around: a render draws one line and exits, so the count usually dies with it, and a
+  channel that outlived it would be a fourth file beside a two-file-and-a-lock log, written by a
+  filesystem call on the path that is dropping records rather than waiting for one. The cross-process
+  signal is the log itself - parked exactly at the cap, no `.log.1`, nothing new appended - and
+  `docs/diagnostics.md` tells the reader to read it that way. Also unlike the mutex this replaced (#49): the lock is scoped by the path rather than a
   machine- or session-wide name, a killed render's handle is released by the kernel on process exit
   with no stale lock left behind, and a lock file some other user cannot open at all - not merely held,
   but permanently unopenable - is read as a structural failure that drops the record rather than as

@@ -340,8 +340,19 @@ function Write-StatusDiag([string] $Reason) {
             # render in another session or another user's account and can hold for as long as it lives,
             # and appending through that is unbounded growth, where dropping through it costs the
             # records that fell in the window and nothing else. The count and the reason are kept for
-            # the next record this process gets down; a render that has no next record is one line of a
-            # log that is off by default, which is the trade every other bounded call here makes too.
+            # the next record this process gets down.
+            #
+            # Which, said plainly, is usually never: a render writes its records and exits, so the count
+            # normally dies with the process that took it and only a long-lived host of this script - a
+            # test run, or anything that dot-sources it - reads the note out of its own later record.
+            # The review of this change asked for a channel that outlived the process instead, and the
+            # answer is no: a sidecar marker is a fourth file beside a log whose whole point is that it
+            # costs two and a lock, and it would be a filesystem write on the very path that drops
+            # records rather than wait for one - the failure it is meant to describe would be the
+            # failure that ate it. There is already a cross-process signal, and it is free: a log left
+            # sitting exactly at its cap with no .log.1 beside it and a .lock file that a live holder
+            # still owns is a log that is dropping records, whoever it was that dropped them.
+            # docs/diagnostics.md says so in as many words.
             if ($script:diagRollSkip) {
                 $script:diagDropped = 1 + [int] $script:diagDropped
                 $script:diagDropWhy = $script:diagRollSkip
