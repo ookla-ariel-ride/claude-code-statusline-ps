@@ -5436,6 +5436,33 @@ $cacheNow = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 . ([scriptblock]::Create("function Get-GitCacheNow { return [long] $cacheNow }"))
 Confirm-Equal (Get-GitCacheNow) $cacheNow 'git cache clock: the group runs on a pinned clock, so nothing below can age an entry by waiting'
 
+# ---- And the deadline the entry itself is read under ----
+# The clock above is not the only wall clock in this group's way. An entry is read through the same
+# bounded reader the config files use, on the thread pool, under the shipped quarter-second deadline;
+# on a saturated machine the pool does not get to that read in time and the call reports "no entry yet"
+# and probes. Every check below that expects a HIT is then a check that can fail because the pool was
+# busy - which is the same defect as the clock, one layer down, and it is what was left of #102 after
+# the clock was pinned. So that deadline is pinned for the group too, from the script's own numbers and
+# leaving the cap exactly as it ships, because the cap IS exercised here. The two cases that spend the
+# deadline on purpose sit further down and set it to zero for themselves, which still works: they
+# rebuild the limit from whatever is in force and put that back.
+$cacheReadLimit = Get-BoundedReadLimit
+. ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($cacheReadLimit.MaxBytes); TimeoutMs = 30000 } }"))
+Confirm-Equal (Get-BoundedReadLimit).TimeoutMs 30000 'git cache read: the entry read''s deadline is pinned for this group, so a miss can only be the entry'
+Confirm-Equal (Get-BoundedReadLimit).MaxBytes $cacheReadLimit.MaxBytes 'git cache read: and the shipped cap is untouched, because the cap is one of the things checked here'
+
+# Waits, briefly, for a change made to the git directory to be visible to the stamp. Windows publishes
+# a file's timestamps to its directory entry after the write rather than during it, and on a loaded
+# machine that lag can outlast the next line of a test: the case then stamps the directory as it was,
+# the entry it writes carries the old stamps, and three checks about invalidation fail with nothing
+# wrong in the cache. Normally this returns on its first look. It cannot make a failing check pass -
+# a stamp that never moves fails the check that says so.
+function Wait-GitStampMoved([string] $GitDir, [string] $Was, [int] $TimeoutMs = 10000) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ((Get-GitStamp $GitDir) -ceq $Was -and $sw.ElapsedMilliseconds -lt $TimeoutMs) { Start-Sleep -Milliseconds 25 }
+    return ((Get-GitStamp $GitDir) -cne $Was)
+}
+
 # Get-GitRepoRoot: the walk up to the first .git entry that is a repository, as a WorkTree/GitDir pair.
 function Get-RootPair([string] $Dir) { $r = Get-GitRepoRoot $Dir; if ($r) { "$($r.WorkTree)|$($r.GitDir)" } else { $null } }
 Confirm-Equal (Get-RootPair $cacheRepo) "$cacheRepo|$cacheGitDir" 'repo root: the repository itself'
@@ -5613,6 +5640,11 @@ foreach ($case in $invalidations) {
     $before = $script:probeCalls
     $stampBefore = (Get-Content -LiteralPath $cacheEntry -Raw | ConvertFrom-Json).stamps
     & $case.Do
+    # The premise of the three checks below, asserted rather than assumed: the change is visible to the
+    # stamp. It normally is by the time this line runs; on a loaded machine the directory entry it is
+    # read from can lag the write, and then every check here would be about a change the cache was
+    # never shown.
+    Confirm-True (Wait-GitStampMoved $cacheGitDir $stampBefore) "$($case.Name): the change moved the directory's stamp, so there is something to invalidate on"
     $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
     Confirm-Equal $script:probeCalls ($before + 1) "$($case.Name): a miss, the probe ran"
     $stampAfter = (Get-Content -LiteralPath $cacheEntry -Raw | ConvertFrom-Json).stamps
@@ -5627,13 +5659,18 @@ $g = Get-CachedGitBranch $cacheWorktree 1500 $cacheDir 5
 $g = Get-CachedGitBranch $cacheWorktree 1500 $cacheDir 5
 $before = $script:probeCalls
 Confirm-True (Test-Path -LiteralPath (Join-Path $cacheDir (Get-CacheEntryName $cacheWorktree))) 'worktree: its entry is named for the worktree path'
+$cacheStampWas = Get-GitStamp $cacheWtGitDir
 [System.IO.Directory]::SetLastWriteTimeUtc((Join-Path $cacheGitDir 'refs' 'heads'), $later.AddSeconds(10))
+Confirm-True (Wait-GitStampMoved $cacheWtGitDir $cacheStampWas) 'worktree: the ref change moved the worktree''s stamp through its commondir'
 $g = Get-CachedGitBranch $cacheWorktree 1500 $cacheDir 5
 Confirm-Equal $script:probeCalls ($before + 1) 'worktree: a ref change in the main repository is a miss'
 $g = Get-CachedGitBranch $cacheWorktree 1500 $cacheDir 5
 Confirm-Equal $script:probeCalls ($before + 1) 'worktree: then a hit'
-# No index at all - a repository with no commits yet - stamps as 0 rather than failing.
+# No index at all - a repository with no commits yet - stamps as 0 rather than failing. Each change is
+# waited into the stamp first, for the reason the invalidation loop above gives.
+$cacheStampWas = Get-GitStamp $cacheGitDir
 Remove-Item -LiteralPath $cacheIndex -Force
+Confirm-True (Wait-GitStampMoved $cacheGitDir $cacheStampWas) 'index removed: the removal moved the directory''s stamp'
 $before = $script:probeCalls
 $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
 Confirm-Equal $script:probeCalls ($before + 1) 'index removed: a miss'
@@ -5641,7 +5678,9 @@ Confirm-Equal ((Get-Content -LiteralPath $cacheEntry -Raw | ConvertFrom-Json).st
 $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
 Confirm-Equal $g.Branch 'main' 'index removed: the entry with the sentinel hits'
 Confirm-Equal $script:probeCalls ($before + 1) 'index removed: no probe on the hit'
+$cacheStampWas = Get-GitStamp $cacheGitDir
 [System.IO.File]::WriteAllBytes($cacheIndex, [byte[]] @(68, 73, 82, 67))
+Confirm-True (Wait-GitStampMoved $cacheGitDir $cacheStampWas) 'index back: writing it moved the directory''s stamp'
 $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
 Confirm-Equal $script:probeCalls ($before + 2) 'index back: a miss'
 $cacheRepoUnborn = Write-FakeRepo 'cache-repo-unborn' $false
@@ -5716,7 +5755,9 @@ Confirm-Equal $script:probeCalls ($before + 1) 'null probe: the second call did 
 $script:cacheProbe = Get-BranchRecord 'main' $false
 Confirm-Equal (Get-CachedGitBranch $cacheRepoNull 1500 $cacheDir 5) $null 'null probe: still null while the entry is fresh, even though git would answer now'
 Confirm-Equal $script:probeCalls ($before + 1) 'null probe: no probe while the entry is fresh'
+$cacheStampWas = Get-GitStamp (Join-Path $cacheRepoNull '.git')
 [System.IO.File]::SetLastWriteTimeUtc((Join-Path $cacheRepoNull '.git' 'HEAD'), $later)
+Confirm-True (Wait-GitStampMoved (Join-Path $cacheRepoNull '.git') $cacheStampWas) 'null probe: the touch moved the directory''s stamp'
 Confirm-Equal (Get-CachedGitBranch $cacheRepoNull 1500 $cacheDir 5).Branch 'main' 'null probe: a stamp change asks git again and the branch is back'
 Confirm-Equal $script:probeCalls ($before + 2) 'null probe: the stamp change probed'
 Edit-CacheEntry $cacheEntryNull { param($j) $j.writtenAt = $cacheNow - 10 }
@@ -5842,7 +5883,9 @@ $sweepFresh = Join-Path $cacheDir 'fresh-entry.json'
 foreach ($f in @($sweepOld, $sweepOldTmp, $sweepFresh)) { [System.IO.File]::WriteAllText($f, '{}') }
 foreach ($f in @($sweepOld, $sweepOldTmp)) { [System.IO.File]::SetLastWriteTimeUtc($f, [DateTime]::UtcNow.AddHours(-25)) }
 Remove-Item -LiteralPath (Join-Path $cacheDir '.sweep') -Force
+$cacheStampWas = Get-GitStamp $cacheGitDir
 [System.IO.File]::SetLastWriteTimeUtc($cacheHead, $later.AddSeconds(20))
+Confirm-True (Wait-GitStampMoved $cacheGitDir $cacheStampWas) 'cache sweep: the touch moved the stamp, so the call below is the miss that writes'
 $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
 Confirm-True (-not (Test-Path -LiteralPath $sweepOld)) 'cache sweep: a day-old entry is deleted on the next write'
 Confirm-True (-not (Test-Path -LiteralPath $sweepOldTmp)) 'cache sweep: a day-old .tmp is deleted too'
@@ -5954,6 +5997,15 @@ Confirm-Equal $g.Branch 'main' 'git cache clock: and the hit answers from the en
 $g = Get-CachedGitBranch $cacheSmokeRepo 1500 $cacheSmokeDir 300 ([long] $cacheSmokeEntry.writtenAt + 300)
 Confirm-Equal $script:probeCalls ($before + 1) 'git cache clock: a supplied clock exactly the lifetime away is a miss, so the caller''s clock is the one that decides'
 Confirm-Equal (Get-Content -LiteralPath (Join-Path $cacheSmokeDir (Get-CacheEntryName $cacheSmokeRepo)) -Raw | ConvertFrom-Json).writtenAt ([long] $cacheSmokeEntry.writtenAt + 300) 'git cache clock: and the entry it rewrote is stamped with the caller''s clock, not the machine''s'
+
+# ---- The entry read's deadline, put back ----
+# From the script rather than retyped, and checked, so the groups after this one read an entry under
+# the deadline a render gives it. It is put back here rather than before the cases above because those
+# are about the clock the lifetime is measured against, and a starved thread pool missing the read's
+# own deadline would fail them for the other reason entirely.
+. (Import-ScriptFunction $script @('Get-BoundedReadLimit'))
+Confirm-Equal (Get-BoundedReadLimit).TimeoutMs $cacheReadLimit.TimeoutMs 'git cache read: the real deadline is back'
+Confirm-Equal (Get-BoundedReadLimit).MaxBytes $cacheReadLimit.MaxBytes 'git cache read: and the real cap with it'
 
 Write-Host '== unit: diag' -ForegroundColor Cyan
 # The diagnostics log. Every failure the probe, the cache and the state file swallow stays swallowed;
@@ -6087,6 +6139,11 @@ try {
     # are given the same clock, so the second one is a hit because the entry matched and not because
     # this machine got from one line to the next inside the five-second lifetime (#102).
     Clear-DiagLog
+    # The entry read's own deadline is pinned across these four, the way the git cache group pins it:
+    # they are about what the log SAYS about a hit and a miss, and a read that missed its quarter-second
+    # on a starved thread pool would turn the hit into a miss and the log line with it (#102).
+    $diagCacheReadLimit = Get-BoundedReadLimit
+    . ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($diagCacheReadLimit.MaxBytes); TimeoutMs = 30000 } }"))
     $diagCacheDir = Join-Path $diagTemp 'cache'
     $before = $script:probeCalls
     $diagMiss = Get-CachedGitBranch $cacheRepo 1500 $diagCacheDir 5 $cacheNow
@@ -6110,6 +6167,8 @@ try {
     $diagCorrupt = Get-CachedGitBranch $cacheRepo 1500 $diagCacheDir 5
     Confirm-Equal $diagCorrupt.Branch 'main' 'diag cache: a corrupt entry still returns the probe record'
     Confirm-Equal (Measure-DiagMatch 'git cache: read failed') 1 'diag cache: a corrupt entry logs the read failure'
+    . ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($diagCacheReadLimit.MaxBytes); TimeoutMs = $($diagCacheReadLimit.TimeoutMs) } }"))
+    Confirm-Equal (Get-BoundedReadLimit).TimeoutMs $diagCacheReadLimit.TimeoutMs 'diag cache: the real entry-read deadline is back'
 
     # With the variable unset the same calls leave no log at all.
     Clear-DiagLog
