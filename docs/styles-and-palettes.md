@@ -109,7 +109,7 @@ under the table.
 | The arrow *between* two blocks — one block's background painted on the next one's | 1.10:1 in luminance and 40 apart in sRGB, over every ordered pair | 40.3 apart; the luminance half is **not** asserted, and `ok`/`warn` is 1.00 — a real gap, tracked separately | worst 1.104 and 40.0 |
 | An inline marker (`+156`, `92% cached`, `1M`, `↑2`) against the background of the block it sits in | 3:1 | worst 3.48 | worst 3.01 |
 | The same marker against that block's **own text**, which it sits beside | 85 apart in sRGB | worst 95.0 | worst 89.6 |
-| An inline marker on the terminal's background in plain style | 4.5:1 | worst 7.03 | not asserted, same reason as the first rule |
+| An inline marker on the terminal's background in plain style | 4.5:1, on the two grounds each palette has: `#FFFFFF` and `#F5F5F5` for light, Campbell `#0C0C0C` and Solarized Dark `#002B36` for dark | worst 6.45 (`muted`) | worst 4.95 — `track` and `cached` are both 246; the other three markers are hues on the basic sixteen and are not asserted |
 
 **Why two of those bars are distances and not ratios.** An inline marker sits inside a block, so it has
 two neighbours: the block's background behind it, and the block's own text beside it. On a dark block
@@ -124,9 +124,35 @@ colour that exists up there. A true red survives inside the light `warn` block, 
 light and its text is black, so the marker can go dark instead — which is the same reason each marker
 carries two colours and the block's own text colour picks between them.
 
-The plain-style colours are 256-colour codes rather than the basic sixteen on purpose. The sixteen are
-whatever your terminal's scheme says they are, which is the thing that goes wrong on a light theme in
-the first place; a table that cannot say what a colour looks like cannot promise it is readable.
+**The light table's plain-style colours are 256-colour codes rather than the basic sixteen on purpose,
+all twelve of them.** The sixteen are whatever your terminal's scheme says they are, which is the thing
+that goes wrong on a light theme in the first place; a table that cannot say what a colour looks like
+cannot promise it is readable. The dark table is *mostly* still the sixteen — see the next paragraph
+for which two values are not, and why the rest stay.
+
+**Why the dark table's two markers moved, and why the rest of it did not.** `track` and `cached` — the
+`92% cached` suffix and the `↑2 ↓1 +3 ~1 ?2` branch counts — used to be `90`, bright black, on a dark
+plain line. That is one of the sixteen, so nothing above could measure it, and on Solarized Dark, whose
+bright black is `#586E75` on a `#002B36` background, it came out at 2.79:1: under even the 3:1 a marker
+clears inside a block, on the shipped default style. Both are `246` (`#949494`) now, the *lowest* index
+on the grey ramp that clears 4.5 on Campbell and on Solarized Dark alike, picked low so the line moves
+as little as it can. Nothing else in the dark table changed: `added` `32`, `removed` `31` and `muted`
+`22;36` are hues rather than greys, and the seven plain role colours — `dim` `90`, the chevron, among
+them — are the line's own text rather than a marker beside it. Replacing those is a redesign of what a
+dark plain line looks like on every install, not a repair, so it is left to its own decision — `dim`
+`90` is tracked as #111, since on Solarized Dark it measures the same 2.79:1 the markers did.
+That is why the first row of the table above still says *not asserted* for the dark column and the last
+row no longer does.
+
+**What that costs on the one configuration it is not for.** `dark` is the default, so somebody on a
+*light* terminal who never set `palette` gets this table anyway, and there `246` is a fixed **3.03:1**
+on white and **2.81:1** on Solarized Light's `#FDF6E3` — under the bar. `90` was not better there so
+much as unknown: a scheme drawing bright black as `#767676` gave 4.54:1 on white, one drawing `#93A1A1`
+gave 2.48:1. The change trades a figure nobody could state for one anybody can, and a dark table on a
+light ground is out of contrast either way. The remedy is the palette key rather than a compromise
+colour that clears neither ground: set `"palette": "light"`, or run `.\install.ps1 -DetectTheme` and
+let it read your terminal's background. Every bar in this page is measured against the ground its own
+table is for.
 
 To check a value by hand: the indices 16–231 are a 6×6×6 cube on the levels 0, 95, 135, 175, 215, 255
 (so index `24` is `16 + 0×36 + 1×6 + 2`, giving `#005F87`), and 232–255 are a grey ramp at `8 + 10n`.

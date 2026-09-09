@@ -204,11 +204,11 @@ function Get-Palette([string] $Palette = 'dark') {
             branch = @{ Sgr = '35';   Fg = 231; Bg = 90;  Ink = 'Light' }
         }
         Inline = @{
-            added   = @{ Sgr = '32';    Light = 46;  Dark = 22 }
-            removed = @{ Sgr = '31';    Light = 222; Dark = 124 }
-            track   = @{ Sgr = '90';    Light = 123; Dark = 240 }
-            muted   = @{ Sgr = '22;36'; Light = 87;  Dark = 24 }
-            cached  = @{ Sgr = '90';    Light = 86;  Dark = 238 }
+            added   = @{ Sgr = '32';        Light = 46;  Dark = 22 }
+            removed = @{ Sgr = '31';        Light = 222; Dark = 124 }
+            track   = @{ Sgr = '38;5;246';  Light = 123; Dark = 240 }
+            muted   = @{ Sgr = '22;36';     Light = 87;  Dark = 24 }
+            cached  = @{ Sgr = '38;5;246';  Light = 86;  Dark = 238 }
         }
     }
 }
