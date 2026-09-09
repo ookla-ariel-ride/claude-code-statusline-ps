@@ -274,7 +274,13 @@ tree does not, and neither does a change to your global git config or `core.excl
 can lag by up to five seconds. A worktree or a submodule, where `.git` is a file, is cached under its own
 path, with its main repository's refs counted too. A `git status` that failed or timed out is
 remembered for the same lifetime, so a slow repository pays the wait once per lifetime, not once per
-render. A `statusline.json` from before this cache has no `git` block and gets the defaults: the
+render — and *is* remembered, which took a fix: the entry is written by replacing the file, and the same
+render read that file a moment earlier through a reader that closes its handle on a background thread
+without waiting for it. Windows refuses to replace a file while a read handle is open, so a probe that
+answered fast enough to beat that close — a machine with no git on `PATH`, which answers in a `PATH`
+scan — could never write the answer it meant to cache, and paid for the scan on every render instead of
+once per lifetime. The replace now keeps trying for a quarter of a second when a share is in the way,
+which happens after the line has been printed and so costs a render nothing. A `statusline.json` from before this cache has no `git` block and gets the defaults: the
 cache on, five seconds, a 1.5 second timeout. Add `"git": { "cache": false }` to turn it off. The
 folder is safe to delete at any time; the next render writes it again, and entries not written for a
 day are swept.

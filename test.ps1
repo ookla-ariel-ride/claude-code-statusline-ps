@@ -337,7 +337,7 @@ function Get-SubagentReply([string[]] $Lines) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-ConfigReadTimeout', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Open-SharedConfigFile', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-GitCacheNow', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-ConfigReadTimeout', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Open-SharedConfigFile', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-GitCacheNow', 'Get-CachedGitBranch', 'Get-ShortHash', 'Get-AtomicWriteLimit', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -5997,6 +5997,50 @@ try {
     if ($null -ne $oldTmpDir) { $env:TMPDIR = $oldTmpDir } else { Remove-Item Env:TMPDIR -ErrorAction SilentlyContinue }
     if ($null -ne $oldTmp) { $env:TMP = $oldTmp } else { Remove-Item Env:TMP -ErrorAction SilentlyContinue }
 }
+
+# ---- The atomic write's move, and the handle this script leaves in its own way ----
+# Both callers of Write-AtomicJson read the same path through the bounded reader earlier in the same
+# call, and that reader closes on the thread pool without waiting. The move that replaces the file needs
+# delete access to the destination, which a File.OpenRead handle does not share, so while that close is
+# queued the move is refused - measured at 459 refusals in 2000 with the pool busy, and the case it
+# breaks is the one the cache exists for: a machine with no git answers in a PATH scan, fast enough that
+# the close has not landed, and would then never manage to cache the null it means to cache.
+# Both halves are decisions, not durations: a handle is held open on purpose, and the retry either
+# outlasts it or does not.
+$atomicRealLimit = Get-AtomicWriteLimit
+$atomicPath = Join-Path $tmp 'atomic-write.json'
+Confirm-True (Write-AtomicJson $atomicPath ([ordered]@{ n = 1 }) 3) 'atomic write: a plain write lands'
+# With no retry at all, a handle in the way stops the move, and the caller is given the throw to swallow.
+. ([scriptblock]::Create("function Get-AtomicWriteLimit { return @{ TimeoutMs = 0; WaitMs = $($atomicRealLimit.WaitMs) } }"))
+$atomicHold = [System.IO.File]::OpenRead($atomicPath)
+$atomicThrew = $false
+try { $null = Write-AtomicJson $atomicPath ([ordered]@{ n = 2 }) 3 } catch { $atomicThrew = $true }
+Confirm-True $atomicThrew 'atomic write: with no retry a read handle in the way refuses the move, and it throws for the caller to swallow'
+Confirm-Equal (Get-Content -LiteralPath $atomicPath -Raw | ConvertFrom-Json).n 1 'atomic write: and the file is left exactly as it was'
+# With the retry, the same handle is outlasted. It is released from another thread after a wait far
+# longer than the shipped window, and the pinned window is far longer than the release, so what decides
+# the outcome is that the move kept trying and not how fast anything ran.
+. ([scriptblock]::Create("function Get-AtomicWriteLimit { return @{ TimeoutMs = 30000; WaitMs = $($atomicRealLimit.WaitMs) } }"))
+$atomicReleaser = [powershell]::Create()
+$null = $atomicReleaser.AddScript('param($s) Start-Sleep -Milliseconds 500; $s.Dispose()').AddArgument($atomicHold)
+$atomicAsync = $atomicReleaser.BeginInvoke()
+Confirm-True (Write-AtomicJson $atomicPath ([ordered]@{ n = 3 }) 3) 'atomic write: with the retry the move outlasts the handle and the write lands'
+Confirm-Equal (Get-Content -LiteralPath $atomicPath -Raw | ConvertFrom-Json).n 3 'atomic write: and the file holds what the retry wrote'
+$null = $atomicReleaser.EndInvoke($atomicAsync)
+$atomicReleaser.Dispose()
+Confirm-True (-not (Test-Path -LiteralPath ($atomicPath + '.tmp'))) 'atomic write: no .tmp is left behind by either attempt'
+# A failure that is not a share in the way is not retried at all: a destination that cannot be replaced
+# because a directory sits at its name throws on the first attempt, with the window wide open.
+$atomicBlocked = Join-Path $tmp 'atomic-blocked.json'
+New-Item -ItemType Directory -Force $atomicBlocked | Out-Null
+$atomicOtherSw = [System.Diagnostics.Stopwatch]::StartNew()
+$atomicOtherThrew = $false
+try { $null = Write-AtomicJson $atomicBlocked ([ordered]@{ n = 4 }) 3 } catch { $atomicOtherThrew = $true }
+Confirm-True $atomicOtherThrew 'atomic write: a failure that is not a share in the way still throws'
+Confirm-True ($atomicOtherSw.ElapsedMilliseconds -lt 20000) "atomic write: and it is not retried for the whole window, took $($atomicOtherSw.ElapsedMilliseconds) ms"
+. (Import-ScriptFunction $script @('Get-AtomicWriteLimit'))
+Confirm-Equal (Get-AtomicWriteLimit).TimeoutMs $atomicRealLimit.TimeoutMs 'atomic write: the script''s own retry window is back'
+Confirm-True ((Get-AtomicWriteLimit).TimeoutMs -gt 0 -and (Get-AtomicWriteLimit).TimeoutMs -le 1000) 'atomic write: and it is a short one, spent after the line is printed'
 
 # ---- The clock, put back, and the two things only a real one can say ----
 # The script's own seam, read out of the script rather than retyped, so a restore that put back a

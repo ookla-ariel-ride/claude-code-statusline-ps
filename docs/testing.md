@@ -98,7 +98,14 @@ that, and none of them is a wider tolerance:
 - `Get-CachedGitBranch` takes the clock its lifetime is measured against as a parameter, defaulting to
   `Get-GitCacheNow`. The git cache group pins that seam and states each entry's age instead of arranging
   one by waiting, and puts the script's own seam back for two cases that are deliberately about the real
-  clock.
+  clock. The entry's own read deadline is pinned across the group too — a starved thread pool missing
+  that 250 ms turns every expected hit into a miss — and each case that changes the git directory waits
+  for its change to be visible to the stamp, because Windows publishes a file's timestamps to its
+  directory entry after the write rather than during it.
+- Writes this file makes to a path the script has just read go through `Invoke-SharedFile`, which
+  retries the two Windows sharing errors briefly. The bounded reader closes its handles on the thread
+  pool without waiting, deliberately, so on a loaded machine the next write to that path can meet the
+  previous read's handle still open — which used to end the whole run at whatever line came next.
 
 So a failure in those groups is a failure. If you do run suites in parallel, run them from separate
 worktrees: each has its own temp tree, but two copies in one checkout share the sample and config files.

@@ -1791,17 +1791,47 @@ function Get-ShortHash([string] $Text) {
     return [BitConverter]::ToString($digest, 0, 8).Replace('-', '').ToLowerInvariant()
 }
 
+# How long the move at the end of an atomic write may keep trying past a sharing violation, and how
+# often. Its own function so a test can pin it, the way the diagnostics budget is pinned: what has to be
+# provable is that the retry is what completes the write, not how many milliseconds it took.
+function Get-AtomicWriteLimit { return @{ TimeoutMs = 250; WaitMs = 5 } }
+
 # Writes an object as compact UTF-8 JSON without a BOM: to a sibling .tmp file first, then moved over
 # the real one, which is atomic on both Windows and Linux, so a reader never sees half a file and an
 # interrupted write costs nothing. $false, and nothing written, when the JSON came out empty. Anything
 # that throws is the caller's to swallow.
+#
+# THE MOVE CAN MEET THIS SCRIPT'S OWN ABANDONED HANDLE, which is why it is not one call. Both callers -
+# the git cache entry and the session state file - read the same path through Read-BoundedFileText
+# earlier in the same render, and that reader closes on the thread pool without waiting, deliberately.
+# MOVEFILE_REPLACE_EXISTING needs delete access to the destination, and File.OpenRead asks for
+# FileShare.Read, so while that close is still queued the move is refused with ERROR_SHARING_VIOLATION.
+# Measured here: with the close queued and the pool busy, 459 moves in 2000 were refused. A render
+# normally spends tens of milliseconds starting git between the read and the write, which is long
+# enough for the close to land - but not always, and the case where it is NOT is exactly the one the
+# cache exists for: a machine with no git on PATH answers in a PATH scan and would then fail to write
+# the null result it means to cache, and pay for that scan on every render forever rather than once per
+# lifetime. So the move keeps trying, briefly, for the sharing errors only; anything else throws at
+# once, as does a share that never lets go, and the caller swallows it as before. All of this happens
+# after the line has been printed, so what it can cost is a slightly later process exit and never a
+# slower render.
 function Write-AtomicJson([string] $Path, $Object, [int] $Depth) {
     $json = ConvertTo-Json -InputObject $Object -Depth $Depth -Compress -ErrorAction Stop
     if (-not $json) { return $false }
     $tmp = "$Path.tmp"
     [System.IO.File]::WriteAllText($tmp, $json, [System.Text.UTF8Encoding]::new($false))
-    [System.IO.File]::Move($tmp, $Path, $true)
-    return $true
+    $limit = Get-AtomicWriteLimit
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
+        try { [System.IO.File]::Move($tmp, $Path, $true); return $true }
+        catch [System.IO.IOException] {
+            # 0x80070020 ERROR_SHARING_VIOLATION, 0x80070021 ERROR_LOCK_VIOLATION, as HResults. By number
+            # rather than by type: the type is the plain IOException every other filesystem failure lands
+            # on, so a path that is gone, refused or on a broken share still throws on the first attempt.
+            if ($_.Exception.HResult -notin @(-2147024864, -2147024863) -or $sw.ElapsedMilliseconds -ge $limit.TimeoutMs) { throw }
+            Start-Sleep -Milliseconds $limit.WaitMs
+        }
+    }
 }
 
 # ---- Git probe cache ----

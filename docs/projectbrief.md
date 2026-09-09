@@ -551,7 +551,13 @@ negative literal in the suite is parenthesised, with an AST check to keep it so 
 encoding detection (#48). The diagnostics rollover guard is a lock file beside the log rather than a
 named mutex, which was session-scoped on Unix (#49). The timing tests inject their clocks instead of
 racing them (#63). The installer's backups live at project-owned names and are provenance-checked
-(#52). The screenshots are regenerated from the shipped samples (#77).
+(#52). The screenshots are regenerated from the shipped samples (#77). Three more test families decide
+rather than wait: a child render's config budget can be raised through
+`CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS`, the diagnostics record budget is pinned for the checks about
+where its bytes go, and the git cache takes the clock its lifetime is measured against (#99, #94, #102).
+That last one turned up a defect of its own: the bounded read of the cache entry leaves a handle open on
+the pool, and Windows refuses to replace a file under one, so a probe that answered faster than the
+close could never write what it meant to cache — the atomic write now outlasts that handle.
 
 
 
