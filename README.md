@@ -263,8 +263,9 @@ screenshots, is described in [docs/testing.md](docs/testing.md). Commits are sca
 ## Roadmap
 
 The feature backlog is done. [The open issues](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues)
-record limits found under review: six light-palette block pairs whose joining arrow disappears (#89),
-a diagnostics log that can
+record limits found under review: the dark palette's `dim` role still on the terminal's own bright
+black, 2.79:1 on Solarized Dark (#111), six light-palette block pairs whose joining arrow disappears
+(#89), a diagnostics log that can
 outgrow its cap while another render holds the lock (#93), test families that fail under parallel
 load (#94, #99, #102), and a clock seam so the screenshots regenerate to the same bytes (#98). The
 design record is [docs/projectbrief.md](docs/projectbrief.md).

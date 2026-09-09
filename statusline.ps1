@@ -1422,7 +1422,22 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
 # dark ROLES, including `dim` 90 - the chevron. Those are hues rather than greys and they are the
 # line's own text rather than a marker beside it, so replacing them is a redesign of what a dark plain
 # line looks like, not a repair; a scheme's own green is also better tuned to that scheme's ground
-# than one index picked here. That larger change is deliberately not folded in here.
+# than one index picked here. That larger change is deliberately not folded in here. `dim` 90 is the
+# piece of it with a number: 2.79:1 on Solarized Dark, the same figure the two markers had, tracked as
+# #111. It is not simply the markers' answer applied again - a quiet grey close enough to 246 to be
+# readable is within a few sRGB steps of the markers drawn inside those same segments, which is rule
+# 4b's problem over again, so `dim` and the marker grey have to be chosen as a pair.
+#
+# WHAT 246 COSTS, ON THE ONE CONFIGURATION IT IS NOT FOR. `dark` is the default, so a reader on a LIGHT
+# terminal who never set `palette` gets this table anyway, and there 246 is a fixed 3.03:1 on white and
+# 2.81:1 on Solarized Light's #FDF6E3. `90` on that reader's screen was not better so much as unknown:
+# a scheme drawing brightBlack #767676 gave 4.54:1 on white, one drawing #93A1A1 gave 2.48:1 - the
+# same coin toss this whole table exists to stop, landing the other way up. So the change trades a
+# figure nobody could state for one anybody can, and the honest reading is that a dark table on a light
+# ground is out of contrast either way. THE REMEDY IS THE PALETTE KEY, not a compromise colour that
+# clears neither ground: `"palette": "light"`, or `install.ps1 -DetectTheme`, which reads Windows
+# Terminal's background and writes the key. Every bar in this note is measured against the ground its
+# own table is for, and a table measured against both would be a table that reads well on neither.
 function Get-Palette([string] $Palette = 'dark') {
     if ($Palette -eq 'light') {
         return @{

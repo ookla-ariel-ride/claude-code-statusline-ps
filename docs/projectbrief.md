@@ -598,7 +598,10 @@ racing them (#63). The installer's backups live at project-owned names and are p
 ## Future work
 
 The feature backlog is done. What remains open are limits recorded under review, none of them a
-feature: six of the light palette's block-background pairs are
+feature: the dark palette's plain-style `dim` role is still SGR 90, the terminal's own bright black,
+which measures 2.79:1 on Solarized Dark and colours the chevron and five segments (#111) — #88 moved
+the two markers off it and left this deliberately, because a quiet grey near the markers' 246 would
+reopen #82's distinctness rule; six of the light palette's block-background pairs are
 isoluminant, so the arrow between them vanishes (#89); the diagnostics log can outgrow its cap while
 another render holds the rollover lock (#93); two more test families fail under parallel load rather
 than on a defect (#94), the git-cache stamp tests do the same (#102), and a parallel suite run can trip
