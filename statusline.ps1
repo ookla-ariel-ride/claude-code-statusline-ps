@@ -816,6 +816,32 @@ function Get-ConfigPreset($Name) {
 # So a second budget would have been two numbers to keep in step for no case either of them separates.
 function Get-BoundedReadLimit { return @{ MaxBytes = 65536; TimeoutMs = 250 } }
 
+# How many milliseconds a CONFIG read may take when the environment asks for more than the shipped
+# budget, or 0 when it does not - which is every render outside a test harness, because the variable is
+# read only when it is set, the shape CLAUDE_STATUSLINE_DEBUG already has here. Nothing else reads it:
+# the git cache entry and the session state file keep the shipped budget, so what this can move is the
+# two config files and nothing else.
+#
+# It exists for #99. test.ps1 renders the sample matrix in child processes that read a config the test
+# itself wrote a moment earlier, under the same quarter-second budget a render gives a stranger's file;
+# on a machine running four suites at once one of those reads misses it, that child draws the built-in
+# defaults, and a random cell of the matrix fails for a reason the render is not responsible for. The
+# suite sets this for its own children rather than the checks being loosened.
+#
+# It can only ever RAISE the budget, and that is the whole of its safety argument: the value is used
+# only where it is larger than the shipped one, so no setting of it - not 0, not a negative number, not
+# a word - can make a render's config read stricter than it is today. Anything that is not a whole
+# number is ignored, and a value larger than a minute is capped at one, because past that the deadline
+# has stopped being a deadline.
+function Get-ConfigReadTimeout {
+    $raw = $env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS
+    if (-not $raw) { return 0 }
+    $n = 0
+    if (-not [int]::TryParse($raw.Trim(), [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref] $n)) { return 0 }
+    if ($n -le 0) { return 0 }
+    return [math]::Min($n, 60000)
+}
+
 # The two calls the bounded read makes, each closed over the path so it can go straight to the thread
 # pool. Nothing here can be a script block: converted to a delegate one needs a runspace, and a thread
 # pool thread has none. Delegate.CreateDelegate over a one-argument static method is plain .NET, needs no
@@ -898,6 +924,10 @@ function Open-SharedConfigFile([string] $Path, $Fault, [bool] $Trusted, [long] $
 #       Both were one File.Exists and one ReadAllText on the render's thread, which is the same shape
 #       the config read has and therefore cost one bounded read to fix rather than any new machinery.
 #       Both files are written by this script, so both are read as trusted.
+#     The two config files, and only those two, will take a LARGER budget from
+#     CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS when it is set; see Get-ConfigReadTimeout for why and for
+#     why it cannot make any of these reads stricter. Unset - which is every render this script was
+#     written for - all four are the 250 ms above.
 #   BOUNDED, by their own clock:
 #     - the diagnostics log's size probe, rollover and append, in Write-StatusDiag: 250 ms for a whole
 #       record, every call on the pool, with the rename attempted only above a reserve. Off entirely
@@ -992,8 +1022,13 @@ function Open-SharedConfigFile([string] $Path, $Fault, [bool] $Trusted, [long] $
 # arriving as one caught exception. File.OpenRead still throws on the pool thread - a file that is not
 # there is the only answer that API has - but the fault is now read off the task rather than rethrown
 # into a PowerShell catch, and the catch was where the cost was.
-function Read-BoundedFileText([string] $Path, [switch] $Trusted) {
+#
+# $TimeoutMs is a caller's larger budget, or 0 for the shipped one. Only the config merge passes it, and
+# only ever from Get-ConfigReadTimeout; it is taken when it is LARGER than the shipped deadline and
+# ignored otherwise, so a caller cannot use it to tighten the clock on a file it is reading.
+function Read-BoundedFileText([string] $Path, [switch] $Trusted, [int] $TimeoutMs = 0) {
     $limit = Get-BoundedReadLimit
+    if ($TimeoutMs -gt $limit.TimeoutMs) { $limit = @{ MaxBytes = $limit.MaxBytes; TimeoutMs = $TimeoutMs } }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $stream = $null
     $why = $null
@@ -1146,7 +1181,11 @@ function Write-BoundedReadDiag([string] $Label = 'config read') {
 function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Trusted) {
     try {
         if (-not $Path) { return $Cfg }
-        $text = Read-BoundedFileText $Path -Trusted:$Trusted
+        # Both config files, the user's and the project's, are read under the same budget, and
+        # CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS moves both or neither: which of them is being read is not
+        # something the machine's load knows about, so a variable that raised one and not the other
+        # would leave half the problem it exists for (#99).
+        $text = Read-BoundedFileText $Path -Trusted:$Trusted -TimeoutMs (Get-ConfigReadTimeout)
         # The read records why it refused rather than writing it, because writing is filesystem work
         # and the read is under a clock that must not carry any. Out here that clock has stopped, so
         # the record goes to the log now.
@@ -1873,6 +1912,13 @@ function Read-CachedRecord($r) {
     return $info
 }
 
+# The wall clock a cache entry's age is measured against, in Unix seconds. One line of its own so that
+# the default of Get-CachedGitBranch's $Now is a named thing rather than an expression buried in a
+# parameter list: a caller with a clock passes it, and everything else - which is every render - gets
+# this. It is also the seam the git cache's own checks pin, because a lifetime measured against however
+# long a loaded machine took between two calls is not a lifetime the cache decided (#102).
+function Get-GitCacheNow { return [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
+
 # The cache directory: claude-statusline under TEMP, else TMPDIR, else the runtime's temp path, so the
 # cache works on Linux and macOS too. TEMP is read first so a test can point the cache into its own tree.
 function Get-GitCacheDir {
@@ -1894,7 +1940,17 @@ function Get-GitCacheDir {
 # cap) this is a plain probe, and nothing is written. The stamps are read before git runs, so a change
 # that lands during the probe invalidates the entry. The directory is created only when there is
 # something to write, and a failure to create it, or to write, costs nothing but the cache.
-function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir, [int] $Ttl) {
+#
+# $Now is the clock the lifetime is measured against, and it defaults to reading one - the same shape
+# Get-PaceArrow's $Now has, and for the same reason. A render never passes it: Main calls this with four
+# arguments and the fifth comes from Get-GitCacheNow, which is the behaviour there has always been.
+# What it buys is a test that can state the age of an entry rather than arrange one, because the
+# lifetime is otherwise measured against however long the machine took between two calls: with a
+# lifetime of five seconds, a pause longer than that turns an entry a check expects to hit into a miss,
+# and one of five to fifteen seconds turns an entry dated in the future - which is a miss because the
+# difference is taken either way - into a hit. That is #102: a check failing for a reason the cache
+# cannot touch.
+function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir, [int] $Ttl, [long] $Now = (Get-GitCacheNow)) {
     $repo = if ($CacheDir -and $Ttl -gt 0) { Get-GitRepoRoot $Dir } else { $null }
     if (-not $repo) {
         if ($script:diagOn) {
@@ -1912,7 +1968,6 @@ function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir
         return Get-GitBranch $Dir $TimeoutMs
     }
     $path = [System.IO.Path]::Combine($CacheDir, (Get-ShortHash $root.ToLowerInvariant()) + '.json')
-    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     try {
         # The entry is read the way the user's own config is: one clock over the open, the length, the
         # reads and the close, on a file this process wrote itself. It is exactly the shape #48 gave the
@@ -1926,7 +1981,7 @@ function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir
             if ($j -is [System.Management.Automation.PSCustomObject] -and [long] $j.v -eq 1 -and
                 $j.root -is [string] -and $j.root -eq $root -and
                 $j.stamps -is [string] -and $j.stamps -ceq $stamps -and
-                [math]::Abs($now - [long] $j.writtenAt) -lt $Ttl -and $null -ne $j.PSObject.Properties['result']) {
+                [math]::Abs($Now - [long] $j.writtenAt) -lt $Ttl -and $null -ne $j.PSObject.Properties['result']) {
                 if ($null -eq $j.result) { if ($script:diagOn) { Write-StatusDiag 'git cache: hit (the entry holds no branch)' }; return $null }
                 $info = Read-CachedRecord $j.result
                 if ($info) { if ($script:diagOn) { Write-StatusDiag "git cache: hit ($($info.Branch))" }; return $info }
@@ -1943,7 +1998,7 @@ function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir
     $info = Get-GitBranch $Dir $TimeoutMs
     try {
         [void] [System.IO.Directory]::CreateDirectory($CacheDir)
-        if (Write-AtomicJson $path ([ordered]@{ v = 1; root = $root; stamps = $stamps; writtenAt = $now; result = $info }) 3) { Invoke-SessionStateSweep $CacheDir }
+        if (Write-AtomicJson $path ([ordered]@{ v = 1; root = $root; stamps = $stamps; writtenAt = $Now; result = $info }) 3) { Invoke-SessionStateSweep $CacheDir }
     } catch { if ($script:diagOn) { Write-StatusDiag "git cache: write failed: $($_.Exception.Message)" } }
     return $info
 }

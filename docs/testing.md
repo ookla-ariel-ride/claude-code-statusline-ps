@@ -79,6 +79,30 @@ nearly all of it `pwsh` start-up.
 The tests never touch your own repositories. They point `GIT_CEILING_DIRECTORIES` at the temp
 folder and pass an empty global git config, so the results do not depend on the machine.
 
+They also try not to depend on how busy it is. A check that fails because the machine was slow says
+nothing about the script, and several used to: the sample matrix renders in child processes that read a
+config the suite wrote a moment earlier, the diagnostics group needs a whole record to land inside its
+quarter-second budget, and the git cache decides an entry is fresh by comparing its `writtenAt` against
+a clock it reads itself. Under several suites at once, any of those can miss — and then a random cell of
+the matrix, or a run of cache checks, fails for a reason that is not in the script. Three things fix
+that, and none of them is a wider tolerance:
+
+- Every child the suite starts is given `CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS=30000`, so its config read
+  cannot miss under load. See [how the config files are read](configuration.md#how-the-config-files-are-read);
+  the variable can only raise the budget, and it is never set in the test process itself, so the checks
+  that spend the deadline on purpose still see the shipped 250 ms.
+- The diagnostics group and the operation-count group pin their budgets — the record budget and the
+  bounded read's deadline — for the run of checks that are about *what* was written rather than about
+  how long it took. Each is rebuilt from the script's own numbers and put back from the script itself
+  afterwards, and the checks that are about a budget running out lift the pin for themselves.
+- `Get-CachedGitBranch` takes the clock its lifetime is measured against as a parameter, defaulting to
+  `Get-GitCacheNow`. The git cache group pins that seam and states each entry's age instead of arranging
+  one by waiting, and puts the script's own seam back for two cases that are deliberately about the real
+  clock.
+
+So a failure in those groups is a failure. If you do run suites in parallel, run them from separate
+worktrees: each has its own temp tree, but two copies in one checkout share the sample and config files.
+
 To try a payload of your own:
 
 ```powershell

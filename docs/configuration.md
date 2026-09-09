@@ -130,6 +130,17 @@ anti-virus scan of a file just saved, a cloud-sync client hydrating it, a disk s
 render is a plain, one-row line, and the next one is back to normal. A visible flicker is the price of
 never waiting; a render that hangs would have cost the line altogether.
 
+**`CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS` raises that 250 ms, and nothing else changes it.** Set it to a
+whole number of milliseconds and both config files — yours and the project's — are read under that
+budget instead. It exists for the test suite, which renders in child processes that read a config it
+wrote a moment earlier and cannot afford one of those reads to miss under load; you would only reach for
+it on a machine where a config really does take longer than a quarter of a second to open and a flicker
+of defaults is worse than a slow render. It can only ever *raise* the budget: a value below 250, zero, a
+negative number, or anything that is not a whole number is ignored and the shipped 250 ms stands, and a
+value over 60000 is capped at 60000. Unset — which is every render this was written for — it is not read
+at all. It does not reach the other two files the same reader opens, the git cache entry and the session
+state file; those keep the 250 ms whatever it says.
+
 What separates the two files is trust, and it comes to one extra check. The project file arrives with
 the repository rather than from you, so it is opened first and then judged by the handle: a handle that
 cannot seek is a device or a pipe rather than a file, and the size that has to fit under 64 KiB is the
