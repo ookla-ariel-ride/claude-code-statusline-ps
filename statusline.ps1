@@ -2597,8 +2597,17 @@ function Get-ContextSegment($d, $cfg) {
 # screenshot can be regenerated to the same bytes; the default is the clock, for the tests, which lift
 # this out and call it directly, and it is what an epoch derived from an earlier reading would drift
 # from - one second out whenever the second ticks in between, enough to move a case off the boundary it
-# was written for. Both guards run before the [int] cast, which is what keeps the cast in range: the
-# ceiling caps the top at 86400 and refusing an expiry of 0 or less caps the bottom at -$Now.
+# was written for. Three guards run before the [int] cast, and between them they are what keeps the
+# cast in range: the ceiling caps the top at 86400, refusing an expiry of 0 or less means the
+# difference cannot be more negative than -$Now, and the floor below caps THAT.
+# The floor is not decoration. The bottom used to be held by -$Now alone, which was safe only while
+# $Now was a reading of the clock: an epoch of about 1.8e9 is comfortably inside an Int32, so nothing
+# could overflow. A $Now the caller chose - CLAUDE_STATUSLINE_NOW naming a year in the far future, or
+# this same clock in 2038 - is not bounded that way, and a difference of -2.3e9 fails the cast, which
+# under this script's SilentlyContinue is silent: the function answers nothing, and nothing means
+# "warm, and I cannot tell you how long" over a cache that has been cold for decades - the most
+# reassuring thing on the line at the moment it is least true. A day gone is far enough past for every
+# caller (they test for -le 0), so that is the floor, and it is the mirror of the ceiling above.
 function Get-CacheSecondsLeft($Value, [long] $Now = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) {
     $at = Get-FiniteNumber $Value
     if ($null -eq $at) { return $null }
@@ -2606,6 +2615,7 @@ function Get-CacheSecondsLeft($Value, [long] $Now = ([DateTimeOffset]::UtcNow.To
     if ($at -le 0) { return $null }
     $left = $at - $Now
     if ($left -gt 86400) { return $null }
+    if ($left -lt -86400) { return -86400 }
     return [int] [math]::Floor($left)
 }
 

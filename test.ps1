@@ -4774,6 +4774,23 @@ try {
     Confirm-Equal (TimeLeft ($clockPinEpoch + 4350) $clockPinEpoch) ' (1h12m)' 'clock seam: TimeLeft takes the reading it is given'
     Confirm-Equal (Get-PaceArrow ($clockPinEpoch + 4350) 23.5 $clockPinEpoch).Arrow $paceFlat 'clock seam: the pace arrow takes the reading it is given'
 } finally { $script:renderNow = $null }
+# A reading the caller chose is not bounded the way a reading of the clock is, and Get-CacheSecondsLeft
+# used to lean on that: -$Now held the bottom of its [int] cast only while $Now was about 1.8e9. A far
+# future instant - which the override accepts, and which this machine's own clock reaches in 2038 -
+# leaves a difference an Int32 cannot hold, the cast fails silently under the script's
+# SilentlyContinue, and the segment reads 'cache warm' over a cache that lapsed decades ago. Found by
+# the Codex review of this branch. The floor is the mirror of the 86400-second ceiling above it.
+Confirm-Equal (Get-CacheSecondsLeft 1768485900 4102444800) (-86400) 'clock seam: an expiry further past than an Int32 can hold still comes back as gone, not as nothing'
+Confirm-Equal (Get-CacheSecondsLeft 1768485900 1768485000) 900 'clock seam: and an ordinary countdown is untouched by the floor'
+Confirm-Equal (Get-CacheSecondsLeft 4102444800 1768485900) $null 'clock seam: the ceiling still refuses an expiry more than a day out'
+try {
+    # 1 January 2100, through the builder the render loop calls, with warm true beside it - the shape
+    # that used to print the reassuring answer.
+    $script:renderNow = [DateTimeOffset]::FromUnixTimeSeconds(4102444800)
+    $clockPinStale = Get-CacheSegment (Get-JsonPayload 'prompt_cache' '{"warm":true,"expires_at":1768485900}')
+    Confirm-Equal $clockPinStale.Text "$iconCache cache cold" 'clock seam: a cache that lapsed decades before the reading is cold, not warm'
+    Confirm-Equal $clockPinStale.Role 'bad' 'clock seam: and it is coloured as the bad news it is'
+} finally { $script:renderNow = $null }
 Confirm-True ($null -eq $script:renderNow) 'clock seam: the reading is put back, so the sections below run on the real clock again'
 
 Write-Host '== unit: badges' -ForegroundColor Cyan
