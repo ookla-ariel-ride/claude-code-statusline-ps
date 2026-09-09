@@ -567,9 +567,31 @@ New-Item -ItemType Directory -Force $tmp | Out-Null
 $oldGitCeiling = $env:GIT_CEILING_DIRECTORIES
 $env:GIT_CEILING_DIRECTORIES = (Split-Path $tmp -Parent).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
 try {
+# The two Windows sharing errors, and one retry rule for every write this file makes to a path the
+# script under test has just read. This is not defensiveness: the bounded reader CLOSES its handles on
+# the thread pool and never waits on the close, deliberately - see the note in Read-BoundedFileText -
+# so a config written here, read through the script, and written again on the same path meets the
+# previous read's handle still open. On a quiet machine the pool closes it in microseconds. On one
+# running six suites the close sits behind a starved pool, the write throws ERROR_SHARING_VIOLATION,
+# and under this file's Stop preference that takes the whole run down at whatever line came next -
+# which is how four of five loaded runs died in `unit: config`, on the one pair of lines that writes
+# the same config name twice. Only the two sharing errors are retried, so a path that is missing,
+# refused or broken still fails at once, and the wait is bounded.
+$sharingHResult = @(-2147024864, -2147024863)  # 0x80070020, 0x80070021
+function Invoke-SharedFile([scriptblock] $Call, [int] $TimeoutMs = 5000) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
+        try { return & $Call } catch {
+            $ex = $_.Exception
+            while ($null -ne $ex -and ($ex -isnot [System.IO.IOException] -or $ex.HResult -notin $sharingHResult)) { $ex = $ex.InnerException }
+            if ($null -eq $ex -or $sw.ElapsedMilliseconds -ge $TimeoutMs) { throw }
+            Start-Sleep -Milliseconds 50
+        }
+    }
+}
 function Write-TempConfig([string] $Name, [string] $Json) {
     $p = Join-Path $tmp $Name
-    [System.IO.File]::WriteAllText($p, $Json, [System.Text.UTF8Encoding]::new($false))
+    $null = Invoke-SharedFile { [System.IO.File]::WriteAllText($p, $Json, [System.Text.UTF8Encoding]::new($false)) }
     return $p
 }
 # Every segment name in layout-one order, from the registry, so this list cannot drift from the script's.
@@ -1086,7 +1108,10 @@ function Write-TempProjectDir([string] $Name, $Json) {
     $dir = Join-Path $tmp $Name
     $claude = Join-Path $dir '.claude'
     New-Item -ItemType Directory -Force $claude | Out-Null
-    if ($null -ne $Json) { [System.IO.File]::WriteAllText((Join-Path $claude 'statusline.json'), $Json, [System.Text.UTF8Encoding]::new($false)) }
+    if ($null -ne $Json) {
+        $projectFile = Join-Path $claude 'statusline.json'
+        $null = Invoke-SharedFile { [System.IO.File]::WriteAllText($projectFile, $Json, [System.Text.UTF8Encoding]::new($false)) }
+    }
     return $dir
 }
 $missingConfig = Join-Path $tmp 'does-not-exist.json'
@@ -5403,7 +5428,10 @@ function Get-CacheFileCount([string] $Dir) { return @(Get-ChildItem -LiteralPath
 function Edit-CacheEntry([string] $Path, [scriptblock] $Change) {
     $j = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
     & $Change $j
-    [System.IO.File]::WriteAllText($Path, ($j | ConvertTo-Json -Depth 4 -Compress), [System.Text.UTF8Encoding]::new($false))
+    # Through the retry: the call that just read this entry closed its handle on the pool without
+    # waiting, so on a loaded machine that handle can still be open here.
+    $entryJson = $j | ConvertTo-Json -Depth 4 -Compress
+    $null = Invoke-SharedFile { [System.IO.File]::WriteAllText($Path, $entryJson, [System.Text.UTF8Encoding]::new($false)) }
 }
 # Get-ShortHash is the one hash behind the state file name and the cache entry name.
 Confirm-Equal (Get-ShortHash 'abc') 'ba7816bf8f01cfea' 'short hash: first 16 hex characters of SHA-256("abc")'
@@ -5808,7 +5836,10 @@ $badEntries = @(
 foreach ($case in $badEntries) {
     $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
     $before = $script:probeCalls
-    if ($case.ContainsKey('Text')) { [System.IO.File]::WriteAllText($cacheEntry, $case.Text) } else { Edit-CacheEntry $cacheEntry $case.Change }
+    if ($case.ContainsKey('Text')) {
+        $badText = $case.Text
+        $null = Invoke-SharedFile { [System.IO.File]::WriteAllText($cacheEntry, $badText) }
+    } else { Edit-CacheEntry $cacheEntry $case.Change }
     $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
     Confirm-Equal $g.Branch 'main' "bad entry, $($case.Name): the probe answers"
     Confirm-Equal $script:probeCalls ($before + 1) "bad entry, $($case.Name): a miss"
@@ -6027,21 +6058,10 @@ $diagStamp = '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \d+ '
 # being asserted; a loaded run of this group died on the very first record that way. The record budget
 # is pinned where that matters most, further down, but the sink checks expire it deliberately, so every
 # call these helpers make to the log is also retried briefly before it is allowed to throw.
-# Only the two Windows sharing errors are retried - ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION -
-# so a log that is missing, refused or on a broken path still fails the run at once, and only the wait
-# for another handle to close is absorbed.
-$diagSharingHResult = @(-2147024864, -2147024863)  # 0x80070020, 0x80070021
-function Invoke-DiagFile([scriptblock] $Call, [int] $TimeoutMs = 5000) {
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    while ($true) {
-        try { return & $Call } catch {
-            $ex = $_.Exception
-            while ($null -ne $ex -and ($ex -isnot [System.IO.IOException] -or $ex.HResult -notin $diagSharingHResult)) { $ex = $ex.InnerException }
-            if ($null -eq $ex -or $sw.ElapsedMilliseconds -ge $TimeoutMs) { throw }
-            Start-Sleep -Milliseconds 50
-        }
-    }
-}
+# That is the same rule Invoke-SharedFile up at the top of this file already states, for the same
+# reason - a handle the script deliberately abandoned to the thread pool - so this is that rule under
+# the name the checks below read by, rather than a second copy of it that could drift.
+function Invoke-DiagFile([scriptblock] $Call, [int] $TimeoutMs = 5000) { return Invoke-SharedFile $Call $TimeoutMs }
 function Get-DiagLine {
     # The comma keeps a one-line log an array rather than one string the caller would index by character.
     if (-not (Test-Path -LiteralPath $diagLog)) { return , @() }
