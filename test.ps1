@@ -30,6 +30,14 @@ $PSNativeCommandUseErrorActionPreference = $false
 # bytes, went on passing. That is the sending half of the very defect #80 was about.
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $PSStyle.OutputRendering = 'Ansi'
+# CLEARED BEFORE ANYTHING RUNS, the way COLUMNS is cleared for every child render, and for a sharper
+# reason. Every child this file starts inherits the environment, and CLAUDE_STATUSLINE_NOW pins the
+# clock every render reads: a shell that still had it set - a screenshot regeneration interrupted
+# before its restore, a value left in a profile - would run every render in this file frozen at that
+# instant, and every one of them would pass, because the cases above the pinned group assert shapes
+# and not times. A green suite that never touched the clock is the failure this line prevents; the
+# pinned group sets the variable itself, for the length of its own renders, and puts it back.
+Remove-Item Env:CLAUDE_STATUSLINE_NOW -ErrorAction SilentlyContinue
 $script = Join-Path $PSScriptRoot 'statusline.ps1'
 $subScript = Join-Path $PSScriptRoot 'subagent-statusline.ps1'
 # One lookup for every child this file starts, rather than one per launcher.
@@ -4709,19 +4717,40 @@ Confirm-Equal $seg.Text "$iconLimit 5h 55% $paceFlat" 'limits at the end of a wi
 Confirm-Equal $seg.Short "$iconLimit 5h 55%" 'limits at the end of a window: a short form exists purely to drop the arrow'
 
 Write-Host '== unit: clock seam' -ForegroundColor Cyan
-# statusline.ps1 reads the wall clock once, at the top, and threads that one reading to the four things
-# on a line that move with it: the cache countdown, the rate-limit countdown, the pace arrow's position
-# in the window, and the `time` segment. CLAUDE_STATUSLINE_NOW replaces the reading. Everything above
-# this section deliberately runs on the real clock, the way production does; this section is the only
-# one that pins it, and it is what makes the two README screenshots regenerable to the same bytes.
+# statusline.ps1 reads the wall clock once, at the top, and the four things on a line that move with it
+# - the cache countdown, the rate-limit countdown, the pace arrow's position in the window, and the
+# `time` segment - all take that one reading. CLAUDE_STATUSLINE_NOW replaces it. This section proves
+# three things and nothing wider: what the override accepts and refuses, that the offset it carries is
+# the zone the wall clock is drawn in, and that the four figures come out of the reading rather than
+# out of a clock of their own. What it does NOT prove is that a whole render is reproducible - that is
+# the child-render group further down - or that a PNG comes out to the same bytes, which depends on the
+# rasteriser and not on this file.
 #
-# The pinned instant is eight months in the past, and that is deliberate: a caller that stopped
-# threading the reading and fell back to its own clock would measure these expiries as long gone, so
-# every assertion below fails loudly rather than agreeing with a fresh reading by luck.
+# Everything above this section deliberately runs on the real clock, the way production does.
+#
+# The pinned instant is well in the past, and that is deliberate: a figure that stopped taking the
+# reading and fell back to its own clock would measure these expiries as long gone, so every assertion
+# below fails loudly rather than agreeing with a fresh reading by luck.
+#
+# $clockPin IS THE ONE PIN IN THIS FILE. The child-render group below reads it from here rather than
+# spelling it again, and it is checked against docs/render-screenshot.ps1's own $fixedNow, so a pin
+# changed in one place and not the other fails here instead of quietly testing a different instant
+# from the one the screenshots are drawn at.
 $clockPin = '2026-01-15T14:05:00+00:00'
 $clockPinAt = [DateTimeOffset]::Parse($clockPin, [System.Globalization.CultureInfo]::InvariantCulture)
 $clockPinEpoch = $clockPinAt.ToUnixTimeSeconds()
 Confirm-Equal $clockPinEpoch 1768485900L 'clock seam: the pinned instant is the epoch every case below is built from'
+# Read out of the docs script by the parser rather than by running it: render-screenshot.ps1 needs a
+# font and a drawing surface, and this is the same way the OSC-pattern pin above reads $pattern out of
+# it. A $null Right means the assignment was renamed, which Get-ScriptAssignment has already failed by
+# name, so the comparison below reports a mismatch rather than dereferencing nothing.
+$clockPinRight = Get-ScriptAssignment (Join-Path $PSScriptRoot 'docs/render-screenshot.ps1') '$fixedNow'
+if ($null -ne $clockPinRight) {
+    # [string] over the invoked result for the same reason the pattern check above casts: a bare
+    # Collection[PSObject] would compare as its own type name and pass or fail for the wrong reason.
+    $clockPinShot = [string] [scriptblock]::Create($clockPinRight.Extent.Text).Invoke()
+    Confirm-Equal $clockPinShot $clockPin 'clock seam: docs/render-screenshot.ps1 pins the same instant this file does'
+}
 # The override is refused unless it carries an offset, because a wall clock without a zone is not
 # reproducible - which is the whole point - and [DateTimeOffset]::TryParse would silently supply the
 # MACHINE'S offset for a value that left it out.
@@ -4759,8 +4788,10 @@ foreach ($bad in @(
 # the machine's, so a lifted builder measures a countdown the way production does.
 Confirm-True ($null -eq $script:renderNow) 'clock seam: this file takes no reading of its own, so the sections above run on the real clock'
 Confirm-True ((((Get-StatusClock) - [DateTimeOffset]::Now).Duration().TotalSeconds) -lt 5) 'clock seam: with no reading taken the clock is this machine''s'
-# The four call sites, through the builders the render loop actually calls. A builder that stopped
-# threading the reading falls back to the real clock, where every one of these expiries is months past.
+# The four figures, through the builders the render loop actually calls, and then through the three
+# helpers CALLED WITH NO CLOCK AT ALL. The second half is the point: the seam lives in those defaults,
+# not in the call sites, so a helper that goes back to reading its own clock is caught here even though
+# every caller still compiles. Each expiry is months past on a real clock, so the fallback is loud.
 try {
     $script:renderNow = $clockPinAt
     Confirm-Equal (Get-TimeSegment).Text "$iconTime 14:05" 'clock seam: the wall clock segment draws the pinned instant'
@@ -4768,20 +4799,28 @@ try {
     Confirm-Equal $clockPinCache.Text "$iconCache cache 42m" 'clock seam: the cache countdown is measured against the pinned instant'
     $clockPinLimits = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":23.5,"resets_at":' + ($clockPinEpoch + 4350) + '}}')) $quietOff
     Confirm-Equal (ConvertTo-PlainText $clockPinLimits.Text) "$iconLimit 5h 24% $paceFlat (1h12m)" 'clock seam: the rate-limit countdown and the pace arrow are measured against it too'
-    # One reading and not two: the countdown and the arrow beside it come out of the same instant, so a
-    # render can never print a minute the projection disagrees with.
-    Confirm-Equal (Get-CacheSecondsLeft ($clockPinEpoch + 2550) $clockPinEpoch) 2550 'clock seam: the seconds-left helper takes the reading it is given'
-    Confirm-Equal (TimeLeft ($clockPinEpoch + 4350) $clockPinEpoch) ' (1h12m)' 'clock seam: TimeLeft takes the reading it is given'
-    Confirm-Equal (Get-PaceArrow ($clockPinEpoch + 4350) 23.5 $clockPinEpoch).Arrow $paceFlat 'clock seam: the pace arrow takes the reading it is given'
+    # No $Now argument anywhere below. What is pinned is that the DEFAULT is Get-StatusClock: a default
+    # that read a clock of its own would answer these three from today and fail all three.
+    Confirm-Equal (Get-CacheSecondsLeft ($clockPinEpoch + 2550)) 2550 'clock seam: the seconds-left helper defaults to the reading, with no argument to carry it'
+    Confirm-Equal (TimeLeft ($clockPinEpoch + 4350)) ' (1h12m)' 'clock seam: TimeLeft defaults to the reading, with no argument to carry it'
+    Confirm-Equal (Get-PaceArrow ($clockPinEpoch + 4350) 23.5).Arrow $paceFlat 'clock seam: the pace arrow defaults to the reading, with no argument to carry it'
+    # And a $Now given explicitly still wins, which is what the boundary cases elsewhere in this file
+    # rely on: they hand in an epoch of their own and must not be moved by a pin or by the clock.
+    Confirm-Equal (Get-CacheSecondsLeft ($clockPinEpoch + 2550) ($clockPinEpoch + 150)) 2400 'clock seam: an explicit $Now still overrides the default'
 } finally { $script:renderNow = $null }
-# A reading the caller chose is not bounded the way a reading of the clock is, and Get-CacheSecondsLeft
-# used to lean on that: -$Now held the bottom of its [int] cast only while $Now was about 1.8e9. A far
-# future instant - which the override accepts, and which this machine's own clock reaches in 2038 -
-# leaves a difference an Int32 cannot hold, the cast fails silently under the script's
-# SilentlyContinue, and the segment reads 'cache warm' over a cache that lapsed decades ago. Found by
-# the Codex review of this branch. The floor is the mirror of the 86400-second ceiling above it.
-Confirm-Equal (Get-CacheSecondsLeft 1768485900 4102444800) (-86400) 'clock seam: an expiry further past than an Int32 can hold still comes back as gone, not as nothing'
-Confirm-Equal (Get-CacheSecondsLeft 1768485900 1768485000) 900 'clock seam: and an ordinary countdown is untouched by the floor'
+# Get-CacheSecondsLeft's cast used to be [int], and its bottom was held by -$Now alone, which was inside
+# an Int32 only while $Now was a reading of the clock. A far future instant - which the override accepts,
+# and which this machine's own clock reaches in 2038 - leaves a difference an Int32 cannot hold; the cast
+# failed, silently under the script's SilentlyContinue, and the segment read 'cache warm' over a cache
+# that lapsed decades ago. Found by the Codex review of this branch. [long] holds the whole domain, so
+# the answer is the real count of seconds rather than a value clamped into range - which is what the
+# refusals around it already promise. Pinned as the property every caller actually tests, "gone", plus
+# the honest magnitude, rather than as a sentinel none of them looks for.
+$clockPinStaleLeft = Get-CacheSecondsLeft 1768485900 4102444800
+Confirm-True ($null -ne $clockPinStaleLeft) 'clock seam: an expiry further past than an Int32 can hold still comes back as a number, not as nothing'
+Confirm-True ($clockPinStaleLeft -le 0) 'clock seam: and that number reads as gone, which is all any caller asks it'
+Confirm-Equal $clockPinStaleLeft (1768485900L - 4102444800L) 'clock seam: it is the true difference, not a value clamped to a boundary'
+Confirm-Equal (Get-CacheSecondsLeft 1768485900 1768485000) 900 'clock seam: and an ordinary countdown is unchanged by the wider cast'
 Confirm-Equal (Get-CacheSecondsLeft 4102444800 1768485900) $null 'clock seam: the ceiling still refuses an expiry more than a day out'
 try {
     # 1 January 2100, through the builder the render loop calls, with warm true beside it - the shape
@@ -4791,7 +4830,6 @@ try {
     Confirm-Equal $clockPinStale.Text "$iconCache cache cold" 'clock seam: a cache that lapsed decades before the reading is cold, not warm'
     Confirm-Equal $clockPinStale.Role 'bad' 'clock seam: and it is coloured as the bad news it is'
 } finally { $script:renderNow = $null }
-Confirm-True ($null -eq $script:renderNow) 'clock seam: the reading is put back, so the sections below run on the real clock again'
 
 Write-Host '== unit: badges' -ForegroundColor Cyan
 # $badgeNameCells and $defaultEffort are script-level constants in statusline.ps1 and the builder closes
@@ -9545,16 +9583,34 @@ Write-Host '== render: the pinned clock' -ForegroundColor Cyan
 # the unit section above cannot reach: the override has to survive being read from the environment by
 # another process, and the figures it pins have to come out of the same render the screenshot captures.
 # The payload is the screenshot's own - sample 06, with the two expiries built from the pinned instant
-# the way render-screenshot.ps1 builds them - so this section fails if that image stops being
-# reproducible, rather than the diff being noticed months later.
-$pinInstant = '2026-01-15T14:05:00+00:00'
+# the way render-screenshot.ps1 builds them - so this section fails if that render stops being
+# reproducible, rather than the diff being noticed months later. It says nothing about the PNG's bytes,
+# which the rasteriser and the installed font decide and this file never touches.
+# $clockPin, from the unit section, is the one pin in this file and is already checked against the docs
+# script's own $fixedNow, so the instant here cannot drift from the instant the screenshots are drawn at.
+$pinInstant = $clockPin
 $pinEpoch = [DateTimeOffset]::Parse($pinInstant, [System.Globalization.CultureInfo]::InvariantCulture).ToUnixTimeSeconds()
 $pinPayloadObj = $samplePayloads[$sample06.Name] | ConvertFrom-Json -AsHashtable
 $pinPayloadObj.rate_limits.five_hour.resets_at = $pinEpoch + 4350
 $pinPayloadObj.prompt_cache = @{ warm = $true; expires_at = $pinEpoch + 2550 }
 $pinPayload = $pinPayloadObj | ConvertTo-Json -Depth 5
 $pinConfig = Write-TempConfig 'clock-pinned.json' '{ "layout": "two", "style": "plain", "segments": { "time": true } }'
+# FIRST, WITH NOTHING SET, and this is the assertion the whole group leans on. Every check below runs a
+# child that inherits this process's environment; if the variable were already set - here, or in the
+# shell that started the suite - the 72 child renders above would have run frozen and passed anyway.
+# This one says the clock those renders read is live, and the two pinned countdowns are absent, before
+# any of them is pinned. The wall clock is read either side, so the only way it matches neither is a
+# render that crossed two minute boundaries.
 $oldPinNow = $env:CLAUDE_STATUSLINE_NOW
+Confirm-True ($null -eq $oldPinNow) 'pinned clock: the suite reaches this group with no pin inherited, so every render above read a live clock'
+$liveBefore = Get-Date
+$live = Invoke-StatusLine $pinPayload $pinConfig 0
+$liveAfter = Get-Date
+$liveText = ConvertTo-PlainText ($live.Lines -join "`n")
+Confirm-True ($live.Err.Count -eq 0) 'pinned clock: the unpinned render writes nothing to stderr'
+Confirm-True ($liveText.Contains("$iconTime $($liveBefore.ToString('HH\:mm'))") -or $liveText.Contains("$iconTime $($liveAfter.ToString('HH\:mm'))")) "pinned clock: unpinned, the wall clock is this machine's, got '$liveText'"
+Confirm-True (-not $liveText.Contains('cache 42m')) 'pinned clock: unpinned, the pinned cache countdown is not on the line'
+Confirm-True (-not $liveText.Contains('(1h12m)')) 'pinned clock: unpinned, the pinned rate-limit countdown is not on the line'
 try {
     $env:CLAUDE_STATUSLINE_NOW = $pinInstant
     $pinned = Invoke-StatusLine $pinPayload $pinConfig 0
@@ -9582,18 +9638,8 @@ try {
         Confirm-True (-not $junkText.Contains("$iconTime 14:05") -or $before.ToString('HH\:mm') -eq '14:05') "pinned clock: '$junk' is not read as the pinned instant"
         Confirm-True ($junkText.Contains("$iconTime $($before.ToString('HH\:mm'))") -or $junkText.Contains("$iconTime $($after.ToString('HH\:mm'))")) "pinned clock: '$junk' falls back to this machine's clock, got '$junkText'"
     }
-    # And unset is the production path: the same fallback, with nothing in the environment at all.
-    Remove-Item Env:CLAUDE_STATUSLINE_NOW -ErrorAction SilentlyContinue
-    $before = Get-Date
-    $loose = Invoke-StatusLine $pinPayload $pinConfig 0
-    $after = Get-Date
-    $looseText = ConvertTo-PlainText ($loose.Lines -join "`n")
-    Confirm-True ($loose.Err.Count -eq 0) 'pinned clock: an unset variable writes nothing to stderr'
-    Confirm-True ($looseText.Contains("$iconTime $($before.ToString('HH\:mm'))") -or $looseText.Contains("$iconTime $($after.ToString('HH\:mm'))")) "pinned clock: unset is this machine's clock, got '$looseText'"
-    # The expiries are months past on the real clock, so the two countdowns the pin produced are gone.
-    # This is the assertion that says the pinned figures above really came from the variable.
-    Confirm-True (-not $looseText.Contains('cache 42m')) 'pinned clock: unset, the pinned cache countdown is not on the line'
-    Confirm-True (-not $looseText.Contains('(1h12m)')) 'pinned clock: unset, the pinned rate-limit countdown is not on the line'
+    # Unsetting again is the production path, and it is the $live render at the head of this group -
+    # same payload, same config, nothing in the environment - so it is not run a second time here.
 } finally {
     if ($null -ne $oldPinNow) { $env:CLAUDE_STATUSLINE_NOW = $oldPinNow } else { Remove-Item Env:CLAUDE_STATUSLINE_NOW -ErrorAction SilentlyContinue }
 }
