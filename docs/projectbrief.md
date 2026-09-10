@@ -551,9 +551,11 @@ negative literal in the suite is parenthesised, with an AST check to keep it so 
 encoding detection (#48). The diagnostics rollover guard is a lock file beside the log rather than a
 named mutex, which was session-scoped on Unix (#49). The timing tests inject their clocks instead of
 racing them (#63). The installer's backups live at project-owned names and are provenance-checked
-(#52). The screenshots are regenerated from the shipped samples (#77). The script reads the wall clock
-once and `CLAUDE_STATUSLINE_NOW` replaces that reading, so the four clock-relative figures on a line
-come out of one instant and both screenshots regenerate to the same bytes (#98).
+(#52). The screenshots are regenerated from the shipped samples (#77). The four clock-relative figures
+on a line — the cache countdown, the rate-limit countdown, the pace arrow and the wall clock — come
+out of one reading, taken once and replaceable through `CLAUDE_STATUSLINE_NOW`, so a screenshot
+regenerates to the same text (#98). The reads that compare against file times, the git cache's TTL and
+the state sweep, stay on the real clock on purpose.
 
 
 
@@ -572,7 +574,7 @@ come out of one instant and both screenshots regenerate to the same bytes (#98).
 - [x] Segment order, rows, colour cut-offs and glyphs as `statusline.json` keys
 - [x] Cached `git status` with a configurable timeout
 - [x] Optional diagnostics log behind `CLAUDE_STATUSLINE_DEBUG`
-- [x] One clock reading per render, pinnable with `CLAUDE_STATUSLINE_NOW`
+- [x] One clock reading behind every clock-relative figure on the line, pinnable with `CLAUDE_STATUSLINE_NOW`
 - [x] Pace arrow on the 5-hour rate limit
 - [x] Per-project `statusline.json` merged over the user file
 - [x] A subagent status line for the agent panel, installed with `-Subagents`
