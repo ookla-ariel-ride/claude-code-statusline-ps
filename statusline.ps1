@@ -945,8 +945,14 @@ function Open-SharedConfigFile([string] $Path, $Fault, [bool] $Trusted, [long] $
 #       Get-GitRepoRoot walking up from the payload's directory looking for a .git, Get-GitStamp
 #       stat-ing that git directory, enumerating the directories under refs and reading .git/commondir,
 #       a file the repository itself writes.
-#     - the writes, which are all after the line has been printed: the cache entry, the state file, and
-#       the sweep of either directory. Nothing waits on them but the process exit.
+#     - the writes. The state file and its sweep are after the line has been printed and nothing waits
+#       on them but the process exit. THE CACHE ENTRY AND ITS SWEEP ARE NOT, and this row said they
+#       were until a review checked it: Get-BranchSegment calls Get-CachedGitBranch while the segments
+#       are being built, which is before anything is printed, so the entry write and the sweep that
+#       follows it are in front of the line. That was harmless while both were single calls that either
+#       worked or threw; it stopped being harmless the moment the move at the end of Write-AtomicJson
+#       gained a retry, which is why that retry's window is sized for this caller and not for the
+#       state file's - see Get-AtomicWriteLimit.
 #     - Get-SessionStateDir and Get-SessionStatePath, one Directory.Exists on the way to the state read.
 #     Where those directories are is worth writing down, because the two are not the same rule.
 #     Write-StatusDiag and Get-GitCacheDir go TEMP, then TMPDIR, then Path.GetTempPath();
@@ -1791,10 +1797,20 @@ function Get-ShortHash([string] $Text) {
     return [BitConverter]::ToString($digest, 0, 8).Replace('-', '').ToLowerInvariant()
 }
 
-# How long the move at the end of an atomic write may keep trying past a sharing violation, and how
+# How long the move at the end of an atomic write may keep trying past a handle in the way, and how
 # often. Its own function so a test can pin it, the way the diagnostics budget is pinned: what has to be
 # provable is that the retry is what completes the write, not how many milliseconds it took.
-function Get-AtomicWriteLimit { return @{ TimeoutMs = 250; WaitMs = 5 } }
+#
+# FIFTY MILLISECONDS, not the 250 the reads get, and the difference is where the callers sit. The
+# session state write is after the last Write-Host and costs nothing but a later exit. THE GIT CACHE
+# WRITE IS NOT: Get-BranchSegment builds the branch segment before anything is printed, so every
+# millisecond spent here is a millisecond of the line the user is waiting for. (The filesystem audit
+# further down used to say both writes were after the print. That was wrong about the cache entry, and
+# it is corrected there.) So this is sized for the thing it actually has to outlast - a close this same
+# render queued on the thread pool a moment ago, which lands in well under a millisecond when the pool
+# is not starved - and not for waiting out a stranger. A holder that is still there after fifty
+# milliseconds is not worth a render: the write is abandoned, exactly as the read would be.
+function Get-AtomicWriteLimit { return @{ TimeoutMs = 50; WaitMs = 5 } }
 
 # Writes an object as compact UTF-8 JSON without a BOM: to a sibling .tmp file first, then moved over
 # the real one, which is atomic on both Windows and Linux, so a reader never sees half a file and an
@@ -1813,9 +1829,9 @@ function Get-AtomicWriteLimit { return @{ TimeoutMs = 250; WaitMs = 5 } }
 # cache exists for: a machine with no git on PATH answers in a PATH scan and would then fail to write
 # the null result it means to cache, and pay for that scan on every render forever rather than once per
 # lifetime. So the move keeps trying, briefly, for the sharing errors only; anything else throws at
-# once, as does a share that never lets go, and the caller swallows it as before. All of this happens
-# after the line has been printed, so what it can cost is a slightly later process exit and never a
-# slower render.
+# once, as does a share that never lets go, and the caller swallows it as before. What the waiting can
+# cost is not the same for both callers - the state write is after the print, the git cache write is in
+# front of it - and Get-AtomicWriteLimit is sized for the second one.
 function Write-AtomicJson([string] $Path, $Object, [int] $Depth) {
     $json = ConvertTo-Json -InputObject $Object -Depth $Depth -Compress -ErrorAction Stop
     if (-not $json) { return $false }
@@ -1834,8 +1850,8 @@ function Write-AtomicJson([string] $Path, $Object, [int] $Depth) {
             # holder can take. Everything else - a path that is gone, a directory in the way, a broken
             # share - throws on the first attempt.
             # The cost of taking 0x80070005 is that a destination denied for a real reason, a read-only
-            # file say, is retried for the window before it throws. That is a quarter of a second spent
-            # after the line has been printed on a write that was going to fail either way.
+            # file say, is retried for the window before it throws: fifty milliseconds spent on a write
+            # that was going to fail either way, which is what the window is kept small for.
             if ($_.Exception.GetBaseException().HResult -notin @(-2147024891, -2147024864, -2147024863) -or
                 $sw.ElapsedMilliseconds -ge $limit.TimeoutMs) { throw }
             Start-Sleep -Milliseconds $limit.WaitMs

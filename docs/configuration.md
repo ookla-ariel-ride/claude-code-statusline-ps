@@ -279,8 +279,10 @@ render read that file a moment earlier through a reader that closes its handle o
 without waiting for it. Windows refuses to replace a file while a read handle is open, so a probe that
 answered fast enough to beat that close — a machine with no git on `PATH`, which answers in a `PATH`
 scan — could never write the answer it meant to cache, and paid for the scan on every render instead of
-once per lifetime. The replace now keeps trying for a quarter of a second when a share is in the way,
-which happens after the line has been printed and so costs a render nothing. A `statusline.json` from before this cache has no `git` block and gets the defaults: the
+once per lifetime. The replace now keeps trying for fifty milliseconds when a handle is in the way. Fifty
+and not more because this write happens while the line is being built rather than after it is printed:
+what it has to outlast is a close the same render queued a moment ago, and a holder still there after
+that is not worth a render — the write is given up on, the way a read would be. A `statusline.json` from before this cache has no `git` block and gets the defaults: the
 cache on, five seconds, a 1.5 second timeout. Add `"git": { "cache": false }` to turn it off. The
 folder is safe to delete at any time; the next render writes it again, and entries not written for a
 day are swept.

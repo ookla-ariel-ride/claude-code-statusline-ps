@@ -6034,12 +6034,28 @@ $atomicAsync = $atomicReleaser.BeginInvoke()
 # Caught rather than left to throw: a retry that stopped covering the error Windows really returns
 # would end the whole run here, at a line whose failure is the finding, instead of naming it.
 $atomicLanded = $false
+$atomicSw = [System.Diagnostics.Stopwatch]::StartNew()
 try { $atomicLanded = Write-AtomicJson $atomicPath ([ordered]@{ n = 3 }) 3 } catch { $atomicLanded = $false }
+$atomicWaitedMs = $atomicSw.ElapsedMilliseconds
 Confirm-True $atomicLanded 'atomic write: with the retry the move outlasts the handle and the write lands'
 Confirm-Equal (Get-Content -LiteralPath $atomicPath -Raw | ConvertFrom-Json).n 3 'atomic write: and the file holds what the retry wrote'
+# A FLOOR, not a ceiling, and it is what makes the check above mean something. The handle is held for
+# 500 ms, so a write that landed without ever retrying could only have done so by starting after the
+# release - which this says it did not. A floor cannot pass by accident on a loaded machine: load makes
+# it easier to clear, and the thing it rules out is an implementation that never waited at all.
+Confirm-True ($atomicWaitedMs -ge 300) "atomic write: the call waited for the handle rather than starting after it, took $atomicWaitedMs ms"
 $null = $atomicReleaser.EndInvoke($atomicAsync)
 $atomicReleaser.Dispose()
 Confirm-True (-not (Test-Path -LiteralPath ($atomicPath + '.tmp'))) 'atomic write: no .tmp is left behind by either attempt'
+# And it terminates. A handle nothing ever releases, with the shipped window in force: the retry runs
+# out and the caller gets the throw, rather than a render waiting on a holder that is not going away.
+. (Import-ScriptFunction $script @('Get-AtomicWriteLimit'))
+$atomicKeep = [System.IO.File]::OpenRead($atomicPath)
+$atomicGaveUp = $false
+try { $null = Write-AtomicJson $atomicPath ([ordered]@{ n = 9 }) 3 } catch { $atomicGaveUp = $true }
+$atomicKeep.Dispose()
+Confirm-True $atomicGaveUp 'atomic write: a handle that never lets go exhausts the window and throws, so the retry is bounded'
+Confirm-Equal (Get-Content -LiteralPath $atomicPath -Raw | ConvertFrom-Json).n 3 'atomic write: and that write left the file alone'
 # A failure the retry cannot help with still reaches the caller: a directory sitting at the destination
 # name is not a handle that will let go. Checked with the window back at zero, so what is being pinned
 # is that it throws rather than how long it waited first - this file states no durations here.
@@ -6060,7 +6076,10 @@ foreach ($atomicNumber in @('-2147024891', '-2147024864', '-2147024863')) {
 }
 . (Import-ScriptFunction $script @('Get-AtomicWriteLimit'))
 Confirm-Equal (Get-AtomicWriteLimit).TimeoutMs $atomicRealLimit.TimeoutMs 'atomic write: the script''s own retry window is back'
-Confirm-True ((Get-AtomicWriteLimit).TimeoutMs -gt 0 -and (Get-AtomicWriteLimit).TimeoutMs -le 1000) 'atomic write: and it is a short one, spent after the line is printed'
+# Short, and it has to be: the git cache write runs while the segments are being built, in front of the
+# line, so this window is foreground time on every render whose entry write meets a holder. Well under
+# the bounded read's own deadline, which is already described there as longer than a render.
+Confirm-True ((Get-AtomicWriteLimit).TimeoutMs -gt 0 -and (Get-AtomicWriteLimit).TimeoutMs -lt $cacheReadLimit.TimeoutMs) "atomic write: and the window is shorter than the shipped bounded-read deadline, because this one is in front of the line, got $((Get-AtomicWriteLimit).TimeoutMs) against $($cacheReadLimit.TimeoutMs)"
 
 # ---- The clock, put back, and the two things only a real one can say ----
 # The script's own seam, read out of the script rather than retyped, so a restore that put back a
