@@ -6031,7 +6031,11 @@ Confirm-Equal (Get-Content -LiteralPath $atomicPath -Raw | ConvertFrom-Json).n 1
 $atomicReleaser = [powershell]::Create()
 $null = $atomicReleaser.AddScript('param($s) Start-Sleep -Milliseconds 500; $s.Dispose()').AddArgument($atomicHold)
 $atomicAsync = $atomicReleaser.BeginInvoke()
-Confirm-True (Write-AtomicJson $atomicPath ([ordered]@{ n = 3 }) 3) 'atomic write: with the retry the move outlasts the handle and the write lands'
+# Caught rather than left to throw: a retry that stopped covering the error Windows really returns
+# would end the whole run here, at a line whose failure is the finding, instead of naming it.
+$atomicLanded = $false
+try { $atomicLanded = Write-AtomicJson $atomicPath ([ordered]@{ n = 3 }) 3 } catch { $atomicLanded = $false }
+Confirm-True $atomicLanded 'atomic write: with the retry the move outlasts the handle and the write lands'
 Confirm-Equal (Get-Content -LiteralPath $atomicPath -Raw | ConvertFrom-Json).n 3 'atomic write: and the file holds what the retry wrote'
 $null = $atomicReleaser.EndInvoke($atomicAsync)
 $atomicReleaser.Dispose()
