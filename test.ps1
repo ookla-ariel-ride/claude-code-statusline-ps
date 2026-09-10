@@ -2672,6 +2672,55 @@ Confirm-Equal ((@(foreach ($r in $roleNames) { $dark.Roles[$r].Bg }) | Sort-Obje
 # arrow between them is never a colour painted on itself.
 Confirm-Equal ((@(foreach ($r in $roleNames) { $light.Roles[$r].Bg }) | Sort-Object -Unique).Count) 7 'light palette: seven distinct block backgrounds'
 
+# THE SECOND SHADE. Seven distinct backgrounds is not enough on its own, because the layout can put two
+# segments of the SAME role side by side: the shipped second row is context, cache and limits, all `ok`,
+# then cost, clock and lines, all `dim`. Three blocks of one background are one band with an invisible
+# arrow inside it, and in plain style one foreground code with only the chevron to break it. So the four
+# roles a VALUE moves between carry a second shade - a background one step along for powerline, a second
+# plain code for plain and ascii - and Format-Line gives it to a block whose immediate predecessor on
+# the line carries the same role, so a run of three reads base, alt, base.
+# WHAT IS NOT HERE IS AS DELIBERATE AS WHAT IS, and each absence is measured below rather than asserted:
+#   model, folder and branch have no second shade at all: each is the role of exactly ONE segment, so no
+#     line can put two of them side by side. If a later layout ever does, Format-Line's divider covers
+#     it - it draws one whenever two neighbouring blocks come out the same colour, whatever the reason.
+#   dark `dim` has no second BACKGROUND. Its block is a grey wedged between its own light text above and
+#     the terminal's ground below, and the band that leaves is too narrow to hold a second NEUTRAL grey
+#     40 sRGB away. Its joints take the divider instead.
+#   light `ok` has no second PLAIN code, the mirror-image case: every green in the cube 40 sRGB from
+#     #005F00 is too light to clear 4.5:1 on a white ground. Its plain joints keep the chevron.
+# The values are written out here rather than read back off the table, so moving one is a decision this
+# file has to be told about; the rules below are what say whether the new value is allowed.
+$expectedShades = @{
+    dark  = @{ ok = @{ Bg = 22; Sgr = '38;5;114' }; warn = @{ Bg = 214; Sgr = '38;5;221' }; bad = @{ Bg = 124; Sgr = '38;5;210' }; dim = @{ Bg = $null; Sgr = '38;5;251' } }
+    light = @{ ok = @{ Bg = 114; Sgr = $null }; warn = @{ Bg = 178; Sgr = '38;5;58' }; bad = @{ Bg = 210; Sgr = '38;5;88' }; dim = @{ Bg = 144; Sgr = '38;5;237' } }
+}
+foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
+    foreach ($r in $roleNames) {
+        $want = $expectedShades[$p.N][$r]
+        Confirm-Equal $p.T.Roles[$r].AltBg ($(if ($want) { $want.Bg })) "$($p.N) palette: role $r's alternate background"
+        Confirm-Equal $p.T.Roles[$r].AltSgr ($(if ($want) { $want.Sgr })) "$($p.N) palette: role $r's alternate plain code"
+    }
+}
+# One row per background a line can paint: the seven roles, and the alternate shade of every role that
+# has one. Rules 2, 2b, 3 and 4 below all run over these rows rather than over $roleNames, so a second
+# shade is held to exactly what a first one is held to - its own text, its joints, the terminal's ground
+# behind it, and every marker drawn inside it - instead of to a shorter list written for it.
+function Get-ShadeTable($Tab) {
+    $rows = @()
+    foreach ($r in @('model', 'ok', 'warn', 'bad', 'dim', 'folder', 'branch')) {
+        $c = $Tab.Roles[$r]
+        $rows += @{ Role = $r; N = $r; Alt = $false; Bg = $c.Bg; Fg = $c.Fg; Ink = $c.Ink }
+        if ($null -ne $c.AltBg) { $rows += @{ Role = $r; N = "$r alt"; Alt = $true; Bg = $c.AltBg; Fg = $c.Fg; Ink = $c.Ink } }
+    }
+    return $rows
+}
+$darkShades = @(Get-ShadeTable $dark)
+$lightShades = @(Get-ShadeTable $light)
+Confirm-Equal $darkShades.Count 10 'dark palette: seven role backgrounds and three alternate shades'
+Confirm-Equal $lightShades.Count 11 'light palette: seven role backgrounds and four alternate shades'
+Confirm-Equal ((@(foreach ($s in $darkShades) { $s.Bg }) | Sort-Object -Unique).Count) 10 'dark palette: every shade is its own colour'
+Confirm-Equal ((@(foreach ($s in $lightShades) { $s.Bg }) | Sort-Object -Unique).Count) 11 'light palette: every shade is its own colour'
+
 # THE FOUR CONTRAST RULES. Ratios are printed as well as asserted, so a reader can see the margin
 # rather than only that a bar was cleared.
 #
@@ -2726,24 +2775,58 @@ foreach ($row in @(
     }
     Write-Host ("   $($row.Label) on the terminal's own ground: worst {0:N2}:1 ($worstPlainAt)" -f $worstPlain)
 }
+# 1b. THE ALTERNATE PLAIN CODES, held to rule 1 and to nothing weaker. The second code a repeated role
+#    draws in is drawn on the terminal's own ground exactly like the first one, so 4.5:1 against both of
+#    its palette's grounds is the whole of the question for it too.
+#    EVERY ALTERNATE NAMES A 256-COLOUR INDEX, in the dark table as well as the light one, where the
+#    seven base codes are the basic sixteen and have no fixed hex. That is not an oversight the way the
+#    base codes' is: a colour being chosen now has no reason to be a theme's own green and every reason
+#    to be a number, and #88 made the same move for the two markers. It also settles the one thing a
+#    basic-sixteen alternate could not settle - that the pair looks like a pair. Solarized Dark maps the
+#    bright half of the sixteen onto GREYS, so `32` beside `92` there is a green beside a grey rather
+#    than a green beside a lighter green, and the role's meaning would depend on the theme.
+#    The distance to the base code is asserted only where the base names an index - the light table -
+#    because there is no hex to measure a theme colour against.
+foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
+    $worstAlt = 99.0; $worstAltAt = 'no alternate'
+    foreach ($r in $roleNames) {
+        $altSgr = $p.T.Roles[$r].AltSgr
+        if (-not $altSgr) { continue }
+        $idx = Get-SgrColourIndex $altSgr
+        Confirm-True ($null -ne $idx) "$($p.N) palette: the alternate plain code for $r names a 256-colour index"
+        if ($null -eq $idx) { continue }
+        foreach ($g in $plainGrounds[$p.N]) {
+            $ratio = Get-ContrastRatio (Get-XtermRgb $idx) $g.Rgb
+            if ($ratio -lt $worstAlt) { $worstAlt = $ratio; $worstAltAt = "$r on $($g.N)" }
+            Confirm-True ($ratio -ge 4.5) ("$($p.N) plain $r alt: colour $idx on $($g.N) is {0:N2}:1" -f $ratio)
+        }
+        $baseIdx = Get-SgrColourIndex $p.T.Roles[$r].Sgr
+        if ($null -eq $baseIdx) { continue }
+        $dist = Get-RgbDistance (Get-XtermRgb $idx) (Get-XtermRgb $baseIdx)
+        Confirm-True ($dist -ge 40) ("$($p.N) plain $r alt: $idx is {0:N1} from the base code $baseIdx in sRGB" -f $dist)
+    }
+    Write-Host ("   $($p.N) alternate plain codes on the terminal's own ground: worst {0:N2}:1 ($worstAltAt)" -f $worstAlt)
+}
 # 2. Powerline style. The block paints its own background, so the pair is what has to be readable and
 #    the terminal's own theme does not enter into it. BOTH tables are held to 4.5, with ONE EXEMPTION
 #    NAMED IN THE LIST BELOW rather than a lowered bar: the dark model block, 231 on 31, is 4.13 and
 #    predates the rule. Naming it keeps the debt legible and keeps the other six at 4.5, where a bar
 #    lowered to 4.0 for the whole table would have quietly let any of them slide to 4.0 as well.
+#    A SECOND SHADE IS NOT EXEMPT FROM THIS, and the exemption is keyed on the shade rather than on the
+#    role, so `dark.model` covers the one block that has the debt and not a second one added later.
 $pairExempt = @{ 'dark.model' = 4.0 }   # 4.13, older than this rule; retuning the model block is its own decision
 $worstPair = 99.0
-foreach ($r in $roleNames) {
-    $ratio = Get-ContrastRatio (Get-XtermRgb $light.Roles[$r].Fg) (Get-XtermRgb $light.Roles[$r].Bg)
+foreach ($s in $lightShades) {
+    $ratio = Get-ContrastRatio (Get-XtermRgb $s.Fg) (Get-XtermRgb $s.Bg)
     if ($ratio -lt $worstPair) { $worstPair = $ratio }
-    Confirm-True ($ratio -ge 4.5) ("light powerline ${r}: $($light.Roles[$r].Fg) on $($light.Roles[$r].Bg) is {0:N2}:1" -f $ratio)
+    Confirm-True ($ratio -ge 4.5) ("light powerline $($s.N): $($s.Fg) on $($s.Bg) is {0:N2}:1" -f $ratio)
 }
 $worstDarkPair = 99.0
-foreach ($r in $roleNames) {
-    $ratio = Get-ContrastRatio (Get-XtermRgb $dark.Roles[$r].Fg) (Get-XtermRgb $dark.Roles[$r].Bg)
+foreach ($s in $darkShades) {
+    $ratio = Get-ContrastRatio (Get-XtermRgb $s.Fg) (Get-XtermRgb $s.Bg)
     if ($ratio -lt $worstDarkPair) { $worstDarkPair = $ratio }
-    $bar = if ($pairExempt.ContainsKey("dark.$r")) { $pairExempt["dark.$r"] } else { 4.5 }
-    Confirm-True ($ratio -ge $bar) ("dark powerline ${r}: $($dark.Roles[$r].Fg) on $($dark.Roles[$r].Bg) is {0:N2}:1, bar $bar" -f $ratio)
+    $bar = if ($pairExempt.ContainsKey("dark.$($s.N)")) { $pairExempt["dark.$($s.N)"] } else { 4.5 }
+    Confirm-True ($ratio -ge $bar) ("dark powerline $($s.N): $($s.Fg) on $($s.Bg) is {0:N2}:1, bar $bar" -f $ratio)
 }
 Write-Host ("   powerline block pair: light {0:N2}:1, dark {1:N2}:1" -f $worstPair, $worstDarkPair)
 # 2b. PROPERTY (c): THE ARROW BETWEEN TWO BLOCKS. A powerline arrow is the left block's BACKGROUND
@@ -2764,13 +2847,20 @@ Write-Host ("   powerline block pair: light {0:N2}:1, dark {1:N2}:1" -f $worstPa
 #    about the light table and it is filed rather than fixed here, because fixing it means retuning a
 #    light background, which is not this issue - it is #89. Its distance half is asserted, and its worst luminance
 #    pair is printed on every run so the number is visible rather than merely true.
-foreach ($p in @(@{ N = 'dark'; T = $dark; Lum = $true }, @{ N = 'light'; T = $light; Lum = $false })) {
+#    EVERY PAIR THAT CAN MEET, WHICH IS EVERY SHADE AGAINST EVERY BASE AND NOT THE WHOLE CROSS PRODUCT.
+#    A block only takes its alternate shade when the block before it carries the same role, and the flag
+#    flips back for the one after, so two alternate blocks can never touch: proving it is one line -
+#    alt[i] and alt[i+1] both true would need role[i+1] = role[i] and alt[i] false at once. Measuring
+#    the alt/alt pairs anyway would be measuring a joint that cannot be drawn, and it would fail: the
+#    dark `ok` and `bad` alternates are 1.07:1 apart, which is fine for two colours that never meet.
+foreach ($p in @(@{ N = 'dark'; T = $dark; Lum = $true; S = $darkShades }, @{ N = 'light'; T = $light; Lum = $false; S = $lightShades })) {
     $worstLum = 99.0; $worstLumPair = ''; $worstDist = 9999.0
-    for ($i = 0; $i -lt $roleNames.Count; $i++) {
-        for ($j = $i + 1; $j -lt $roleNames.Count; $j++) {
-            $a = $p.T.Roles[$roleNames[$i]].Bg
-            $b = $p.T.Roles[$roleNames[$j]].Bg
-            $pair = "$($roleNames[$i])/$($roleNames[$j])"
+    for ($i = 0; $i -lt $p.S.Count; $i++) {
+        for ($j = $i + 1; $j -lt $p.S.Count; $j++) {
+            if ($p.S[$i].Alt -and $p.S[$j].Alt) { continue }
+            $a = $p.S[$i].Bg
+            $b = $p.S[$j].Bg
+            $pair = "$($p.S[$i].N)/$($p.S[$j].N)"
             $ratio = Get-ContrastRatio (Get-XtermRgb $a) (Get-XtermRgb $b)
             $dist = Get-RgbDistance (Get-XtermRgb $a) (Get-XtermRgb $b)
             if ($ratio -lt $worstLum) { $worstLum = $ratio; $worstLumPair = $pair }
@@ -2787,16 +2877,16 @@ foreach ($p in @(@{ N = 'dark'; T = $dark; Lum = $true }, @{ N = 'light'; T = $l
 #    disappear and the blocks stop reading as blocks. The bar is the same for both palettes, and the
 #    dark table is measured against the same ground here so neither is special-cased.
 $worstBg = 99.0
-foreach ($r in $roleNames) {
-    $ratio = Get-ContrastRatio (Get-XtermRgb $light.Roles[$r].Bg) $groundWhite
+foreach ($s in $lightShades) {
+    $ratio = Get-ContrastRatio (Get-XtermRgb $s.Bg) $groundWhite
     if ($ratio -lt $worstBg) { $worstBg = $ratio }
-    Confirm-True ($ratio -ge 1.7) ("light powerline ${r}: background $($light.Roles[$r].Bg) against white is {0:N2}:1" -f $ratio)
+    Confirm-True ($ratio -ge 1.7) ("light powerline $($s.N): background $($s.Bg) against white is {0:N2}:1" -f $ratio)
 }
 $worstDarkBg = 99.0
-foreach ($r in $roleNames) {
-    $ratio = Get-ContrastRatio (Get-XtermRgb $dark.Roles[$r].Bg) $groundBlack
+foreach ($s in $darkShades) {
+    $ratio = Get-ContrastRatio (Get-XtermRgb $s.Bg) $groundBlack
     if ($ratio -lt $worstDarkBg) { $worstDarkBg = $ratio }
-    Confirm-True ($ratio -ge 1.7) ("dark powerline ${r}: background $($dark.Roles[$r].Bg) against #0C0C0C is {0:N2}:1" -f $ratio)
+    Confirm-True ($ratio -ge 1.7) ("dark powerline $($s.N): background $($s.Bg) against #0C0C0C is {0:N2}:1" -f $ratio)
 }
 Write-Host ("   block edge against the terminal's ground: light {0:N2}:1, dark {1:N2}:1" -f $worstBg, $worstDarkBg)
 # 4. The inline roles. In plain style they are drawn on the terminal's ground like everything else; in
@@ -2823,20 +2913,204 @@ Write-Host ("   block edge against the terminal's ground: light {0:N2}:1, dark {
 #    own ground is exactly what rule 1 measures, so both tables' plain marker codes are held to 4.5:1
 #    up there, against the two grounds each palette has - see the note over $plainGrounds. What is
 #    left below is the pair of halves that exist only inside a block.
-foreach ($p in @(@{ N = 'light'; T = $light }, @{ N = 'dark'; T = $dark })) {
+#    A SECOND SHADE CHANGES THE BACKGROUND UNDER A MARKER AND NOT THE MARKER, which is why every row of
+#    $darkShades and $lightShades is measured here: the marker a segment's text carries was chosen when
+#    the text was BUILT, by the role's ink, and the alternation happens later, in Format-Line, once the
+#    line is known. The marker cannot follow the shade, so the shade has to be safe for the marker. The
+#    ink column and the block's own text are the base role's either way - an alternate moves the
+#    background alone - so (b) is the same measurement twice for the two rows of one role, and it costs
+#    nothing to leave it that way rather than to write a rule about which half to skip.
+foreach ($p in @(@{ N = 'light'; T = $light; S = $lightShades }, @{ N = 'dark'; T = $dark; S = $darkShades })) {
     $worstBlock = 99.0; $worstBlockAt = ''; $worstInk = 9999.0; $worstInkAt = ''
     foreach ($i in $inlineNames) {
-        foreach ($r in $roleNames) {
-            $mk = $p.T.Inline[$i][$p.T.Roles[$r].Ink]
-            $ratio = Get-ContrastRatio (Get-XtermRgb $mk) (Get-XtermRgb $p.T.Roles[$r].Bg)
-            $dist = Get-RgbDistance (Get-XtermRgb $mk) (Get-XtermRgb $p.T.Roles[$r].Fg)
-            if ($ratio -lt $worstBlock) { $worstBlock = $ratio; $worstBlockAt = "$i in $r" }
-            if ($dist -lt $worstInk) { $worstInk = $dist; $worstInkAt = "$i in $r" }
-            Confirm-True ($ratio -ge 3.0) ("$($p.N) inline ${i}: $mk inside the $r block is {0:N2}:1 against its background" -f $ratio)
-            Confirm-True ($dist -ge 85) ("$($p.N) inline ${i}: $mk inside the $r block is {0:N1} from that block's text $($p.T.Roles[$r].Fg)" -f $dist)
+        foreach ($s in $p.S) {
+            $mk = $p.T.Inline[$i][$s.Ink]
+            $ratio = Get-ContrastRatio (Get-XtermRgb $mk) (Get-XtermRgb $s.Bg)
+            $dist = Get-RgbDistance (Get-XtermRgb $mk) (Get-XtermRgb $s.Fg)
+            if ($ratio -lt $worstBlock) { $worstBlock = $ratio; $worstBlockAt = "$i in $($s.N)" }
+            if ($dist -lt $worstInk) { $worstInk = $dist; $worstInkAt = "$i in $($s.N)" }
+            Confirm-True ($ratio -ge 3.0) ("$($p.N) inline ${i}: $mk inside the $($s.N) block is {0:N2}:1 against its background" -f $ratio)
+            Confirm-True ($dist -ge 85) ("$($p.N) inline ${i}: $mk inside the $($s.N) block is {0:N1} from that block's text $($s.Fg)" -f $dist)
         }
     }
     Write-Host ("   $($p.N) inline: worst against a background {0:N2}:1 ($worstBlockAt), worst against block text {1:N1} ($worstInkAt)" -f $worstBlock, $worstInk)
+}
+# 5. A SECOND SHADE MAY CHANGE ITS LIGHTNESS AND NOT ITS MEANING. The four rules above would be cleared
+#    by an `ok` alternate that is a teal and a `warn` alternate that is a red, and either would make the
+#    line say something different about the session on every other segment. Contrast cannot see that, so
+#    hue is measured here: the same arithmetic every colour picker uses, from the same hex the rules
+#    above read, with a neutral - under 30 sRGB between its strongest and weakest channel - reported as
+#    having no hue at all rather than as some arbitrary angle.
+function Get-ColourHue($Rgb) {
+    $mx = [math]::Max($Rgb[0], [math]::Max($Rgb[1], $Rgb[2]))
+    $mn = [math]::Min($Rgb[0], [math]::Min($Rgb[1], $Rgb[2]))
+    if ($mx - $mn -lt 30) { return $null }
+    $c = $mx - $mn
+    $h = if ($mx -eq $Rgb[0]) { 60 * ((($Rgb[1] - $Rgb[2]) / $c) % 6) }
+    elseif ($mx -eq $Rgb[1]) { 60 * ((($Rgb[2] - $Rgb[0]) / $c) + 2) }
+    else { 60 * ((($Rgb[0] - $Rgb[1]) / $c) + 4) }
+    return (($h + 360) % 360)
+}
+# Degrees between two hues the short way round the circle, so 350 and 10 are 20 apart rather than 340.
+function Get-HueDistance([double] $A, [double] $B) {
+    $d = [math]::Abs($A - $B) % 360
+    return $(if ($d -gt 180) { 360 - $d } else { $d })
+}
+Confirm-Equal ([math]::Round((Get-ColourHue @(255, 0, 0)))) 0 'hue: pure red is 0 degrees'
+Confirm-Equal ([math]::Round((Get-ColourHue @(0, 255, 0)))) 120 'hue: pure green is 120 degrees'
+Confirm-Equal ([math]::Round((Get-ColourHue @(0, 0, 255)))) 240 'hue: pure blue is 240 degrees'
+Confirm-Equal ([math]::Round((Get-ColourHue @(255, 215, 0)))) 51 'hue: #FFD700 is an amber at 51 degrees'
+Confirm-True ($null -eq (Get-ColourHue @(188, 188, 188))) 'hue: a neutral grey has none'
+Confirm-Equal (Get-HueDistance 350 10) 20 'hue: 350 and 10 are 20 degrees apart, not 340'
+#    (a) EVERY ALTERNATE WHOSE BASE HAS A HEX is within 20 degrees of it. That is the whole of "an
+#        alternate yellow is still yellow", and it is what rules out reaching across the cube for a
+#        colour that happens to clear the floors. The dark table's seven PLAIN codes are the basic
+#        sixteen and have no hex, so their alternates are held to (b) instead.
+$hueChecked = 0
+foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
+    foreach ($r in $roleNames) {
+        foreach ($axis in @(
+                @{ K = 'AltBg'; Label = 'background'; Base = $p.T.Roles[$r].Bg; Alt = $p.T.Roles[$r].AltBg }
+                @{ K = 'AltSgr'; Label = 'plain code'; Base = (Get-SgrColourIndex $p.T.Roles[$r].Sgr); Alt = (Get-SgrColourIndex ([string] $p.T.Roles[$r].AltSgr)) })) {
+            if ($null -eq $axis.Alt -or $null -eq $axis.Base) { continue }
+            $bh = Get-ColourHue (Get-XtermRgb $axis.Base)
+            $ah = Get-ColourHue (Get-XtermRgb $axis.Alt)
+            if ($null -eq $bh) {
+                # The one pair whose base is a neutral: the light dim block. There is no second neutral
+                # the floors allow, which is what the pin below this loop measures, so all that is asked
+                # here is that its plain half - where a second neutral IS available - takes one.
+                if ($p.T.Roles[$r].AltSgr -and $axis.K -eq 'AltSgr') { Confirm-True ($null -eq $ah) "$($p.N) $r alt $($axis.Label): a neutral base keeps a neutral alternate" }
+                continue
+            }
+            $hueChecked++
+            $gap = Get-HueDistance $bh $ah
+            Confirm-True ($null -ne $ah -and $gap -le 20) ("$($p.N) $r alt $($axis.Label): colour $($axis.Alt) is {0:N0} degrees from the base $($axis.Base), so it is still the same colour" -f $gap)
+        }
+    }
+}
+Confirm-Equal $hueChecked 8 'palette: eight alternate shades have a measurable base to be compared against'
+#    (b) THE DARK TABLE'S PLAIN ALTERNATES, whose bases are theme colours, are held to the role's own
+#        window instead: a green stays inside the greens whatever the terminal thinks green is. The
+#        windows are wide on purpose - this is the difference between an amber and a red, not a tuning.
+$darkPlainWindow = @{ ok = @{ Lo = 90; Hi = 150 }; warn = @{ Lo = 30; Hi = 70 }; bad = @{ Lo = 340; Hi = 20 }; dim = $null }
+foreach ($r in $roleNames) {
+    if (-not $dark.Roles[$r].AltSgr) { continue }
+    Confirm-True ($darkPlainWindow.ContainsKey($r)) "dark plain $r alt: the role has a hue window"
+    $w = $darkPlainWindow[$r]
+    $h = Get-ColourHue (Get-XtermRgb (Get-SgrColourIndex $dark.Roles[$r].AltSgr))
+    if ($null -eq $w) { Confirm-True ($null -eq $h) "dark plain $r alt: a neutral role takes a neutral alternate"; continue }
+    $inWindow = if ($w.Lo -le $w.Hi) { $null -ne $h -and $h -ge $w.Lo -and $h -le $w.Hi } else { $null -ne $h -and ($h -ge $w.Lo -or $h -le $w.Hi) }
+    Confirm-True $inWindow ("dark plain $r alt: hue {0:N0} is inside the role's window $($w.Lo)..$($w.Hi)" -f $h)
+}
+#    (c) THE TWO GAPS, SEARCHED RATHER THAN CLAIMED. Both absences above are statements about the whole
+#        256-colour cube, so both are made by walking it here with exactly the floors the rules above
+#        apply. If a floor is ever loosened, the search finds the colour that has become available and
+#        the gap has to be closed or re-argued; the comment on its own could not do that.
+$dimCandidates = @()
+foreach ($idx in 16..255) {
+    $rgb = Get-XtermRgb $idx
+    if ((Get-ContrastRatio (Get-XtermRgb $dark.Roles.dim.Fg) $rgb) -lt 4.5) { continue }
+    if ((Get-ContrastRatio $rgb $groundBlack) -lt 1.7) { continue }
+    $clears = $true
+    foreach ($y in $roleNames) {
+        $other = Get-XtermRgb $dark.Roles[$y].Bg
+        if ((Get-RgbDistance $rgb $other) -lt 40 -or (Get-ContrastRatio $rgb $other) -lt 1.10) { $clears = $false; break }
+    }
+    if ($clears) {
+        foreach ($i in $inlineNames) {
+            if ((Get-ContrastRatio (Get-XtermRgb $dark.Inline[$i][$dark.Roles.dim.Ink]) $rgb) -lt 3.0) { $clears = $false; break }
+        }
+    }
+    if ($clears) { $dimCandidates += $idx }
+}
+$dimNeutral = @($dimCandidates | Where-Object { $null -eq (Get-ColourHue (Get-XtermRgb $_)) })
+Confirm-Equal ($dimNeutral -join ',') '' "dark dim: no neutral colour in the cube clears every floor as a second background, so the role keeps one shade (what does clear them: $(if ($dimCandidates.Count) { $dimCandidates -join ', ' } else { 'nothing at all' }))"
+$okPlainCandidates = @()
+$lightOkPlain = Get-XtermRgb (Get-SgrColourIndex $light.Roles.ok.Sgr)
+foreach ($idx in 16..255) {
+    $rgb = Get-XtermRgb $idx
+    $clears = $true
+    foreach ($g in $plainGrounds['light']) { if ((Get-ContrastRatio $rgb $g.Rgb) -lt 4.5) { $clears = $false; break } }
+    if (-not $clears -or (Get-RgbDistance $rgb $lightOkPlain) -lt 40) { continue }
+    $okPlainCandidates += $idx
+}
+$okPlainGreen = @($okPlainCandidates | Where-Object { $h = Get-ColourHue (Get-XtermRgb $_); $null -ne $h -and (Get-HueDistance $h 120) -le 20 })
+Confirm-Equal ($okPlainGreen -join ',') '' 'light plain ok: no green in the cube is 40 sRGB from #005F00 and still 4.5:1 on both light grounds, so the role keeps one plain code'
+#    (d) AND THE ONE SHADE CHOSEN BY MEASUREMENT RATHER THAN BY HUE: the light dim block, whose base is
+#        a neutral and whose alternate cannot be one. What is pinned is that it is the LEAST coloured
+#        colour the floors leave, so "a warm grey" is the best available answer and not a preference.
+$lightDimBest = $null
+$lightDimChroma = 999
+foreach ($idx in 16..255) {
+    $rgb = Get-XtermRgb $idx
+    if ((Get-ContrastRatio (Get-XtermRgb $light.Roles.dim.Fg) $rgb) -lt 4.5) { continue }
+    if ((Get-ContrastRatio $rgb $groundWhite) -lt 1.7) { continue }
+    $clears = $true
+    foreach ($y in $roleNames) { if ((Get-RgbDistance $rgb (Get-XtermRgb $light.Roles[$y].Bg)) -lt 40) { $clears = $false; break } }
+    if ($clears) {
+        foreach ($i in $inlineNames) {
+            if ((Get-ContrastRatio (Get-XtermRgb $light.Inline[$i][$light.Roles.dim.Ink]) $rgb) -lt 3.0) { $clears = $false; break }
+        }
+    }
+    if (-not $clears) { continue }
+    $chroma = [math]::Max($rgb[0], [math]::Max($rgb[1], $rgb[2])) - [math]::Min($rgb[0], [math]::Min($rgb[1], $rgb[2]))
+    if ($chroma -lt $lightDimChroma) { $lightDimChroma = $chroma; $lightDimBest = $idx }
+}
+Confirm-Equal $light.Roles.dim.AltBg $lightDimBest "light dim: the alternate background is the least coloured shade the floors leave (chroma $lightDimChroma)"
+
+# READING A RENDERED LINE BACK. The rules above measure a table; these three read the joints out of a
+# line that has been drawn and hold them to the same numbers, which is what lets the render sections
+# below - the matrix, and the walk over every layout and preset - check the bytes the script actually
+# printed instead of the colours it was supposed to use. They live here, beside the floors they apply.
+# A joint opens `38;5;X;48;5;Y`, foreground first, which nothing else on a line can be read as: a block
+# opens `0;[1;]48;5;X;38;5;Y`, background first, and the arrow after the last block is `38;5;X` with no
+# background in it at all.
+function Get-JointSet([string] $Line) {
+    $out = @()
+    foreach ($m in [regex]::Matches($Line, "$esc\[38;5;(\d+);48;5;(\d+)m(.)")) {
+        $out += @{ Fg = [int] $m.Groups[1].Value; Bg = [int] $m.Groups[2].Value; Glyph = $m.Groups[3].Value }
+    }
+    return , $out
+}
+$script:jointArrows = 0
+$script:jointDividers = 0
+$script:jointPlainSame = 0
+# One joint, held to whichever floor is its own: an arrow is the left block's background painted on the
+# right block's, so the two colours are what has to be told apart; a divider is a glyph in the block's
+# own ink on the block's own background, so it is a mark on a ground like any inline marker, at 3:1.
+function Confirm-JointClear([string] $Line, [string] $Palette, [string] $Label) {
+    foreach ($j in (Get-JointSet $Line)) {
+        if ([string]::Equals($j.Glyph, $arrow, [System.StringComparison]::Ordinal)) {
+            $script:jointArrows++
+            $dist = Get-RgbDistance (Get-XtermRgb $j.Fg) (Get-XtermRgb $j.Bg)
+            Confirm-True ($dist -ge 40) ("${Label}: the arrow between $($j.Fg) and $($j.Bg) is {0:N1} apart in sRGB" -f $dist)
+            if ($Palette -eq 'dark') {
+                $ratio = Get-ContrastRatio (Get-XtermRgb $j.Fg) (Get-XtermRgb $j.Bg)
+                Confirm-True ($ratio -ge 1.10) ("${Label}: the arrow between $($j.Fg) and $($j.Bg) is {0:N3}:1 apart in luminance" -f $ratio)
+            }
+        } elseif ([string]::Equals($j.Glyph, $chevron, [System.StringComparison]::Ordinal)) {
+            $script:jointDividers++
+            $ratio = Get-ContrastRatio (Get-XtermRgb $j.Fg) (Get-XtermRgb $j.Bg)
+            Confirm-True ($ratio -ge 3.0) ("${Label}: the divider, ink $($j.Fg) on $($j.Bg), is {0:N2}:1" -f $ratio)
+        } else {
+            Confirm-True $false "${Label}: a joint drawn with neither the arrow nor the divider"
+        }
+    }
+}
+# The plain and ascii answer to the same question. There is no background to measure, so what has to
+# hold is that two segments side by side are not one colour - and where they are, the role has to be one
+# the palette has no second code for, which is a fact about the table rather than about this line.
+function Confirm-PlainJointClear([string] $Line, [string] $Palette, [string] $Style, [string] $Label) {
+    $tab = Get-Palette $Palette
+    $mark = if ($Style -eq 'ascii') { '>' } else { $chevron }
+    $sep = " $esc[$($tab.Roles.dim.Sgr)m$mark$esc[0m "
+    $noAlt = @(foreach ($r in $roleNames) { if (-not $tab.Roles[$r].AltSgr) { $tab.Roles[$r].Sgr } })
+    $codes = @(foreach ($part in ($Line -split [regex]::Escape($sep))) { if ($part -match "^$esc\[([0-9;]+)m") { $Matches[1] } else { '' } })
+    for ($i = 1; $i -lt $codes.Count; $i++) {
+        $same = [string]::Equals($codes[$i], $codes[$i - 1], [System.StringComparison]::Ordinal)
+        if ($same) { $script:jointPlainSame++ }
+        Confirm-True (-not $same -or $codes[$i] -in $noAlt) "${Label}: segments $($i - 1) and $i are $(if ($same) { "both $($codes[$i])" } else { 'different colours' })"
+    }
 }
 # A contrast floor is only worth having if the colour it names is the one the terminal ends up in, so
 # the ratios above are joined to the bytes here. This one exact string carries all three of the things
@@ -2888,6 +3162,57 @@ Confirm-Equal (Get-FittedLine @($segModel, $segFolder) 'plain' $null -Palette 'l
 Confirm-Equal (Get-FittedLine @($segModel, $segFolder) 'plain' 40 -Palette 'light') (Format-Line @($segModel, $segFolder) 'plain' 'light') 'fitted at a width that holds it: the light render'
 Confirm-Equal (Get-FittedLine @($segModel, $segFolder) 'plain' 40 -Right @('folder') -Palette 'light') (Join-AlignedLine (Format-Line @($segModel) 'plain' 'light') (Format-Line @($segFolder) 'plain' 'light') 40) 'fitted with a right group: both groups are light'
 Confirm-Equal (Get-FittedLine @($segModel, $segFolder) 'plain' 40) (Get-FittedLine @($segModel, $segFolder) 'plain' 40 -Palette 'dark') 'fitted: no palette argument is the dark render'
+
+# ---- Adjacent segments of the same role ----
+# The shipped second row is context, cache and limits - all `ok` when nothing is warning - and then
+# cost, clock and lines, all `dim`. Every one of those joints used to be a colour painted on itself.
+# Format-Line settles them from the records IT is handed, which is the only place the question can be
+# answered: a line can be missing the cache block, the lines block or the pull request, so which
+# segments end up side by side is not a property of the registry.
+$segCtx = @{ Name = 'context'; Text = 'C'; Short = $null; Role = 'ok'; Bold = $false }
+$segCache = @{ Name = 'cache'; Text = 'K'; Short = $null; Role = 'ok'; Bold = $false }
+$segLimits = @{ Name = 'limits'; Text = 'L'; Short = $null; Role = 'ok'; Bold = $false }
+$segClock = @{ Name = 'clock'; Text = 'Y'; Short = $null; Role = 'dim'; Bold = $false }
+$segLines = @{ Name = 'lines'; Text = 'Z'; Short = $null; Role = 'dim'; Bold = $false }
+$segFolder2 = @{ Name = 'folder'; Text = 'G'; Short = $null; Role = 'folder'; Bold = $false }
+# Two blocks of one role: the second takes the role's second background, and the arrow between them is
+# the first background painted on the second, which is what makes it visible at all.
+Confirm-Equal (Format-Line @($segCtx, $segCache) 'powerline') "$esc[0;48;5;28;38;5;231m C $esc[38;5;28;48;5;22m$arrow$esc[0;48;5;22;38;5;231m K $esc[0m$esc[38;5;22m$arrow$esc[0m" 'powerline same role: the second block takes the alternate shade'
+# Three of them alternate rather than drift: base, alt, base. Two alternate blocks never touch, which
+# is what lets the palette leave the alt/alt pairs unmeasured.
+Confirm-Equal (Format-Line @($segCtx, $segCache, $segLimits) 'powerline') "$esc[0;48;5;28;38;5;231m C $esc[38;5;28;48;5;22m$arrow$esc[0;48;5;22;38;5;231m K $esc[38;5;22;48;5;28m$arrow$esc[0;48;5;28;38;5;231m L $esc[0m$esc[38;5;28m$arrow$esc[0m" 'powerline same role: a run of three reads base, alt, base'
+# The dark `dim` role has no second background, so its joint falls back to a divider: the thin chevron
+# in the block's own ink, on the block's own background, instead of a solid arrow of one colour on
+# itself. The blocks either side are unchanged, and so is the trailing arrow.
+Confirm-Equal (Format-Line @($segDim, $segClock) 'powerline') "$esc[0;48;5;238;38;5;250m X $esc[38;5;250;48;5;238m$chevron$esc[0;48;5;238;38;5;250m Y $esc[0m$esc[38;5;238m$arrow$esc[0m" 'powerline same role, no second shade: a divider in the block ink'
+Confirm-Equal (Format-Line @($segDim, $segClock, $segLines) 'powerline') "$esc[0;48;5;238;38;5;250m X $esc[38;5;250;48;5;238m$chevron$esc[0;48;5;238;38;5;250m Y $esc[38;5;250;48;5;238m$chevron$esc[0;48;5;238;38;5;250m Z $esc[0m$esc[38;5;238m$arrow$esc[0m" 'powerline same role, no second shade: every joint in the run gets one'
+# A role that no line can repeat gets the same fallback if one ever does, so the rule is total.
+Confirm-Equal (Format-Line @($segFolder, $segFolder2) 'powerline') "$esc[0;48;5;25;38;5;231m F $esc[38;5;231;48;5;25m$chevron$esc[0;48;5;25;38;5;231m G $esc[0m$esc[38;5;25m$arrow$esc[0m" 'powerline same role: a role with no alternate at all still gets a visible joint'
+# Two different roles are the render they always were, to the byte: the arrow between them is still
+# the left background on the right one and nothing else moved.
+Confirm-Equal (Format-Line @($segCtx, $segDim) 'powerline') "$esc[0;48;5;28;38;5;231m C $esc[38;5;28;48;5;238m$arrow$esc[0;48;5;238;38;5;250m X $esc[0m$esc[38;5;238m$arrow$esc[0m" 'powerline different roles: unchanged'
+# The light table alternates the dim block, where the dark one cannot.
+Confirm-Equal (Format-Line @($segDim, $segClock, $segLines) 'powerline' 'light') "$esc[0;48;5;$($light.Roles.dim.Bg);38;5;$($light.Roles.dim.Fg)m X $esc[38;5;$($light.Roles.dim.Bg);48;5;$($light.Roles.dim.AltBg)m$arrow$esc[0;48;5;$($light.Roles.dim.AltBg);38;5;$($light.Roles.dim.Fg)m Y $esc[38;5;$($light.Roles.dim.AltBg);48;5;$($light.Roles.dim.Bg)m$arrow$esc[0;48;5;$($light.Roles.dim.Bg);38;5;$($light.Roles.dim.Fg)m Z $esc[0m$esc[38;5;$($light.Roles.dim.Bg)m$arrow$esc[0m" 'light powerline same role: the dim run alternates'
+# Plain style, where the complaint was one foreground code with only the chevron between two segments.
+Confirm-Equal (Format-Line @($segCtx, $segCache) 'plain') "$esc[32mC$esc[0m $esc[90m$chevron$esc[0m $esc[38;5;114mK$esc[0m" 'plain same role: the second segment takes the alternate code'
+Confirm-Equal (Format-Line @($segDim, $segClock, $segLines) 'plain') "$esc[90mX$esc[0m $esc[90m$chevron$esc[0m $esc[38;5;251mY$esc[0m $esc[90m$chevron$esc[0m $esc[90mZ$esc[0m" 'plain same role: base, alt, base, and the chevron is the dim role either way'
+Confirm-Equal (Format-Line @($segDim, $segClock) 'ascii') "$esc[90mX$esc[0m $esc[90m>$esc[0m $esc[38;5;251mY$esc[0m" 'ascii same role: the alternation is the palette, not the shape'
+# The light table has no second green plain code, so this pair is the one place the alternation cannot
+# reach and the chevron carries the joint on its own, exactly as it did before.
+Confirm-Equal (Format-Line @($segCtx, $segCache) 'plain' 'light') "$esc[$($light.Roles.ok.Sgr)mC$esc[0m $esc[$($light.Roles.dim.Sgr)m$chevron$esc[0m $esc[$($light.Roles.ok.Sgr)mK$esc[0m" 'light plain same role: no second green, so the pair is unchanged'
+# A MARKER INSIDE AN ALTERNATED SEGMENT. Format-Inline closes its run by handing the segment's own
+# colour back, and it chose that colour when the TEXT was built, long before this line existed - so a
+# segment drawn in the alternate has to have those hand-backs moved with it, or the text after the
+# first marker reverts to the base code and the segment is two colours.
+$segCached = @{ Name = 'cache'; Text = "64k $(Format-Inline 'cached' '92% cached' 'ok' 'plain')"; Short = $null; Role = 'ok'; Bold = $false }
+Confirm-Equal (Format-Line @($segCtx, $segCached) 'plain') "$esc[32mC$esc[0m $esc[90m$chevron$esc[0m $esc[38;5;114m64k $esc[38;5;246m92% cached$esc[38;5;114m$esc[0m" 'plain same role: a marker inside the alternated segment hands the alternate back, not the base'
+Confirm-Equal (Format-Line @($segCached, $segCtx) 'plain') "$esc[32m64k $esc[38;5;246m92% cached$esc[32m$esc[0m $esc[90m$chevron$esc[0m $esc[38;5;114mC$esc[0m" 'plain: the same segment in the base position is untouched'
+# In powerline the marker needs no such move, and must not be given one: an alternate changes the
+# background and never the block text, so the foreground Format-Inline hands back is already right, and
+# the marker itself is the one the block's ink chose. The whole segment comes through untouched inside
+# a block whose background is the alternate.
+$segCachedPl = @{ Name = 'cache'; Text = "64k $(Format-Inline 'cached' '92% cached' 'ok' 'powerline')"; Short = $null; Role = 'ok'; Bold = $false }
+Confirm-Equal (Format-Line @($segCtx, $segCachedPl) 'powerline') "$esc[0;48;5;28;38;5;231m C $esc[38;5;28;48;5;22m$arrow$esc[0;48;5;22;38;5;231m 64k $esc[38;5;86m92% cached$esc[38;5;231m $esc[0m$esc[38;5;22m$arrow$esc[0m" 'powerline same role: the alternated block keeps its marker and hands its own foreground back'
 
 Write-Host '== unit: fitting' -ForegroundColor Cyan
 function Get-FitSegmentSet {
@@ -8529,6 +8854,14 @@ $sampleMarkers = @{
 # what holds the rest of the matrix to the colours it printed before this key existed. The markers are
 # plain text and cannot see any of it, so the colour is checked raw below.
 $alarmSamples = @('02-feature-dirty-high.json', '12-context-alarm.json')
+# THE ALARM COLOUR IS THE `bad` ROLE, AND A ROLE IS TWO SHADES. When the segment before the model on
+# the line is also `bad` - and on an alarm sample the context segment is, so the reversed order, which
+# puts context immediately before the model, does exactly that - the model takes the role's alternate
+# shade. Both spellings are accepted below and the check is unchanged in what it asks: the alarm draws
+# the model in `bad` rather than in the model's own colour. Read off the table rather than retyped, so
+# a retune of either shade has to answer to the palette group instead of quietly passing here.
+$alarmPlainSgr = @($pal.Roles.bad.Sgr, $pal.Roles.bad.AltSgr)
+$alarmBlockBg = @($pal.Roles.bad.Bg, $pal.Roles.bad.AltBg)
 # Every glyph a segment can put on the line: a segment the config turns off must show none of them, and
 # the two-line checks use them to say which row a segment landed on.
 $segmentGlyphs = @{
@@ -8563,7 +8896,7 @@ function Get-ConfigRecord([string] $Name, [string] $Path, $Parsed, [int[]] $Widt
     $listed = @($rows | ForEach-Object { $_ })
     $enabled = @{}
     foreach ($n in $allSegments) { $enabled[$n] = [bool] ($Parsed.Segments[$n] -and $n -in $listed) }
-    return @{ Name = $Name; Path = $Path; Layout = $Parsed.Layout; Style = $Parsed.Style; Folder = $Parsed.Folder; Enabled = $enabled; Rows = $rows; Widths = $Widths }
+    return @{ Name = $Name; Path = $Path; Layout = $Parsed.Layout; Style = $Parsed.Style; Palette = $Parsed.Palette; Folder = $Parsed.Folder; Enabled = $enabled; Rows = $rows; Widths = $Widths }
 }
 # The oracle turns off every registry segment but model, so a new segment is off here without an edit.
 $modelOnlySegments = @($allSegments | Where-Object { $_ -ne 'model' } | ForEach-Object { '"' + $_ + '": false' }) -join ', '
@@ -8650,6 +8983,10 @@ foreach ($cfg in $configSet) {
             Confirm-True ($lines.Count -le $maxLines) "${label}: $($lines.Count) lines, layout allows $maxLines"
             foreach ($line in $lines) {
                 Confirm-True (-not [string]::IsNullOrWhiteSpace($line)) "${label}: empty line"
+                # Every joint on a line the SCRIPT drew, at every width in the matrix - so the shrink
+                # and drop stages are covered too, where segments close up around a dropped one and put
+                # neighbours together that the full line never had side by side.
+                if ($cfg.Style -eq 'powerline') { Confirm-JointClear $line $cfg.Palette $label } else { Confirm-PlainJointClear $line $cfg.Palette $cfg.Style $label }
                 if ($c -le 0) { continue }
                 $w = Measure-VisibleWidth $line
                 if ($w -le $c - 1) { $script:passed++; continue }
@@ -8668,9 +9005,9 @@ foreach ($cfg in $configSet) {
             if ($cfg.Enabled['model'] -and $sample.Name -in $alarmSamples) {
                 $rawAlarm = $lines -join "`n"
                 if ($cfg.Style -eq 'plain') {
-                    Confirm-True ($rawAlarm.Contains("$esc[31m$iconModel")) "${label}: the alarm keeps the plain model segment red"
+                    Confirm-True (@($alarmPlainSgr | Where-Object { $rawAlarm.Contains("$esc[${_}m$iconModel") }).Count -gt 0) "${label}: the alarm keeps the plain model segment red, in either shade of the role"
                 } else {
-                    Confirm-True ($rawAlarm.Contains("$esc[0;1;48;5;160;38;5;231m $iconModel")) "${label}: the alarm keeps the model block on background 160"
+                    Confirm-True (@($alarmBlockBg | Where-Object { $rawAlarm.Contains("$esc[0;1;48;5;${_};38;5;231m $iconModel") }).Count -gt 0) "${label}: the alarm keeps the model block on a red background, in either shade of the role"
                 }
             }
             if ($c -gt 0 -and $sampleShortForms.ContainsKey($sample.Name)) {
@@ -8786,7 +9123,15 @@ foreach ($cfg in $configSet) {
                         if ($cfg.Style -eq 'plain') {
                             Confirm-True ($text.Contains($chevron) -and -not $text.Contains($arrow)) "${label}: plain uses chevron not arrow"
                         } else {
-                            Confirm-True ($text.Contains($arrow) -and -not $text.Contains($chevron)) "${label}: powerline uses arrow not chevron"
+                            # A powerline line can now carry the chevron too, but only where two blocks
+                            # came out one colour and the arrow between them would have been that colour
+                            # painted on itself - #106's divider. So it is COUNTED rather than forbidden:
+                            # every chevron on the line has to be one of the divider joints the raw
+                            # escapes name, which is what stops the plain separator leaking into this
+                            # style under cover of the new rule.
+                            $dividerCount = @(Get-JointSet ($lines -join "`n") | Where-Object { [string]::Equals($_.Glyph, $chevron, [System.StringComparison]::Ordinal) }).Count
+                            $chevronCount = @([regex]::Matches($text, [regex]::Escape($chevron))).Count
+                            Confirm-True ($text.Contains($arrow) -and $chevronCount -eq $dividerCount) "${label}: powerline uses arrows, and its $chevronCount chevrons are all same-background dividers ($dividerCount)"
                         }
                     }
                     # The alarm only changes a colour, so it is the one thing the plain-text markers
@@ -8795,11 +9140,11 @@ foreach ($cfg in $configSet) {
                     if ($cfg.Enabled['model'] -and $cfg.Style -eq 'plain') {
                         $rawText = $lines -join "`n"
                         if ($sample.Name -in $alarmSamples) {
-                            Confirm-True ($rawText.Contains("$esc[31m$iconModel")) "${label}: the alarm turns the plain model segment red"
+                            Confirm-True (@($alarmPlainSgr | Where-Object { $rawText.Contains("$esc[${_}m$iconModel") }).Count -gt 0) "${label}: the alarm turns the plain model segment red, in either shade of the role"
                             Confirm-True (-not $rawText.Contains("$esc[1;36m$iconModel")) "${label}: no bold cyan model segment beside the alarm"
                         } else {
                             Confirm-True ($rawText.Contains("$esc[1;36m$iconModel")) "${label}: the plain model segment is bold cyan"
-                            Confirm-True (-not $rawText.Contains("$esc[31m$iconModel")) "${label}: no alarm, so the model segment is not red"
+                            Confirm-True (@($alarmPlainSgr | Where-Object { $rawText.Contains("$esc[${_}m$iconModel") }).Count -eq 0) "${label}: no alarm, so the model segment is neither shade of red"
                         }
                     }
                     if ($cfg.Style -eq 'powerline') {
@@ -9696,6 +10041,88 @@ Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render light bad paylo
 Confirm-True (($r.Lines -join "`n").Contains("$esc[$($palLight.Roles.model.Sgr)m")) 'render light bad payload: the stand-in follows the palette'
 Confirm-Equal ((Invoke-StatusLine 'not json' $darkConfig 0).Lines -join "`n") ((Invoke-StatusLine 'not json' $plainConfig 0).Lines -join "`n") 'render dark bad payload: the stand-in is unchanged'
 Confirm-True (((Invoke-StatusLine 'not json' $plainConfig 0).Lines -join "`n").Contains("$esc[36m")) 'render dark bad payload: still the raw cyan it always was'
+
+Write-Host ''
+Write-Host '== render: every joint of every layout' -ForegroundColor Cyan
+# THE CHECK NEITHER HALF COULD MAKE ON ITS OWN. The contrast rules measure every ordered pair of ROLES
+# and cannot see that two adjacent SEGMENTS carry the same one, because the palette does not know the
+# layout; the layout does not know the colours either. This is where the two are put together: every
+# sample, built by the real segment builders, laid out by both shipped layouts AND by all three presets,
+# rendered in both palettes and all three styles, and then every joint on the rendered line is held to
+# the floors the palette group applies to a pair of neighbouring blocks.
+# THE JOINTS ARE READ BACK OUT OF THE RENDERED LINE, not out of the records, so what is measured is the
+# bytes a terminal receives - and so a sample that drops a segment (no cache block, no lines, no pull
+# request) is measured as the line it actually draws rather than as the one the registry describes.
+# Built once per style and palette rather than once per layout: which segments a payload can build, and
+# what each of them says, does not depend on how the rows are arranged - only on the style's glyphs and
+# the palette's marker codes, which is exactly what the two loops here are. The git cache is off so this
+# walk leaves nothing behind; the three samples with no git object probe a directory that is provably
+# not a repository, the same one the render matrix points them at.
+$jointBuilt = @{}
+foreach ($jointStyle in @('plain', 'powerline', 'ascii')) {
+    foreach ($jointPalette in @('dark', 'light')) {
+        $jointCfg = Get-DefaultStatusConfig
+        $jointCfg.Style = $jointStyle
+        $jointCfg.Palette = $jointPalette
+        $jointCfg.Git.Cache = $false
+        foreach ($sample in $sampleFiles) {
+            $d = $samplePayloads[$sample.Name] | ConvertFrom-Json
+            $set = @{}
+            foreach ($rec in Get-SegmentRegistry) {
+                $seg = & $rec.Build $d $jointCfg $null
+                if ($seg) { $set[$rec.Name] = $seg }
+            }
+            $jointBuilt["$jointStyle|$jointPalette|$($sample.Name)"] = $set
+        }
+    }
+}
+# The layouts a line can have: the two the config offers, and the three presets, which are where the
+# NEW adjacencies come from - `cost` turns folder, branch, badges and the pull request off, and the
+# segments that were on either side of them close up.
+$jointCases = @()
+foreach ($jointLayout in @('one', 'two')) {
+    $c = Get-DefaultStatusConfig
+    $c.Layout = $jointLayout
+    $jointCases += @{ N = "layout $jointLayout"; Cfg = $c }
+}
+foreach ($presetName in @('minimal', 'cost', 'full')) {
+    $c = Get-DefaultStatusConfig
+    $preset = Get-ConfigPreset $presetName
+    $c.Layout = $preset.Layout
+    foreach ($n in @($preset.Segments.Keys)) { $c.Segments[$n] = $preset.Segments[$n] }
+    $jointCases += @{ N = "preset $presetName"; Cfg = $c }
+}
+Confirm-Equal $jointCases.Count 5 'joints: both layouts and all three presets are walked'
+$jointLines = 0
+foreach ($case in $jointCases) {
+    $rows = @(if ($case.Cfg.Layout -eq 'two') { $case.Cfg.Rows } else { , $case.Cfg.Order })
+    foreach ($jointStyle in @('plain', 'powerline', 'ascii')) {
+        foreach ($jointPalette in @('dark', 'light')) {
+            foreach ($sample in $sampleFiles) {
+                $set = $jointBuilt["$jointStyle|$jointPalette|$($sample.Name)"]
+                foreach ($row in $rows) {
+                    $onLine = @(foreach ($n in $row) { if ($case.Cfg.Segments[$n] -and $set.ContainsKey($n)) { $set[$n] } })
+                    if ($onLine.Count -lt 2) { continue }
+                    $jointLines++
+                    $label = "joints $($case.N) $jointStyle $jointPalette $($sample.Name)"
+                    $rendered = Format-Line $onLine $jointStyle $jointPalette
+                    if ($jointStyle -eq 'powerline') { Confirm-JointClear $rendered $jointPalette $label }
+                    else { Confirm-PlainJointClear $rendered $jointPalette $jointStyle $label }
+                }
+            }
+        }
+    }
+}
+# A walk that measured nothing would pass every assertion above it, so the three things it is here to
+# find are counted: joints between different backgrounds, joints the divider had to carry, and plain
+# pairs the palette has no second code for. The middle one is the dark dim run - cost, clock and lines -
+# and the last is the light green pair; both are the gaps the palette group measured, seen from the
+# other end, on real lines built from real payloads.
+Confirm-True ($jointLines -gt 200) "joints: the walk rendered $jointLines lines"
+Confirm-True ($script:jointArrows -gt 0) "joints: $($script:jointArrows) arrows between two different backgrounds"
+Confirm-True ($script:jointDividers -gt 0) "joints: $($script:jointDividers) same-background joints carried by the divider"
+Confirm-True ($script:jointPlainSame -gt 0) "joints: $($script:jointPlainSame) plain pairs share a code, all of them roles with no second one"
+Write-Host ("   $jointLines lines, $($script:jointArrows) arrows, $($script:jointDividers) dividers, $($script:jointPlainSame) plain pairs on one code")
 
 Write-Host ''
 Write-Host '== render: links' -ForegroundColor Cyan

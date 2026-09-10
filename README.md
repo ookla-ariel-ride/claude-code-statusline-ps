@@ -166,7 +166,10 @@ Fable 5.1 > ctx 32% ###....... 64k/200k 92% cached > $1.07 > 1h12m | api 38%
 ```
 
 `{"palette": "light"}` swaps the colour table for one chosen against white, in any style. Every value
-in both tables is held to a measured contrast floor by the test suite. `.\install.ps1 -DetectTheme`
+in both tables is held to a measured contrast floor by the test suite. Where the layout puts two
+segments of the same role side by side — context, cache and limits, or cost, clock and lines — the
+second is drawn in that role's alternate shade, so the run reads as segments rather than as one band.
+`.\install.ps1 -DetectTheme`
 reads Windows Terminal's scheme and sets the key, or says why it could not. The stand-in table, the
 contrast rules and what `-DetectTheme` reads: [docs/styles-and-palettes.md](docs/styles-and-palettes.md).
 

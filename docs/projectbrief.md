@@ -111,6 +111,21 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   are 256-colour indices now and measured against Campbell and Solarized Dark; the dark plain *role*
   colours are still the sixteen, because changing those is a redesign of the default line rather than
   a repair.
+- **A role can be two shades, and which one a segment takes is a property of the line.** Seven
+  distinct role colours are still one colour where the layout puts two segments of the same role side
+  by side, which the shipped second row does twice over — context, cache and limits are all `ok`, and
+  cost, clock and lines are all `dim`. Neither half can see it: the contrast rules measure pairs of
+  roles and do not know the order, and the layout does not know the colours. So `ok`, `warn`, `bad`
+  and `dim` carry a second background and a second plain code, `Format-Line` gives it to a block whose
+  neighbour on the line has the same role, and a run of three alternates rather than drifting. The
+  decision is made from the records `Format-Line` is handed, because a line can be missing the cache
+  block, the lines block or the pull request, so which segments end up adjacent is not a property of
+  the registry. The shade moves the background and never the block's text: a segment's markers were
+  chosen when its text was built and already hand that text's own colour back, so a second foreground
+  would have to be threaded into finished text. Where no colour clears every floor — dark `dim`'s
+  block, light `ok`'s plain code — the pair keeps one shade and the powerline joint is drawn as a
+  divider in the block's own ink instead of an arrow of one colour on itself. Both absences are
+  searched over the whole 256-colour cube in `test.ps1` rather than asserted in a comment.
 - **The right group is a layout, and a layout is the first thing a narrow line gives up.** `right`
   names segments that leave the packed line and sit flush against the right edge of the FIRST line;
   everything else stays where it was. `Get-FittedLine` splits the records in two, renders each group
@@ -594,6 +609,7 @@ racing them (#63). The installer's backups live at project-owned names and are p
 - [x] Installer backups at project-owned names with their provenance checked before they are touched
 - [x] Screenshots regenerated from the shipped samples, showing every segment
 - [x] The dark plain markers on a measurable 256-colour index, and both tables' plain markers asserted
+- [x] A second shade per role, so two segments of one role side by side stop reading as one block
 
 ## Future work
 

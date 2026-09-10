@@ -177,10 +177,10 @@ function Get-Palette([string] $Palette = 'dark') {
         return @{
             Roles = @{
                 model  = @{ Sgr = '1;38;5;24'; Fg = 16; Bg = 44;  Ink = 'Dark' }
-                ok     = @{ Sgr = '38;5;22';   Fg = 16; Bg = 77;  Ink = 'Dark' }
-                warn   = @{ Sgr = '38;5;94';   Fg = 16; Bg = 214; Ink = 'Dark' }
-                bad    = @{ Sgr = '38;5;124';  Fg = 16; Bg = 217; Ink = 'Dark' }
-                dim    = @{ Sgr = '38;5;240';  Fg = 16; Bg = 250; Ink = 'Dark' }
+                ok     = @{ Sgr = '38;5;22';   Fg = 16; Bg = 77;  Ink = 'Dark'; AltBg = 114 }
+                warn   = @{ Sgr = '38;5;94';   Fg = 16; Bg = 214; Ink = 'Dark'; AltBg = 178; AltSgr = '38;5;58' }
+                bad    = @{ Sgr = '38;5;124';  Fg = 16; Bg = 217; Ink = 'Dark'; AltBg = 210; AltSgr = '38;5;88' }
+                dim    = @{ Sgr = '38;5;240';  Fg = 16; Bg = 250; Ink = 'Dark'; AltBg = 144; AltSgr = '38;5;237' }
                 folder = @{ Sgr = '38;5;25';   Fg = 16; Bg = 147; Ink = 'Dark' }
                 branch = @{ Sgr = '38;5;90';   Fg = 16; Bg = 182; Ink = 'Dark' }
             }
@@ -196,10 +196,10 @@ function Get-Palette([string] $Palette = 'dark') {
     return @{
         Roles = @{
             model  = @{ Sgr = '1;36'; Fg = 231; Bg = 31;  Ink = 'Light' }
-            ok     = @{ Sgr = '32';   Fg = 231; Bg = 28;  Ink = 'Light' }
-            warn   = @{ Sgr = '33';   Fg = 16;  Bg = 178; Ink = 'Dark' }
-            bad    = @{ Sgr = '31';   Fg = 231; Bg = 160; Ink = 'Light' }
-            dim    = @{ Sgr = '90';   Fg = 250; Bg = 238; Ink = 'Light' }
+            ok     = @{ Sgr = '32';   Fg = 231; Bg = 28;  Ink = 'Light'; AltBg = 22;  AltSgr = '38;5;114' }
+            warn   = @{ Sgr = '33';   Fg = 16;  Bg = 178; Ink = 'Dark';  AltBg = 214; AltSgr = '38;5;221' }
+            bad    = @{ Sgr = '31';   Fg = 231; Bg = 160; Ink = 'Light'; AltBg = 124; AltSgr = '38;5;210' }
+            dim    = @{ Sgr = '90';   Fg = 250; Bg = 238; Ink = 'Light'; AltSgr = '38;5;251' }
             folder = @{ Sgr = '34';   Fg = 231; Bg = 25;  Ink = 'Light' }
             branch = @{ Sgr = '35';   Fg = 231; Bg = 90;  Ink = 'Light' }
         }
@@ -313,6 +313,11 @@ $paletteName = Get-EnumArgument $Palette @('dark', 'light') 'dark'
 $iconModel = if ($styleName -eq 'ascii') { '@' } else { G 0xF06A9 }
 # The colour table, not the name: $palette would be the parameter, and PowerShell's variable names are
 # case-insensitive, so the assignment would eat the argument it was built from.
+# The table's AltBg and AltSgr entries are unused here, and that is the right answer rather than a gap:
+# they exist for two segments of one role standing side by side on a status line, and this panel draws
+# one row per agent with nothing joined to anything - no arrow, no chevron, no neighbour. The table is
+# copied whole because the drift gate compares it as text with statusline.ps1's, which is what keeps a
+# colour from being fixed in one script and left wrong in the other.
 $colours = Get-Palette $paletteName
 $ellipsis = (Get-MarkSet $styleName).Ellipsis
 

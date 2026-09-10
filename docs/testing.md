@@ -22,7 +22,14 @@ ways the chain can break — and then the switch itself runs with both `USERPROF
 redirected, so a light scheme writes `"palette": "light"`, Campbell writes `dark`, and a missing,
 broken, unknown or OS-following scheme leaves `statusline.json` byte for byte as it was. The light
 palette's own group recomputes every contrast ratio in both tables from the xterm colour cube, and
-holds each of them to a 3:1 floor for every inline marker inside every block it can be drawn in. The subagent group pipes every payload in
+holds each of them to a 3:1 floor for every inline marker inside every block it can be drawn in. It
+runs over every shade a line can paint, the alternate shades included, and it searches the whole cube
+for the two alternates that do not exist, so a loosened floor shows up as the colour that has become
+available rather than as silence. A later group puts the palette and the layout together: it builds
+every sample through the real segment builders, lays them out with both layouts and all three presets,
+renders each row in both palettes and all three styles, and reads the joints back out of the rendered
+line to hold each one to the same floor — which is the check neither the palette nor the layout could
+make alone. The subagent group pipes every payload in
 `samples/subagent/` through `subagent-statusline.ps1` and reads the replies the way the panel does:
 each line must be an object with a string `id` and a string `content`, every id must belong to a task
 in the payload, every row must be one line carrying that style's own glyph, and it must fit the
