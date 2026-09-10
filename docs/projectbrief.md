@@ -105,7 +105,12 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   table's values are picked against contrast ratios rather than by eye — a plain foreground at 4.5:1
   on white and on off-white, a block's own pair at 4.5:1, a block's background at 1.7:1 against the
   terminal's ground so the trailing arrow and the block edges survive, and an inline marker at 3:1
-  inside any block — and `test.ps1` recomputes every one of them from the xterm cube.
+  inside any block — and `test.ps1` recomputes every one of them from the xterm cube. A bar can only
+  be applied to a colour the table can name a hex for, which is why the dark table's plain codes were
+  outside all of it: the basic sixteen are the terminal scheme's to define. The two dark plain markers
+  are 256-colour indices now and measured against Campbell and Solarized Dark; the dark plain *role*
+  colours are still the sixteen, because changing those is a redesign of the default line rather than
+  a repair.
 - **The right group is a layout, and a layout is the first thing a narrow line gives up.** `right`
   names segments that leave the packed line and sit flush against the right edge of the FIRST line;
   everything else stays where it was. `Get-FittedLine` splits the records in two, renders each group
@@ -435,7 +440,8 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   filesystem calls - the size the rollover decision needs, the append open, and the close that actually
   writes - go to the thread pool and are waited on for what is left of one 250 ms clock, the same shape
   the project config read uses. A record that cannot be written inside it is dropped, which is the
-  trade #43 already made when it took a zero wait on the rollover lock over a guaranteed rotation. That includes the rollover: it reads the size again with the lock held, because
+  trade #43 already made when it took a zero wait on the rollover lock over a guaranteed rotation.
+  That includes the rollover: it reads the size again with the lock held, because
   another render may have rolled the file already, and that second read goes to the pool under the same
   clock as the first. Reading it straight from a `FileInfo` there, as it once did, put an unbounded
   filesystem call back on the render's thread and made every other bound in the function moot.
@@ -485,7 +491,8 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   channel that outlived it would be a fourth file beside a two-file-and-a-lock log, written by a
   filesystem call on the path that is dropping records rather than waiting for one. The cross-process
   signal is the log itself - parked exactly at the cap, no `.log.1`, nothing new appended - and
-  `docs/diagnostics.md` tells the reader to read it that way. Also unlike the mutex this replaced (#49): the lock is scoped by the path rather than a
+  `docs/diagnostics.md` tells the reader to read it that way. Also unlike the mutex this replaced
+  (#49): the lock is scoped by the path rather than a
   machine- or session-wide name, a killed render's handle is released by the kernel on process exit
   with no stale lock left behind, and a lock file some other user cannot open at all - not merely held,
   but permanently unopenable - is read as a structural failure that drops the record rather than as
@@ -601,12 +608,15 @@ racing them (#63). The installer's backups live at project-owned names and are p
 - [x] Both config files, the git cache and the state file read under one bounded, encoding-aware reader
 - [x] Installer backups at project-owned names with their provenance checked before they are touched
 - [x] Screenshots regenerated from the shipped samples, showing every segment
+- [x] The dark plain markers on a measurable 256-colour index, and both tables' plain markers asserted
 
 ## Future work
 
 The feature backlog is done. What remains open are limits recorded under review, none of them a
-feature: plain-style `track` and `cached` markers use SGR 90, the terminal's own `brightBlack`, which
-some dark schemes draw nearly invisible (#88); six of the light palette's block-background pairs are
+feature: the dark palette's plain-style `dim` role is still SGR 90, the terminal's own bright black,
+which measures 2.79:1 on Solarized Dark and colours the chevron and five segments (#111) — #88 moved
+the two markers off it and left this deliberately, because a quiet grey near the markers' 246 would
+reopen #82's distinctness rule; six of the light palette's block-background pairs are
 isoluminant, so the arrow between them vanishes (#89); two more test families fail under parallel load rather
 than on a defect (#94), the git-cache stamp tests do the same (#102), and a parallel suite run can trip
 the 250 ms user-config clock and fail random matrix cells (#99); and a clock seam through `statusline.ps1` would make the screenshots and every
