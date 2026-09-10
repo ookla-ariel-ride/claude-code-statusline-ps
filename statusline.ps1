@@ -1805,7 +1805,8 @@ function Get-AtomicWriteLimit { return @{ TimeoutMs = 250; WaitMs = 5 } }
 # the git cache entry and the session state file - read the same path through Read-BoundedFileText
 # earlier in the same render, and that reader closes on the thread pool without waiting, deliberately.
 # MOVEFILE_REPLACE_EXISTING needs delete access to the destination, and File.OpenRead asks for
-# FileShare.Read, so while that close is still queued the move is refused with ERROR_SHARING_VIOLATION.
+# FileShare.Read, so while that close is still queued the move is refused - with ERROR_ACCESS_DENIED
+# rather than ERROR_SHARING_VIOLATION, which is the whole reason the filter below goes by number.
 # Measured here: with the close queued and the pool busy, 459 moves in 2000 were refused. A render
 # normally spends tens of milliseconds starting git between the read and the write, which is long
 # enough for the close to land - but not always, and the case where it is NOT is exactly the one the
@@ -1824,11 +1825,19 @@ function Write-AtomicJson([string] $Path, $Object, [int] $Depth) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     while ($true) {
         try { [System.IO.File]::Move($tmp, $Path, $true); return $true }
-        catch [System.IO.IOException] {
-            # 0x80070020 ERROR_SHARING_VIOLATION, 0x80070021 ERROR_LOCK_VIOLATION, as HResults. By number
-            # rather than by type: the type is the plain IOException every other filesystem failure lands
-            # on, so a path that is gone, refused or on a broken share still throws on the first attempt.
-            if ($_.Exception.HResult -notin @(-2147024864, -2147024863) -or $sw.ElapsedMilliseconds -ge $limit.TimeoutMs) { throw }
+        catch {
+            # By NUMBER, not by type, and the number that matters is the surprising one: MoveFileEx over
+            # a destination that is open without delete sharing returns ERROR_ACCESS_DENIED, 0x80070005,
+            # which .NET raises as UnauthorizedAccessException and not as the IOException the name
+            # "sharing violation" would lead you to catch. Measured, not assumed. 0x80070020
+            # ERROR_SHARING_VIOLATION and 0x80070021 ERROR_LOCK_VIOLATION are here for the other shapes a
+            # holder can take. Everything else - a path that is gone, a directory in the way, a broken
+            # share - throws on the first attempt.
+            # The cost of taking 0x80070005 is that a destination denied for a real reason, a read-only
+            # file say, is retried for the window before it throws. That is a quarter of a second spent
+            # after the line has been printed on a write that was going to fail either way.
+            if ($_.Exception.GetBaseException().HResult -notin @(-2147024891, -2147024864, -2147024863) -or
+                $sw.ElapsedMilliseconds -ge $limit.TimeoutMs) { throw }
             Start-Sleep -Milliseconds $limit.WaitMs
         }
     }

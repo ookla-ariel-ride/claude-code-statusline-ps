@@ -572,19 +572,22 @@ try {
 # the thread pool and never waits on the close, deliberately - see the note in Read-BoundedFileText -
 # so a config written here, read through the script, and written again on the same path meets the
 # previous read's handle still open. On a quiet machine the pool closes it in microseconds. On one
-# running six suites the close sits behind a starved pool, the write throws ERROR_SHARING_VIOLATION,
-# and under this file's Stop preference that takes the whole run down at whatever line came next -
-# which is how four of five loaded runs died in `unit: config`, on the one pair of lines that writes
-# the same config name twice. Only the two sharing errors are retried, so a path that is missing,
-# refused or broken still fails at once, and the wait is bounded.
-$sharingHResult = @(-2147024864, -2147024863)  # 0x80070020, 0x80070021
+# running six suites the close sits behind a starved pool, the write throws, and under this file's Stop
+# preference that takes the whole run down at whatever line came next - which is how four of five loaded
+# runs died in `unit: config`, on the one pair of lines that writes the same config name twice, and a
+# sixth in `unit: state`, deleting a file it had just read.
+#
+# Which errors, by number rather than by type, because the two do not line up: deleting or writing a
+# file that is open gives ERROR_SHARING_VIOLATION or ERROR_LOCK_VIOLATION as an IOException, while
+# REPLACING one by MoveFileEx gives ERROR_ACCESS_DENIED as an UnauthorizedAccessException. All three are
+# a handle in the way; nothing else is retried, so a path that is missing, on a broken share, or denied
+# for a reason that will not pass still fails the run, at worst one bounded wait later.
+$sharingHResult = @(-2147024891, -2147024864, -2147024863)  # 0x80070005, 0x80070020, 0x80070021
 function Invoke-SharedFile([scriptblock] $Call, [int] $TimeoutMs = 5000) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     while ($true) {
         try { return & $Call } catch {
-            $ex = $_.Exception
-            while ($null -ne $ex -and ($ex -isnot [System.IO.IOException] -or $ex.HResult -notin $sharingHResult)) { $ex = $ex.InnerException }
-            if ($null -eq $ex -or $sw.ElapsedMilliseconds -ge $TimeoutMs) { throw }
+            if ($_.Exception.GetBaseException().HResult -notin $sharingHResult -or $sw.ElapsedMilliseconds -ge $TimeoutMs) { throw }
             Start-Sleep -Milliseconds 50
         }
     }
@@ -2240,7 +2243,9 @@ Confirm-Equal (Read-SessionState 'abc').cost_usd 1.07 'state read: and the same 
 $stateHuge = Join-Path $stateDir 'huge.json'
 [System.IO.File]::WriteAllText($stateHuge, ('{ "v": 1, "cost_usd": 1.07, "pad": "' + ('x' * $stateRealLimit.MaxBytes) + '" }'))
 Confirm-Equal (Read-SessionState 'huge') $null 'state read: a file over the byte cap reads as no state'
-Remove-Item -LiteralPath $stateHuge -Force
+# Through the retry: the read above closed its handle on the pool without waiting, so on a loaded
+# machine this delete can meet it still open.
+$null = Invoke-SharedFile { Remove-Item -LiteralPath $stateHuge -Force }
 
 # The history ring gains an entry only when the cost moved.
 $same = Merge-SessionState $back (Get-StatePayload 1.07) 1767225660
@@ -5659,7 +5664,9 @@ $invalidations = @(
     @{ Name = 'info/exclude written';       Do = { New-Item -ItemType Directory -Force (Join-Path $cacheGitDir 'info') | Out-Null; [System.IO.File]::WriteAllText((Join-Path $cacheGitDir 'info' 'exclude'), "*.log`n") } }
     @{ Name = 'a line appended to info/exclude'; Do = { [System.IO.File]::AppendAllText((Join-Path $cacheGitDir 'info' 'exclude'), "build/`n") } }
     @{ Name = 'refs/heads touched';         Do = { [System.IO.Directory]::SetLastWriteTimeUtc((Join-Path $cacheGitDir 'refs' 'heads'), $later) } }
-    @{ Name = 'a ref written by rename';    Do = { $lock = Join-Path $cacheGitDir 'refs' 'heads' 'main.lock'; [System.IO.File]::WriteAllText($lock, "abc`n"); [System.IO.File]::Move($lock, (Join-Path $cacheGitDir 'refs' 'heads' 'main'), $true) } }
+    # The move goes through the retry for the reason Invoke-SharedFile states: replacing a file that
+    # something still has open is refused, and under load that something can be this run's own reader.
+    @{ Name = 'a ref written by rename';    Do = { $lock = Join-Path $cacheGitDir 'refs' 'heads' 'main.lock'; $ref = Join-Path $cacheGitDir 'refs' 'heads' 'main'; $null = Invoke-SharedFile { [System.IO.File]::WriteAllText($lock, "abc`n"); [System.IO.File]::Move($lock, $ref, $true) } } }
     @{ Name = 'refs/remotes/origin created'; Do = { New-Item -ItemType Directory -Force (Join-Path $cacheGitDir 'refs' 'remotes' 'origin') | Out-Null } }
     @{ Name = 'the git directory touched'; Do = { [System.IO.Directory]::SetLastWriteTimeUtc($cacheGitDir, $later.AddSeconds(5)) } }
 )
@@ -6029,15 +6036,24 @@ Confirm-Equal (Get-Content -LiteralPath $atomicPath -Raw | ConvertFrom-Json).n 3
 $null = $atomicReleaser.EndInvoke($atomicAsync)
 $atomicReleaser.Dispose()
 Confirm-True (-not (Test-Path -LiteralPath ($atomicPath + '.tmp'))) 'atomic write: no .tmp is left behind by either attempt'
-# A failure that is not a share in the way is not retried at all: a destination that cannot be replaced
-# because a directory sits at its name throws on the first attempt, with the window wide open.
+# A failure the retry cannot help with still reaches the caller: a directory sitting at the destination
+# name is not a handle that will let go. Checked with the window back at zero, so what is being pinned
+# is that it throws rather than how long it waited first - this file states no durations here.
+. ([scriptblock]::Create("function Get-AtomicWriteLimit { return @{ TimeoutMs = 0; WaitMs = $($atomicRealLimit.WaitMs) } }"))
 $atomicBlocked = Join-Path $tmp 'atomic-blocked.json'
 New-Item -ItemType Directory -Force $atomicBlocked | Out-Null
-$atomicOtherSw = [System.Diagnostics.Stopwatch]::StartNew()
 $atomicOtherThrew = $false
 try { $null = Write-AtomicJson $atomicBlocked ([ordered]@{ n = 4 }) 3 } catch { $atomicOtherThrew = $true }
-Confirm-True $atomicOtherThrew 'atomic write: a failure that is not a share in the way still throws'
-Confirm-True ($atomicOtherSw.ElapsedMilliseconds -lt 20000) "atomic write: and it is not retried for the whole window, took $($atomicOtherSw.ElapsedMilliseconds) ms"
+Confirm-True $atomicOtherThrew 'atomic write: a destination the retry cannot outlast still throws for the caller'
+# The three numbers the loop retries, spelled here rather than read out of the script, so the script
+# cannot agree with itself: ERROR_ACCESS_DENIED, which is what replacing a file under an open handle
+# really returns, and the two sharing errors. A filter that lost the first would lose the case this
+# whole loop exists for, and both behavioural checks above would go on passing.
+$atomicSource = [System.Management.Automation.Language.Parser]::ParseFile($script, [ref] $null, [ref] $null).Find(
+    { param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Write-AtomicJson' }, $true)
+foreach ($atomicNumber in @('-2147024891', '-2147024864', '-2147024863')) {
+    Confirm-True ($atomicSource.Extent.Text.Contains($atomicNumber)) "atomic write: the move retries on $atomicNumber and the script says so"
+}
 . (Import-ScriptFunction $script @('Get-AtomicWriteLimit'))
 Confirm-Equal (Get-AtomicWriteLimit).TimeoutMs $atomicRealLimit.TimeoutMs 'atomic write: the script''s own retry window is back'
 Confirm-True ((Get-AtomicWriteLimit).TimeoutMs -gt 0 -and (Get-AtomicWriteLimit).TimeoutMs -le 1000) 'atomic write: and it is a short one, spent after the line is printed'
