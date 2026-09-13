@@ -11773,6 +11773,70 @@ Confirm-True (($capBigLen + $capBigRotated) -le 2 * $capBigMax) 'capture oversiz
 Confirm-True (-not (Test-Path -LiteralPath "$capBigFile.2")) 'capture oversize: still only one generation is kept'
 
 
+# ---- Suite runner: detached launch stamp, lock and attach ----
+# Invoke this script in a fresh PowerShell process because -SuiteProbe is intentionally a scriptblock
+# seam, and because the runner's exit code belongs to that child rather than to this suite process.
+$suiteRunner = Join-Path $PSScriptRoot 'tools\Invoke-Suite.ps1'
+$suiteRunnerLogDir = Join-Path $subTmp 'suite-runner-dry-run'
+$suiteRunnerDriver = Join-Path $subTmp 'invoke-suite-driver.ps1'
+Set-Content -LiteralPath $suiteRunnerDriver -Value @'
+[CmdletBinding()]
+param(
+    [string] $Runner,
+    [string] $Mode,
+    [string] $AttachPath,
+    [string] $LogDir
+)
+
+$probe = if ($Mode -in @('concurrent', 'force')) { { 8123 } } else { {} }
+if ($Mode -eq 'attach') {
+    & $Runner -Attach $AttachPath -PollSeconds 1 -SuiteProbe $probe
+} elseif ($Mode -eq 'force') {
+    & $Runner -DryRun -Force -LogDir $LogDir -SuiteProbe $probe
+} else {
+    & $Runner -DryRun -LogDir $LogDir -SuiteProbe $probe
+}
+exit $LASTEXITCODE
+'@ -Encoding utf8NoBOM
+function Invoke-SuiteRunner([string] $Mode, [string] $AttachPath) {
+    $arguments = @('-Runner', $suiteRunner, '-Mode', $Mode, '-LogDir', $suiteRunnerLogDir)
+    if ($AttachPath) { $arguments += @('-AttachPath', $AttachPath) }
+    return Invoke-ChildPwsh $suiteRunnerDriver $arguments ''
+}
+
+$c = Invoke-SuiteRunner 'empty'
+$suiteRunnerStamp = $c.Lines -join "`n"
+Confirm-True ($c.ExitCode -eq 0 -and $c.Err.Count -eq 0) "suite runner dry run: exit code 0, stderr empty, got '$($c.Err -join ' | ')'"
+foreach ($field in @(
+        @{ Pattern = '(?m)^utc=.+Z$'; Label = 'UTC start time' }
+        @{ Pattern = '(?m)^sha=[0-9a-f]+$'; Label = 'short commit SHA' }
+        @{ Pattern = '(?m)^dirty=\d+$'; Label = 'dirty count' }
+        @{ Pattern = '(?m)^concurrent=0 pids=$'; Label = 'empty concurrent PID stamp' }
+        @{ Pattern = '(?m)^freeMb=\d+$'; Label = 'free physical memory' }
+        @{ Pattern = '(?m)^launch=pwsh -NoProfile -File .+test\.ps1"$'; Label = 'suite launch command' })) {
+    Confirm-True ($suiteRunnerStamp -match $field.Pattern) "suite runner dry run: stamp records $($field.Label)"
+}
+Confirm-True (-not (Test-Path -LiteralPath $suiteRunnerLogDir)) 'suite runner dry run: does not create its requested log directory'
+
+$c = Invoke-SuiteRunner 'concurrent'
+Confirm-True ($c.ExitCode -eq 3) "suite runner lock: injected PID refuses with exit 3, got $($c.ExitCode)"
+Confirm-True ((($c.Lines + $c.Err) -join "`n").Contains('8123')) 'suite runner lock: the refusal names the injected PID'
+$c = Invoke-SuiteRunner 'force'
+Confirm-True ($c.ExitCode -eq 0 -and $c.Err.Count -eq 0) "suite runner force: bypasses the lock on dry run, got exit $($c.ExitCode), stderr '$($c.Err -join ' | ')'"
+Confirm-True (($c.Lines -join "`n") -match '(?m)^concurrent=1 pids=8123$') 'suite runner force: the stamp retains the forced concurrent PID'
+
+$suiteAttachSuccess = Join-Path $subTmp 'suite-attach-success.log'
+Set-Content -LiteralPath $suiteAttachSuccess -Value @('utc=2026-09-13T00:00:00Z', 'passed 7, failed 0', 'exit=0') -Encoding utf8NoBOM
+$c = Invoke-SuiteRunner 'attach' $suiteAttachSuccess
+Confirm-True ($c.ExitCode -eq 0 -and $c.Err.Count -eq 0) "suite runner attach success: returns exit 0, got $($c.ExitCode), stderr '$($c.Err -join ' | ')'"
+Confirm-True (($c.Lines -join "`n") -match '(?m)^passed 7, failed 0$') 'suite runner attach success: prints the suite passed line'
+Confirm-True (($c.Lines -join "`n") -match '(?m)^exit=0$') 'suite runner attach success: prints the exit line'
+$suiteAttachFailure = Join-Path $subTmp 'suite-attach-failure.log'
+Set-Content -LiteralPath $suiteAttachFailure -Value @('utc=2026-09-13T00:00:00Z', 'passed 6, failed 1', 'exit=1') -Encoding utf8NoBOM
+$c = Invoke-SuiteRunner 'attach' $suiteAttachFailure
+Confirm-True ($c.ExitCode -eq 1) "suite runner attach failure: returns the suite's exit 1, got $($c.ExitCode)"
+
+
 # The two ownership tests, driven directly. Both decide whether the uninstaller may delete something, so
 # each one is checked against the forms that must NOT count as ours as well as the ones that must.
 . (Import-ScriptFunction $installer @('Split-CommandArgument', 'Test-SamePath', 'Get-SubagentArgumentSpec', 'Get-StatusConfigReadLimit', 'Test-OwnSubagentEntry', 'Test-OwnSubagentScript'))
