@@ -13,7 +13,8 @@ open on GitHub. Read this first when resuming work on this repo.
   **ten to thirteen minutes alone** on this machine (15,000-assertion trees took nine minutes forty; the
   loaded runs of the night took eighteen to twenty-four). Under any second suite the git-cache stamp cases,
   the `time` minute-boundary case and random render-matrix cells still fail; run alone before believing one.
-  New full runs use `pwsh -NoProfile -File .\tools\Invoke-Suite.ps1 -Wait`.
+  New full runs launch with `pwsh -NoProfile -File .\tools\Invoke-Suite.ps1` and attach to the stamped
+  log path; `-Wait -TimeoutMinutes 9` is the bounded alternative.
 - Lint clean on every `.ps1` with `PSScriptAnalyzerSettings.psd1`. Samples 01..15; subagent samples 01..05.
   `statusline.json` gained one key, `tint` (`role` by default, `segment` opt-in).
 - **The installed status line on this machine matches `main`** (both scripts hash-match, reinstalled at
@@ -70,9 +71,10 @@ and every implementer is a routed executor. Rules that came out of this run, all
   every review ran inline in the review fork. It also means an implementer can never be a plain agent.
 - **Verification on this machine is fragile.** The harness kills background tasks (and their children)
   when free memory drops under about a gigabyte, which it does whenever a suite runs beside Chrome, WSL
-  and Docker. Run the full suite only through `pwsh -NoProfile -File .\tools\Invoke-Suite.ps1 -Wait`:
-  it detaches the child, prevents an accidental second suite and prints its stamped log path. If the
-  shell disappears, resume with `-Attach <log-path>`; do not hand-roll `Start-Process` or a `Monitor`.
+  and Docker. Launch the full suite with `pwsh -NoProfile -File .\tools\Invoke-Suite.ps1`, keep its
+  stamped log path, then attach with `-Attach <log-path>` until it ends. A caller with a ten-minute
+  ceiling can instead use `-Wait -TimeoutMinutes 9` and attach after `still-running`; do not hand-roll
+  `Start-Process` or a `Monitor`.
 - **Transient API drops** (stream idle timeouts, connection resets, one unparsable tool call) hit seven
   executors and two review forks. Every one was resumed by `SendMessage` with its last note and lost
   nothing; never relaunch.
