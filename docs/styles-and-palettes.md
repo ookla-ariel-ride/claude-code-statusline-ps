@@ -108,7 +108,7 @@ now an alternate's.
 
 | Rule | Bar | Light table | Dark table |
 |---|---|---|---|
-| A plain-style colour against the terminal's background | 4.5:1 on `#FFFFFF` **and** on an off-white `#F5F5F5` | worst 5.25 (`warn`) | the seven base codes are the basic sixteen and are not asserted — what those look like is the terminal's to say. The four **alternate** codes are 256-colour indices and are held to it: worst 6.47 (`bad` alt on `#002B36`) |
+| A plain-style colour against the terminal's background | 4.5:1 on `#FFFFFF` **and** on an off-white `#F5F5F5` | worst 5.25 (`warn`) | the seven base codes are the basic sixteen and are not asserted — what those look like is the terminal's to say. The four **alternate** codes are 256-colour indices and are held to it: worst 6.48 (`bad` alt on `#002B36`) |
 | A powerline block's own text against its own background | 4.5:1 | worst 9.07 (`bad` alt) | worst 4.70 (`ok`); `model` is 4.13 and exempt by name, older than the rule |
 | A block's background against the terminal's background — the trailing arrow paints it as a *foreground*, and every block edge is that boundary | 1.7:1 | worst 1.74 (`ok` alt) | worst 2.01 (`dim`) against Campbell |
 | The arrow *between* two blocks — one block's background painted on the next one's | 1.10:1 in luminance and 40 apart in sRGB, over every pair that can meet | 40.0 apart (`warn`/`warn` alt); the luminance half is **not** asserted, and `ok`/`warn` is 1.00 — a real gap, tracked separately | worst 1.104 and 40.0 |

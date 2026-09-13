@@ -2707,7 +2707,7 @@ foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
 # behind it, and every marker drawn inside it - instead of to a shorter list written for it.
 function Get-ShadeTable($Tab) {
     $rows = @()
-    foreach ($r in @('model', 'ok', 'warn', 'bad', 'dim', 'folder', 'branch')) {
+    foreach ($r in $roleNames) {
         $c = $Tab.Roles[$r]
         $rows += @{ Role = $r; N = $r; Alt = $false; Bg = $c.Bg; Fg = $c.Fg; Ink = $c.Ink }
         if ($null -ne $c.AltBg) { $rows += @{ Role = $r; N = "$r alt"; Alt = $true; Bg = $c.AltBg; Fg = $c.Fg; Ink = $c.Ink } }
@@ -2716,8 +2716,11 @@ function Get-ShadeTable($Tab) {
 }
 $darkShades = @(Get-ShadeTable $dark)
 $lightShades = @(Get-ShadeTable $light)
-Confirm-Equal $darkShades.Count 10 'dark palette: seven role backgrounds and three alternate shades'
-Confirm-Equal $lightShades.Count 11 'light palette: seven role backgrounds and four alternate shades'
+foreach ($shadeTable in @(@{ N = 'dark'; T = $dark; S = $darkShades }, @{ N = 'light'; T = $light; S = $lightShades })) {
+    Confirm-Equal ((@($shadeTable.S | ForEach-Object { $_.Role } | Sort-Object -Unique) -join ',')) ((@($roleNames | Sort-Object) -join ',')) "$($shadeTable.N) shade table: covers every named role"
+    $alternateCount = @($roleNames | Where-Object { $null -ne $shadeTable.T.Roles[$_].AltBg }).Count
+    Confirm-Equal $shadeTable.S.Count ($roleNames.Count + $alternateCount) "$($shadeTable.N) shade table: one background per named role plus every alternate"
+}
 Confirm-Equal ((@(foreach ($s in $darkShades) { $s.Bg }) | Sort-Object -Unique).Count) 10 'dark palette: every shade is its own colour'
 Confirm-Equal ((@(foreach ($s in $lightShades) { $s.Bg }) | Sort-Object -Unique).Count) 11 'light palette: every shade is its own colour'
 
@@ -3225,6 +3228,12 @@ Confirm-Equal (Format-Line @($segCtx, $segCache) 'plain' 'light') "$esc[$($light
 $segCached = @{ Name = 'cache'; Text = "64k $(Format-Inline 'cached' '92% cached' 'ok' 'plain')"; Short = $null; Role = 'ok'; Bold = $false }
 Confirm-Equal (Format-Line @($segCtx, $segCached) 'plain') "$esc[32mC$esc[0m $esc[90m$chevron$esc[0m $esc[38;5;114m64k $esc[38;5;246m92% cached$esc[38;5;114m$esc[0m" 'plain same role: a marker inside the alternated segment hands the alternate back, not the base'
 Confirm-Equal (Format-Line @($segCached, $segCtx) 'plain') "$esc[32m64k $esc[38;5;246m92% cached$esc[32m$esc[0m $esc[90m$chevron$esc[0m $esc[38;5;114mC$esc[0m" 'plain: the same segment in the base position is untouched'
+# `muted` opens with 22;, so this is the hand-back replacement where a marker also turns bold text normal.
+$segMuted = @{ Name = 'cache'; Text = "K $(Format-Inline 'muted' '1M' 'ok' 'plain')"; Short = $null; Role = 'ok'; Bold = $false }
+Confirm-Equal (Format-Line @($segCtx, $segMuted) 'plain') "$esc[32mC$esc[0m $esc[90m$chevron$esc[0m $esc[38;5;114mK $esc[22;36m1M$esc[38;5;114m$esc[0m" 'plain same role: muted marker hands the alternate back after its 22; marker'
+# Light's alternated dim segment exercises its palette's exact hand-back, not the dark table by default.
+$segAddedLight = @{ Name = 'clock'; Text = "Y $(Format-Inline 'added' '+1' 'dim' 'plain' 'light')"; Short = $null; Role = 'dim'; Bold = $false }
+Confirm-Equal (Format-Line @($segDim, $segAddedLight) 'plain' 'light') "$esc[$($light.Roles.dim.Sgr)mX$esc[0m $esc[$($light.Roles.dim.Sgr)m$chevron$esc[0m $esc[$($light.Roles.dim.AltSgr)mY $esc[$($light.Inline.added.Sgr)m+1$esc[$($light.Roles.dim.AltSgr)m$esc[0m" 'light plain same role: added marker hands the alternate back'
 # In powerline the marker needs no such move, and must not be given one: an alternate changes the
 # background and never the block text, so the foreground Format-Inline hands back is already right, and
 # the marker itself is the one the block's ink chose. The whole segment comes through untouched inside

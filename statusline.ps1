@@ -1573,10 +1573,10 @@ function Format-Line($Segments, [string] $Style, [string] $Palette = 'dark') {
     # never touch - which is what lets the palette leave the alt-against-alt pairs unmeasured.
     $alt = [bool[]]::new($segs.Count)
     for ($i = 1; $i -lt $segs.Count; $i++) { $alt[$i] = $segs[$i].Role -eq $segs[$i - 1].Role -and -not $alt[$i - 1] }
+    # The soft separator belongs to every style: ASCII chooses its '>' here and the other styles share the Nerd Font glyph.
+    $divider = if ($Style -eq 'ascii') { '>' } else { [char]::ConvertFromUtf32(0xE0B1) }
     if ($Style -eq 'powerline') {
         $arrow = [char]::ConvertFromUtf32(0xE0B0)
-        # The powerline soft separator, the same glyph the plain style already draws between segments.
-        $divider = [char]::ConvertFromUtf32(0xE0B1)
         # The background each block actually paints, settled before anything is drawn: the arrow between
         # two blocks is made of both of their backgrounds, so the second one has to be known already.
         $bg = [int[]]::new($segs.Count)
@@ -1611,10 +1611,8 @@ function Format-Line($Segments, [string] $Style, [string] $Palette = 'dark') {
         }
         return $sb.ToString()
     }
-    # Plain's soft divider is a Nerd Font glyph like every icon, so the ascii style brings its own. The
-    # powerline branch above is not offered one: its look is a solid block with a background colour
-    # behind it, which no ASCII character can stand in for, so ascii renders like plain and not like it.
-    $divider = if ($Style -eq 'ascii') { '>' } else { [char]::ConvertFromUtf32(0xE0B1) }
+    # Powerline is not offered an ASCII block substitute: its look is a solid background, so ASCII renders
+    # like plain instead. Its '>' and plain's Nerd Font glyph were both selected above.
     # The divider's colour comes from the palette's dim role rather than a literal 90, which is what it
     # used to be. The dark table spells that role 90, so this line renders the same bytes it always did;
     # on a light terminal 90 is a pale grey on a pale ground and the chevron would be the one mark on
@@ -1630,9 +1628,11 @@ function Format-Line($Segments, [string] $Style, [string] $Palette = 'dark') {
         # was built - before this line existed and before anything knew this segment would be the second
         # of its role. Left alone, the text after the first marker would revert to the base code and the
         # segment would be two colours. The run to move is exactly the one Format-Inline emits, and
-        # String.Replace is ordinal, so nothing but that escape can match. Where a marker's own code IS
-        # the role's code - `added` and `32` in the dark table - the marker moves with the text, which
-        # changes nothing a reader could see: those two were already the same colour.
+        # String.Replace is ordinal, so nothing but that escape can match. This couples the replacement to
+        # Format-Inline's exact plain hand-back bytes; the renderer assertions `plain same role: muted marker
+        # hands the alternate back after its 22; marker` and `light plain same role: added marker hands the
+        # alternate back` guard that coupling. Where a marker's own code IS the role's code - `added` and
+        # `32` in the dark table - the marker moves with the text, which changes nothing a reader could see.
         $parts.Add("`e[$($c.AltSgr)m$($s.Text.Replace("`e[$($c.Sgr)m", "`e[$($c.AltSgr)m"))`e[0m")
     }
     return ($parts -join $sep)
