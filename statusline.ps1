@@ -1438,13 +1438,23 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
 #      rather than the basic sixteen on purpose: the sixteen are whatever the terminal's scheme says
 #      they are, which is exactly the thing that goes wrong on a light theme.
 #   2. A powerline block's own text on its own background clears 4.5:1. The light table's worst is
-#      folder at 10.40; the dark table's worst is model, 231 on 31, at 4.13, which is older than the
+#      folder at 9.14; the dark table's worst is model, 231 on 31, at 4.13, which is older than the
 #      rule and is exempted BY NAME in the test so the debt stays visible rather than lowering the bar
 #      for the other six.
-#   3. A block's background clears 1.7:1 against the terminal's own ground, because the trailing arrow
-#      paints that background as a FOREGROUND on the terminal and every block edge is the same
-#      boundary. The light table's worst is bad, 217, at 1.75; the dark table's is dim, 238, at 2.01
-#      against Campbell.
+#   3. A block's background clears its own table's bar against the terminal's own ground, because the
+#      trailing arrow paints that background as a FOREGROUND on the terminal and every block edge is
+#      the same boundary. Dark's bar is 1.7:1 and its worst is dim, 238, at 2.01 against Campbell.
+#      LIGHT'S BAR IS 1.25:1, worst model, 51, at 1.25, and the two differ because of #89 rather than
+#      by neglect. Seven backgrounds each 1.10:1 from the next - rule 4(c) - need a luminance span of
+#      1.7716:1. Rule 4(a) floors every light background at 0.398 relative luminance, because the
+#      BRIGHTEST of the markers - muted 24, #005F87, at 0.0993 - has to clear 3:1 inside every one of
+#      them, and a 1.7 bar here ceilinged them at 0.568: a band of 1.3786:1, in which at most four of
+#      the seven can ever sit 1.10 apart. That is arithmetic and not a tuning problem, so no assignment
+#      exists - not in the cube, and not in truecolour either, since the band is set by the rules
+#      rather than by the palette's 216 values. One of the three bars had to give, and this is the one
+#      whose cost is carried by a saturated hue rather than by a marker BOTH tables share: the block
+#      that sets 1.25 is model #00FFFF, whose edge against white is chroma where its luminance is
+#      nearly white's, and the palest NEUTRAL in the table is still dim #D0D0D0 at 1.54.
 #   4. THE THREE THINGS AN INLINE MARKER HAS TO DO. A marker - `92% cached`, `1M`, `+156`, an arrow, a
 #      branch count - is drawn INSIDE a block by Format-Inline, beside that block's own text. So it has
 #      to clear three bars at once, and #82 is the issue that found out what happens when only one of
@@ -1453,11 +1463,14 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
 #            block was 1.05:1 - one colour drawn on itself, for all a reader could tell.
 #        (b) at least 85 sRGB distance from the block's own TEXT, or it merges with the figure it
 #            qualifies. This is a distance and not a ratio on purpose: see below.
-#        (c) and, for the blocks themselves rather than the markers, every ordered pair of dark block
-#            backgrounds stays 1.10:1 apart in luminance and 40 apart in distance, because the arrow
-#            between two blocks is the left block's background painted as a foreground on the right
-#            one's. Two blocks of equal luminance make that arrow disappear even when the two colours
-#            are plainly different side by side.
+#        (c) and, for the blocks themselves rather than the markers, every ordered pair of block
+#            backgrounds stays 1.10:1 apart in luminance and 40 apart in distance - in BOTH tables
+#            since #89 - because the arrow between two blocks is the left block's background painted
+#            as a foreground on the right one's. Two blocks of equal luminance make that arrow
+#            disappear even when the two colours are plainly different side by side. The dark table's
+#            worst pair is dim/branch at 1.104 and model/folder at exactly 40.0; the light table's is
+#            bad/dim at 1.101 and bad/branch at 56.6, and the light half of this rule is what moved
+#            all seven light backgrounds and cost rule 3 its bar.
 #
 # WHY THERE ARE TWO MARKER COLUMNS. (a) and (b) pull in opposite directions, and on a dark block they
 # pull hard enough that no single colour can do both. A dark block is dark, so a marker clearing 3:1
@@ -1523,15 +1536,15 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
 # `dim`. Three blocks of one background are one band with an invisible arrow inside it; in plain style
 # they are one foreground code with only the chevron between them. Neither the palette nor the layout
 # can see that on its own - the palette does not know the order and the layout does not know the
-# colours - so the four roles a VALUE moves between carry a second shade, one step along, and
-# Format-Line hands it to a block whose immediate predecessor on the line carries the same role.
+# colours - so the roles a VALUE moves between carry a second shade, one step along, and Format-Line
+# hands it to a block whose immediate predecessor on the line carries the same role.
 # THE SHADE MOVES THE BACKGROUND AND NEVER THE BLOCK'S TEXT, which is not a preference: a segment's
 # text is built before there is a line, so the markers inside it were already chosen by the role's ink
 # and already close their runs by handing that role's own foreground back. A second foreground would
 # have to be threaded back into text that is finished. So `Fg` and `Ink` are the role's either way, and
 # what has to hold instead is that every marker still clears its floors against the second background -
 # which is measured, in test.ps1, exactly as it is for the first.
-# THREE ABSENCES, EACH MEASURED RATHER THAN CHOSEN:
+# THE ABSENCES, EACH MEASURED RATHER THAN CHOSEN:
 #   model, folder and branch have no second shade because each is the role of exactly ONE segment, so
 #     no line can put two of them side by side.
 #   dark `dim` has no second BACKGROUND. Its block is a grey wedged between its own light text at 250
@@ -1540,6 +1553,18 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
 #     joints take Format-Line's divider instead, which is the whole reason that fallback exists.
 #   light `ok` has no second PLAIN code, the mirror-image case: every green in the cube 40 sRGB from
 #     #005F00 is too light to hold 4.5:1 on a white ground, so that pair keeps the chevron it had.
+#   THE LIGHT TABLE HAS NO SECOND BACKGROUND AT ALL since #89, and that is a whole column absent rather
+#     than a cell. Rule 4(c) holds every pair of backgrounds a line can paint to 1.10:1, alternates
+#     included, and the seven light bases already spend the entire band rules 4(a) and 3 leave them:
+#     1.7716:1 out of 1.8750:1. Their widest interior gap is 1.1118 where an eighth value needs 1.21 to
+#     sit between two of them, there is 1.0204 of headroom below folder, and a shade 1.10 above model
+#     would be 1.1399:1 against white where rule 3 asks 1.25. An alternate run costs exactly one more
+#     1.10 step however long it is, since two alternates never touch, so the light rule 3 bar at which
+#     the first one could fit is 1.20269 - and at 1.20 the cube still offers nothing for any of the
+#     seven. Every repeated light role takes the divider, and here that is the better joint rather than
+#     a consolation: a chevron in the block's own ink is 9.14:1 or better on a light block, where the
+#     four shades #106 shipped measure 1.008 to 1.022 against the new bases, which is precisely the
+#     invisible arrow #89 exists to close.
 # The plain alternates are 256-colour indices in BOTH tables even though the dark table's seven base
 # codes are the basic sixteen. A colour chosen now has no reason to be a theme's own green, and one
 # concrete reason not to be: Solarized Dark maps the bright half of the sixteen onto greys, so `32`
@@ -1550,13 +1575,13 @@ function Get-Palette([string] $Palette = 'dark') {
     if ($Palette -eq 'light') {
         return @{
             Roles = @{
-                model  = @{ Sgr = '1;38;5;24'; Fg = 16; Bg = 44;  Ink = 'Dark' }
-                ok     = @{ Sgr = '38;5;22';   Fg = 16; Bg = 77;  Ink = 'Dark'; AltBg = 114 }
-                warn   = @{ Sgr = '38;5;94';   Fg = 16; Bg = 214; Ink = 'Dark'; AltBg = 178; AltSgr = '38;5;58' }
-                bad    = @{ Sgr = '38;5;124';  Fg = 16; Bg = 217; Ink = 'Dark'; AltBg = 210; AltSgr = '38;5;88' }
-                dim    = @{ Sgr = '38;5;240';  Fg = 16; Bg = 250; Ink = 'Dark'; AltBg = 144; AltSgr = '38;5;237' }
-                folder = @{ Sgr = '38;5;25';   Fg = 16; Bg = 147; Ink = 'Dark' }
-                branch = @{ Sgr = '38;5;90';   Fg = 16; Bg = 182; Ink = 'Dark' }
+                model  = @{ Sgr = '1;38;5;24'; Fg = 16; Bg = 51;  Ink = 'Dark' }
+                ok     = @{ Sgr = '38;5;22';   Fg = 16; Bg = 76;  Ink = 'Dark' }
+                warn   = @{ Sgr = '38;5;94';   Fg = 16; Bg = 221; Ink = 'Dark'; AltSgr = '38;5;58' }
+                bad    = @{ Sgr = '38;5;124';  Fg = 16; Bg = 218; Ink = 'Dark'; AltSgr = '38;5;88' }
+                dim    = @{ Sgr = '38;5;240';  Fg = 16; Bg = 252; Ink = 'Dark'; AltSgr = '38;5;237' }
+                folder = @{ Sgr = '38;5;25';   Fg = 16; Bg = 110; Ink = 'Dark' }
+                branch = @{ Sgr = '38;5;90';   Fg = 16; Bg = 213; Ink = 'Dark' }
             }
             Inline = @{
                 added   = @{ Sgr = '38;5;22';    Dark = 22 }

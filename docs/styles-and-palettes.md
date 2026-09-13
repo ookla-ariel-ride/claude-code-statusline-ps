@@ -97,25 +97,43 @@ darker numbers. Every value in it is an xterm 256-colour index picked to clear a
 the ratios are checked by arithmetic in `test.ps1` rather than by eye — an index is turned into its hex, and the hex
 into a [WCAG 2.1](https://www.w3.org/TR/WCAG21/#dfn-relative-luminance) contrast ratio, by code that
 shares nothing with the script. **Both tables are measured**, and where a bar is asserted for only one
-of them the table below says so and why. Two of the rules are not contrast ratios at all but
+of them, or differs between them, the table below says so and why. Two of the rules are not contrast ratios at all but
 straight-line distances in sRGB, because a ratio cannot answer the question they ask — see the note
 under the table.
 
 Every rule below runs over **every shade a line can paint**, which since the second shade (below) means
-the seven role backgrounds *and* the alternates — ten colours in the dark table, eleven in the light
-one. An alternate is measured exactly as a base is, and several of the worst figures in the table are
-now an alternate's.
+the seven role backgrounds *and* the alternates — ten colours in the dark table. An alternate is
+measured exactly as a base is, and several of the dark table's worst figures are now an alternate's.
+The light table has seven: holding its arrow rule to 1.10:1 spends every step its other bars leave, so
+its backgrounds cannot carry a second shade at all and its repeated roles take the divider instead.
 
 | Rule | Bar | Light table | Dark table |
 |---|---|---|---|
-| A plain-style colour against the terminal's background | 4.5:1 on `#FFFFFF` **and** on an off-white `#F5F5F5` | worst 5.25 (`warn`) | the seven base codes are the basic sixteen and are not asserted — what those look like is the terminal's to say. The four **alternate** codes are 256-colour indices and are held to it: worst 6.48 (`bad` alt on `#002B36`) |
-| A powerline block's own text against its own background | 4.5:1 | worst 9.07 (`bad` alt) | worst 4.70 (`ok`); `model` is 4.13 and exempt by name, older than the rule |
-| A block's background against the terminal's background — the trailing arrow paints it as a *foreground*, and every block edge is that boundary | 1.7:1 | worst 1.74 (`ok` alt) | worst 2.01 (`dim`) against Campbell |
-| The arrow *between* two blocks — one block's background painted on the next one's | 1.10:1 in luminance and 40 apart in sRGB, over every pair that can meet | 40.0 apart (`warn`/`warn` alt); the luminance half is **not** asserted, and `ok`/`warn` is 1.00 — a real gap, tracked separately | worst 1.104 and 40.0 |
-| An inline marker (`+156`, `92% cached`, `1M`, `↑2`) against the background of the block it sits in | 3:1 | worst 3.04 (`muted` in `bad` alt) | worst 3.01 |
+| A plain-style colour against the terminal's background | 4.5:1 on `#FFFFFF` **and** on an off-white `#F5F5F5` | worst 5.25 (`warn`); the three **alternate** codes are held to it too, worst 6.17 (`warn` alt on `#F5F5F5`) | the seven base codes are the basic sixteen and are not asserted — what those look like is the terminal's to say. The four **alternate** codes are 256-colour indices and are held to it: worst 6.48 (`bad` alt on `#002B36`) |
+| A powerline block's own text against its own background | 4.5:1 | worst 9.14 (`folder`) | worst 4.70 (`ok`); `model` is 4.13 and exempt by name, older than the rule |
+| A block's background against the terminal's background — the trailing arrow paints it as a *foreground*, and every block edge is that boundary | 1.25:1 light, 1.7:1 dark — the one bar that differs, and the note under the table says what bought it | worst 1.25 (`model`) | worst 2.01 (`dim`) against Campbell |
+| The arrow *between* two blocks — one block's background painted on the next one's | 1.10:1 in luminance and 40 apart in sRGB, over every pair that can meet | worst 1.101 (`bad`/`dim`) and 56.6 | worst 1.104 and 40.0 |
+| An inline marker (`+156`, `92% cached`, `1M`, `↑2`) against the background of the block it sits in | 3:1 | worst 3.06 (`muted` in `folder`) | worst 3.01 |
 | The same marker against that block's **own text**, which it sits beside | 85 apart in sRGB | worst 95.0 | worst 89.6 |
 | An inline marker on the terminal's background in plain style | 4.5:1, on the two grounds each palette has: `#FFFFFF` and `#F5F5F5` for light, Campbell `#0C0C0C` and Solarized Dark `#002B36` for dark | worst 6.45 (`muted`) | worst 4.95 — `track` and `cached` are both 246; the other three markers are hues on the basic sixteen and are not asserted |
 | An alternate shade against the base it alternates with | within 20° of hue, on top of every rule above | 18° at worst (`warn`'s plain code, an amber to a darker olive-amber) | 8° at worst (`warn`'s block) |
+
+**Why the light bar against the terminal's background is 1.25 where the dark one is 1.7.** It is the
+one figure in the table that differs between the two palettes, and the smaller number was bought
+rather than dropped ([#89](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/89)).
+The arrow *between* two blocks needs 1.10:1, so seven backgrounds have to spread over a luminance
+span of 1.10⁶ = 1.7716:1. The light table's other rules leave less room than that. The brightest of the
+inline markers — `muted` `#005F87`, at 0.0993 — has to clear 3:1 inside every block, which floors every
+light background at 0.398 relative luminance; 1.7:1 against white put a ceiling on them at 0.568. That
+is a band of 1.3786:1,
+and at most four of seven values can sit 1.10 apart inside it — arithmetic, not tuning, so no
+assignment exists in the 256-colour cube or in 24-bit colour either, since the band is set by the
+rules and not by how many colours there are to pick from. One of the three bars had to give, and this
+is the one whose cost lands on a saturated hue rather than on a marker both tables share: the light
+block that sets 1.25 is `model` `#00FFFF`, whose edge against white is carried by chroma where its
+luminance is nearly white's, and the palest *neutral* in the table is still `dim` `#D0D0D0` at 1.54.
+The dark table is untouched and keeps 1.7. The same arithmetic is what leaves the light table with no
+second block shade at all — see [the second shade](#the-second-shade).
 
 **Why two of those bars are distances and not ratios.** An inline marker sits inside a block, so it has
 two neighbours: the block's background behind it, and the block's own text beside it. On a dark block
@@ -182,10 +200,10 @@ carries the same role is drawn in it. A run of three reads base, alternate, base
 
 | Role | `dark` block | `dark` plain | `light` block | `light` plain |
 |---|---|---|---|---|
-| `ok` | 28 → **22** | `32` → **`38;5;114`** | 77 → **114** | `38;5;22` → none |
-| `warn` | 178 → **214** | `33` → **`38;5;221`** | 214 → **178** | `38;5;94` → **`38;5;58`** |
-| `bad` | 160 → **124** | `31` → **`38;5;210`** | 217 → **210** | `38;5;124` → **`38;5;88`** |
-| `dim` | 238 → none | `90` → **`38;5;251`** | 250 → **144** | `38;5;240` → **`38;5;237`** |
+| `ok` | 28 → **22** | `32` → **`38;5;114`** | 76 → none | `38;5;22` → none |
+| `warn` | 178 → **214** | `33` → **`38;5;221`** | 221 → none | `38;5;94` → **`38;5;58`** |
+| `bad` | 160 → **124** | `31` → **`38;5;210`** | 218 → none | `38;5;124` → **`38;5;88`** |
+| `dim` | 238 → none | `90` → **`38;5;251`** | 252 → none | `38;5;240` → **`38;5;237`** |
 
 **Which segments this reaches.** `ok`, `warn` and `bad` are the roles of context, cache, limits and the
 pull request — whichever of them the thresholds put a segment in — and `dim` is cost, clock, time,
@@ -196,7 +214,7 @@ exactly one segment, so no line can put two of them side by side.
 a line, so the inline markers inside it were already chosen by the role's ink and already close their
 runs by handing that role's own foreground back; a second foreground would have to be threaded back
 into finished text. What holds instead is that every marker clears its floors against the second
-background too, which is where several of the worst figures in the table above come from. In `plain`
+background too, which is where several of the dark table's worst figures above come from. In `plain`
 the segment's own code *is* the thing that changes, so the hand-backs inside its text move with it —
 otherwise the words after the first marker would revert to the base code and the segment would be two
 colours.
@@ -222,12 +240,22 @@ table, and two of the twelve cells could not be filled by any colour in the 256-
 Both searches are run in `test.ps1` over the whole cube rather than asserted as comments, so loosening
 a floor makes the colour that has become available show up as a failure.
 
-**`light` `dim`'s alternate is a warm grey, `#AFAF87`, and not a neutral one** for the same reason as
-the first gap, seen from the light side: the markers drawn inside those segments are dark, so the block
-cannot go far down without falling under the 3:1 marker bar, and every neutral grey close enough to
-`#BCBCBC` in luminance is under the 40 sRGB the joint needs. What the test pins is that it is the
-*least coloured* shade the floors leave, so "a warm grey" is the best available answer rather than a
-preference.
+**The `light` block column is empty — all four cells, and this one was bought rather than found.**
+[#89](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/89) made the arrow rule hold
+every pair of light backgrounds a line can paint to 1.10:1, an alternate against every base included,
+and the seven bases then spend the whole band the marker floor and the 1.25 ground bar leave them:
+1.7716:1 out of 1.8750:1. Their widest interior gap is 1.1118 where an eighth value needs 1.21 to sit
+between two of them; there is 1.0204 of headroom under `folder`, the darkest of them; and a shade a step
+above `model` would be 1.1399:1 against white where the ground bar asks 1.25. A run of alternates costs
+exactly one more 1.10 step however long it is, because two alternates never touch, so the light ground
+bar at which the first one could fit is 1.20269 — and at 1.20 the cube still offers nothing for any of
+the seven roles. `test.ps1` walks the cube for this too, in one loop rather than seven, because what
+rules a colour out does not depend on the role: an alternate meets *every* base, not only its own.
+
+Every repeated light role takes the divider instead, and here that is the better joint rather than a
+consolation. A chevron in the block's own ink is 9.14:1 or better on a light block, where the four
+shades that fitted the old backgrounds measure 1.008 to 1.022 against the new ones — the invisible
+arrow the rule exists to close.
 
 **The plain alternates are 256-colour indices in both tables**, even though the dark table's seven base
 codes are the basic sixteen. A colour chosen now has no reason to be a theme's own green, and one
