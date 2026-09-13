@@ -451,12 +451,12 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   (half the budget) still unspent, which is not a bound on it but a test of the filesystem about to be
   renamed on - reaching that point means both size reads answered, and answered briskly. Below the
   reserve the record is dropped, unrolled and unwritten. What that leaves, plainly: while a filesystem
-  is slow enough to eat the reserve the log stops being written rather than growing, and it sits at its
-  cap until a render with room to spare rolls it; it heals on its own once the filesystem does. That is
-  the same answer a rollover that is entered and cannot take the lock now gets (#93), so the reserve is
-  one more road to it rather than a hole beside it. The reserve's drop is the one not counted into the
-  note that answer leaves: letting how briskly a filesystem answered decide the text of a later record
-  would put timing inside the log's contents, which every check on this file is built to keep out.
+  is slow enough to eat the reserve the log stops being written rather than growing, and it sits near
+  its cap until a render with room to spare rolls it; it heals on its own once the filesystem does. That
+  is the same answer a rollover that is entered and cannot take the lock now gets (#93), so the reserve
+  is one more road to it rather than a hole beside it. Every cap drop, including this reserve drop, is
+  counted by reason and carried only after a later close really completes; timing does not decide whether
+  the accounting exists.
   `Read-BoundedFileText` writes no record at all: it records the
   reason and `Merge-StatusConfigFile` writes it once the read has returned and its clock has stopped,
   because a size probe, a rename, an open and a close inside that clock would be exactly the unbounded
@@ -483,15 +483,17 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   Nothing waits. Appending through a held lock, as it did before #93, made the cap a target and not a
   ceiling: a holder can be a stalled render or one in another session or another user's account, and
   every render on the machine appended past the cap for as long as it lived. What is left of the
-  approximation is the unlocked append - renders that each measure room at the same instant all write,
-  so the file can end over the cap by up to one record apiece. That is the right trade for a log that
-  must never delay a render and is off by default. The note the drop leaves is bounded by the process
+  approximation is the unlocked append: `FileInfo.AppendText` uses `FileShare.Read`, so overlapping
+  appends can lose a line to each other when one open fails. A successful append can still leave the
+  file a little over the cap because both renders measured room before either wrote. That is the right
+  trade for a log that must never delay a render and is off by default. The note the drop leaves is bounded by the process
   that took it, which the review of #93 read as the fix's weak point and which is recorded here rather
   than engineered around: a render draws one line and exits, so the count usually dies with it, and a
   channel that outlived it would be a fourth file beside a two-file-and-a-lock log, written by a
   filesystem call on the path that is dropping records rather than waiting for one. The cross-process
-  signal is the log itself - parked exactly at the cap, no `.log.1`, nothing new appended - and
-  `docs/diagnostics.md` tells the reader to read it that way. Also unlike the mutex this replaced
+  signal is the log itself - near its cap and no longer growing while a live process owns `.lock` - and
+  `docs/diagnostics.md` tells the reader to read it that way; a `.log.1` can remain from an earlier
+  rollover. Also unlike the mutex this replaced
   (#49): the lock is scoped by the path rather than a
   machine- or session-wide name, a killed render's handle is released by the kernel on process exit
   with no stale lock left behind, and a lock file some other user cannot open at all - not merely held,

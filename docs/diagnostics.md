@@ -33,17 +33,17 @@ on release, since deleting it would race a process already waiting to open it. T
 anything, so a render that finds that lock held by another one skips the rollover; when the log is
 already full, it drops its record rather than appending past the cap, and says how many it dropped and
 why in the next record it does get down (`[2 records dropped at the cap: another render holds the
-rollover lock]`). That note reaches you only when the same process writes again, which for a render
-that draws one line and exits means usually not — so the sign to read is the log itself: one sitting
-exactly at 4 MB, with no `.log.1` beside it and nothing new being appended, is a log whose rotation
-somebody is holding up, and it starts moving again the moment they let go. Nothing is written anywhere
-else to tell you so, on purpose: another file to write would be another filesystem call on the path
-that is dropping records rather than waiting for one.
-Rolling over means renaming, and a rename is the one thing here that cannot be put
-behind the deadline, so it is only attempted when the folder has just answered two size questions
-quickly. If it has not — a share gone slow — the record is dropped the same way and the log sits at its
-cap until a render finds the folder responsive again, which it does on its own. What is left of the
-4 MB being approximate is small: the append itself is not locked, so renders that each measure room at
-the same instant all write, and the file can end up over the cap by up to one record each. Unset the
+rollover lock: 2]`). That note reaches you only when the same process writes again, which for a render
+that draws one line and exits means usually not. The useful cross-process sign is a log near its cap
+that has stopped growing while a live process holds its `.lock`; an older `.log.1` can still be there
+from a previous rollover. Nothing is written anywhere else to tell you so, on purpose: another file to
+write would be another filesystem call on the path that is dropping records rather than waiting for one.
+Rolling over means renaming, and a rename is the one thing here that cannot be put behind the deadline,
+so it is only attempted when the folder has just answered two size questions quickly. If it has not — a
+share gone slow — the record is dropped and counted the same way, and the log waits for a render that
+finds the folder responsive again. What is left of 4 MB being approximate is small: the append itself
+is not locked. `FileInfo.AppendText` opens with `FileShare.Read`, so overlapping renders can lose a
+line to each other when one append open fails; the other can still leave the file a little over the cap
+because both measured room before either wrote. Unset the
 variable when you are done (`0`,
 `false`, `no` and `off` also count as off) and delete all three files.

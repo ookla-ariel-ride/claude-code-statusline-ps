@@ -314,7 +314,7 @@ function Get-SubagentReply([string[]] $Lines) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Open-SharedConfigFile', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Open-SharedConfigFile', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Clear-StatusDiagPendingLock', 'Test-StatusDiagAbsent', 'Add-StatusDiagDrop', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -6137,6 +6137,7 @@ using System.Threading;
 namespace StatuslineTest {
     public class BlockingWriter : StreamWriter {
         public BlockingWriter() : base(new MemoryStream()) { }
+        public override void Write(string value) { DiagSink.LastLine = value; base.Write(value); }
         protected override void Dispose(bool disposing) { Thread.Sleep(DiagSink.CloseDelayMs); DiagSink.Closed = true; base.Dispose(disposing); }
     }
     // A stand-in for the FileStream a real lock open hands back, so a delayed or a held lock can be
@@ -6153,18 +6154,20 @@ namespace StatuslineTest {
     public static class DiagSink {
         public static int OpenDelayMs, LengthDelayMs, CloseDelayMs, LockDelayMs, DisposeDelayMs;
         public static bool Closed, Locked;
+        public static string LastLine;
         // The size the double reports, and which call it starts stalling on. Write-StatusDiag reads the
         // size once to decide whether a rollover is due and Invoke-StatusDiagRollover reads it again
         // with the lock held, so SlowFromCall 2 lets the first read answer at once - entering the
         // rollover - and the second one stall inside it. LengthCalls is how a test sees which of those
         // two reads happened, and so whether the rollover branch was entered at all.
         public static long LengthValue;
-        public static int SlowFromCall, LengthCalls, LockCalls;
-        public static void ResetLength() { LengthValue = 0L; SlowFromCall = 0; LengthCalls = 0; LengthDelayMs = 0; }
+        public static int SlowFromCall, ThrowFromCall, LengthCalls, LockCalls;
+        public static void ResetLength() { LengthValue = 0L; SlowFromCall = 0; ThrowFromCall = 0; LengthCalls = 0; LengthDelayMs = 0; }
         public static void ResetLock() { Locked = false; LockDelayMs = 0; DisposeDelayMs = 0; LockCalls = 0; }
         public static long Length() {
             int n = Interlocked.Increment(ref LengthCalls);
             if (SlowFromCall > 0 && n >= SlowFromCall) { Thread.Sleep(LengthDelayMs); }
+            if (ThrowFromCall > 0 && n >= ThrowFromCall) { throw new IOException("length fault"); }
             return LengthValue;
         }
         public static StreamWriter Open() { Thread.Sleep(OpenDelayMs); return new BlockingWriter(); }
@@ -6227,10 +6230,16 @@ namespace StatuslineTest {
         [StatuslineTest.DiagSink]::OpenDelayMs = 0
         [StatuslineTest.DiagSink]::CloseDelayMs = 5000
         Clear-DiagLog
+        $script:diagDropped = 1
+        $script:diagDropReasons = @{ 'a previous cap drop' = 1 }
         $diagSinkSw = [System.Diagnostics.Stopwatch]::StartNew()
         Write-StatusDiag 'into a sink that will not close'
         $diagCloseMs = $diagSinkSw.ElapsedMilliseconds
         Confirm-True ($diagCloseMs -lt 2000) "diag sink: a close that blocks costs the record's budget, not the sink's, took $diagCloseMs ms"
+        Confirm-Equal $script:diagDropped 1 'diag sink: a close that has not completed keeps the carried drop count'
+        [StatuslineTest.DiagSink]::CloseDelayMs = 0
+        Write-StatusDiag 'a record after the close can complete'
+        Confirm-Equal $script:diagDropped 0 'diag sink: a completed close clears the carried drop count'
         # A length probe that never answers stops the record before it opens anything.
         [StatuslineTest.DiagSink]::CloseDelayMs = 0
         [StatuslineTest.DiagSink]::ResetLength()
@@ -6241,6 +6250,18 @@ namespace StatuslineTest {
         Write-StatusDiag 'into a sink whose size never answers'
         $diagLenMs = $diagSinkSw.ElapsedMilliseconds
         Confirm-True ($diagLenMs -lt 2000) "diag sink: a size probe that blocks costs the record's budget, took $diagLenMs ms"
+        [StatuslineTest.DiagSink]::ResetLength()
+
+        # A faulted first size read is only an empty log when the file is actually absent. An IOException
+        # from a flapping share must drop, not append without having entered the rollover.
+        [StatuslineTest.DiagSink]::LengthValue = 4194304
+        [StatuslineTest.DiagSink]::ThrowFromCall = 1
+        [StatuslineTest.DiagSink]::Closed = $false
+        Write-StatusDiag 'a record whose first size read faults'
+        Confirm-True (-not [StatuslineTest.DiagSink]::Closed) 'diag rollover: a non-absent first size fault drops rather than appends past the cap'
+        [StatuslineTest.DiagSink]::ResetLength()
+        Write-StatusDiag 'a record after the first size fault'
+        Confirm-True ("$([StatuslineTest.DiagSink]::LastLine)".Contains('the size of the log could not be read before the rollover: 1')) 'diag rollover: the next landed record accounts for a non-absent first size fault'
         [StatuslineTest.DiagSink]::ResetLength()
 
         # ---- The rollover, which the checks above never reach ----
@@ -6279,6 +6300,8 @@ namespace StatuslineTest {
         $diagRollMs = $diagSinkSw.ElapsedMilliseconds
         Confirm-Equal ([StatuslineTest.DiagSink]::LengthCalls) 2 'diag rollover: the stalling read is the one inside the rollover, not the one before it'
         Confirm-True ($diagRollMs -lt 2000) "diag rollover: a size read that stalls inside the rollover costs the record's budget, not the sink's, took $diagRollMs ms"
+        $diagSizeTimeoutRoom = Invoke-StatusDiagRollover 'unused' 120 $diagCapBytes 100
+        Confirm-Equal $diagSizeTimeoutRoom 'the size read inside the rollover did not answer' 'diag rollover: the stalled second size read returns its drop reason'
         [StatuslineTest.DiagSink]::ResetLength()
         # The reserve: below it the record is dropped rather than the rename attempted. A reserve larger
         # than the whole budget can never be met, so this pins the rule itself rather than a timing
@@ -6298,6 +6321,9 @@ namespace StatuslineTest {
         . ([scriptblock]::Create("function Get-StatusDiagLimit { return @{ TimeoutMs = $($diagRealDiagLimit.TimeoutMs); RolloverMs = $($diagRealDiagLimit.RolloverMs) } }"))
         Confirm-Equal (Get-StatusDiagLimit).RolloverMs $diagRealDiagLimit.RolloverMs 'diag rollover: the real reserve is back'
         [StatuslineTest.DiagSink]::ResetLength()
+        Write-StatusDiag 'a record after the reserve drop'
+        Confirm-True ("$([StatuslineTest.DiagSink]::LastLine)".Contains('the record budget was spent before the rollover was tried: 1')) 'diag rollover: the next landed record accounts for a reserve drop'
+        [StatuslineTest.DiagSink]::ResetLength()
         # The lock open goes through the same delegate factory as the length and the append (issue #49
         # review finding 3), so it is exactly as coverable as either: a lock slower than the record's
         # budget must cost that budget, not the sink's, and must not reach the rollover's own size read
@@ -6312,6 +6338,8 @@ namespace StatuslineTest {
         $diagLockSinkMs = $diagLockSinkSw.ElapsedMilliseconds
         Confirm-True ($diagLockSinkMs -lt 2000) "diag rollover lock: a lock open that stalls costs the record's budget, not the sink's, took $diagLockSinkMs ms"
         Confirm-Equal ([StatuslineTest.DiagSink]::LengthCalls) 1 'diag rollover lock: a lock that has not answered yet never reaches the size read inside the rollover'
+        $diagHeldRoom = Invoke-StatusDiagRollover 'unused' 120 $diagCapBytes 100
+        Confirm-Equal $diagHeldRoom 'another render holds the rollover lock' 'diag rollover lock: a second attempt sees the still-running timed-out lock as held'
         # The delayed open is still running underneath - the double's own Thread.Sleep(LockDelayMs) does
         # not stop just because this call gave up waiting on it - so the fix (issue #49 review finding 1)
         # is not something a background continuation does the moment that finishes: a PowerShell script
@@ -6324,9 +6352,11 @@ namespace StatuslineTest {
         Start-Sleep -Milliseconds 5500
         Confirm-True ([StatuslineTest.DiagSink]::Locked) 'diag rollover lock: nothing watches the late-finishing task on its own - the delayed lock is still marked held once it has actually finished, before any later call has looked'
         [StatuslineTest.DiagSink]::LockDelayMs = 0
-        Write-StatusDiag 'a second record after the slow lock finished underneath'
-        Confirm-True (-not [StatuslineTest.DiagSink]::Locked) 'diag rollover lock: the next call to reach the rollover disposes a finished, abandoned lock before opening its own (issue #49 review finding 1)'
-        Confirm-Equal ([StatuslineTest.DiagSink]::LengthCalls) 3 'diag rollover lock: with the old handle disposed first, this call still reaches its own size read rather than finding its own leaked handle in the way'
+        [StatuslineTest.DiagSink]::LengthValue = 0
+        Write-StatusDiag 'a second record under the cap after the slow lock finished underneath'
+        Confirm-True (-not [StatuslineTest.DiagSink]::Locked) 'diag rollover lock: every later record sweeps a finished abandoned lock, even under the cap'
+        Confirm-Equal ([StatuslineTest.DiagSink]::LengthCalls) 2 'diag rollover lock: the under-cap sweep happens before a rollover would be needed'
+        Confirm-True ("$([StatuslineTest.DiagSink]::LastLine)".Contains('the rollover lock did not open inside the record budget: 1')) 'diag rollover lock: the next under-cap record accounts for the timed-out lock open'
         [StatuslineTest.DiagSink]::ResetLock()
         [StatuslineTest.DiagSink]::ResetLength()
 
@@ -6473,7 +6503,7 @@ namespace StatuslineTest {
     Confirm-True ((Get-DiagLogSize) -le $diagCap) 'diag record cap: an enormous reason on a full log still leaves the log at or under the cap'
 
     # The rollover is taken under an exclusive lock on the log's .lock file with no wait at all, so a
-    # render that finds it already open elsewhere appends rather than waiting on it. A lock file can
+    # render that finds it already open elsewhere drops a full-log record rather than waiting on it. A lock file can
     # contend with itself inside one process just as well as across two - unlike a mutex, which is
     # reentrant per thread, nothing here is - so a second process is not what proves contention; it is
     # what proves the property a mutex could not: killing the holder, rather than asking it to let go,
@@ -6518,17 +6548,15 @@ Start-Sleep -Seconds 60
         # The decision, with nothing else left that could account for it: the log is over the cap, the
         # size read has thirty seconds, and the move does not happen.
         $diagRollThrewHeld = $false
-        $diagRollOutHeld = @('not run')
-        try { $diagRollOutHeld = @(Invoke-StatusDiagRollover $diagLog 120 $diagCap 30000) } catch { $diagRollThrewHeld = $true }
+        $diagRollRoomHeld = $null
+        try { $diagRollRoomHeld = Invoke-StatusDiagRollover $diagLog 120 $diagCap 30000 } catch { $diagRollThrewHeld = $true }
         Confirm-True (-not $diagRollThrewHeld) 'diag rollover lock: a rollover it cannot take does not throw'
-        Confirm-Equal $diagRollOutHeld.Count 0 'diag rollover lock: and nothing reaches the pipeline'
+        Confirm-Equal $diagRollRoomHeld 'another render holds the rollover lock' 'diag rollover lock: a skipped rollover returns why it left the log full'
         Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover lock: the file the other render is rotating is left alone'
         Confirm-Equal (Get-DiagLogSize) $diagCap 'diag rollover lock: and the full log is left exactly as it was'
-        # The skip says which of its reasons it was, in the words the next record that lands will carry.
-        # Asserted here rather than only through the record below, because "the log did not grow" alone
-        # would pass just as well if the record had been dropped by a spent budget or a stalled size
-        # read, neither of which is what this holder is here to prove.
-        Confirm-Equal $script:diagRollSkip 'another render holds the rollover lock' 'diag rollover lock: the skipped rollover names the holder as the reason (issue #93)'
+        # The returned reason keeps a future early return fail-closed: anything but $true becomes a
+        # counted drop rather than silently looking like room to append.
+        Confirm-Equal $diagRollRoomHeld 'another render holds the rollover lock' 'diag rollover lock: the skipped rollover names the holder as the reason (issue #93)'
         # A record while the lock is held is not by itself a record lost: only one that has no room left
         # has anything to gain by waiting for the rotation, so with the log well under the cap the lock
         # is never asked for and the line lands as it always did.
@@ -6565,12 +6593,12 @@ Start-Sleep -Seconds 60
     # What was lost in the meantime is in that record, so the hole the drop above left in the log says
     # it is a hole and why, rather than reading as a stretch where this process had nothing to say.
     $diagAfterLock = (Get-DiagLine)[0]
-    Confirm-True ($diagAfterLock.Contains('[1 record dropped at the cap: another render holds the rollover lock]')) "diag rollover lock: and it carries the record that was dropped and the reason (issue #93), got '$diagAfterLock'"
+    Confirm-True ($diagAfterLock.Contains('[1 record dropped at the cap: another render holds the rollover lock: 1]')) "diag rollover lock: and it carries the record that was dropped and the reason (issue #93), got '$diagAfterLock'"
     # Carried once, not for the rest of the process: the count is what has been lost since the last
     # record that landed, so a record that lands clears it.
     Write-StatusDiag 'and nothing was dropped after that'
     Confirm-Equal (Get-DiagLine).Count 2 'diag rollover lock: the next record lands in the same fresh log'
-    Confirm-True (-not ((Get-DiagLine)[1].Contains('dropped at the cap'))) 'diag rollover lock: and carries no note, because the record before it cleared the count'
+    Confirm-True (-not ("$((Get-DiagLine)[1])".Contains('dropped at the cap'))) 'diag rollover lock: and carries no note, because the record before it cleared the count'
     Clear-DiagLog
     Clear-DiagRollover
 
