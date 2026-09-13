@@ -949,10 +949,10 @@ function Open-SharedConfigFile([string] $Path, $Fault, [bool] $Trusted, [long] $
 #       on them but the process exit. THE CACHE ENTRY AND ITS SWEEP ARE NOT, and this row said they
 #       were until a review checked it: Get-BranchSegment calls Get-CachedGitBranch while the segments
 #       are being built, which is before anything is printed, so the entry write and the sweep that
-#       follows it are in front of the line. That was harmless while both were single calls that either
-#       worked or threw; it stopped being harmless the moment the move at the end of Write-AtomicJson
-#       gained a retry, which is why that retry's window is sized for this caller and not for the
-#       state file's - see Get-AtomicWriteLimit.
+#       follows it are in front of the line. When the cache reader has a pending close from this process,
+#       Write-AtomicJson waits only through its 50 ms budget and then attempts one move. A directory,
+#       read-only file or another process's handle is not inferred from an HResult and gets no retry -
+#       see Get-AtomicWriteLimit.
 #     - Get-SessionStateDir and Get-SessionStatePath, one Directory.Exists on the way to the state read.
 #     Where those directories are is worth writing down, because the two are not the same rule.
 #     Write-StatusDiag and Get-GitCacheDir go TEMP, then TMPDIR, then Path.GetTempPath();
@@ -985,10 +985,41 @@ function Open-SharedConfigFile([string] $Path, $Fault, [bool] $Trusted, [long] $
 # ABANDONMENT IS LITERAL, and anything that copies this pattern copies that too. When the budget is
 # gone the reader does not cancel anything, because there is nothing here that can cancel a blocking
 # filesystem call: it stops waiting and returns. A pool thread can stay stuck in the kernel until the
-# process exits, a handle opened after the deadline passed is never closed, and a stream still open is
-# left open rather than closed on the way out, because closing it would wait on the same thing that is
-# already stuck. That is harmless in a process that draws one line and exits, and it is the right trade
-# there. It is not "nothing happened", and it would not be the right trade in something long-lived.
+# process exits. A completed abandoned open or close is retained in a small pending list and the next
+# bounded operation disposes it within that operation's own budget; a task that never answers remains
+# bounded and is eventually reclaimed at process exit.
+
+# Returns a pending close task after disposing completed open tasks, and otherwise $null. A timed-out
+# open can still hand a live FileStream back after its caller has returned; keeping the task lets a later
+# bounded operation own that handle rather than leaking it for the life of a long-lived host. PowerShell
+# script blocks cannot run safely in a task continuation, so the later call sweeps eagerly on its own
+# runspace. A close remains bounded by this call's budget (with a small ordinary-close floor), and the
+# list is capped so a permanently stalled filesystem cannot retain unbounded task references.
+function Invoke-BoundedFilePendingSweep([int] $TimeoutMs, [System.Diagnostics.Stopwatch] $Stopwatch) {
+    if ($null -eq $script:boundedFilePending) { $script:boundedFilePending = [System.Collections.Generic.List[object]]::new() }
+    if ($null -eq $script:boundedDisposeMethod) { $script:boundedDisposeMethod = [System.IDisposable].GetMethod('Dispose', [type[]] @()) }
+    $pendingClose = $null
+    for ($i = $script:boundedFilePending.Count - 1; $i -ge 0; $i--) {
+        $pending = $script:boundedFilePending[$i]
+        $task = $pending.Task
+        if ($pending.Kind -eq 'Open' -and $task.IsCompleted) {
+            $script:boundedFilePending.RemoveAt($i)
+            if ($task.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion -and $null -ne $task.Result) {
+                $closeLeft = [Math]::Max($TimeoutMs - [int] $Stopwatch.ElapsedMilliseconds, 20)
+                $close = [System.Threading.Tasks.Task]::Run([System.Delegate]::CreateDelegate([Action], $task.Result, $script:boundedDisposeMethod))
+                if ([System.Threading.Tasks.Task]::WaitAny(@($close), $closeLeft) -lt 0) {
+                    $script:boundedFilePending.Add([pscustomobject]@{ Kind = 'Close'; Task = $close })
+                    $pendingClose = $close
+                }
+            }
+        } elseif ($pending.Kind -eq 'Close') {
+            if ($task.IsCompleted) { $script:boundedFilePending.RemoveAt($i) }
+            else { $pendingClose = $task }
+        }
+    }
+    while ($script:boundedFilePending.Count -gt 8) { $script:boundedFilePending.RemoveAt(0) }
+    return $pendingClose
+}
 
 # The text of a config file, or $null when it is anything but a small, promptly readable one - and, for
 # the project's file, an ordinary one. Test-Path and Get-Content are not enough here: they follow a link
@@ -1042,6 +1073,7 @@ function Read-BoundedFileText([string] $Path, [switch] $Trusted, [int] $TimeoutM
     $abandoned = $false
     $closeErr = $null
     try {
+        $null = Invoke-BoundedFilePendingSweep $limit.TimeoutMs $sw
         if (-not $Path) { $why = 'no path was given'; return $null }
         $call = Get-BoundedFileDelegate $Path
         # The open goes first and what it hands back is what gets judged, so there is no gap between a
@@ -1052,7 +1084,12 @@ function Read-BoundedFileText([string] $Path, [switch] $Trusted, [int] $TimeoutM
         $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
         if ($left -le 0) { $why = 'the deadline was spent before the open'; return $null }
         $open = [System.Threading.Tasks.Task]::Run($call.Open)
-        if ([System.Threading.Tasks.Task]::WaitAny(@($open), [int] $left) -lt 0) { $why = "the open did not answer inside $($limit.TimeoutMs) ms"; return $null }
+        if ([System.Threading.Tasks.Task]::WaitAny(@($open), [int] $left) -lt 0) {
+            $script:boundedFilePending.Add([pscustomobject]@{ Kind = 'Open'; Task = $open })
+            $abandoned = $true
+            $why = "the open did not answer inside $($limit.TimeoutMs) ms"
+            return $null
+        }
         $fs = if ($open.IsCompletedSuccessfully) { $open.Result } else { Open-SharedConfigFile $Path $open.Exception $Trusted ($limit.TimeoutMs - $sw.ElapsedMilliseconds) }
         if ($null -eq $fs) {
             # A file that is not there is not a refusal for the user's own config: an install without one
@@ -1132,16 +1169,19 @@ function Read-BoundedFileText([string] $Path, [switch] $Trusted, [int] $TimeoutM
         $err = $_.Exception
         return $null
     } finally {
-        # Cleanup obeys the same clock, and goes first, with nothing on this thread in front of it. With
-        # budget left the close is queued on the pool and not waited on, so it cannot become the thing
-        # that overruns; with the budget gone the stream is abandoned outright, whichever stage spent it,
-        # because a close would only wait on what is already stuck. An abandoned handle is closed by the
-        # process exit that follows the line.
-        if ($null -ne $stream -and ($limit.TimeoutMs - $sw.ElapsedMilliseconds) -gt 0) {
-            try { $null = [System.Threading.Tasks.Task]::Run($stream.Dispose) } catch { $closeErr = $_.Exception }
-        } elseif ($null -ne $stream) {
-            $abandoned = $true
+        # Cleanup stays on the pool. If the close has not finished when this frame returns, retain that
+        # task so the next bounded operation can observe it; no close is allowed to turn this read into a
+        # filesystem wait on the render thread.
+        if ($null -ne $stream) {
+            try {
+                $close = [System.Threading.Tasks.Task]::Run($stream.Dispose)
+                if (-not $close.IsCompleted) {
+                    $script:boundedFilePending.Add([pscustomobject]@{ Kind = 'Close'; Task = $close })
+                    $abandoned = $true
+                }
+            } catch { $closeErr = $_.Exception }
         }
+        while ($script:boundedFilePending.Count -gt 8) { $script:boundedFilePending.RemoveAt(0) }
         # The reason is recorded here and written by the caller, once this function has returned and its
         # clock has stopped. Writing it is filesystem work of its own - a size probe, possibly a rename,
         # an open and a close - and doing that work here would put calls inside the one clock this
@@ -1828,41 +1868,20 @@ function Get-ShortHash([string] $Text) {
     return [BitConverter]::ToString($digest, 0, 8).Replace('-', '').ToLowerInvariant()
 }
 
-# How long the move at the end of an atomic write may keep trying past a handle in the way, and how
-# often. Its own function so a test can pin it, the way the diagnostics budget is pinned: what has to be
-# provable is that the retry is what completes the write, not how many milliseconds it took.
-#
-# FIFTY MILLISECONDS, not the 250 the reads get, and the difference is where the callers sit. The
-# session state write is after the last Write-Host and costs nothing but a later exit. THE GIT CACHE
-# WRITE IS NOT: Get-BranchSegment builds the branch segment before anything is printed, so every
-# millisecond spent here is a millisecond of the line the user is waiting for. (The filesystem audit
-# further down used to say both writes were after the print. That was wrong about the cache entry, and
-# it is corrected there.) So this is sized for the thing it actually has to outlast - a close this same
-# render queued on the thread pool a moment ago, which lands in well under a millisecond when the pool
-# is not starved - and not for waiting out a stranger. A holder that is still there after fifty
-# milliseconds is not worth a render: the write is abandoned, exactly as the read would be.
-function Get-AtomicWriteLimit { return @{ TimeoutMs = 50; WaitMs = 5 } }
+# The cache write is in front of the line, while the state write is after it. The only wait here is
+# for a close this process already queued through Read-BoundedFileText; the shared pending list identifies
+# that exact case. A directory, read-only destination, or another process's handle is not guessed from an
+# HResult and receives exactly one move attempt.
+function Get-AtomicWriteLimit { return @{ TimeoutMs = 50 } }
 
-# Writes an object as compact UTF-8 JSON without a BOM: to a sibling .tmp file first, then moved over
-# the real one, which is atomic on both Windows and Linux, so a reader never sees half a file and an
-# interrupted write costs nothing. $false, and nothing written, when the JSON came out empty. Anything
-# that throws is the caller's to swallow.
-#
-# THE MOVE CAN MEET THIS SCRIPT'S OWN ABANDONED HANDLE, which is why it is not one call. Both callers -
-# the git cache entry and the session state file - read the same path through Read-BoundedFileText
-# earlier in the same render, and that reader closes on the thread pool without waiting, deliberately.
-# MOVEFILE_REPLACE_EXISTING needs delete access to the destination, and File.OpenRead asks for
-# FileShare.Read, so while that close is still queued the move is refused - with ERROR_ACCESS_DENIED
-# rather than ERROR_SHARING_VIOLATION, which is the whole reason the filter below goes by number.
-# Measured here: with the close queued and the pool busy, 459 moves in 2000 were refused. A render
-# normally spends tens of milliseconds starting git between the read and the write, which is long
-# enough for the close to land - but not always, and the case where it is NOT is exactly the one the
-# cache exists for: a machine with no git on PATH answers in a PATH scan and would then fail to write
-# the null result it means to cache, and pay for that scan on every render forever rather than once per
-# lifetime. So the move keeps trying, briefly, for the sharing errors only; anything else throws at
-# once, as does a share that never lets go, and the caller swallows it as before. What the waiting can
-# cost is not the same for both callers - the state write is after the print, the git cache write is in
-# front of it - and Get-AtomicWriteLimit is sized for the second one.
+function Move-AtomicFile([string] $Source, [string] $Destination) {
+    [System.IO.File]::Move($Source, $Destination, $true)
+}
+
+# Writes compact UTF-8 JSON to a sibling .tmp then atomically replaces the destination. A pending close
+# from this process is waited only through the remaining 50 ms foreground budget; after that one move
+# either lands or throws for the caller to swallow. This bounds the cache-write cost on the render path
+# and does not mistake unrelated access failures for an eventually releasable handle.
 function Write-AtomicJson([string] $Path, $Object, [int] $Depth) {
     $json = ConvertTo-Json -InputObject $Object -Depth $Depth -Compress -ErrorAction Stop
     if (-not $json) { return $false }
@@ -1870,24 +1889,13 @@ function Write-AtomicJson([string] $Path, $Object, [int] $Depth) {
     [System.IO.File]::WriteAllText($tmp, $json, [System.Text.UTF8Encoding]::new($false))
     $limit = Get-AtomicWriteLimit
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    while ($true) {
-        try { [System.IO.File]::Move($tmp, $Path, $true); return $true }
-        catch {
-            # By NUMBER, not by type, and the number that matters is the surprising one: MoveFileEx over
-            # a destination that is open without delete sharing returns ERROR_ACCESS_DENIED, 0x80070005,
-            # which .NET raises as UnauthorizedAccessException and not as the IOException the name
-            # "sharing violation" would lead you to catch. Measured, not assumed. 0x80070020
-            # ERROR_SHARING_VIOLATION and 0x80070021 ERROR_LOCK_VIOLATION are here for the other shapes a
-            # holder can take. Everything else - a path that is gone, a directory in the way, a broken
-            # share - throws on the first attempt.
-            # The cost of taking 0x80070005 is that a destination denied for a real reason, a read-only
-            # file say, is retried for the window before it throws: fifty milliseconds spent on a write
-            # that was going to fail either way, which is what the window is kept small for.
-            if ($_.Exception.GetBaseException().HResult -notin @(-2147024891, -2147024864, -2147024863) -or
-                $sw.ElapsedMilliseconds -ge $limit.TimeoutMs) { throw }
-            Start-Sleep -Milliseconds $limit.WaitMs
-        }
+    $pendingClose = Invoke-BoundedFilePendingSweep $limit.TimeoutMs $sw
+    if ($pendingClose) {
+        $left = $limit.TimeoutMs - [int] $sw.ElapsedMilliseconds
+        if ($left -gt 0) { [void] [System.Threading.Tasks.Task]::WaitAny(@($pendingClose), $left) }
     }
+    Move-AtomicFile $tmp $Path
+    return $true
 }
 
 # ---- Git probe cache ----

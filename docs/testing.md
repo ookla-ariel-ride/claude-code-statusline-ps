@@ -87,10 +87,11 @@ a clock it reads itself. Under several suites at once, any of those can miss —
 the matrix, or a run of cache checks, fails for a reason that is not in the script. Three things fix
 that, and none of them is a wider tolerance:
 
-- Every child the suite starts is given `CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS=30000`, so its config read
-  cannot miss under load. See [how the config files are read](configuration.md#how-the-config-files-are-read);
-  the variable can only raise the budget, and it is never set in the test process itself, so the checks
-  that spend the deadline on purpose still see the shipped 250 ms.
+- Matrix and sample children are given `CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS=30000`, so their freshly
+  written config cannot miss under load. A child that proves a real render rejects an unreachable project
+  directory runs without the variable and therefore under the shipped 250 ms budget. See [how the config
+  files are read](configuration.md#how-the-config-files-are-read); the variable can only raise the budget
+  and is never set in the test process itself.
 - The diagnostics group and the operation-count group pin their budgets — the record budget and the
   bounded read's deadline — for the run of checks that are about *what* was written rather than about
   how long it took. Each is rebuilt from the script's own numbers and put back from the script itself

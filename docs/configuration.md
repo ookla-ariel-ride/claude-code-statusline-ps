@@ -274,15 +274,14 @@ tree does not, and neither does a change to your global git config or `core.excl
 can lag by up to five seconds. A worktree or a submodule, where `.git` is a file, is cached under its own
 path, with its main repository's refs counted too. A `git status` that failed or timed out is
 remembered for the same lifetime, so a slow repository pays the wait once per lifetime, not once per
-render — and *is* remembered, which took a fix: the entry is written by replacing the file, and the same
-render read that file a moment earlier through a reader that closes its handle on a background thread
-without waiting for it. Windows refuses to replace a file while a read handle is open, so a probe that
-answered fast enough to beat that close — a machine with no git on `PATH`, which answers in a `PATH`
-scan — could never write the answer it meant to cache, and paid for the scan on every render instead of
-once per lifetime. The replace now keeps trying for fifty milliseconds when a handle is in the way. Fifty
-and not more because this write happens while the line is being built rather than after it is printed:
-what it has to outlast is a close the same render queued a moment ago, and a holder still there after
-that is not worth a render — the write is given up on, the way a read would be. A `statusline.json` from before this cache has no `git` block and gets the defaults: the
+render — and *is* remembered, which took a fix: a bounded read that times out can finish its open
+after the caller has moved on. The reader keeps that task in a small pending list, and the next bounded
+read or cache write disposes a completed handle within its own budget. The cache write is on the render
+path, before the line prints, so it waits at most 50 ms for this process's pending close and then makes
+one replacement attempt. It does not poll an access-denied number: a directory, a read-only destination
+or another process's holder is not evidence that this process's close will land, so each throws at once
+for the cache caller to swallow. This is a bounded best effort, not a claim that every cache write is
+free. A `statusline.json` from before this cache has no `git` block and gets the defaults: the
 cache on, five seconds, a 1.5 second timeout. Add `"git": { "cache": false }` to turn it off. The
 folder is safe to delete at any time; the next render writes it again, and entries not written for a
 day are swept.
