@@ -1683,26 +1683,22 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
 # 246 (#949494) now: the LOWEST index on the grey ramp that clears 4.5 on Campbell (6.45) and on
 # Solarized Dark (4.95) alike, chosen low on purpose so the line moves as little as it can while still
 # being a colour that can be promised. Both tables' plain marker codes are asserted in test.ps1 now.
-# `added` 32, `removed` 31 and `muted` 22;36 STAY on the basic sixteen, and so do all seven of the
-# dark ROLES, including `dim` 90 - the chevron. Those are hues rather than greys and they are the
-# line's own text rather than a marker beside it, so replacing them is a redesign of what a dark plain
-# line looks like, not a repair; a scheme's own green is also better tuned to that scheme's ground
-# than one index picked here. That larger change is deliberately not folded in here. `dim` 90 is the
-# piece of it with a number: 2.79:1 on Solarized Dark, the same figure the two markers had, tracked as
-# #111. It is not simply the markers' answer applied again - a quiet grey close enough to 246 to be
-# readable is within a few sRGB steps of the markers drawn inside those same segments, which is rule
-# 4b's problem over again, so `dim` and the marker grey have to be chosen as a pair.
+# `added` 32, `removed` 31 and `muted` 22;36 STAY on the basic sixteen, as do the six dark role hues
+# `1;36`, `32`, `33`, `31`, `34` and `35`: a scheme's own hue is better tuned to its ground than an
+# index picked here. `dim` is the neutral exception #111 measured. Its old `90` was 2.79:1 on
+# Solarized Dark; base 251 (#C6C6C6) is 8.79:1 and alternate 254 (#E4E4E4) is 11.81:1. The pair is
+# 52.0 sRGB apart. `dim` never shares a segment with `track` or `cached`: the latter belong only to
+# branch and context respectively, while dim segments carry added/removed markers or plain text. No
+# marker-distance rule therefore joins dim to either marker.
 #
-# WHAT 246 COSTS, ON THE ONE CONFIGURATION IT IS NOT FOR. `dark` is the default, so a reader on a LIGHT
-# terminal who never set `palette` gets this table anyway, and there 246 is a fixed 3.03:1 on white and
-# 2.81:1 on Solarized Light's #FDF6E3. `90` on that reader's screen was not better so much as unknown:
-# a scheme drawing brightBlack #767676 gave 4.54:1 on white, one drawing #93A1A1 gave 2.48:1 - the
-# same coin toss this whole table exists to stop, landing the other way up. So the change trades a
-# figure nobody could state for one anybody can, and the honest reading is that a dark table on a light
-# ground is out of contrast either way. THE REMEDY IS THE PALETTE KEY, not a compromise colour that
-# clears neither ground: `"palette": "light"`, or `install.ps1 -DetectTheme`, which reads Windows
-# Terminal's background and writes the key. Every bar in this note is measured against the ground its
-# own table is for, and a table measured against both would be a table that reads well on neither.
+# WHAT THE DARK DIM CODES COST, ON THE ONE CONFIGURATION THEY ARE NOT FOR. `dark` is the default, so a
+# reader on a LIGHT terminal who never set `palette` gets this table anyway. There dim 251 (#C6C6C6) is
+# 1.71:1 on white and 1.58:1 on Solarized Light's #FDF6E3; its alternate 254 (#E4E4E4) is 1.27:1 on
+# white. `90` on a Campbell terminal was #767676, 4.54:1 on white. The dark table on a light ground is
+# out of contrast either way. A light terminal using the default palette should set `"palette": "light"`,
+# or run `install.ps1 -DetectTheme`, which reads Windows Terminal's background and writes the key.
+# Every bar in this note is measured against the ground its own table is for, and a table measured
+# against both would be a table that reads well on neither.
 #
 # THE SECOND SHADE, AltBg AND AltSgr (#106). Seven distinct role colours are still one colour where the
 # LAYOUT puts two segments of the same role side by side, and the shipped second row does exactly that:
@@ -1739,12 +1735,11 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
 #     a consolation: a chevron in the block's own ink is 9.14:1 or better on a light block, where the
 #     four shades #106 shipped measure 1.008 to 1.022 against the new bases, which is precisely the
 #     invisible arrow #89 exists to close.
-# The plain alternates are 256-colour indices in BOTH tables even though the dark table's seven base
-# codes are the basic sixteen. A colour chosen now has no reason to be a theme's own green, and one
-# concrete reason not to be: Solarized Dark maps the bright half of the sixteen onto greys, so `32`
-# beside `92` there would be a green beside a grey rather than a green beside a lighter green. The
-# `dim` alternate 251 is also 86.6 sRGB from the 246 the markers inside those same segments are drawn
-# in, which is #111's constraint honoured in advance - #111 itself, the base `dim` 90, is untouched.
+# The plain alternates are 256-colour indices in BOTH tables. Six dark bases are basic-sixteen hues,
+# but dim is indexed because its terminal-defined bright black failed contrast. Solarized Dark maps the
+# bright half of the sixteen onto greys, so `32` beside `92` could be a green beside a grey rather than
+# a green beside a lighter green. Dim never shares a segment with `track` or `cached`, so #111 applies
+# no distance rule between them and changes no marker code.
 function Get-Palette([string] $Palette = 'dark') {
     if ($Palette -eq 'light') {
         return @{
@@ -1772,7 +1767,7 @@ function Get-Palette([string] $Palette = 'dark') {
             ok     = @{ Sgr = '32';   Fg = 231; Bg = 28;  Ink = 'Light'; AltBg = 22;  AltSgr = '38;5;114' }
             warn   = @{ Sgr = '33';   Fg = 16;  Bg = 178; Ink = 'Dark';  AltBg = 214; AltSgr = '38;5;221' }
             bad    = @{ Sgr = '31';   Fg = 231; Bg = 160; Ink = 'Light'; AltBg = 124; AltSgr = '38;5;210' }
-            dim    = @{ Sgr = '90';   Fg = 250; Bg = 238; Ink = 'Light'; AltSgr = '38;5;251' }
+            dim    = @{ Sgr = '38;5;251'; Fg = 250; Bg = 238; Ink = 'Light'; AltSgr = '38;5;254' }
             folder = @{ Sgr = '34';   Fg = 231; Bg = 25;  Ink = 'Light' }
             branch = @{ Sgr = '35';   Fg = 231; Bg = 90;  Ink = 'Light' }
         }
@@ -1960,10 +1955,10 @@ function Format-Line($Segments, [string] $Style, [string] $Palette = 'dark', [st
     }
     # Powerline is not offered an ASCII block substitute: its look is a solid background, so ASCII renders
     # like plain instead. Its '>' and plain's Nerd Font glyph were both selected above.
-    # The divider's colour comes from the palette's dim role rather than a literal 90, which is what it
-    # used to be. The dark table spells that role 90, so this line renders the same bytes it always did;
-    # on a light terminal 90 is a pale grey on a pale ground and the chevron would be the one mark on
-    # the line that did not follow the theme.
+    # The divider's colour comes from the palette's dim role rather than the literal 90 it used to be.
+    # The dark table now spells that role 38;5;251 and the light table its own 38;5;240, so the chevron
+    # follows the selected palette rather than making a terminal-defined bright black the one mark on
+    # the line that does not follow the theme.
     $sep = " `e[$($pal.Roles.dim.Sgr)m$divider`e[0m "
     $parts = [System.Collections.Generic.List[string]]::new()
     for ($i = 0; $i -lt $segs.Count; $i++) {

@@ -129,7 +129,7 @@ its backgrounds cannot carry a second shade at all and its repeated roles take t
 
 | Rule | Bar | Light table | Dark table |
 |---|---|---|---|
-| A plain-style colour against the terminal's background | 4.5:1 on `#FFFFFF` **and** on an off-white `#F5F5F5` | worst 5.25 (`warn`); the three **alternate** codes are held to it too, worst 6.17 (`warn` alt on `#F5F5F5`) | the seven base codes are the basic sixteen and are not asserted — what those look like is the terminal's to say. The four **alternate** codes are 256-colour indices and are held to it: worst 6.48 (`bad` alt on `#002B36`) |
+| A plain-style colour against the terminal's background | 4.5:1 on `#FFFFFF` **and** on an off-white `#F5F5F5` | worst 5.25 (`warn`); the three **alternate** codes are held to it too, worst 6.17 (`warn` alt on `#F5F5F5`) | the six hue bases are the basic sixteen and are not asserted; `dim` is `251` and its `254` alternate is also held to it: worst 6.48 (`bad` alt on `#002B36`), while `dim` is 8.79 and 11.81 on Solarized Dark |
 | A powerline block's own text against its own background | 4.5:1 | worst 9.14 (`folder`) | worst 4.70 (`ok`); `model` is 4.13 and exempt by name, older than the rule |
 | A block's background against the terminal's background — the trailing arrow paints it as a *foreground*, and every block edge is that boundary | 1.25:1 light, 1.7:1 dark, and 80 apart in sRGB on both — the one ratio bar that differs, and the note under the table says what bought it | worst 1.25 (`model`), 81.4 sRGB (`dim`) | worst 2.01 (`dim`) against Campbell, 84.7 sRGB (`ok` alt) |
 | The arrow *between* two blocks — one block's background painted on the next one's | 1.10:1 in luminance and 40 apart in sRGB, over every pair that can meet | worst 1.101 (`bad`/`dim`) and 56.6 | worst 1.104 and 40.0 |
@@ -173,32 +173,27 @@ carries two colours and the block's own text colour picks between them.
 **The light table's plain-style colours are 256-colour codes rather than the basic sixteen on purpose,
 all twelve of them.** The sixteen are whatever your terminal's scheme says they are, which is the thing
 that goes wrong on a light theme in the first place; a table that cannot say what a colour looks like
-cannot promise it is readable. The dark table is *mostly* still the sixteen — see the next paragraph
-for which two values are not, and why the rest stay.
+cannot promise it is readable. The dark table still leaves its six hue roles to the terminal — and makes
+the measured neutral exception explicit.
 
-**Why the dark table's two markers moved, and why the rest of it did not.** `track` and `cached` — the
-`92% cached` suffix and the `↑2 ↓1 +3 ~1 ?2` branch counts — used to be `90`, bright black, on a dark
-plain line. That is one of the sixteen, so nothing above could measure it, and on Solarized Dark, whose
-bright black is `#586E75` on a `#002B36` background, it came out at 2.79:1: under even the 3:1 a marker
-clears inside a block, on the shipped default style. Both are `246` (`#949494`) now, the *lowest* index
-on the grey ramp that clears 4.5 on Campbell and on Solarized Dark alike, picked low so the line moves
-as little as it can. Nothing else in the dark table changed: `added` `32`, `removed` `31` and `muted`
-`22;36` are hues rather than greys, and the seven plain role colours — `dim` `90`, the chevron, among
-them — are the line's own text rather than a marker beside it. Replacing those is a redesign of what a
-dark plain line looks like on every install, not a repair, so it is left to its own decision — `dim`
-`90` is tracked as #111, since on Solarized Dark it measures the same 2.79:1 the markers did.
-That is why the first row of the table above still says *not asserted* for the dark column and the last
-row no longer does.
+**Why the dark table's markers stayed at 246 and `dim` moved.** `track` and `cached` — the `92% cached`
+suffix and the `↑2 ↓1 +3 ~1 ?2` branch counts — were moved from `90`, bright black, to `246` (`#949494`)
+by #88: the lowest grey ramp index that clears 4.5 on Campbell and Solarized Dark alike. #111 found the
+same 2.79:1 Solarized-Dark failure in the `dim` role: the chevron and cost, clock, time, lines, and
+badges text. `dim` is now `251` (`#C6C6C6`), 8.79:1 on Solarized Dark; its alternating code is `254`
+(`#E4E4E4`), 11.81:1. They are 52.0 sRGB apart. The `dim` role never shares a segment with `track` or
+`cached`: `cached` is context-only, `track` branch-only, and dim segments carry added/removed markers
+or plain text. No distance rule applies between dim and either marker. The other six dark role codes —
+`1;36`, `32`, `33`, `31`, `34`, `35` — remain terminal-scheme hues: a scheme's tuned hue is preferable
+to turning that visual choice into a fixed cube colour.
 
 **What that costs on the one configuration it is not for.** `dark` is the default, so somebody on a
-*light* terminal who never set `palette` gets this table anyway, and there `246` is a fixed **3.03:1**
-on white and **2.81:1** on Solarized Light's `#FDF6E3` — under the bar. `90` was not better there so
-much as unknown: a scheme drawing bright black as `#767676` gave 4.54:1 on white, one drawing `#93A1A1`
-gave 2.48:1. The change trades a figure nobody could state for one anybody can, and a dark table on a
-light ground is out of contrast either way. The remedy is the palette key rather than a compromise
-colour that clears neither ground: set `"palette": "light"`, or run `.\install.ps1 -DetectTheme` and
-let it read your terminal's background. Every bar in this page is measured against the ground its own
-table is for.
+*light* terminal who never set `palette` gets this table anyway. There `dim` `251` (`#C6C6C6`) is
+**1.71:1** on white and **1.58:1** on Solarized Light's `#FDF6E3`; alternate `254` (`#E4E4E4`) is
+**1.27:1** on white. By comparison, SGR `90` was Campbell bright black `#767676`, **4.54:1** on white.
+A dark table on a light ground is out of contrast either way. A light terminal using the default palette
+should set `"palette": "light"`, or run `.\install.ps1 -DetectTheme` and let it read the terminal
+background. Every bar in this page is measured against the ground its own table is for.
 
 To check a value by hand: the indices 16–231 are a 6×6×6 cube on the levels 0, 95, 135, 175, 215, 255
 (so index `24` is `16 + 0×36 + 1×6 + 2`, giving `#005F87`), and 232–255 are a grey ramp at `8 + 10n`.
@@ -227,7 +222,7 @@ available shade reads base, alternate, base.
 | `ok` | 28 → **22** | `32` → **`38;5;114`** | 76 → none | `38;5;22` → none |
 | `warn` | 178 → **214** | `33` → **`38;5;221`** | 221 → none | `38;5;94` → **`38;5;58`** |
 | `bad` | 160 → **124** | `31` → **`38;5;210`** | 218 → none | `38;5;124` → **`38;5;88`** |
-| `dim` | 238 → none | `90` → **`38;5;251`** | 252 → none | `38;5;240` → **`38;5;237`** |
+| `dim` | 238 → none | `38;5;251` → **`38;5;254`** | 252 → none | `38;5;240` → **`38;5;237`** |
 
 **Which segments this reaches.** `ok`, `warn` and `bad` are the roles of context, cache, limits and the
 pull request — whichever of them the thresholds put a segment in — and `dim` is cost, clock, time,
@@ -282,13 +277,13 @@ consolation. A chevron in the block's own ink is 9.14:1 or better on a light blo
 shades that fitted the old backgrounds measure 1.008 to 1.022 against the new ones — the invisible
 arrow the rule exists to close.
 
-**The plain alternates are 256-colour indices in both tables**, even though the dark table's seven base
-codes are the basic sixteen. A colour chosen now has no reason to be a theme's own green, and one
-concrete reason not to be: Solarized Dark maps the bright half of the sixteen onto greys, so `32`
-beside `92` there would be a green beside a grey rather than a green beside a lighter green. The `dim`
-alternate `251` is also 86.6 sRGB from the `246` the markers inside those same segments are drawn in,
-which is [#111](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/111)'s constraint
-honoured in advance; `dim`'s base code `90` is untouched, and #111 is still open.
+**The plain alternates are 256-colour indices in both tables.** Six dark bases remain basic-sixteen
+hues, but dim is indexed because its terminal-defined bright black could not promise contrast. A colour
+chosen now has no reason to be a theme's own green, and one concrete reason not to be: Solarized Dark
+maps the bright half of the sixteen onto greys, so `32` beside `92` there would be a green beside a grey
+rather than a green beside a lighter green. The `dim` role never shares a segment with the `track` or
+`cached` markers, so [#111](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/111)
+does not apply a distance rule between them.
 
 **Every layout is walked.** `test.ps1` builds every sample through the real segment builders, lays them
 out with both layouts *and* all three presets, renders each row in both palettes and all three styles,
