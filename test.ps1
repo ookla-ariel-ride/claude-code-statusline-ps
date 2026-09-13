@@ -6310,6 +6310,11 @@ namespace StatuslineTest {
         [StatuslineTest.DiagSink]::ResetLength()
         $diagUnderCapRoom = Invoke-StatusDiagRollover 'unused' 120 $diagCapBytes 100
         Confirm-Equal $diagUnderCapRoom $true 'diag rollover: a second read that finds room returns true'
+        [StatuslineTest.DiagSink]::ResetLength()
+        [StatuslineTest.DiagSink]::ThrowFromCall = 1
+        $diagSizeFaultRoom = Invoke-StatusDiagRollover 'unused' 120 $diagCapBytes 100
+        Confirm-Equal $diagSizeFaultRoom 'the size of the log could not be read inside the rollover' 'diag rollover: a non-absent second size fault returns its drop reason'
+        [StatuslineTest.DiagSink]::ResetLength()
         $diagBudgetRoom = Invoke-StatusDiagRollover 'unused' 120 $diagCapBytes 0
         Confirm-Equal $diagBudgetRoom 'the record budget was spent inside the rollover' 'diag rollover: a spent rollover budget returns its drop reason'
         # The reserve: below it the record is dropped rather than the rename attempted. A reserve larger
