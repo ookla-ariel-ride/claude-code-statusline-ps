@@ -1569,15 +1569,45 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
 # clears neither ground: `"palette": "light"`, or `install.ps1 -DetectTheme`, which reads Windows
 # Terminal's background and writes the key. Every bar in this note is measured against the ground its
 # own table is for, and a table measured against both would be a table that reads well on neither.
+#
+# THE SECOND SHADE, AltBg AND AltSgr (#106). Seven distinct role colours are still one colour where the
+# LAYOUT puts two segments of the same role side by side, and the shipped second row does exactly that:
+# context, cache and limits are all `ok` while nothing is warning, then cost, clock and lines are all
+# `dim`. Three blocks of one background are one band with an invisible arrow inside it; in plain style
+# they are one foreground code with only the chevron between them. Neither the palette nor the layout
+# can see that on its own - the palette does not know the order and the layout does not know the
+# colours - so the four roles a VALUE moves between carry a second shade, one step along, and
+# Format-Line hands it to a block whose immediate predecessor on the line carries the same role.
+# THE SHADE MOVES THE BACKGROUND AND NEVER THE BLOCK'S TEXT, which is not a preference: a segment's
+# text is built before there is a line, so the markers inside it were already chosen by the role's ink
+# and already close their runs by handing that role's own foreground back. A second foreground would
+# have to be threaded back into text that is finished. So `Fg` and `Ink` are the role's either way, and
+# what has to hold instead is that every marker still clears its floors against the second background -
+# which is measured, in test.ps1, exactly as it is for the first.
+# THREE ABSENCES, EACH MEASURED RATHER THAN CHOSEN:
+#   model, folder and branch have no second shade because each is the role of exactly ONE segment, so
+#     no line can put two of them side by side.
+#   dark `dim` has no second BACKGROUND. Its block is a grey wedged between its own light text at 250
+#     and the terminal's ground below, which leaves a band of about 0.041 to 0.073 in relative
+#     luminance - and no NEUTRAL colour in the 256-colour cube sits in it 40 sRGB from #444444. Its
+#     joints take Format-Line's divider instead, which is the whole reason that fallback exists.
+#   light `ok` has no second PLAIN code, the mirror-image case: every green in the cube 40 sRGB from
+#     #005F00 is too light to hold 4.5:1 on a white ground, so that pair keeps the chevron it had.
+# The plain alternates are 256-colour indices in BOTH tables even though the dark table's seven base
+# codes are the basic sixteen. A colour chosen now has no reason to be a theme's own green, and one
+# concrete reason not to be: Solarized Dark maps the bright half of the sixteen onto greys, so `32`
+# beside `92` there would be a green beside a grey rather than a green beside a lighter green. The
+# `dim` alternate 251 is also 86.6 sRGB from the 246 the markers inside those same segments are drawn
+# in, which is #111's constraint honoured in advance - #111 itself, the base `dim` 90, is untouched.
 function Get-Palette([string] $Palette = 'dark') {
     if ($Palette -eq 'light') {
         return @{
             Roles = @{
                 model  = @{ Sgr = '1;38;5;24'; Fg = 16; Bg = 44;  Ink = 'Dark' }
-                ok     = @{ Sgr = '38;5;22';   Fg = 16; Bg = 77;  Ink = 'Dark' }
-                warn   = @{ Sgr = '38;5;94';   Fg = 16; Bg = 214; Ink = 'Dark' }
-                bad    = @{ Sgr = '38;5;124';  Fg = 16; Bg = 217; Ink = 'Dark' }
-                dim    = @{ Sgr = '38;5;240';  Fg = 16; Bg = 250; Ink = 'Dark' }
+                ok     = @{ Sgr = '38;5;22';   Fg = 16; Bg = 77;  Ink = 'Dark'; AltBg = 114 }
+                warn   = @{ Sgr = '38;5;94';   Fg = 16; Bg = 214; Ink = 'Dark'; AltBg = 178; AltSgr = '38;5;58' }
+                bad    = @{ Sgr = '38;5;124';  Fg = 16; Bg = 217; Ink = 'Dark'; AltBg = 210; AltSgr = '38;5;88' }
+                dim    = @{ Sgr = '38;5;240';  Fg = 16; Bg = 250; Ink = 'Dark'; AltBg = 144; AltSgr = '38;5;237' }
                 folder = @{ Sgr = '38;5;25';   Fg = 16; Bg = 147; Ink = 'Dark' }
                 branch = @{ Sgr = '38;5;90';   Fg = 16; Bg = 182; Ink = 'Dark' }
             }
@@ -1593,10 +1623,10 @@ function Get-Palette([string] $Palette = 'dark') {
     return @{
         Roles = @{
             model  = @{ Sgr = '1;36'; Fg = 231; Bg = 31;  Ink = 'Light' }
-            ok     = @{ Sgr = '32';   Fg = 231; Bg = 28;  Ink = 'Light' }
-            warn   = @{ Sgr = '33';   Fg = 16;  Bg = 178; Ink = 'Dark' }
-            bad    = @{ Sgr = '31';   Fg = 231; Bg = 160; Ink = 'Light' }
-            dim    = @{ Sgr = '90';   Fg = 250; Bg = 238; Ink = 'Light' }
+            ok     = @{ Sgr = '32';   Fg = 231; Bg = 28;  Ink = 'Light'; AltBg = 22;  AltSgr = '38;5;114' }
+            warn   = @{ Sgr = '33';   Fg = 16;  Bg = 178; Ink = 'Dark';  AltBg = 214; AltSgr = '38;5;221' }
+            bad    = @{ Sgr = '31';   Fg = 231; Bg = 160; Ink = 'Light'; AltBg = 124; AltSgr = '38;5;210' }
+            dim    = @{ Sgr = '90';   Fg = 250; Bg = 238; Ink = 'Light'; AltSgr = '38;5;251' }
             folder = @{ Sgr = '34';   Fg = 231; Bg = 25;  Ink = 'Light' }
             branch = @{ Sgr = '35';   Fg = 231; Bg = 90;  Ink = 'Light' }
         }
@@ -1657,38 +1687,85 @@ function Format-Link($Url, [string] $Text) {
 # read independently: $Style decides the shape - blocks, a chevron or an ascii divider - and $Palette
 # decides only which numbers go into the colour codes, so every pairing of the three styles and the two
 # palettes is a line this function draws.
+# It is also where two neighbours of the SAME role are told apart, in all three styles: the second one
+# takes the role's alternate shade, and where the role has none the powerline joint is drawn as a
+# visible divider instead of an arrow of one colour on itself. See the note over Get-Palette.
 function Format-Line($Segments, [string] $Style, [string] $Palette = 'dark') {
     $segs = [System.Collections.Generic.List[hashtable]]::new()
     foreach ($s in $Segments) { if ($s) { $segs.Add($s) } }
     if ($segs.Count -eq 0) { return '' }
     $pal = Get-Palette $Palette
+    # WHICH BLOCKS TAKE THEIR ROLE'S SECOND SHADE, decided here and from the records this function was
+    # handed, because this is the only place the question can be answered. A line can be missing the
+    # cache block, the lines block or the pull request, so which segments end up next to each other is
+    # not a property of the registry; it is a property of this payload, this config and this width.
+    # A block whose immediate predecessor carries the same role takes the alternate, and the flag flips
+    # back for the one after it, so a run of three reads base, alt, base and two alternate blocks can
+    # never touch - which is what lets the palette leave the alt-against-alt pairs unmeasured.
+    $alt = [bool[]]::new($segs.Count)
+    for ($i = 1; $i -lt $segs.Count; $i++) { $alt[$i] = $segs[$i].Role -eq $segs[$i - 1].Role -and -not $alt[$i - 1] }
+    # The soft separator belongs to every style: ASCII chooses its '>' here and the other styles share the Nerd Font glyph.
+    $divider = if ($Style -eq 'ascii') { '>' } else { [char]::ConvertFromUtf32(0xE0B1) }
     if ($Style -eq 'powerline') {
         $arrow = [char]::ConvertFromUtf32(0xE0B0)
+        # The background each block actually paints, settled before anything is drawn: the arrow between
+        # two blocks is made of both of their backgrounds, so the second one has to be known already.
+        $bg = [int[]]::new($segs.Count)
+        for ($i = 0; $i -lt $segs.Count; $i++) {
+            $c = $pal.Roles[$segs[$i].Role]
+            $bg[$i] = if ($alt[$i] -and $null -ne $c.AltBg) { $c.AltBg } else { $c.Bg }
+        }
         $sb = [System.Text.StringBuilder]::new()
         for ($i = 0; $i -lt $segs.Count; $i++) {
             $s = $segs[$i]
             $c = $pal.Roles[$s.Role]
             $bold = if ($s.Bold) { '1;' } else { '' }
-            [void] $sb.Append("`e[0;${bold}48;5;$($c.Bg);38;5;$($c.Fg)m $($s.Text) ")
+            [void] $sb.Append("`e[0;${bold}48;5;$($bg[$i]);38;5;$($c.Fg)m $($s.Text) ")
             if ($i -lt $segs.Count - 1) {
-                $n = $pal.Roles[$segs[$i + 1].Role]
-                [void] $sb.Append("`e[38;5;$($c.Bg);48;5;$($n.Bg)m$arrow")
+                if ($bg[$i + 1] -eq $bg[$i]) {
+                    # TWO NEIGHBOURS ON ONE BACKGROUND, which the alternation could not part: the role
+                    # has no second shade, because none clears the floors. An arrow here would be that
+                    # background painted on itself - nothing to see - so the joint is drawn as the thin
+                    # separator in the block's own ink instead. Thin rather than the solid arrow, since
+                    # a solid triangle in the text colour reads as a segment of its own; and the ink is
+                    # already known to clear the background, because it is what the block writes in.
+                    # The rule is on the RENDERED backgrounds rather than on the roles, so it covers a
+                    # role with no alternate, a role a layout was never expected to repeat, and any
+                    # future pair that comes out the same colour for a reason nobody has thought of.
+                    [void] $sb.Append("`e[38;5;$($c.Fg);48;5;$($bg[$i])m$divider")
+                } else {
+                    [void] $sb.Append("`e[38;5;$($bg[$i]);48;5;$($bg[$i + 1])m$arrow")
+                }
             } else {
-                [void] $sb.Append("`e[0m`e[38;5;$($c.Bg)m$arrow`e[0m")
+                [void] $sb.Append("`e[0m`e[38;5;$($bg[$i])m$arrow`e[0m")
             }
         }
         return $sb.ToString()
     }
-    # Plain's soft divider is a Nerd Font glyph like every icon, so the ascii style brings its own. The
-    # powerline branch above is not offered one: its look is a solid block with a background colour
-    # behind it, which no ASCII character can stand in for, so ascii renders like plain and not like it.
-    $divider = if ($Style -eq 'ascii') { '>' } else { [char]::ConvertFromUtf32(0xE0B1) }
+    # Powerline is not offered an ASCII block substitute: its look is a solid background, so ASCII renders
+    # like plain instead. Its '>' and plain's Nerd Font glyph were both selected above.
     # The divider's colour comes from the palette's dim role rather than a literal 90, which is what it
     # used to be. The dark table spells that role 90, so this line renders the same bytes it always did;
     # on a light terminal 90 is a pale grey on a pale ground and the chevron would be the one mark on
     # the line that did not follow the theme.
     $sep = " `e[$($pal.Roles.dim.Sgr)m$divider`e[0m "
-    $parts = foreach ($s in $segs) { $c = $pal.Roles[$s.Role]; "`e[$($c.Sgr)m$($s.Text)`e[0m" }
+    $parts = [System.Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt $segs.Count; $i++) {
+        $s = $segs[$i]
+        $c = $pal.Roles[$s.Role]
+        if (-not ($alt[$i] -and $c.AltSgr)) { $parts.Add("`e[$($c.Sgr)m$($s.Text)`e[0m"); continue }
+        # THE SEGMENT'S OWN CODE, INSIDE ITS TEXT AS WELL AS IN FRONT OF IT. Format-Inline closes every
+        # marker it draws by handing the segment's colour back, and it chose that colour when the text
+        # was built - before this line existed and before anything knew this segment would be the second
+        # of its role. Left alone, the text after the first marker would revert to the base code and the
+        # segment would be two colours. The run to move is exactly the one Format-Inline emits, and
+        # String.Replace is ordinal, so nothing but that escape can match. This couples the replacement to
+        # Format-Inline's exact plain hand-back bytes; the renderer assertions `plain same role: muted marker
+        # hands the alternate back after its 22; marker` and `light plain same role: added marker hands the
+        # alternate back` guard that coupling. Where a marker's own code IS the role's code - `added` and
+        # `32` in the dark table - the marker moves with the text, which changes nothing a reader could see.
+        $parts.Add("`e[$($c.AltSgr)m$($s.Text.Replace("`e[$($c.Sgr)m", "`e[$($c.AltSgr)m"))`e[0m")
+    }
     return ($parts -join $sep)
 }
 

@@ -40,7 +40,7 @@ abbreviation, cut to a single letter where the segment's own text carries the wo
 | clock's api share | `·` | `\|` |
 | pace on track, overrunning | `→` `↑` | `=` `^` |
 | clipped name | `…` | `.` |
-| between segments | dim chevron in `plain`, solid arrow in `powerline` | `>` |
+| between segments | dim chevron in `plain`, solid arrow in `powerline` — or the thin chevron where two `powerline` blocks come out the same colour, see [the second shade](#the-second-shade) | `>` |
 | subagent panel row | robot | `@` |
 
 Two things follow from ASCII being the promise rather than "no Nerd Font". Everything the script
@@ -101,15 +101,21 @@ of them the table below says so and why. Two of the rules are not contrast ratio
 straight-line distances in sRGB, because a ratio cannot answer the question they ask — see the note
 under the table.
 
+Every rule below runs over **every shade a line can paint**, which since the second shade (below) means
+the seven role backgrounds *and* the alternates — ten colours in the dark table, eleven in the light
+one. An alternate is measured exactly as a base is, and several of the worst figures in the table are
+now an alternate's.
+
 | Rule | Bar | Light table | Dark table |
 |---|---|---|---|
-| A plain-style colour against the terminal's background | 4.5:1 on `#FFFFFF` **and** on an off-white `#F5F5F5` | worst 5.25 (`warn`) | not asserted — the plain codes are the basic sixteen, and what those look like is the terminal's to say |
-| A powerline block's own text against its own background | 4.5:1 | worst 10.40 (`folder`) | worst 4.70 (`ok`); `model` is 4.13 and exempt by name, older than the rule |
-| A block's background against the terminal's background — the trailing arrow paints it as a *foreground*, and every block edge is that boundary | 1.7:1 | worst 1.75 (`bad`) | worst 2.01 (`dim`) against Campbell |
-| The arrow *between* two blocks — one block's background painted on the next one's | 1.10:1 in luminance and 40 apart in sRGB, over every ordered pair | 40.3 apart; the luminance half is **not** asserted, and `ok`/`warn` is 1.00 — a real gap, tracked separately | worst 1.104 and 40.0 |
-| An inline marker (`+156`, `92% cached`, `1M`, `↑2`) against the background of the block it sits in | 3:1 | worst 3.48 | worst 3.01 |
+| A plain-style colour against the terminal's background | 4.5:1 on `#FFFFFF` **and** on an off-white `#F5F5F5` | worst 5.25 (`warn`) | the seven base codes are the basic sixteen and are not asserted — what those look like is the terminal's to say. The four **alternate** codes are 256-colour indices and are held to it: worst 6.48 (`bad` alt on `#002B36`) |
+| A powerline block's own text against its own background | 4.5:1 | worst 9.07 (`bad` alt) | worst 4.70 (`ok`); `model` is 4.13 and exempt by name, older than the rule |
+| A block's background against the terminal's background — the trailing arrow paints it as a *foreground*, and every block edge is that boundary | 1.7:1 | worst 1.74 (`ok` alt) | worst 2.01 (`dim`) against Campbell |
+| The arrow *between* two blocks — one block's background painted on the next one's | 1.10:1 in luminance and 40 apart in sRGB, over every pair that can meet | 40.0 apart (`warn`/`warn` alt); the luminance half is **not** asserted, and `ok`/`warn` is 1.00 — a real gap, tracked separately | worst 1.104 and 40.0 |
+| An inline marker (`+156`, `92% cached`, `1M`, `↑2`) against the background of the block it sits in | 3:1 | worst 3.04 (`muted` in `bad` alt) | worst 3.01 |
 | The same marker against that block's **own text**, which it sits beside | 85 apart in sRGB | worst 95.0 | worst 89.6 |
 | An inline marker on the terminal's background in plain style | 4.5:1, on the two grounds each palette has: `#FFFFFF` and `#F5F5F5` for light, Campbell `#0C0C0C` and Solarized Dark `#002B36` for dark | worst 6.45 (`muted`) | worst 4.95 — `track` and `cached` are both 246; the other three markers are hues on the basic sixteen and are not asserted |
+| An alternate shade against the base it alternates with | within 20° of hue, on top of every rule above | 18° at worst (`warn`'s plain code, an amber to a darker olive-amber) | 8° at worst (`warn`'s block) |
 
 **Why two of those bars are distances and not ratios.** An inline marker sits inside a block, so it has
 two neighbours: the block's background behind it, and the block's own text beside it. On a dark block
@@ -157,6 +163,91 @@ table is for.
 To check a value by hand: the indices 16–231 are a 6×6×6 cube on the levels 0, 95, 135, 175, 215, 255
 (so index `24` is `16 + 0×36 + 1×6 + 2`, giving `#005F87`), and 232–255 are a grey ramp at `8 + 10n`.
 Put the hex into any contrast checker against `#FFFFFF`.
+
+## The second shade
+
+Seven distinct role colours are still one colour where the **layout** puts two segments of the same
+role side by side, and the shipped two-line layout does exactly that. Its second row is context, cache,
+limits, cost, clock, lines: while nothing is warning the first three are all `ok` and the last three
+are all `dim`. A powerline arrow is the left block's background painted on the right block's, so
+between two blocks of one background there is nothing to see — three green segments read as one band
+and then three grey ones as another. In `plain` the same segments share one foreground code with only
+the chevron between them.
+
+Neither half of the problem can see the other. The contrast rules above measure every pair of *roles*
+and cannot know that two adjacent *segments* carry the same one; the layout does not know the colours.
+So the four roles a value moves between carry a **second shade** — a background one step along for
+`powerline`, a second code for `plain` and `ascii` — and a block whose immediate neighbour on the line
+carries the same role is drawn in it. A run of three reads base, alternate, base.
+
+| Role | `dark` block | `dark` plain | `light` block | `light` plain |
+|---|---|---|---|---|
+| `ok` | 28 → **22** | `32` → **`38;5;114`** | 77 → **114** | `38;5;22` → none |
+| `warn` | 178 → **214** | `33` → **`38;5;221`** | 214 → **178** | `38;5;94` → **`38;5;58`** |
+| `bad` | 160 → **124** | `31` → **`38;5;210`** | 217 → **210** | `38;5;124` → **`38;5;88`** |
+| `dim` | 238 → none | `90` → **`38;5;251`** | 250 → **144** | `38;5;240` → **`38;5;237`** |
+
+**Which segments this reaches.** `ok`, `warn` and `bad` are the roles of context, cache, limits and the
+pull request — whichever of them the thresholds put a segment in — and `dim` is cost, clock, time,
+lines and badges. `model`, `folder` and `branch` have no second shade because each is the role of
+exactly one segment, so no line can put two of them side by side.
+
+**The shade moves the background, never the block's text.** A segment's text is built before there is
+a line, so the inline markers inside it were already chosen by the role's ink and already close their
+runs by handing that role's own foreground back; a second foreground would have to be threaded back
+into finished text. What holds instead is that every marker clears its floors against the second
+background too, which is where several of the worst figures in the table above come from. In `plain`
+the segment's own code *is* the thing that changes, so the hand-backs inside its text move with it —
+otherwise the words after the first marker would revert to the base code and the segment would be two
+colours.
+
+**Where a joint has no second shade, it gets a divider.** Two neighbouring blocks that still come out
+the same colour are drawn with the thin powerline separator in the block's own ink instead of an arrow
+of one colour on itself. The rule is on the rendered backgrounds rather than on the roles, so it covers
+a role with no alternate, a role no layout was expected to repeat, and any future pair that comes out
+the same for a reason nobody has thought of. In `plain` there is nothing to fall back to: the chevron
+was already between the two segments and it stays.
+
+**Two gaps, both measured rather than chosen.** Every alternate above had to clear every rule in the
+table, and two of the twelve cells could not be filled by any colour in the 256-colour cube:
+
+- **`dark` `dim` has no second background.** Its block is a grey wedged between its own light text at
+  250 above and the terminal's ground below, which leaves a band of roughly 0.041 to 0.073 in relative
+  luminance — and no *neutral* colour in the cube sits inside it while staying 40 sRGB from `#444444`.
+  The only colour that clears every floor there is `#5F0087`, a purple, which is not a shade of grey.
+  So the dark grey run — cost, clock, lines — is the case the divider carries.
+- **`light` `ok` has no second plain code.** The mirror image: every green in the cube 40 sRGB away
+  from `#005F00` is too light to hold 4.5:1 on a white ground. That pair keeps the chevron.
+
+Both searches are run in `test.ps1` over the whole cube rather than asserted as comments, so loosening
+a floor makes the colour that has become available show up as a failure.
+
+**`light` `dim`'s alternate is a warm grey, `#AFAF87`, and not a neutral one** for the same reason as
+the first gap, seen from the light side: the markers drawn inside those segments are dark, so the block
+cannot go far down without falling under the 3:1 marker bar, and every neutral grey close enough to
+`#BCBCBC` in luminance is under the 40 sRGB the joint needs. What the test pins is that it is the
+*least coloured* shade the floors leave, so "a warm grey" is the best available answer rather than a
+preference.
+
+**The plain alternates are 256-colour indices in both tables**, even though the dark table's seven base
+codes are the basic sixteen. A colour chosen now has no reason to be a theme's own green, and one
+concrete reason not to be: Solarized Dark maps the bright half of the sixteen onto greys, so `32`
+beside `92` there would be a green beside a grey rather than a green beside a lighter green. The `dim`
+alternate `251` is also 86.6 sRGB from the `246` the markers inside those same segments are drawn in,
+which is [#111](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/111)'s constraint
+honoured in advance; `dim`'s base code `90` is untouched, and #111 is still open.
+
+**Every layout is walked.** `test.ps1` builds every sample through the real segment builders, lays them
+out with both layouts *and* all three presets, renders each row in both palettes and all three styles,
+and then reads the joints back out of the rendered line and holds each to the floor above. A segment
+can be absent — no cache block, no lines, no pull request — so which segments end up next to each other
+is decided from the records actually on the line rather than from the registry, and the walk covers the
+lines a payload really produces. The render matrix does the same to the output of the script itself, at
+every width, which brings in the neighbours that only appear once fitting has dropped a segment.
+
+**The agent panel is unaffected.** It draws one row per agent with nothing joined to anything, so there
+is no joint to part; it carries the same colour table because a drift gate compares the two copies as
+text.
 
 **Letting the installer decide.** `.\install.ps1 -DetectTheme` reads Windows Terminal's
 `settings.json`, follows `defaultProfile` to a profile, that profile's `colorScheme` to a scheme, and
