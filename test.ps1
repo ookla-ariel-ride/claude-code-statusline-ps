@@ -197,6 +197,7 @@ function Measure-VisibleWidth([string] $Text) {
 # including the ones that spend the deadline on purpose - reads the shipped 250 ms, and the checks
 # below that state what the variable does set it themselves and put it back.
 $childConfigTimeoutMs = '30000'
+$script:matrixChildConfigTimeout = $false
 
 # Runs a script file in a child pwsh with $Payload on stdin, and collects stdout as Lines and stderr as Err.
 function Invoke-ChildPwsh([string] $File, [string[]] $Arguments, [string] $Payload, [bool] $RaiseConfigTimeout = $false) {
