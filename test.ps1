@@ -2262,7 +2262,7 @@ Confirm-Equal $neg.five_hour_percentage 23.5 'state read: the five-hour gauge re
 Confirm-Equal @($neg.history).Count 1 'state read: a ring entry with a negative cost is dropped'
 Confirm-Equal $neg.history[0].cost_usd 0.5 'state read: and the honest entry is kept'
 # The pace arrow is where a negative five-hour figure would land, and it refuses one already.
-Confirm-Equal (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) (-3)) $null 'pace arrow: a negative percentage draws no arrow'
+Confirm-Equal (Get-PaceArrow ((Get-StatusClock).ToUnixTimeSeconds() + 9000) (-3)) $null 'pace arrow: a negative percentage draws no arrow'
 
 # The file name is the id itself when it is clean and at most 64 characters, as a UUID is. An id that had
 # characters stripped, or was longer than that, gets a hash of the whole id as a suffix, so two ids that
@@ -3652,10 +3652,9 @@ Confirm-True ($null -eq (Get-CacheSecondsLeft 0 $cacheClock)) 'cache seconds: an
 Confirm-True ($null -eq (Get-CacheSecondsLeft (-600) $cacheClock)) 'cache seconds: a negative epoch is refused rather than called expired'
 Confirm-True ($null -eq (Get-CacheSecondsLeft 4102444800 $cacheClock)) 'cache seconds: a far-future epoch is refused rather than clamped to the ceiling'
 # The default clock, which is the only path the script itself takes, so the pinned parameter above
-# cannot become the only thing under test. Real time moves forward between the epoch being built here
-# and the function reading its own clock, which only lowers the answer, so each case sits clear of its
-# boundary on the side that drift carries it towards.
-$cacheReal = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+# cannot become the only thing under test. Extracted functions share the typed reading set above, so
+# these epochs are built against that same default and each case still exercises the omitted parameter.
+$cacheReal = (Get-StatusClock).ToUnixTimeSeconds()
 Confirm-True ((Get-CacheSecondsLeft ($cacheReal + 600)) -in 590..600) 'cache seconds on the default clock: ten minutes out'
 Confirm-True ((Get-CacheSecondsLeft ($cacheReal - 100)) -le -100) 'cache seconds on the default clock: a hundred seconds past'
 Confirm-True ($null -eq (Get-CacheSecondsLeft 4102444800)) 'cache seconds on the default clock: the 2100 epoch is refused'
@@ -3705,21 +3704,18 @@ Confirm-Equal (Get-CacheRole 301) 'ok' 'cache role: a second past five minutes i
 
 # A prompt_cache payload built through ConvertFrom-Json, so `warm` is a real JSON boolean and `requests`
 # arrives as an Int64 the way a payload sends it. <AT> is replaced with an epoch $In seconds from the
-# clock read at the moment of the call, so the gap between building the payload and the builder reading
-# its own clock is a fraction of a second however long this section has been running.
+# clock reading used by the lifted builders, so this payload and its builder share the default value
+# no matter how long the rest of the suite has been running.
 function Get-PromptCachePayload([string] $Json, [int] $In = 0) {
-    $at = [string] ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + $In)
+    $at = [string] ((Get-StatusClock).ToUnixTimeSeconds() + $In)
     return Get-JsonPayload 'prompt_cache' ($Json -replace '<AT>', $at)
 }
 # EVERY OFFSET HERE IS MID-MINUTE, AND THAT IS THE POINT. These cases go through Get-CacheSegment,
-# which calls Get-CacheSecondsLeft on the default clock, so the payload's expiry is built against one
-# reading and measured against another. An offset sitting exactly on a minute - 300, 360, 120 - renders
-# `5m`, `6m`, `2m` when no second ticks in between and `4m`, `5m`, `1m` when one does, which is a test
-# that FAILS CORRECT CODE roughly whenever the run is unlucky. The fix is not a tolerance: it is to put
-# every case half a minute away from the edge, where a second of drift cannot change the floor, and to
-# pin the two real boundaries - the five-minute line and the under-a-minute line - where no clock is
-# involved at all: Get-CacheRole and Format-MinutesLeft above, both pure functions of whole seconds.
-# What is left here is the wiring, tested the way production runs it, on the real clock.
+# which calls Get-CacheSecondsLeft on the default clock. The payload and builder share the one lifted
+# reading, and offsets sitting exactly on a minute - 300, 360, 120 - would otherwise make a timing
+# boundary look like a formatting result. The two real boundaries remain pinned above in Get-CacheRole
+# and Format-MinutesLeft, both pure functions of whole seconds. What is left here is the omitted-$Now
+# wiring; the child-render group covers the production clock separately.
 $cacheTable = @(
     @{ Label = 'forty-two minutes left'; Json = '{"warm":true,"expires_at":<AT>}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
     @{ Label = 'two hours five minutes left'; Json = '{"warm":true,"expires_at":<AT>}'; In = 7530; Text = 'cache 2h05m'; Short = '2h05m'; Role = 'ok' }
@@ -4419,20 +4415,19 @@ foreach ($paceRow in $noPaceTable) {
     Confirm-True ($null -eq (Get-PaceArrow $paceRow.Reset $paceRow.Used $paceClock)) "pace: $($paceRow.Label) gives no arrow"
 }
 # The default clock, which is the only path the script itself ever takes, so the parameter above cannot
-# become the only thing under test. Real time moves on between the epoch being built here and
-# Get-PaceArrow reading it, always forward, which only raises the elapsed fraction and only lowers the
-# projection. Every case below therefore sits clear of its threshold on the side drift carries it
-# towards, well outside a second's worth of movement. The boundaries themselves are pinned above.
-$pace = Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) 80
+# become the only thing under test. The extracted builders share the typed reading set above, and these
+# epochs are built from it so each case exercises the omitted parameter without depending on suite time.
+# The boundaries themselves are pinned above.
+$pace = Get-PaceArrow ((Get-StatusClock).ToUnixTimeSeconds() + 9000) 80
 Confirm-Equal $pace.Arrow $paceUp 'pace on the default clock: half a window gone at 80% points up'
 Confirm-Equal $pace.Red $true 'pace on the default clock: 160% projected is red'
 Confirm-Equal $pace.Over $true 'pace on the default clock: 160% projected is an overrun'
-$pace = Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) 40
+$pace = Get-PaceArrow ((Get-StatusClock).ToUnixTimeSeconds() + 9000) 40
 Confirm-Equal $pace.Arrow $paceFlat 'pace on the default clock: half a window gone at 40% holds'
 Confirm-Equal $pace.Red $false 'pace on the default clock: 80% projected is not red'
 Confirm-Equal $pace.Over $false 'pace on the default clock: 80% projected is not an overrun'
-Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 100) 80)) 'pace on the default clock: a reset already past gives no arrow'
-Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 16400) 90)) 'pace on the default clock: the first half hour gives no arrow'
+Confirm-True ($null -eq (Get-PaceArrow ((Get-StatusClock).ToUnixTimeSeconds() - 100) 80)) 'pace on the default clock: a reset already past gives no arrow'
+Confirm-True ($null -eq (Get-PaceArrow ((Get-StatusClock).ToUnixTimeSeconds() + 16400) 90)) 'pace on the default clock: the first half hour gives no arrow'
 Confirm-True ($null -eq (Get-PaceArrow 4102444800 80)) 'pace on the default clock: a far-future reset gives no arrow'
 
 Write-Host '== unit: TimeLeft' -ForegroundColor Cyan
@@ -4548,7 +4543,7 @@ Confirm-True ($null -eq $seg.Short) 'limits 7d alone: short would equal text, so
 # 200 days out rather than sample 06's fixed 2100 epoch: since #44 capped TimeLeft's countdown at a
 # year, a reset built from the live clock is what keeps this a "definitely still live, definitely
 # still countable" case rather than one the cap now empties out from under it.
-$liveReset = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + (200 * 86400)
+$liveReset = (Get-StatusClock).ToUnixTimeSeconds() + (200 * 86400)
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":70,"resets_at":' + $liveReset + '},"seven_day":{"used_percentage":12,"resets_at":' + $liveReset + '}}')) $bandCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 70% (") -and $seg.Text.EndsWith(') 7d 12%')) 'limits 5h worst with a live reset: text carries the countdown'
 Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits 5h worst with a live reset: short drops the countdown'
@@ -4613,7 +4608,7 @@ Confirm-Equal (Get-LimitsSegment $limits5h15 $quietRoleAlarm) $null 'limits quie
 # Get-PaceArrow without a clock parameter. A tenth of the window gone (16200 seconds left) makes the
 # projection ten times the current figure; real time only moves the reading further into the window,
 # which lowers the projection, so each case sits far clear of the limit it is on the safe side of.
-$paceNow = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+$paceNow = (Get-StatusClock).ToUnixTimeSeconds()
 function Get-PaceLimitsPayload([double] $Used, [long] $Left) {
     return Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":' + ([string]::Format([cultureinfo]::InvariantCulture, '{0}', $Used)) + ',"resets_at":' + ($paceNow + $Left) + '}}')
 }
@@ -4720,38 +4715,38 @@ Confirm-Equal $seg.Short "$iconLimit 5h 10%" 'limits 10 and 15 at 20/40: short i
 # that has not opened.
 $paceCfg = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Style = 'plain' }
 $pacePlCfg = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Style = 'powerline' }
-$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$paceLive = (Get-StatusClock).ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":40,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $paceCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 40% $paceFlat (") -and $seg.Text.EndsWith(') 7d 12%')) 'limits on pace: the right arrow sits after the figure and before the countdown'
 Confirm-Equal $seg.Short "$iconLimit 5h 40%" 'limits on pace: the short form drops the arrow with the countdown'
 Confirm-Equal $seg.Role 'ok' 'limits on pace: the arrow does not touch the role'
 
-$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$paceLive = (Get-StatusClock).ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":55,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $paceCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 55% $paceUp (")) 'limits overrunning under 120: a plain up arrow, no colour'
 Confirm-Equal $seg.Role 'ok' 'limits overrunning under 120: the role is still the worse of the figures'
 
 # At 80% with half the window gone the projection is 160, so the arrow goes through the removed inline
 # role and restores the segment's own foreground - the warn one here, which the 80 earns on its own.
-$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$paceLive = (Get-StatusClock).ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":80,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $paceCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'plain') (")) 'limits well over pace: the up arrow takes the removed role and hands the warn colour back'
 Confirm-Equal $seg.Role 'warn' 'limits well over pace: the role is the worse figure, not the projection'
 Confirm-Equal $seg.Short "$iconLimit 5h 80%" 'limits well over pace: the short form keeps the figure without the arrow'
 
-$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$paceLive = (Get-StatusClock).ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":80,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $pacePlCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'powerline') (")) 'limits well over pace in powerline: the removed-role arrow restores the segment foreground'
 
 # The 7-day figure never gets an arrow, whatever its reset says: one payload cannot pace a week.
-$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$paceLive = (Get-StatusClock).ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"seven_day":{"used_percentage":80,"resets_at":' + $paceLive + '},"spend_limit":{"used_percentage":80,"resets_at":' + $paceLive + '}}')) $paceCfg
 Confirm-Equal $seg.Text "$iconLimit 7d 80% `$ 80%" 'limits without a 5h figure: no arrow on the 7d or the spend figure'
 
 # A reset under a minute out leaves TimeLeft empty, so the arrow is the only thing the Text has that the
 # Short form does not. Fifty seconds is far enough from both ends - past the reset, or past the minute
 # TimeLeft needs - that no plausible drift moves the answer.
-$paceEnd = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 50
+$paceEnd = (Get-StatusClock).ToUnixTimeSeconds() + 50
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":55,"resets_at":' + $paceEnd + '}}')) $paceCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 55% $paceFlat" 'limits at the end of a window: the arrow with no countdown behind it'
 Confirm-Equal $seg.Short "$iconLimit 5h 55%" 'limits at the end of a window: a short form exists purely to drop the arrow'
