@@ -10330,13 +10330,14 @@ $text = ConvertTo-PlainText ($r.Lines -join "`n")
 Confirm-True ($text.Contains('dir my-project')) 'ascii layout two: the first row carries the folder segment'
 Confirm-True ($text.Contains('ctx 32%')) 'ascii layout two: the second row carries the context meter'
 
-# Both fallback lines under ascii: the model stand-in is empty, so each is the bare word. This is the
-# pair #42 left the raw cyan on, and it is still raw cyan - the ascii style changes what is drawn, not
-# what colour it is drawn in - so the escape codes are pinned here as well as the text.
+# Both fallback lines under ascii: the model stand-in is empty, so each is the bare word. Its colour
+# is resolved exactly as a model segment would be under the active tint; ascii changes the text glyphs,
+# not that resolved code, so the fallback keeps the same model colour contract as a normal segment.
 $r = Invoke-StatusLine 'not json' $asciiPath 0
 Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'ascii bad payload: exit code 0, stderr empty'
 Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) 'claude' 'ascii bad payload: the fallback is the bare word, with no space in front of it'
-Confirm-Equal (($r.Lines -join "`n") -replace $esc, '<ESC>') '<ESC>[36mclaude<ESC>[0m' 'ascii bad payload: the fallback keeps its cyan'
+$asciiStandInSgr = (Get-TintColour (Get-Palette 'dark') 'model' 'model' 'role' 'dark').Sgr
+Confirm-Equal (($r.Lines -join "`n") -replace $esc, '<ESC>') ('<ESC>[' + $asciiStandInSgr + 'mclaude<ESC>[0m') 'ascii bad payload: the fallback follows the resolved model code'
 $r = Invoke-StatusLine '{ }' $asciiPath 0
 Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'ascii zero segments: exit code 0, stderr empty'
 Confirm-Equal (ConvertTo-PlainText ($r.Lines -join "`n")) 'claude' 'ascii zero segments: the stand-in line is the bare word too'
@@ -11106,12 +11107,15 @@ $r = Invoke-StatusLine 'not json' $lightConfig 0
 Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render light bad payload: exit code 0, stderr empty'
 Confirm-True (($r.Lines -join "`n").Contains("$esc[$($palLight.Roles.model.Sgr)m")) 'render light bad payload: role tint follows the palette'
 Confirm-Equal ((Invoke-StatusLine 'not json' $darkConfig 0).Lines -join "`n") ((Invoke-StatusLine 'not json' $plainConfig 0).Lines -join "`n") 'render dark bad payload: role tint is the default render'
-Confirm-True (((Invoke-StatusLine 'not json' $plainConfig 0).Lines -join "`n").Contains("$esc[1;36m")) 'render dark bad payload: role tint uses the model role code'
+$darkRoleStandInSgr = (Get-TintColour (Get-Palette 'dark') 'model' 'model' 'role' 'dark').Sgr
+Confirm-True (((Invoke-StatusLine 'not json' $plainConfig 0).Lines -join "`n").Contains("$esc[${darkRoleStandInSgr}m")) 'render dark bad payload: role tint follows the resolved model code'
 foreach ($standinPalette in @('dark', 'light')) {
-    $standinConfig = Write-TempConfig "render-tint-$standinPalette-standin.json" ('{ "palette": "' + $standinPalette + '", "tint": "segment" }')
-    $standin = Invoke-StatusLine 'not json' $standinConfig 0
-    $want = (Get-SegmentPalette $standinPalette).model.Sgr
-    Confirm-True (($standin.Lines -join "`n").Contains("$esc[$want`m")) "render $standinPalette segment tint bad payload: the stand-in restores the model segment colour"
+    foreach ($standinTint in @('role', 'segment')) {
+        $standinConfig = Write-TempConfig "render-tint-$standinPalette-$standinTint-standin.json" ('{ "palette": "' + $standinPalette + '", "tint": "' + $standinTint + '" }')
+        $standin = Invoke-StatusLine 'not json' $standinConfig 0
+        $want = (Get-TintColour (Get-Palette $standinPalette) 'model' 'model' $standinTint $standinPalette).Sgr
+        Confirm-True (($standin.Lines -join "`n").Contains("$esc[${want}m")) "render $standinPalette $standinTint tint bad payload: the stand-in follows the resolved model code"
+    }
 }
 
 Write-Host ''
