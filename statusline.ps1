@@ -1490,6 +1490,37 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
 # and muted is the model's own colour at normal intensity, which is why its code opens with 22 in both.
 # The two tables' `Dark` columns are the same five numbers, and deliberately so - a dark marker on a
 # light block is the same problem in both palettes, so it has the same answer.
+#
+# THE MARKERS' PLAIN CODES, AND WHY ONLY TWO OF THEM MOVED (#88). Everything above is about a marker
+# inside a block. In plain style there is no block: the marker is drawn on the terminal's own ground,
+# so the only bar that means anything is the ratio against that ground - rule 1's bar, 4.5:1 - and the
+# only colours that can be held to it are the ones this table can name a hex for. `track` and `cached`
+# were `90`, bright black, which is not a colour this table knows: it is whatever the scheme says, and
+# on Solarized Dark that is #586E75 on a #002B36 ground, 2.79:1. The `92% cached` suffix and the
+# `+3 ~1 ?2` branch counts were under even the 3:1 in-block bar on the shipped default style. Both are
+# 246 (#949494) now: the LOWEST index on the grey ramp that clears 4.5 on Campbell (6.45) and on
+# Solarized Dark (4.95) alike, chosen low on purpose so the line moves as little as it can while still
+# being a colour that can be promised. Both tables' plain marker codes are asserted in test.ps1 now.
+# `added` 32, `removed` 31 and `muted` 22;36 STAY on the basic sixteen, and so do all seven of the
+# dark ROLES, including `dim` 90 - the chevron. Those are hues rather than greys and they are the
+# line's own text rather than a marker beside it, so replacing them is a redesign of what a dark plain
+# line looks like, not a repair; a scheme's own green is also better tuned to that scheme's ground
+# than one index picked here. That larger change is deliberately not folded in here. `dim` 90 is the
+# piece of it with a number: 2.79:1 on Solarized Dark, the same figure the two markers had, tracked as
+# #111. It is not simply the markers' answer applied again - a quiet grey close enough to 246 to be
+# readable is within a few sRGB steps of the markers drawn inside those same segments, which is rule
+# 4b's problem over again, so `dim` and the marker grey have to be chosen as a pair.
+#
+# WHAT 246 COSTS, ON THE ONE CONFIGURATION IT IS NOT FOR. `dark` is the default, so a reader on a LIGHT
+# terminal who never set `palette` gets this table anyway, and there 246 is a fixed 3.03:1 on white and
+# 2.81:1 on Solarized Light's #FDF6E3. `90` on that reader's screen was not better so much as unknown:
+# a scheme drawing brightBlack #767676 gave 4.54:1 on white, one drawing #93A1A1 gave 2.48:1 - the
+# same coin toss this whole table exists to stop, landing the other way up. So the change trades a
+# figure nobody could state for one anybody can, and the honest reading is that a dark table on a light
+# ground is out of contrast either way. THE REMEDY IS THE PALETTE KEY, not a compromise colour that
+# clears neither ground: `"palette": "light"`, or `install.ps1 -DetectTheme`, which reads Windows
+# Terminal's background and writes the key. Every bar in this note is measured against the ground its
+# own table is for, and a table measured against both would be a table that reads well on neither.
 function Get-Palette([string] $Palette = 'dark') {
     if ($Palette -eq 'light') {
         return @{
@@ -1522,11 +1553,11 @@ function Get-Palette([string] $Palette = 'dark') {
             branch = @{ Sgr = '35';   Fg = 231; Bg = 90;  Ink = 'Light' }
         }
         Inline = @{
-            added   = @{ Sgr = '32';    Light = 46;  Dark = 22 }
-            removed = @{ Sgr = '31';    Light = 222; Dark = 124 }
-            track   = @{ Sgr = '90';    Light = 123; Dark = 240 }
-            muted   = @{ Sgr = '22;36'; Light = 87;  Dark = 24 }
-            cached  = @{ Sgr = '90';    Light = 86;  Dark = 238 }
+            added   = @{ Sgr = '32';        Light = 46;  Dark = 22 }
+            removed = @{ Sgr = '31';        Light = 222; Dark = 124 }
+            track   = @{ Sgr = '38;5;246';  Light = 123; Dark = 240 }
+            muted   = @{ Sgr = '22;36';     Light = 87;  Dark = 24 }
+            cached  = @{ Sgr = '38;5;246';  Light = 86;  Dark = 238 }
         }
     }
 }

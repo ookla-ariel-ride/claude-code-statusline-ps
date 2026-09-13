@@ -2540,8 +2540,16 @@ Confirm-Equal $pal.Roles.warn.Sgr '33' 'palette warn sgr'
 Confirm-Equal $pal.Roles.warn.Fg 16 'palette warn fg'
 Confirm-Equal $pal.Roles.branch.Bg 90 'palette branch bg'
 Confirm-Equal $pal.Inline.added.Light 46 'palette inline added fg on a light-inked block'
-Confirm-Equal $pal.Inline.cached.Sgr '90' 'palette inline cached sgr'
+Confirm-Equal $pal.Inline.cached.Sgr '38;5;246' 'palette inline cached sgr'
+Confirm-Equal $pal.Inline.track.Sgr '38;5;246' 'palette inline track sgr'
 Confirm-Equal $pal.Inline.cached.Light 86 'palette inline cached fg on a light-inked block'
+# THE ONE DARK PLAIN MARKER CODE, read from the table once instead of retyped into the sixteen
+# rendered-byte assertions further down. The two literals above are what pin it to a value - that is
+# the assertion a palette change has to answer to - and this is what stops the same string being spelled
+# out sixteen more times, where a missed site would fail as a mystery rather than as "the palette moved".
+# The two markers being ONE colour is itself asserted, because the interpolation below assumes it.
+Confirm-Equal $pal.Inline.track.Sgr $pal.Inline.cached.Sgr 'palette: the two dark plain markers are one colour'
+$darkMarkSgr = $pal.Inline.track.Sgr
 # One palette table as a single sorted string, so two tables compare as text whatever order a
 # hashtable happens to enumerate its keys in.
 function Format-PaletteText($Palette) {
@@ -2609,8 +2617,11 @@ function Get-RgbDistance($A, $B) {
     return [math]::Sqrt([math]::Pow($A[0] - $B[0], 2) + [math]::Pow($A[1] - $B[1], 2) + [math]::Pow($A[2] - $B[2], 2))
 }
 # The colour index an SGR run ends in, for the plain-style codes: '38;5;24' is index 24, and so is
-# '1;38;5;24' and '22;38;5;24', where the leading number is a weight rather than a colour. $null for
-# a code that names no 256-colour index, which is every code in the dark table.
+# '1;38;5;24' and '22;38;5;24', where the leading number is a weight rather than a colour. $null for a
+# code that names no 256-colour index - every plain code in the light table names one, and in the dark
+# table only the two markers #88 moved do: the seven roles and the other three markers are still the
+# basic sixteen, which have no fixed hex to measure. A $null is what puts a colour outside every bar
+# below, so the set that returns one is pinned rather than merely observed.
 function Get-SgrColourIndex([string] $Sgr) {
     if ($Sgr -match '38;5;(\d+)$') { return [int] $Matches[1] }
     return $null
@@ -2669,28 +2680,60 @@ Confirm-Equal ((@(foreach ($r in $roleNames) { $dark.Roles[$r].Bg }) | Sort-Obje
 # arrow between them is never a colour painted on itself.
 Confirm-Equal ((@(foreach ($r in $roleNames) { $light.Roles[$r].Bg }) | Sort-Object -Unique).Count) 7 'light palette: seven distinct block backgrounds'
 
-# THE FOUR CONTRAST RULES. The grounds are the two a light terminal actually has: pure white, and the
-# off-white a great many light themes use. Ratios are printed as well as asserted, so a reader can see
-# the margin rather than only that a bar was cleared.
+# THE FOUR CONTRAST RULES. Ratios are printed as well as asserted, so a reader can see the margin
+# rather than only that a bar was cleared.
+#
+# THE GROUNDS, all four in one place. Rule 1 is the only rule that measures against a terminal's own
+# background, and since #88 it runs over both palettes, so each palette needs the two grounds ITS
+# terminal has: for light, pure white and the off-white a great many light themes use; for dark,
+# Campbell - Windows Terminal's default - and Solarized Dark. The Solarized ground is the LIGHTER of
+# the two dark ones and therefore the harder one, and it is the scheme #88 was found on, so the dark
+# bar is set by the case that failed rather than by the case that happened to pass.
 $groundWhite = @(255, 255, 255)
 $groundPale = @(245, 245, 245)
-$groundBlack = @(12, 12, 12)   # Campbell, Windows Terminal's default scheme
-# 1. Plain style. The role's own foreground is drawn straight onto the terminal's background, so it
-#    carries the whole readability of the line. 4.5:1 is the WCAG AA bar for body text.
-$worst = 99.0
-foreach ($r in $roleNames) {
-    $idx = Get-SgrColourIndex $light.Roles[$r].Sgr
-    Confirm-True ($null -ne $idx) "light palette: role $r names a 256-colour index, not one of the 16 the terminal picks"
-    if ($null -eq $idx) { continue }
-    $rgb = Get-XtermRgb $idx
-    $w = Get-ContrastRatio $rgb $groundWhite
-    $p = Get-ContrastRatio $rgb $groundPale
-    if ($w -lt $worst) { $worst = $w }
-    if ($p -lt $worst) { $worst = $p }
-    Confirm-True ($w -ge 4.5) ("light plain ${r}: colour $idx on white is {0:N2}:1" -f $w)
-    Confirm-True ($p -ge 4.5) ("light plain ${r}: colour $idx on #F5F5F5 is {0:N2}:1" -f $p)
+$groundBlack = @(12, 12, 12)      # Campbell, Windows Terminal's default scheme
+$groundSolarized = @(0, 43, 54)   # Solarized Dark's background, #002B36
+$plainGrounds = @{
+    light = @(@{ N = 'white';   Rgb = $groundWhite }, @{ N = '#F5F5F5'; Rgb = $groundPale })
+    dark  = @(@{ N = '#0C0C0C'; Rgb = $groundBlack }, @{ N = '#002B36'; Rgb = $groundSolarized })
 }
-Write-Host ("   light plain: worst foreground contrast {0:N2}:1" -f $worst)
+# 1. PLAIN STYLE, WHICH IS ONE RULE OVER THREE SETS OF COLOURS. Anything drawn in plain style is drawn
+#    straight onto the terminal's own background, so it carries the whole readability of the line:
+#    the light table's seven role foregrounds, the light table's five inline markers, and - since #88 -
+#    the dark table's two measurable markers. 4.5:1 is the WCAG AA bar for body text, and it is the
+#    same bar for a marker as for a role here: in plain style there is no block, so a marker has no
+#    second neighbour for rule 4b to measure it against and the ground is the whole of the question.
+#    Each set is held to BOTH of its palette's grounds. One loop rather than three, because three
+#    hand-unrolled copies of it is how the dark half came to be missing in the first place.
+#    WHAT IS NOT HERE, AND CANNOT BE. The dark table's seven plain ROLE codes and its other three
+#    markers are the basic sixteen, which have no fixed hex for Get-SgrColourIndex to return. `dim` 90
+#    is the largest piece of that - the chevron, and the cost, clock, time, lines and badges segments -
+#    and it measures the same 2.79:1 on Solarized Dark that the two markers did before #88. It is
+#    tracked as #111 rather than folded in here: a grey close enough to 246 to be readable
+#    would land within a few sRGB steps of the markers drawn INSIDE those same segments, which is
+#    rule 4b's distinctness problem over again, and the role shades are being reworked separately.
+$darkPlainMeasured = @($inlineNames | Where-Object { $null -ne (Get-SgrColourIndex $dark.Inline[$_].Sgr) } | Sort-Object)
+Confirm-Equal ($darkPlainMeasured -join ',') 'cached,track' 'dark palette: the inline markers whose plain code is a measurable 256-colour index'
+foreach ($row in @(
+        @{ P = 'light'; T = $light; Group = 'Roles';  Kind = 'role';   Names = $roleNames;         Label = 'light plain';  Require = $true }
+        @{ P = 'light'; T = $light; Group = 'Inline'; Kind = 'inline'; Names = $inlineNames;       Label = 'light inline'; Require = $true }
+        @{ P = 'dark';  T = $dark;  Group = 'Inline'; Kind = 'inline'; Names = $darkPlainMeasured; Label = 'dark inline';  Require = $false })) {
+    $worstPlain = 99.0; $worstPlainAt = 'nothing measurable'
+    foreach ($n in $row.Names) {
+        $idx = Get-SgrColourIndex $row.T[$row.Group][$n].Sgr
+        # Asserted for the two sets whose names are fixed lists; NOT for the dark row, whose names are
+        # the ones that already passed this test to get into $darkPlainMeasured. The pin above is what
+        # holds that set, and it is the assertion a marker slipping back to a basic-sixteen code fails.
+        if ($row.Require) { Confirm-True ($null -ne $idx) "$($row.P) palette: $($row.Kind) $n names a 256-colour index, not one of the 16 the terminal picks" }
+        if ($null -eq $idx) { continue }
+        foreach ($g in $plainGrounds[$row.P]) {
+            $ratio = Get-ContrastRatio (Get-XtermRgb $idx) $g.Rgb
+            if ($ratio -lt $worstPlain) { $worstPlain = $ratio; $worstPlainAt = "$n on $($g.N)" }
+            Confirm-True ($ratio -ge 4.5) ("$($row.Label) ${n}: colour $idx on $($g.N) is {0:N2}:1" -f $ratio)
+        }
+    }
+    Write-Host ("   $($row.Label) on the terminal's own ground: worst {0:N2}:1 ($worstPlainAt)" -f $worstPlain)
+}
 # 2. Powerline style. The block paints its own background, so the pair is what has to be readable and
 #    the terminal's own theme does not enter into it. BOTH tables are held to 4.5, with ONE EXEMPTION
 #    NAMED IN THE LIST BELOW rather than a lowered bar: the dark model block, 231 on 31, is 4.13 and
@@ -2784,16 +2827,10 @@ Write-Host ("   block edge against the terminal's ground: light {0:N2}:1, dark {
 #    not the pairs a reader of today's segment builders can talk themselves into: a role moving between
 #    segments must not be able to reopen this. The ink column is why the two loops below read
 #    $tab.Inline[$i][$tab.Roles[$r].Ink] rather than one fixed foreground.
-$worstInlineWhite = 99.0
-foreach ($i in $inlineNames) {
-    $idx = Get-SgrColourIndex $light.Inline[$i].Sgr
-    Confirm-True ($null -ne $idx) "light palette: inline $i names a 256-colour index"
-    if ($null -ne $idx) {
-        $w = Get-ContrastRatio (Get-XtermRgb $idx) $groundWhite
-        if ($w -lt $worstInlineWhite) { $worstInlineWhite = $w }
-        Confirm-True ($w -ge 4.5) ("light inline ${i}: colour $idx on white is {0:N2}:1" -f $w)
-    }
-}
+#    THE PLAIN HALF OF RULE 4 IS RULE 1's LOOP, NOT A THIRD COPY HERE. A marker drawn on the terminal's
+#    own ground is exactly what rule 1 measures, so both tables' plain marker codes are held to 4.5:1
+#    up there, against the two grounds each palette has - see the note over $plainGrounds. What is
+#    left below is the pair of halves that exist only inside a block.
 foreach ($p in @(@{ N = 'light'; T = $light }, @{ N = 'dark'; T = $dark })) {
     $worstBlock = 99.0; $worstBlockAt = ''; $worstInk = 9999.0; $worstInkAt = ''
     foreach ($i in $inlineNames) {
@@ -2809,7 +2846,6 @@ foreach ($p in @(@{ N = 'light'; T = $light }, @{ N = 'dark'; T = $dark })) {
     }
     Write-Host ("   $($p.N) inline: worst against a background {0:N2}:1 ($worstBlockAt), worst against block text {1:N1} ($worstInkAt)" -f $worstBlock, $worstInk)
 }
-Write-Host ("   light inline on white: worst {0:N2}:1" -f $worstInlineWhite)
 # A contrast floor is only worth having if the colour it names is the one the terminal ends up in, so
 # the ratios above are joined to the bytes here. This one exact string carries all three of the things
 # that could go wrong: the marker is the colour the RIGHT INK COLUMN names, so a block cannot be handed
@@ -3438,7 +3474,7 @@ $plain32 = "$iconCtx 32% $barCache"
 # because Confirm-Equal compares ordinally: a stray format character between the counts and the
 # suffix would slip past a culture comparison.
 $seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500) $cacheCfg
-Confirm-Equal $seg.Text "$plain32$counts32 $esc[90m92% cached$esc[32m" 'context cached 92: the whole rendered text'
+Confirm-Equal $seg.Text "$plain32$counts32 $esc[${darkMarkSgr}m92% cached$esc[32m" 'context cached 92: the whole rendered text'
 Confirm-Equal $seg.Text "$plain32$counts32 $(Format-Inline 'cached' '92% cached' 'ok' 'plain')" 'context cached 92: the suffix is the cached inline role'
 Confirm-Equal $seg.Short $plain32 'context cached 92: the suffix never reaches Short'
 Confirm-Equal $seg.Role 'ok' 'context cached 92: the suffix does not touch the role'
@@ -3447,7 +3483,7 @@ Confirm-Equal $seg.Text "$plain32$counts32 $esc[38;5;86m92% cached$esc[38;5;231m
 Confirm-Equal $seg.Short $plain32 'context cached 92 in powerline: the suffix never reaches Short'
 # The same payload as JSON: ConvertFrom-Json hands the counts over as Int64 or Double, not Int32.
 $seg = Get-ContextSegment (Get-JsonPayload 'context_window' '{"used_percentage":32,"total_input_tokens":60000,"total_output_tokens":4000,"context_window_size":200000,"current_usage":{"input_tokens":2000,"cache_creation_input_tokens":3000,"cache_read_input_tokens":57500}}') $cacheCfg
-Confirm-Equal $seg.Text "$plain32$counts32 $esc[90m92% cached$esc[32m" 'context cached 92: a payload parsed from JSON renders the same text'
+Confirm-Equal $seg.Text "$plain32$counts32 $esc[${darkMarkSgr}m92% cached$esc[32m" 'context cached 92: a payload parsed from JSON renders the same text'
 
 # The share goes through Get-WholePercent, the one rule behind every percentage this script prints,
 # so it rounds half to even like the meter beside it: 92.5 gives 92 and 97.5 gives 98.
@@ -3494,14 +3530,14 @@ foreach ($row in @(
 # These two rows sit either side of that boundary. The comment above Get-CacheShare once claimed the
 # result was in range by arithmetic and no test covered the range, which is how it shipped.
 $seg = Get-ContextSegment (Get-CachePayload 1 0 1e307) $cacheCfg
-Confirm-Equal $seg.Text "$plain32$counts32 $esc[90m100% cached$esc[32m" 'context cached: a read past the overflow boundary still divides to 100, not to the Int32 ceiling'
+Confirm-Equal $seg.Text "$plain32$counts32 $esc[${darkMarkSgr}m100% cached$esc[32m" 'context cached: a read past the overflow boundary still divides to 100, not to the Int32 ceiling'
 $seg = Get-ContextSegment (Get-CachePayload 1 0 1e306) $cacheCfg
-Confirm-Equal $seg.Text "$plain32$counts32 $esc[90m100% cached$esc[32m" 'context cached: and just under the boundary, unchanged'
+Confirm-Equal $seg.Text "$plain32$counts32 $esc[${darkMarkSgr}m100% cached$esc[32m" 'context cached: and just under the boundary, unchanged'
 
 # Short is what stage 1 of the fitting swaps in, so a segment carrying a suffix has to have one even
 # when the payload gives it no token counts at all. Without this the suffix could never be shed.
 $seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500 0) $cacheCfg
-Confirm-Equal $seg.Text "$plain32 $esc[90m92% cached$esc[32m" 'context cached with no token counts: the suffix still renders'
+Confirm-Equal $seg.Text "$plain32 $esc[${darkMarkSgr}m92% cached$esc[32m" 'context cached with no token counts: the suffix still renders'
 Confirm-Equal $seg.Short $plain32 'context cached with no token counts: there is still a Short form to shed it'
 Confirm-Equal (Get-ContextSegment (Get-CachePayload 0 0 0 0) $cacheCfg).Short $null 'context cached: no counts and no suffix leaves no Short form'
 
@@ -3523,7 +3559,7 @@ foreach ($row in @(
     foreach ($styleName in @('plain', 'powerline')) {
         $roleCfg = @{ Style = $styleName; Thresholds = $row.Bands }
         $seg = Get-ContextSegment (Get-CachePayload 2000 3000 57500) $roleCfg
-        $open = if ($styleName -eq 'plain') { "$esc[90m" } else { "$esc[38;5;$($row.Mark)m" }
+        $open = if ($styleName -eq 'plain') { "$esc[${darkMarkSgr}m" } else { "$esc[38;5;$($row.Mark)m" }
         $back = if ($styleName -eq 'plain') { "$esc[$($row.Plain)m" } else { "$esc[38;5;$($row.Fg)m" }
         $roleLabel = "context cached on a $($row.Role) meter in $styleName"
         Confirm-Equal $seg.Role $row.Role "${roleLabel}: 32% bands as $($row.Role) here"
@@ -5178,7 +5214,7 @@ Confirm-Equal $seg.Role 'warn' 'branch payload boolean: role'
 
 $seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = ('{"modified":2,"untracked":1}' | ConvertFrom-Json) } }) $branchCfg
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ~2 ?1 $iconDirty" 'branch payload modified and untracked: tilde then question mark'
-Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m~2$esc[33m $esc[90m?1$esc[33m $iconDirty" 'branch payload modified and untracked: counts dim, warn colour restored'
+Confirm-Equal $seg.Text "$iconBranch feature/x $esc[${darkMarkSgr}m~2$esc[33m $esc[${darkMarkSgr}m?1$esc[33m $iconDirty" 'branch payload modified and untracked: counts dim, warn colour restored'
 Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch payload modified and untracked: short has no counts'
 $seg = Get-BranchSegment ([pscustomobject]@{ git = @{ branch = 'feature/x'; status = 'modified' } }) $branchCfg
 Confirm-Equal $seg.Text "$iconBranch feature/x $iconDirty" 'branch payload string status: pencil only, no counts'
@@ -5323,7 +5359,7 @@ Confirm-Equal (Get-VisibleWidth $seg.Text) (Get-VisibleWidth "$iconBranch featur
 Confirm-Equal (Measure-VisibleWidth $seg.Text) (Get-VisibleWidth $seg.Text) 'branch link: the script and the test count the same width'
 Confirm-Equal $seg.Role 'branch' 'branch link: the role is untouched'
 $seg = Get-BranchSegment ('{"git":{"branch":"feature/x","status":{"modified":2}},"worktree":{"name":"wt-review"},"workspace":{"git_worktree":true,"repo":{"host":"github.com","owner":"octo","name":"demo"}}}' | ConvertFrom-Json) $branchLinkCfg
-Confirm-Equal $seg.Text "$branchLinkOpen$iconBranch feature/x $iconWorktree wt-review $esc[90m~2$esc[33m $iconDirty${linkClose}" 'branch link: the badge, the counts and the pencil are all inside the one link'
+Confirm-Equal $seg.Text "$branchLinkOpen$iconBranch feature/x $iconWorktree wt-review $esc[${darkMarkSgr}m~2$esc[33m $iconDirty${linkClose}" 'branch link: the badge, the counts and the pencil are all inside the one link'
 Confirm-Equal $seg.Short "$branchLinkOpen$iconBranch feature/x $iconDirty${linkClose}" 'branch link: the short form is the name and the pencil, linked'
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x $iconWorktree wt-review ~2 $iconDirty" 'branch link: the visible text is what it was without the link'
 $unlinkedBadge = Get-BranchSegment ('{"git":{"branch":"feature/x","status":{"modified":2}},"worktree":{"name":"wt-review"},"workspace":{"git_worktree":true}}' | ConvertFrom-Json) $branchLinkOffCfg
@@ -5363,7 +5399,7 @@ $probePayload = [pscustomobject]@{ workspace = @{ current_dir = 'x' } }
 $script:mockGitBranch = Get-BranchRecord 'feature/x' $false -Ahead 1 -Behind 2
 $seg = Get-BranchSegment $probePayload @{ Git = (Get-DefaultGitConfig) }
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ${iconAhead}1 ${iconBehind}2" 'branch counts: ahead then behind after the name'
-Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m${iconAhead}1$esc[35m $esc[90m${iconBehind}2$esc[35m" 'branch counts: arrows dim, branch colour restored (plain, no style in the cfg)'
+Confirm-Equal $seg.Text "$iconBranch feature/x $esc[${darkMarkSgr}m${iconAhead}1$esc[35m $esc[${darkMarkSgr}m${iconBehind}2$esc[35m" 'branch counts: arrows dim, branch colour restored (plain, no style in the cfg)'
 Confirm-Equal $seg.Short "$iconBranch feature/x" 'branch counts: short has no arrows'
 Confirm-Equal $seg.Role 'branch' 'branch counts: role'
 $seg = Get-BranchSegment $probePayload $branchPowerlineCfg
@@ -5381,13 +5417,13 @@ Confirm-Equal $seg.Short "$iconHome main" 'branch zero counts: short is the same
 $script:mockGitBranch = Get-BranchRecord 'feature/x' $true -Ahead 1 -Behind 1
 $seg = Get-BranchSegment $probePayload $branchCfg
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ${iconAhead}1 ${iconBehind}1 $iconDirty" 'branch dirty with counts: pencil last'
-Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m${iconAhead}1$esc[33m $esc[90m${iconBehind}1$esc[33m $iconDirty" 'branch dirty with counts: arrows restore the warn colour'
+Confirm-Equal $seg.Text "$iconBranch feature/x $esc[${darkMarkSgr}m${iconAhead}1$esc[33m $esc[${darkMarkSgr}m${iconBehind}1$esc[33m $iconDirty" 'branch dirty with counts: arrows restore the warn colour'
 Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch dirty with counts: short keeps the pencil, drops the arrows'
 Confirm-Equal $seg.Role 'warn' 'branch dirty with counts: role'
 $script:mockGitBranch = Get-BranchRecord 'feature/x' $true -Ahead 1 -Behind 2 -Staged 2 -Modified 1 -Untracked 3 -Conflicts 1
 $seg = Get-BranchSegment $probePayload $branchCfg
 Confirm-Equal (ConvertTo-PlainText $seg.Text) "$iconBranch feature/x ${iconAhead}1 ${iconBehind}2 +2 ~1 ?3 ${iconConflict}1 $iconDirty" 'branch everything: arrows, staged, modified, untracked, conflict, pencil'
-Confirm-Equal $seg.Text "$iconBranch feature/x $esc[90m${iconAhead}1$esc[33m $esc[90m${iconBehind}2$esc[33m $esc[90m+2$esc[33m $esc[90m~1$esc[33m $esc[90m?3$esc[33m $esc[31m${iconConflict}1$esc[33m $iconDirty" 'branch everything: counts dim, conflict red, warn colour restored after each'
+Confirm-Equal $seg.Text "$iconBranch feature/x $esc[${darkMarkSgr}m${iconAhead}1$esc[33m $esc[${darkMarkSgr}m${iconBehind}2$esc[33m $esc[${darkMarkSgr}m+2$esc[33m $esc[${darkMarkSgr}m~1$esc[33m $esc[${darkMarkSgr}m?3$esc[33m $esc[31m${iconConflict}1$esc[33m $iconDirty" 'branch everything: counts dim, conflict red, warn colour restored after each'
 Confirm-Equal $seg.Short "$iconBranch feature/x $iconDirty" 'branch everything: short is icon, name, pencil'
 $script:mockGitBranch = Get-BranchRecord 'main' $true -Staged 1 -Modified 2
 $seg = Get-BranchSegment $probePayload $branchCfg
@@ -6838,11 +6874,11 @@ if ($haveGit) {
     $gitCases.Add(@{ Name = 'clean';           Dir = $clean;          Has = "$iconHome main";              Not = $iconDirty; Config = $gitPatient })
     $gitCases.Add(@{ Name = 'dirty tracked';   Dir = $dirtyTracked;   Has = "$iconHome main ~1 $iconDirty";  Raw = "$esc[33m"; Config = $gitPatient })
     $gitCases.Add(@{ Name = 'dirty untracked'; Dir = $dirtyUntracked; Has = "$iconHome main ?1 $iconDirty"; Config = $gitPatient })
-    $gitCases.Add(@{ Name = 'mixed';           Dir = $mixed;          Has = "$iconHome main +1 ~1 ?1 $iconDirty"; Not = $iconConflict; Raw = "$esc[90m+1$esc[33m $esc[90m~1$esc[33m $esc[90m?1$esc[33m"; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'mixed';           Dir = $mixed;          Has = "$iconHome main +1 ~1 ?1 $iconDirty"; Not = $iconConflict; Raw = "$esc[${darkMarkSgr}m+1$esc[33m $esc[${darkMarkSgr}m~1$esc[33m $esc[${darkMarkSgr}m?1$esc[33m"; Config = $gitPatient })
     $gitCases.Add(@{ Name = 'feature';         Dir = $feature;        Has = "$iconBranch feature/x"; Config = $gitPatient })
     $gitCases.Add(@{ Name = 'unborn';          Dir = $unborn;         Has = "$iconHome main";              Not = $iconDirty; Config = $gitPatient })
     $gitCases.Add(@{ Name = 'detached';        Dir = $detached;       Has = "$iconBranch detached"; Config = $gitPatient })
-    $gitCases.Add(@{ Name = 'ahead';           Dir = $ahead;          Has = "$iconBranch topic ${iconAhead}1"; Not = $iconBehind; Raw = "$esc[90m${iconAhead}1$esc[35m"; Config = $gitPatient })
+    $gitCases.Add(@{ Name = 'ahead';           Dir = $ahead;          Has = "$iconBranch topic ${iconAhead}1"; Not = $iconBehind; Raw = "$esc[${darkMarkSgr}m${iconAhead}1$esc[35m"; Config = $gitPatient })
     $gitCases.Add(@{ Name = 'behind';          Dir = $behind;         Has = "$iconHome main ${iconBehind}1";   Not = $iconAhead; Config = $gitPatient })
 }
 $notRepo = Join-Path $tmp 'not-a-repo'; New-Item -ItemType Directory -Force $notRepo | Out-Null
@@ -9790,8 +9826,16 @@ $bogusConfig = Write-TempConfig 'render-palette-bogus.json' '{ "palette": "beige
 $plainConfig = Write-TempConfig 'render-palette-none.json' '{}'
 # Every SGR run the dark table can put on a plain line, so "none of these" is a claim about the whole
 # table rather than about the two codes the issue named.
-$darkPlainCodes = @("$esc[1;36m", "$esc[32m", "$esc[33m", "$esc[31m", "$esc[90m", "$esc[34m", "$esc[35m", "$esc[22;36m")
-foreach ($name in @('01-main-clean.json', '06-limits-badges-lines.json')) {
+$darkPlainCodes = @("$esc[1;36m", "$esc[32m", "$esc[33m", "$esc[31m", "$esc[90m", "$esc[34m", "$esc[35m", "$esc[22;36m", "$esc[38;5;246m")
+# WHICH SAMPLE REACHES THE MARKER IS NAMED, not left to whichever one happens to. 06 carries a cache
+# share and a dirty branch, so its dark plain line draws 38;5;246; 01 is clean and reaches neither, so
+# "the light line has none of the dark codes" says nothing about that code on 01. Stating the
+# expectation per sample is what turns the loop below from a claim about two samples into a claim
+# about the code: on 06 the negative is guarded by a positive, and on 01 the absence is deliberate.
+foreach ($case in @(
+        @{ Name = '01-main-clean.json'; Marker = $false }
+        @{ Name = '06-limits-badges-lines.json'; Marker = $true })) {
+    $name = $case.Name
     $p = $samplePayloads[$name]
     $rLight = Invoke-StatusLine $p $lightConfig 0
     $rDark = Invoke-StatusLine $p $darkConfig 0
@@ -9806,6 +9850,7 @@ foreach ($name in @('01-main-clean.json', '06-limits-badges-lines.json')) {
     # The dark render still carries the codes it always did, which is what makes the check above a
     # comparison rather than a claim about a sample that happens not to reach those roles.
     Confirm-True ($darkText.Contains("$esc[1;36m") -and $darkText.Contains("$esc[90m")) "render dark ${name}: the dark codes are still there"
+    Confirm-Equal ($darkText.Contains("$esc[${darkMarkSgr}m")) $case.Marker "render dark ${name}: the plain marker code $darkMarkSgr is $(if ($case.Marker) { 'on the line' } else { 'not reached by this sample' })"
     # A palette is a colour, so the visible line and its width are the same either way. That is also
     # what says the light palette cannot change what fits or what is dropped.
     Confirm-Equal (ConvertTo-PlainText $lightText) (ConvertTo-PlainText $darkText) "render light ${name}: the visible text is the same as dark"

@@ -105,7 +105,12 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   table's values are picked against contrast ratios rather than by eye — a plain foreground at 4.5:1
   on white and on off-white, a block's own pair at 4.5:1, a block's background at 1.7:1 against the
   terminal's ground so the trailing arrow and the block edges survive, and an inline marker at 3:1
-  inside any block — and `test.ps1` recomputes every one of them from the xterm cube.
+  inside any block — and `test.ps1` recomputes every one of them from the xterm cube. A bar can only
+  be applied to a colour the table can name a hex for, which is why the dark table's plain codes were
+  outside all of it: the basic sixteen are the terminal scheme's to define. The two dark plain markers
+  are 256-colour indices now and measured against Campbell and Solarized Dark; the dark plain *role*
+  colours are still the sixteen, because changing those is a redesign of the default line rather than
+  a repair.
 - **The right group is a layout, and a layout is the first thing a narrow line gives up.** `right`
   names segments that leave the packed line and sit flush against the right edge of the FIRST line;
   everything else stays where it was. `Get-FittedLine` splits the records in two, renders each group
@@ -593,12 +598,15 @@ the state sweep, stay on the real clock on purpose.
 - [x] Both config files, the git cache and the state file read under one bounded, encoding-aware reader
 - [x] Installer backups at project-owned names with their provenance checked before they are touched
 - [x] Screenshots regenerated from the shipped samples, showing every segment
+- [x] The dark plain markers on a measurable 256-colour index, and both tables' plain markers asserted
 
 ## Future work
 
 The feature backlog is done. What remains open are limits recorded under review, none of them a
-feature: plain-style `track` and `cached` markers use SGR 90, the terminal's own `brightBlack`, which
-some dark schemes draw nearly invisible (#88); six of the light palette's block-background pairs are
+feature: the dark palette's plain-style `dim` role is still SGR 90, the terminal's own bright black,
+which measures 2.79:1 on Solarized Dark and colours the chevron and five segments (#111) — #88 moved
+the two markers off it and left this deliberately, because a quiet grey near the markers' 246 would
+reopen #82's distinctness rule; six of the light palette's block-background pairs are
 isoluminant, so the arrow between them vanishes (#89); the diagnostics log can outgrow its cap while
 another render holds the rollover lock (#93); two more test families fail under parallel load rather
 than on a defect (#94), the git-cache stamp tests do the same (#102), and a parallel suite run can trip
