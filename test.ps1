@@ -6510,7 +6510,10 @@ namespace StatuslineTest {
     Write-StatusDiag ('q' * 5000)
     $diagLines = Get-DiagLine
     Confirm-Equal $diagLines.Count 1 'diag record cap: an enormous reason is still one line'
-    Confirm-Equal $diagLines[0].Split(' ', 3)[2] (('q' * 1000) + ' [cut]') 'diag record cap: the reason is cut at 1000 characters and marked'
+    $diagReason = $diagLines[0].Split(' ', 3)[2]
+    $diagCutReason = ('q' * 1000) + ' [cut]'
+    Confirm-True ($diagReason.Length -ge $diagCutReason.Length -and [string]::Equals($diagReason.Substring(0, $diagCutReason.Length), $diagCutReason, [System.StringComparison]::Ordinal)) 'diag record cap: the reason is cut at 1000 characters and marked before carried accounting'
+    Confirm-True ($diagReason.EndsWith('[1 record dropped at the cap: the rollover could not complete: 1]', [System.StringComparison]::Ordinal)) 'diag record cap: a landed cut reason carries the prior cap drop after its marker'
     Confirm-True ((Get-DiagLogSize) -lt 1200) "diag record cap: the record is bounded, size $(Get-DiagLogSize)"
     Write-DiagLogText ('y' * $diagCap)
     Write-StatusDiag ('r' * 5000)
