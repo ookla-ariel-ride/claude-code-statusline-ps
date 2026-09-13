@@ -22,7 +22,14 @@ report this way; the path in the line says which one it was.
 The printed line is the same either way, and a log that cannot be written is as silent as the failure
 it records. Writing a record is itself bounded: your temp folder is a filesystem like any other and
 can be a share that stalls, so each record gets a quarter of a second and is dropped if it cannot be
-written in that. A missing line is better than a status line that waits. Anything in a reason that a
+written in that. A missing line is better than a status line that waits. A record that gives up on an
+open already in flight leaves that open running, and the writer it goes on to produce would hold the
+log against every record and every read after it; the next record closes whatever earlier ones
+abandoned before it opens anything of its own, so a slow moment costs the lines it happens over rather
+than every line after them. Only eight of those can be outstanding at once: while eight are, a record
+is dropped instead of starting a ninth open, so that no handle is ever left with nobody to close it,
+and one that lands in the gap between the sweep and the next record's own open costs that record too.
+Both are counted and reported like any other drop. Anything in a reason that a
 terminal would act on rather than show — an escape, a format character — is written as `<U+001B>`
 notation, because a repository's own config file can put text into a parser's error message, and a log
 you open to read should not be able to clear your screen. The log rolls over into
@@ -38,7 +45,7 @@ that draws one line and exits means usually not. The useful cross-process sign i
 that has stopped growing while a live process holds its `.lock`; an older `.log.1` can still be there
 from a previous rollover. Nothing is written anywhere else to tell you so, on purpose: another file to
 write would be another filesystem call on the path that is dropping records rather than waiting for one.
-A cap-drop note can name any of these reasons: `the record budget was spent inside the rollover`, `the rollover lock did not open inside the record budget`, `another render holds the rollover lock`, `the size read inside the rollover did not answer`, `the size of the log could not be read inside the rollover`, `the rollover could not complete`, `the size of the log could not be read before the rollover`, `the record budget was spent before the rollover was tried`, or `the rollover left the log full`. Rolling over means renaming, and a rename is the one thing here that cannot be put behind the deadline,
+A cap-drop note can name any of these reasons: `the record budget was spent inside the rollover`, `the rollover lock did not open inside the record budget`, `another render holds the rollover lock`, `the size read inside the rollover did not answer`, `the size of the log could not be read inside the rollover`, `the rollover could not complete`, `the size of the log could not be read before the rollover`, `the record budget was spent before the rollover was tried`, `the append open did not answer inside the record budget`, `the log could not be opened for append`, `too many abandoned handles from earlier records are still outstanding`, or `the rollover left the log full`. Rolling over means renaming, and a rename is the one thing here that cannot be put behind the deadline,
 so it is only attempted when the folder has just answered two size questions quickly. If it has not — a
 share gone slow — the record is dropped and counted the same way, and the log waits for a render that
 finds the folder responsive again. What is left of 4 MB being approximate is small: the append itself
