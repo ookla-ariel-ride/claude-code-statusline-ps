@@ -352,7 +352,7 @@ function Get-SubagentReply([string[]] $Lines) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-ConfigReadTimeout', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Invoke-BoundedFilePendingSweep', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Move-AtomicFile', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent', 'Get-StatusNow', 'Get-StatusClock', 'Clear-StatusDiagPendingLock', 'Test-PathAbsent', 'Add-StatusDiagDrop'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-ConfigReadTimeout', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Invoke-BoundedFilePendingSweep', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Move-AtomicFile', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent', 'Get-StatusNow', 'Get-StatusClock', 'Clear-StatusDiagPendingHandle', 'Test-PathAbsent', 'Add-StatusDiagDrop'))
 # Import-ScriptFunction lifts functions but not the script-level clock reading. Keep one typed baseline
 # for every lifted builder so an invalid test setup reaches the consumer instead of being repaired.
 $script:renderNow = [DateTimeOffset]::Now
@@ -6990,6 +6990,12 @@ namespace StatuslineTest {
         // two reads happened, and so whether the rollover branch was entered at all.
         public static long LengthValue;
         public static int SlowFromCall, ThrowFromCall, LengthCalls, LockCalls;
+        // The abandoned-writer case (#94) needs the handle an overrunning open leaves behind to be a
+        // handle on a real file: a writer over a MemoryStream holds nothing, so nothing else can then
+        // fail to read it, which is the whole of what that defect cost. RealPath is the group's own log
+        // and UseRealFile switches Open over to it for that one case.
+        public static string RealPath;
+        public static bool UseRealFile;
         public static void ResetLength() { LengthValue = 0L; SlowFromCall = 0; ThrowFromCall = 0; LengthCalls = 0; LengthDelayMs = 0; }
         public static void ResetLock() { Locked = false; LockDelayMs = 0; DisposeDelayMs = 0; LockCalls = 0; }
         public static long Length() {
@@ -6998,7 +7004,11 @@ namespace StatuslineTest {
             if (ThrowFromCall > 0 && n >= ThrowFromCall) { throw new IOException("length fault"); }
             return LengthValue;
         }
-        public static StreamWriter Open() { Thread.Sleep(OpenDelayMs); return new BlockingWriter(); }
+        public static StreamWriter Open() {
+            Thread.Sleep(OpenDelayMs);
+            if (UseRealFile) { return File.AppendText(RealPath); }
+            return new BlockingWriter();
+        }
         // Held elsewhere throws before the delay, the same order a real sharing violation happens in:
         // instantly, against whatever is already there. A lock nothing else holds sleeps for LockDelayMs
         // and then is held until its own Dispose runs - which is what lets a test tell whether something
@@ -7235,6 +7245,72 @@ namespace StatuslineTest {
         Confirm-True (-not [StatuslineTest.DiagSink]::Locked) 'diag rollover lock: the abandoned close still runs to completion in the background'
         [StatuslineTest.DiagSink]::DisposeDelayMs = 0
         [StatuslineTest.DiagSink]::ResetLock()
+        [StatuslineTest.DiagSink]::ResetLength()
+
+        # ---- The writer an overrunning open leaves behind (#94) ----
+        # "An open that never answers writes nothing" is the first case in this group, and for a long
+        # while it was the whole of what was checked about one: the record is lost and the call comes
+        # back. What it did not say is that the open goes on running underneath and hands back a writer
+        # nobody is left to close. FileInfo.AppendText shares the log for reading only, so from that
+        # moment the next record's own open is refused, a rollover's rename throws, and an ordinary read
+        # of the file - which is how every other check in this group looks at the log - meets a sharing
+        # violation. Under this file's Stop preference that took the whole group down, which is how #94
+        # was found. So the handle here has to be a real one: the double opens the group's own log rather
+        # than a writer over memory, and the case is about who closes it.
+        $diagLeakDelayMs = 3000
+        # A read that tolerates the log still being held, so a failure here is this case's own assertion
+        # rather than the abort it is about. Get-DiagLine cannot serve: it retries a sharing violation and
+        # then throws, which is the abort. FileShare.ReadWrite is what lets this one past a live writer.
+        function Get-DiagLineShared {
+            if (-not (Test-Path -LiteralPath $diagLog)) { return , @() }
+            $diagShareFs = [System.IO.File]::Open($diagLog, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            try { $diagShareText = [System.IO.StreamReader]::new($diagShareFs).ReadToEnd() } finally { $diagShareFs.Dispose() }
+            return , @($diagShareText -split "`n" | Where-Object { $_ -ne '' })
+        }
+        # Whatever the rollover checks above left in the cap-drop accounting would ride along on the first
+        # record that lands, and the line this case reads back is that record.
+        $script:diagDropReasons = $null
+        [StatuslineTest.DiagSink]::RealPath = $diagLog
+        [StatuslineTest.DiagSink]::UseRealFile = $true
+        [StatuslineTest.DiagSink]::OpenDelayMs = $diagLeakDelayMs
+        Clear-DiagLog
+        Write-StatusDiag 'a record whose open will not answer in time'
+        Confirm-Equal (Get-DiagLineShared).Count 0 'diag abandoned writer: an open that overruns the budget writes no record'
+        # Nothing watches the late-finishing open, the same as the abandoned lock above, so the handle
+        # really is on the log a moment later - which is what makes the check after it a check of
+        # something. Waited for rather than slept past: how long a starved pool takes to pick the open up
+        # is the one thing a loaded machine changes here, and a fixed sleep would make this case fail for
+        # the very reason it exists. Only a sharing or lock violation counts as held, so a log that is
+        # simply not there yet keeps the loop going rather than passing it.
+        $diagLeakDeadline = [DateTime]::UtcNow.AddMilliseconds($diagLeakDelayMs * 5)
+        $diagLeakHeld = $false
+        while (-not $diagLeakHeld -and [DateTime]::UtcNow -lt $diagLeakDeadline) {
+            try { $null = [System.IO.File]::ReadAllText($diagLog) } catch { $diagLeakHeld = $_.Exception.GetBaseException().HResult -in $sharingHResult }
+            if (-not $diagLeakHeld) { Start-Sleep -Milliseconds 50 }
+        }
+        Confirm-True $diagLeakHeld 'diag abandoned writer: until something closes it, the abandoned writer holds the log against an ordinary read'
+        # The handle exists the instant AppendText returns; the task carrying it completes a hair later,
+        # and the sweep only closes tasks that have finished. So the wait above is not quite the whole of
+        # it - waited for too, on the script's own list, rather than slept past for the same reason.
+        while ($null -ne $script:diagPendingHandles -and $script:diagPendingHandles.Count -gt 0 -and -not $script:diagPendingHandles[0].IsCompleted -and [DateTime]::UtcNow -lt $diagLeakDeadline) { Start-Sleep -Milliseconds 25 }
+        # The next record closes it before opening its own. Its own open is the proof: with the leaked
+        # writer still there, FileInfo.AppendText cannot have the file at all and this record would be
+        # lost in turn - the "one overrun record cost every record after it" the helper's own note warns
+        # about.
+        [StatuslineTest.DiagSink]::OpenDelayMs = 0
+        Write-StatusDiag 'a second record after the abandoned open finished underneath'
+        $diagLeakLines = Get-DiagLineShared
+        Confirm-Equal $diagLeakLines.Count 1 'diag abandoned writer: the next record disposes the abandoned writer before opening its own, so its own record lands'
+        Confirm-True ($diagLeakLines.Count -eq 1 -and $diagLeakLines[0].EndsWith('a second record after the abandoned open finished underneath')) "diag abandoned writer: and the line is the second record's, got '$($diagLeakLines -join ' | ')'"
+        # And nothing is left holding the log: a delete no plain reader could have made stands in for
+        # every later read in this group, which is what #94 actually broke. Retried briefly, because the
+        # second record's own close is on the pool too and a loaded machine can be a beat behind it; a
+        # handle nothing ever closes outlasts that retry the same as it outlasts everything else.
+        $diagLeakFreed = $true
+        try { $null = Invoke-SharedFile { [System.IO.File]::Delete($diagLog) } 2000 } catch { $diagLeakFreed = $false }
+        Confirm-True $diagLeakFreed 'diag abandoned writer: a dropped record leaves no open handle behind, so the next read in the group succeeds (#94)'
+        [StatuslineTest.DiagSink]::UseRealFile = $false
+        [StatuslineTest.DiagSink]::OpenDelayMs = 0
         [StatuslineTest.DiagSink]::ResetLength()
 
         # A sink that answers at once still writes the record, so the checks above are of a path that

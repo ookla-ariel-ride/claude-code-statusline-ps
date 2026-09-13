@@ -137,7 +137,7 @@ function Read-StdinText() {
 # callable there - verified empirically, it fails with "no Runspace available to run scripts in this
 # thread" every time, silently as far as the task that hosts it is concerned, since an unobserved
 # faulted continuation raises nothing anyone here would see. So the check is made eagerly instead, by
-# Clear-StatusDiagPendingLock, on whichever later record happens to come next: it looks at whatever
+# Clear-StatusDiagPendingHandle, on whichever later record happens to come next: it looks at whatever
 # abandoned tasks earlier calls left running and disposes the result of any that have finished by then.
 # It runs at the top of EVERY record and not only of the ones that reach a rollover. A leaked handle in
 # this process holds Path.lock until something disposes it; while it does, every render on the machine
@@ -155,25 +155,33 @@ function Read-StdinText() {
 # past the newest 8 still running is dropped from the list outright rather than kept waiting its turn -
 # abandoned for good, the same trade a call that never returns here again already makes with the one
 # it leaves behind.
-# The eager half of the abandoned-lock guard the comment above describes, split out of the rollover so
+# The append open a record abandons below is the same defect in a second place, and it gets this sweep
+# rather than a second copy of it: what a timed-out append open leaves behind is a handle on the log
+# itself, and FileInfo.AppendText shares that for reading only, so it refuses the next record's own open
+# and every ordinary read of the file besides - which is #94. Both cases are an abandoned task whose
+# result is an IDisposable only this process can close, so the list holds handles of either kind and
+# diagUnlockMethod - IDisposable's own Dispose, reflected once - closes a StreamWriter exactly as it
+# closes a lock's FileStream. It is also why this runs at the very top of a record rather than beside
+# the rollover: a leaked writer is precisely what would refuse the open the record is about to make.
+# The eager half of the abandoned-handle guard the comment above describes, split out of the rollover so
 # that every record runs it and not only the ones that find the log full. Nothing here reaches the
 # pipeline and nothing is returned: a caller cannot act on the result of a sweep, only benefit from it.
 # The list being empty is the normal case and costs a null test and a Count.
-function Clear-StatusDiagPendingLock([int] $TimeoutMs) {
-    if ($null -eq $script:diagPendingLocks -or $script:diagPendingLocks.Count -eq 0) { return }
+function Clear-StatusDiagPendingHandle([int] $TimeoutMs) {
+    if ($null -eq $script:diagPendingHandles -or $script:diagPendingHandles.Count -eq 0) { return }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    for ($i = $script:diagPendingLocks.Count - 1; $i -ge 0; $i--) {
-        $pending = $script:diagPendingLocks[$i]
+    for ($i = $script:diagPendingHandles.Count - 1; $i -ge 0; $i--) {
+        $pending = $script:diagPendingHandles[$i]
         if ($pending.IsCompleted) {
             if ($pending.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) {
                 $closeLeft = [Math]::Max($TimeoutMs - [int] $sw.ElapsedMilliseconds, 20)
                 $closePending = [System.Threading.Tasks.Task]::Run([System.Delegate]::CreateDelegate([Action], $pending.Result, $script:diagUnlockMethod))
                 [void] [System.Threading.Tasks.Task]::WaitAny(@($closePending), $closeLeft)
             }
-            $script:diagPendingLocks.RemoveAt($i)
+            $script:diagPendingHandles.RemoveAt($i)
         }
     }
-    while ($script:diagPendingLocks.Count -gt 8) { $script:diagPendingLocks.RemoveAt(0) }
+    while ($script:diagPendingHandles.Count -gt 8) { $script:diagPendingHandles.RemoveAt(0) }
 }
 
 # Whether a filesystem call failed because the thing it names is not there, as against failing for any
@@ -208,8 +216,8 @@ function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [i
     if ($left -le 0) { return 'the record budget was spent inside the rollover' }
     $open = [System.Threading.Tasks.Task]::Run($call.Lock)
     if ([System.Threading.Tasks.Task]::WaitAny(@($open), $left) -lt 0) {
-        if ($null -eq $script:diagPendingLocks) { $script:diagPendingLocks = [System.Collections.Generic.List[object]]::new() }
-        $script:diagPendingLocks.Add($open)
+        if ($null -eq $script:diagPendingHandles) { $script:diagPendingHandles = [System.Collections.Generic.List[object]]::new() }
+        $script:diagPendingHandles.Add($open)
         return 'the rollover lock did not open inside the record budget'
     }
     if (-not $open.IsCompletedSuccessfully) {
@@ -270,11 +278,16 @@ function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [i
 # an approximate cap over guaranteed ones.
 # What that trade costs is more than the one line, and saying so here rather than leaving it to be
 # rediscovered: an open or a close that overruns leaves a writer on the log that nothing in this process
-# is waiting for any longer. A pool thread closes it a moment later, but until then the file is held. A
-# render writes one line and exits, so there it is invisible; in a long-lived process that writes many -
-# a test run, or anything that dot-sources this - the next record's open can meet that handle and be
-# dropped in turn, and a rollover's rename can throw on it, so one overrun record can cost several. It
-# heals as soon as the filesystem does.
+# is waiting for any longer. The two read alike and are not the same. A close that overruns is a Dispose
+# already running: it finishes on its own a moment later and takes the handle with it. An open that
+# overruns is a handle not made yet that nobody is left to close, because the call that asked for it has
+# gone - and FileInfo.AppendText shares the log for reading only, so until something closes it the next
+# record's own open is refused, a rollover's rename throws, and so does any read of the file. A render
+# writes one line and exits, so there it would be invisible; in a long-lived process that writes many -
+# a test run, or anything that dot-sources this - one overrun record cost every record after it, which
+# is #94: a loaded test run met a sharing violation on a line that was only reading the log back. So the
+# abandoned open is handed to Clear-StatusDiagPendingHandle, which the rollover's abandoned lock already
+# had, and the next record closes it. It heals as soon as the filesystem does.
 # RolloverMs is how much of that budget has to be left before the one call this function cannot bound -
 # the rename a rollover does - is attempted at all. Half, so that reaching it means both size reads
 # answered in well under half a record's clock. The note at the call site has the reasoning.
@@ -320,10 +333,11 @@ function Write-StatusDiag([string] $Reason) {
     try {
         $limit = Get-StatusDiagLimit
         $budget = $limit.TimeoutMs
-        # A late lock open can finish after its original record gave up, leaving this process itself
-        # holding .lock. Sweep it on every later record, including under-cap ones, so it cannot make a
-        # long quiet stretch look like contention by every other render.
-        Clear-StatusDiagPendingLock $budget
+        # A late lock open, or a late append open, can finish after its original record gave up, leaving
+        # this process itself holding .lock or the log. Sweep both on every later record, including
+        # under-cap ones, so a lock cannot make a long quiet stretch look like contention by every other
+        # render, and so a leaked writer is gone before this record opens a writer of its own.
+        Clear-StatusDiagPendingHandle $budget
         $base = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { [System.IO.Path]::GetTempPath() }
         $path = [System.IO.Path]::Combine($base, 'claude-statusline-diag.log')
         $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [System.Globalization.CultureInfo]::InvariantCulture)
@@ -386,7 +400,13 @@ function Write-StatusDiag([string] $Reason) {
         }
         if ($left -le 0) { return }
         $open = [System.Threading.Tasks.Task]::Run($call.Append)
-        if ([System.Threading.Tasks.Task]::WaitAny(@($open), [int] $left) -lt 0) { return }
+        # Nothing here is waiting on this task any longer, so it goes to the sweep rather than on the
+        # floor: whatever it opens is a handle on the log with nobody left to close it.
+        if ([System.Threading.Tasks.Task]::WaitAny(@($open), [int] $left) -lt 0) {
+            if ($null -eq $script:diagPendingHandles) { $script:diagPendingHandles = [System.Collections.Generic.List[object]]::new() }
+            $script:diagPendingHandles.Add($open)
+            return
+        }
         if (-not $open.IsCompletedSuccessfully) { return }
         $writer = $open.Result
         # Into the writer's buffer, which is memory: a record is far shorter than the buffer, so nothing

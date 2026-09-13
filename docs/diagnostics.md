@@ -22,7 +22,11 @@ report this way; the path in the line says which one it was.
 The printed line is the same either way, and a log that cannot be written is as silent as the failure
 it records. Writing a record is itself bounded: your temp folder is a filesystem like any other and
 can be a share that stalls, so each record gets a quarter of a second and is dropped if it cannot be
-written in that. A missing line is better than a status line that waits. Anything in a reason that a
+written in that. A missing line is better than a status line that waits. A record that gives up on an
+open already in flight leaves that open running, and the writer it goes on to produce would hold the
+log against every record and every read after it; the next record closes whatever the last one
+abandoned before it opens anything of its own, so a slow moment costs the lines it happens over rather
+than every line after them. Anything in a reason that a
 terminal would act on rather than show — an escape, a format character — is written as `<U+001B>`
 notation, because a repository's own config file can put text into a parser's error message, and a log
 you open to read should not be able to clear your screen. The log rolls over into
