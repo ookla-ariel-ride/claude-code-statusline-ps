@@ -480,7 +480,7 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   while it is held, so two renders cannot rotate over each other's archive; one that cannot take the
   lock at once skips the rollover and, with the log already full, drops its record rather than
   appending past the cap, carrying the count and the reason into the next record it does land (#93).
-  Nothing waits. Appending through a held lock, as it did before #93, made the cap a target and not a
+  The five returned rollover reasons are `the record budget was spent inside the rollover`, `the rollover lock did not open inside the record budget`, `another render holds the rollover lock`, `the size read inside the rollover did not answer`, and `the size of the log could not be read inside the rollover`. Nothing waits. Appending through a held lock, as it did before #93, made the cap a target and not a
   ceiling: a holder can be a stalled render or one in another session or another user's account, and
   every render on the machine appended past the cap for as long as it lived. What is left of the
   approximation is the unlocked append: `FileInfo.AppendText` uses `FileShare.Read`, so overlapping

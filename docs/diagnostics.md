@@ -38,7 +38,7 @@ that draws one line and exits means usually not. The useful cross-process sign i
 that has stopped growing while a live process holds its `.lock`; an older `.log.1` can still be there
 from a previous rollover. Nothing is written anywhere else to tell you so, on purpose: another file to
 write would be another filesystem call on the path that is dropping records rather than waiting for one.
-Rolling over means renaming, and a rename is the one thing here that cannot be put behind the deadline,
+The five returned rollover reasons are `the record budget was spent inside the rollover`, `the rollover lock did not open inside the record budget`, `another render holds the rollover lock`, `the size read inside the rollover did not answer`, and `the size of the log could not be read inside the rollover`. Rolling over means renaming, and a rename is the one thing here that cannot be put behind the deadline,
 so it is only attempted when the folder has just answered two size questions quickly. If it has not — a
 share gone slow — the record is dropped and counted the same way, and the log waits for a render that
 finds the folder responsive again. What is left of 4 MB being approximate is small: the append itself
