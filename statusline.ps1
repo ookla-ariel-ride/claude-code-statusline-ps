@@ -1718,7 +1718,7 @@ function Get-Palette([string] $Palette = 'dark') {
                 cost    = @{ Sgr = '38;5;23';  Fg = 16; Bg = 40;  Ink = 'Dark' }
                 clock   = @{ Sgr = '38;5;22';  Fg = 16; Bg = 43;  Ink = 'Dark' }
                 time    = @{ Sgr = '38;5;58';  Fg = 16; Bg = 113; Ink = 'Dark' }
-                lines   = @{ Sgr = '38;5;29';  Fg = 16; Bg = 148; Ink = 'Dark' }
+                lines   = @{ Sgr = '38;5;17';  Fg = 16; Bg = 148; Ink = 'Dark' }
                 limits  = @{ Sgr = '38;5;61';  Fg = 16; Bg = 117; Ink = 'Dark' }
                 badges  = @{ Sgr = '38;5;94';  Fg = 16; Bg = 186; Ink = 'Dark' }
                 pr      = @{ Sgr = '38;5;95';  Fg = 16; Bg = 220; Ink = 'Dark' }

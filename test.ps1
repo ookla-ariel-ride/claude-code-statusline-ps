@@ -2955,8 +2955,8 @@ foreach ($shadeTable in @(
     $alternateCount = if ($shadeTable.Group -eq 'Roles') { @($shadeTable.Names | Where-Object { $null -ne $shadeTable.T.Roles[$_].AltBg }).Count } else { 0 }
     Confirm-Equal $shadeTable.S.Count ($shadeTable.Names.Count + $alternateCount) "$($shadeTable.N) shade table: one background per entry plus every alternate"
 }
-Confirm-Equal ((@(foreach ($s in $darkBlockShades) { $s.Bg }) | Sort-Object -Unique).Count) 10 'dark palette: every role shade is its own colour'
-Confirm-Equal ((@(foreach ($s in $lightBlockShades) { $s.Bg }) | Sort-Object -Unique).Count) 7 'light palette: every role shade is its own colour'
+Confirm-Equal ((@(foreach ($s in $darkShades) { $s.Bg }) | Sort-Object -Unique).Count) 10 'dark palette: every role shade is its own colour'
+Confirm-Equal ((@(foreach ($s in $lightShades) { $s.Bg }) | Sort-Object -Unique).Count) 7 'light palette: every role shade is its own colour'
 Confirm-Equal ((@(foreach ($s in $darkSegmentShades) { $s.Bg }) | Sort-Object -Unique).Count) 12 'dark segment tint: every resting block is its own colour'
 Confirm-Equal ((@(foreach ($s in $lightSegmentShades) { $s.Bg }) | Sort-Object -Unique).Count) 12 'light segment tint: every resting block is its own colour'
 
