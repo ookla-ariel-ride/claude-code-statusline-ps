@@ -29,13 +29,23 @@ you open to read should not be able to clear your screen. The log rolls over int
 `claude-statusline-diag.log.1` once it would pass 4 MB, so
 leaving the variable set costs two files of that size at most, plus a small `.lock` file kept beside
 the log to serialise a rollover against another render's — left behind by design rather than deleted
-on release, since deleting it would race a process already waiting to open it. Treat the 4 MB as
-approximate: the log is best-effort and never waits on anything, so two renders that overlap can leave
-the file a little over the cap, or lose one of their lines to each other. Rolling over means renaming,
-and a rename is the one thing here that cannot be put behind the deadline, so it is only attempted
-when the folder has just answered two size questions quickly. If it has not — a share gone slow — the
-record is dropped and the log sits at its cap until a render finds the folder responsive again, which
-it does on its own. Unset the variable when you are done (`0`,
+on release, since deleting it would race a process already waiting to open it. The log never waits on
+anything, so a render that finds that lock held by another one skips the rollover; when the log is
+already full, it drops its record rather than appending past the cap, and says how many it dropped and
+why in the next record it does get down (`[2 records dropped at the cap: another render holds the
+rollover lock: 2]`). That note reaches you only when the same process writes again, which for a render
+that draws one line and exits means usually not. The useful cross-process sign is a log near its cap
+that has stopped growing while a live process holds its `.lock`; an older `.log.1` can still be there
+from a previous rollover. Nothing is written anywhere else to tell you so, on purpose: another file to
+write would be another filesystem call on the path that is dropping records rather than waiting for one.
+A cap-drop note can name any of these reasons: `the record budget was spent inside the rollover`, `the rollover lock did not open inside the record budget`, `another render holds the rollover lock`, `the size read inside the rollover did not answer`, `the size of the log could not be read inside the rollover`, `the rollover could not complete`, `the size of the log could not be read before the rollover`, `the record budget was spent before the rollover was tried`, or `the rollover left the log full`. Rolling over means renaming, and a rename is the one thing here that cannot be put behind the deadline,
+so it is only attempted when the folder has just answered two size questions quickly. If it has not — a
+share gone slow — the record is dropped and counted the same way, and the log waits for a render that
+finds the folder responsive again. What is left of 4 MB being approximate is small: the append itself
+is not locked. `FileInfo.AppendText` opens with `FileShare.Read`, so overlapping renders can lose a
+line to each other when one append open fails; the other can still leave the file a little over the cap
+because both measured room before either wrote. Unset the
+variable when you are done (`0`,
 `false`, `no` and `off` also count as off) and delete all three files.
 
 ## Pinning the clock
