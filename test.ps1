@@ -207,6 +207,7 @@ function Invoke-ChildPwsh([string] $File, [string[]] $Arguments, [string] $Paylo
     try {
         if ($RaiseConfigTimeout) { $env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS = $childConfigTimeoutMs }
         else { Remove-Item Env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS -ErrorAction SilentlyContinue }
+        $script:lastChildConfigTimeoutForRender = $env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS
         $out = $Payload | pwsh @pwshArgs 2>&1 | ForEach-Object {
             if ($_ -is [System.Management.Automation.ErrorRecord]) { $err.Add("$_") } else { "$_" }
         }
@@ -10141,6 +10142,7 @@ Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains($iconCost)) "
 $deadRender = $payload06 | ConvertFrom-Json
 $deadRender.workspace | Add-Member -NotePropertyName project_dir -NotePropertyValue '\\192.0.2.1\statusline-test' -Force
 $r = Invoke-StatusLine ($deadRender | ConvertTo-Json -Depth 20 -Compress) $null 0 $null $false
+Confirm-Equal $script:lastChildConfigTimeoutForRender $null 'render project: an unreachable project directory keeps the shipped config read budget'
 Write-Host "  unreachable render: $($r.Ms) ms" -ForegroundColor DarkGray
 Confirm-True ($r.ExitCode -eq 0) "render project: an unreachable project directory, exit code $($r.ExitCode)"
 Confirm-True ($r.Err.Count -eq 0) 'render project: an unreachable project directory prints nothing on stderr'
