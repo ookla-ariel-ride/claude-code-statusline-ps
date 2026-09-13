@@ -19,7 +19,21 @@ $PSStyle.OutputRendering = 'Ansi'
 # profile loaded, which is free to have changed it.
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
-$now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+# THE CLOCK IS PINNED, and that is what makes these two PNGs regenerate to the same bytes on every run
+# on one machine. statusline.ps1 reads its clock once and CLAUDE_STATUSLINE_NOW replaces that reading,
+# so the child render below measures the payload's expiries against the same instant this script builds
+# them from, and the `time` segment in the two-line shot draws this instant's wall clock instead of
+# whatever time the capture happened at. The offset is the zone rule: +00:00 here means the two-line
+# shot reads 14:05 whatever zone the machine is in.
+# What is pinned is the TEXT of the render, not the image. Everything below the render - GDI+'s
+# rasteriser, the display's DPI and ClearType settings, the installed version of JetBrainsMono NF, the
+# Windows build - still chooses the pixels, so two different machines can draw the same line into
+# different bytes. Regenerating on the machine that last regenerated leaves git clean; that is the
+# promise, and it is the one that stops a docs PR carrying a binary diff.
+# Any instant would do; this one is the 14:05 the README and docs/segments.md already print as the
+# example wall clock, so the image and the prose agree.
+$fixedNow = '2026-01-15T14:05:00+00:00'
+$now = [DateTimeOffset]::Parse($fixedNow, [System.Globalization.CultureInfo]::InvariantCulture).ToUnixTimeSeconds()
 # One payload feeds both screenshots; only -Config differs between them. The default (one-line,
 # no -Config) render shows the eleven segments that ship Default = $true; docs/statusline-two-line.json
 # turns the twelfth, `time`, on with "segments": { "time": true }, so the two-line shot is the one that
@@ -30,11 +44,11 @@ $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 # need a value relative to render time, are overlaid on top of it.
 $payload = Get-Content -Raw (Join-Path $Repo 'samples/06-limits-badges-lines.json') | ConvertFrom-Json -AsHashtable
 
-# Both reset times are nudged to the middle of a minute rather than the top of one: the render started
-# here and the child process a moment later each read their own clock, and TimeLeft's and
-# Get-CacheSecondsLeft's own comments note the same few seconds of drift always moves a countdown
-# towards a shorter reading, never a longer one - enough on its own to cross a minute boundary and print
-# a different figure than the other screenshot, started a moment apart from this one.
+# Both reset times are still nudged to the middle of a minute rather than the top of one. The drift
+# they were put there for is gone - this script and the child now share one pinned instant, so a
+# countdown cannot land a minute short of the other screenshot's - but mid-minute is also where a
+# figure is furthest from the boundary that would change it, so a later change to the pinned instant,
+# or a render taken with the pin lifted, still prints these numbers rather than the ones below them.
 $payload.rate_limits.five_hour.resets_at = $now + 4350    # 1h12m30s out -> "(1h12m)"
 $payload.rate_limits.seven_day.resets_at = $now + 400000  # never printed as a countdown; just fresh
 $payload.prompt_cache = @{ warm = $true; expires_at = $now + 2550 }  # 42m30s out -> "cache 42m"
@@ -49,7 +63,20 @@ $payload = $payload | ConvertTo-Json -Depth 5
 $scriptArgs = @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', (Join-Path $Repo 'statusline.ps1'))
 if ($Config) { $scriptArgs += @('-Config', (Resolve-Path $Config).Path) }
 Remove-Item Env:COLUMNS -ErrorAction SilentlyContinue
-$rows = @($payload | pwsh @scriptArgs)
+# The pin is set for the length of the child render and PUT BACK, rather than left on the process. The
+# header says to run this file with `pwsh docs/render-screenshot.ps1`, where the process is this render
+# and nothing else - but `.\docs\render-screenshot.ps1`, `& ...` and a dot-source all run it in a shell
+# that goes on living, and a variable left behind there pins every later status line in that shell:
+# `time` frozen at 14:05 all day, a real cache expiry refused by the 86400-second ceiling and printed
+# as a bare "cache warm", a reset an hour out rendered as "(238d)". Restoring what was there also means
+# a caller who had pinned the clock deliberately gets their own value back rather than nothing.
+$oldPin = $env:CLAUDE_STATUSLINE_NOW
+try {
+    $env:CLAUDE_STATUSLINE_NOW = $fixedNow
+    $rows = @($payload | pwsh @scriptArgs)
+} finally {
+    if ($null -ne $oldPin) { $env:CLAUDE_STATUSLINE_NOW = $oldPin } else { Remove-Item Env:CLAUDE_STATUSLINE_NOW -ErrorAction SilentlyContinue }
+}
 
 # One Half Dark palette for the 16 system colours; the 256-colour cube and greys are computed.
 $palette = @{ 30 = '#282C34'; 31 = '#E06C75'; 32 = '#98C379'; 33 = '#E5C07B'; 34 = '#61AFEF'; 35 = '#C678DD'; 36 = '#56B6C2'; 37 = '#DCDFE4'; 90 = '#5C6370'

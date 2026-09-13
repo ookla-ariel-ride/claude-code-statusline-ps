@@ -30,6 +30,14 @@ $PSNativeCommandUseErrorActionPreference = $false
 # bytes, went on passing. That is the sending half of the very defect #80 was about.
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $PSStyle.OutputRendering = 'Ansi'
+# CLEARED BEFORE ANYTHING RUNS, the way COLUMNS is cleared for every child render, and for a sharper
+# reason. Every child this file starts inherits the environment, and CLAUDE_STATUSLINE_NOW pins the
+# clock every render reads: a shell that still had it set - a screenshot regeneration interrupted
+# before its restore, a value left in a profile - would run every render in this file frozen at that
+# instant, and every one of them would pass, because the cases above the pinned group assert shapes
+# and not times. A green suite that never touched the clock is the failure this line prevents; the
+# pinned group sets the variable itself, for the length of its own renders, and puts it back.
+Remove-Item Env:CLAUDE_STATUSLINE_NOW -ErrorAction SilentlyContinue
 $script = Join-Path $PSScriptRoot 'statusline.ps1'
 $subScript = Join-Path $PSScriptRoot 'subagent-statusline.ps1'
 # One lookup for every child this file starts, rather than one per launcher.
@@ -314,7 +322,11 @@ function Get-SubagentReply([string[]] $Lines) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Open-SharedConfigFile', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Open-SharedConfigFile', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent', 'Get-StatusNow', 'Get-StatusClock'))
+# Import-ScriptFunction lifts functions but not the script-level clock reading. Keep one typed baseline
+# for every lifted builder so an invalid test setup reaches the consumer instead of being repaired.
+$script:renderNow = [DateTimeOffset]::Now
+$clockTestNow = $script:renderNow
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -2250,7 +2262,7 @@ Confirm-Equal $neg.five_hour_percentage 23.5 'state read: the five-hour gauge re
 Confirm-Equal @($neg.history).Count 1 'state read: a ring entry with a negative cost is dropped'
 Confirm-Equal $neg.history[0].cost_usd 0.5 'state read: and the honest entry is kept'
 # The pace arrow is where a negative five-hour figure would land, and it refuses one already.
-Confirm-Equal (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) (-3)) $null 'pace arrow: a negative percentage draws no arrow'
+Confirm-Equal (Get-PaceArrow ((Get-StatusClock).ToUnixTimeSeconds() + 9000) (-3)) $null 'pace arrow: a negative percentage draws no arrow'
 
 # The file name is the id itself when it is clean and at most 64 characters, as a UUID is. An id that had
 # characters stripped, or was longer than that, gets a hash of the whole id as a suffix, so two ids that
@@ -3992,10 +4004,9 @@ Confirm-True ($null -eq (Get-CacheSecondsLeft 0 $cacheClock)) 'cache seconds: an
 Confirm-True ($null -eq (Get-CacheSecondsLeft (-600) $cacheClock)) 'cache seconds: a negative epoch is refused rather than called expired'
 Confirm-True ($null -eq (Get-CacheSecondsLeft 4102444800 $cacheClock)) 'cache seconds: a far-future epoch is refused rather than clamped to the ceiling'
 # The default clock, which is the only path the script itself takes, so the pinned parameter above
-# cannot become the only thing under test. Real time moves forward between the epoch being built here
-# and the function reading its own clock, which only lowers the answer, so each case sits clear of its
-# boundary on the side that drift carries it towards.
-$cacheReal = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+# cannot become the only thing under test. Extracted functions share the typed reading set above, so
+# these epochs are built against that same default and each case still exercises the omitted parameter.
+$cacheReal = (Get-StatusClock).ToUnixTimeSeconds()
 Confirm-True ((Get-CacheSecondsLeft ($cacheReal + 600)) -in 590..600) 'cache seconds on the default clock: ten minutes out'
 Confirm-True ((Get-CacheSecondsLeft ($cacheReal - 100)) -le -100) 'cache seconds on the default clock: a hundred seconds past'
 Confirm-True ($null -eq (Get-CacheSecondsLeft 4102444800)) 'cache seconds on the default clock: the 2100 epoch is refused'
@@ -4045,21 +4056,18 @@ Confirm-Equal (Get-CacheRole 301) 'ok' 'cache role: a second past five minutes i
 
 # A prompt_cache payload built through ConvertFrom-Json, so `warm` is a real JSON boolean and `requests`
 # arrives as an Int64 the way a payload sends it. <AT> is replaced with an epoch $In seconds from the
-# clock read at the moment of the call, so the gap between building the payload and the builder reading
-# its own clock is a fraction of a second however long this section has been running.
+# clock reading used by the lifted builders, so this payload and its builder share the default value
+# no matter how long the rest of the suite has been running.
 function Get-PromptCachePayload([string] $Json, [int] $In = 0) {
-    $at = [string] ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + $In)
+    $at = [string] ((Get-StatusClock).ToUnixTimeSeconds() + $In)
     return Get-JsonPayload 'prompt_cache' ($Json -replace '<AT>', $at)
 }
 # EVERY OFFSET HERE IS MID-MINUTE, AND THAT IS THE POINT. These cases go through Get-CacheSegment,
-# which calls Get-CacheSecondsLeft on the default clock, so the payload's expiry is built against one
-# reading and measured against another. An offset sitting exactly on a minute - 300, 360, 120 - renders
-# `5m`, `6m`, `2m` when no second ticks in between and `4m`, `5m`, `1m` when one does, which is a test
-# that FAILS CORRECT CODE roughly whenever the run is unlucky. The fix is not a tolerance: it is to put
-# every case half a minute away from the edge, where a second of drift cannot change the floor, and to
-# pin the two real boundaries - the five-minute line and the under-a-minute line - where no clock is
-# involved at all: Get-CacheRole and Format-MinutesLeft above, both pure functions of whole seconds.
-# What is left here is the wiring, tested the way production runs it, on the real clock.
+# which calls Get-CacheSecondsLeft on the default clock. The payload and builder share the one lifted
+# reading, and offsets sitting exactly on a minute - 300, 360, 120 - would otherwise make a timing
+# boundary look like a formatting result. The two real boundaries remain pinned above in Get-CacheRole
+# and Format-MinutesLeft, both pure functions of whole seconds. What is left here is the omitted-$Now
+# wiring; the child-render group covers the production clock separately.
 $cacheTable = @(
     @{ Label = 'forty-two minutes left'; Json = '{"warm":true,"expires_at":<AT>}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
     @{ Label = 'two hours five minutes left'; Json = '{"warm":true,"expires_at":<AT>}'; In = 7530; Text = 'cache 2h05m'; Short = '2h05m'; Role = 'ok' }
@@ -4759,20 +4767,19 @@ foreach ($paceRow in $noPaceTable) {
     Confirm-True ($null -eq (Get-PaceArrow $paceRow.Reset $paceRow.Used $paceClock)) "pace: $($paceRow.Label) gives no arrow"
 }
 # The default clock, which is the only path the script itself ever takes, so the parameter above cannot
-# become the only thing under test. Real time moves on between the epoch being built here and
-# Get-PaceArrow reading it, always forward, which only raises the elapsed fraction and only lowers the
-# projection. Every case below therefore sits clear of its threshold on the side drift carries it
-# towards, well outside a second's worth of movement. The boundaries themselves are pinned above.
-$pace = Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) 80
+# become the only thing under test. The extracted builders share the typed reading set above, and these
+# epochs are built from it so each case exercises the omitted parameter without depending on suite time.
+# The boundaries themselves are pinned above.
+$pace = Get-PaceArrow ((Get-StatusClock).ToUnixTimeSeconds() + 9000) 80
 Confirm-Equal $pace.Arrow $paceUp 'pace on the default clock: half a window gone at 80% points up'
 Confirm-Equal $pace.Red $true 'pace on the default clock: 160% projected is red'
 Confirm-Equal $pace.Over $true 'pace on the default clock: 160% projected is an overrun'
-$pace = Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) 40
+$pace = Get-PaceArrow ((Get-StatusClock).ToUnixTimeSeconds() + 9000) 40
 Confirm-Equal $pace.Arrow $paceFlat 'pace on the default clock: half a window gone at 40% holds'
 Confirm-Equal $pace.Red $false 'pace on the default clock: 80% projected is not red'
 Confirm-Equal $pace.Over $false 'pace on the default clock: 80% projected is not an overrun'
-Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 100) 80)) 'pace on the default clock: a reset already past gives no arrow'
-Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 16400) 90)) 'pace on the default clock: the first half hour gives no arrow'
+Confirm-True ($null -eq (Get-PaceArrow ((Get-StatusClock).ToUnixTimeSeconds() - 100) 80)) 'pace on the default clock: a reset already past gives no arrow'
+Confirm-True ($null -eq (Get-PaceArrow ((Get-StatusClock).ToUnixTimeSeconds() + 16400) 90)) 'pace on the default clock: the first half hour gives no arrow'
 Confirm-True ($null -eq (Get-PaceArrow 4102444800 80)) 'pace on the default clock: a far-future reset gives no arrow'
 
 Write-Host '== unit: TimeLeft' -ForegroundColor Cyan
@@ -4888,7 +4895,7 @@ Confirm-True ($null -eq $seg.Short) 'limits 7d alone: short would equal text, so
 # 200 days out rather than sample 06's fixed 2100 epoch: since #44 capped TimeLeft's countdown at a
 # year, a reset built from the live clock is what keeps this a "definitely still live, definitely
 # still countable" case rather than one the cap now empties out from under it.
-$liveReset = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + (200 * 86400)
+$liveReset = (Get-StatusClock).ToUnixTimeSeconds() + (200 * 86400)
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":70,"resets_at":' + $liveReset + '},"seven_day":{"used_percentage":12,"resets_at":' + $liveReset + '}}')) $bandCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 70% (") -and $seg.Text.EndsWith(') 7d 12%')) 'limits 5h worst with a live reset: text carries the countdown'
 Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits 5h worst with a live reset: short drops the countdown'
@@ -4953,7 +4960,7 @@ Confirm-Equal (Get-LimitsSegment $limits5h15 $quietRoleAlarm) $null 'limits quie
 # Get-PaceArrow without a clock parameter. A tenth of the window gone (16200 seconds left) makes the
 # projection ten times the current figure; real time only moves the reading further into the window,
 # which lowers the projection, so each case sits far clear of the limit it is on the safe side of.
-$paceNow = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+$paceNow = (Get-StatusClock).ToUnixTimeSeconds()
 function Get-PaceLimitsPayload([double] $Used, [long] $Left) {
     return Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":' + ([string]::Format([cultureinfo]::InvariantCulture, '{0}', $Used)) + ',"resets_at":' + ($paceNow + $Left) + '}}')
 }
@@ -5060,41 +5067,163 @@ Confirm-Equal $seg.Short "$iconLimit 5h 10%" 'limits 10 and 15 at 20/40: short i
 # that has not opened.
 $paceCfg = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Style = 'plain' }
 $pacePlCfg = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Style = 'powerline' }
-$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$paceLive = (Get-StatusClock).ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":40,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $paceCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 40% $paceFlat (") -and $seg.Text.EndsWith(') 7d 12%')) 'limits on pace: the right arrow sits after the figure and before the countdown'
 Confirm-Equal $seg.Short "$iconLimit 5h 40%" 'limits on pace: the short form drops the arrow with the countdown'
 Confirm-Equal $seg.Role 'ok' 'limits on pace: the arrow does not touch the role'
 
-$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$paceLive = (Get-StatusClock).ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":55,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $paceCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 55% $paceUp (")) 'limits overrunning under 120: a plain up arrow, no colour'
 Confirm-Equal $seg.Role 'ok' 'limits overrunning under 120: the role is still the worse of the figures'
 
 # At 80% with half the window gone the projection is 160, so the arrow goes through the removed inline
 # role and restores the segment's own foreground - the warn one here, which the 80 earns on its own.
-$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$paceLive = (Get-StatusClock).ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":80,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $paceCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'plain') (")) 'limits well over pace: the up arrow takes the removed role and hands the warn colour back'
 Confirm-Equal $seg.Role 'warn' 'limits well over pace: the role is the worse figure, not the projection'
 Confirm-Equal $seg.Short "$iconLimit 5h 80%" 'limits well over pace: the short form keeps the figure without the arrow'
 
-$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$paceLive = (Get-StatusClock).ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":80,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $pacePlCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'powerline') (")) 'limits well over pace in powerline: the removed-role arrow restores the segment foreground'
 
 # The 7-day figure never gets an arrow, whatever its reset says: one payload cannot pace a week.
-$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$paceLive = (Get-StatusClock).ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"seven_day":{"used_percentage":80,"resets_at":' + $paceLive + '},"spend_limit":{"used_percentage":80,"resets_at":' + $paceLive + '}}')) $paceCfg
 Confirm-Equal $seg.Text "$iconLimit 7d 80% `$ 80%" 'limits without a 5h figure: no arrow on the 7d or the spend figure'
 
 # A reset under a minute out leaves TimeLeft empty, so the arrow is the only thing the Text has that the
 # Short form does not. Fifty seconds is far enough from both ends - past the reset, or past the minute
 # TimeLeft needs - that no plausible drift moves the answer.
-$paceEnd = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 50
+$paceEnd = (Get-StatusClock).ToUnixTimeSeconds() + 50
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":55,"resets_at":' + $paceEnd + '}}')) $paceCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 55% $paceFlat" 'limits at the end of a window: the arrow with no countdown behind it'
 Confirm-Equal $seg.Short "$iconLimit 5h 55%" 'limits at the end of a window: a short form exists purely to drop the arrow'
+
+Write-Host '== unit: clock seam' -ForegroundColor Cyan
+# statusline.ps1 reads the wall clock once, at the top, and the four things on a line that move with it
+# - the cache countdown, the rate-limit countdown, the pace arrow's position in the window, and the
+# `time` segment - all take that one reading. CLAUDE_STATUSLINE_NOW replaces it. This section proves
+# three things and nothing wider: what the override accepts and refuses, that the offset it carries is
+# the zone the wall clock is drawn in, and that the four figures come out of the reading rather than
+# out of a clock of their own. What it does NOT prove is that a whole render is reproducible - that is
+# the child-render group further down - or that a PNG comes out to the same bytes, which depends on the
+# rasteriser and not on this file.
+#
+# Everything above this section deliberately runs on the real clock, the way production does.
+#
+# The pinned instant is well in the past, and that is deliberate: a figure that stopped taking the
+# reading and fell back to its own clock would measure these expiries as long gone, so every assertion
+# below fails loudly rather than agreeing with a fresh reading by luck.
+#
+# $clockPin IS THE ONE PIN IN THIS FILE. The child-render group below reads it from here rather than
+# spelling it again, and it is checked against docs/render-screenshot.ps1's own $fixedNow, so a pin
+# changed in one place and not the other fails here instead of quietly testing a different instant
+# from the one the screenshots are drawn at.
+$clockPin = '2026-01-15T14:05:00+00:00'
+$clockPinAt = [DateTimeOffset]::Parse($clockPin, [System.Globalization.CultureInfo]::InvariantCulture)
+$clockPinEpoch = $clockPinAt.ToUnixTimeSeconds()
+Confirm-Equal $clockPinEpoch 1768485900L 'clock seam: the pinned instant is the epoch every case below is built from'
+# Read out of the docs script by the parser rather than by running it: render-screenshot.ps1 needs a
+# font and a drawing surface, and this is the same way the OSC-pattern pin above reads $pattern out of
+# it. A $null Right means the assignment was renamed, which Get-ScriptAssignment has already failed by
+# name, so the comparison below reports a mismatch rather than dereferencing nothing.
+$clockPinRight = Get-ScriptAssignment (Join-Path $PSScriptRoot 'docs/render-screenshot.ps1') '$fixedNow'
+if ($null -ne $clockPinRight) {
+    # [string] over the invoked result for the same reason the pattern check above casts: a bare
+    # Collection[PSObject] would compare as its own type name and pass or fail for the wrong reason.
+    $clockPinShot = [string] [scriptblock]::Create($clockPinRight.Extent.Text).Invoke()
+    Confirm-Equal $clockPinShot $clockPin 'clock seam: docs/render-screenshot.ps1 pins the same instant this file does'
+}
+# The override is refused unless it carries an offset, because a wall clock without a zone is not
+# reproducible - which is the whole point - and [DateTimeOffset]::TryParse would silently supply the
+# MACHINE'S offset for a value that left it out.
+Confirm-True ($null -eq (Get-StatusNow $null)) 'clock seam: no override is no reading'
+Confirm-True ($null -eq (Get-StatusNow '')) 'clock seam: an empty override is no reading'
+Confirm-True ($null -eq (Get-StatusNow '   ')) 'clock seam: a whitespace-only override is no reading'
+Confirm-Equal ((Get-StatusNow $clockPin).ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: an ISO-8601 instant with an offset is the instant it names'
+Confirm-Equal ((Get-StatusNow $clockPin).Offset.TotalMinutes) 0.0 'clock seam: and it keeps the offset it carried, not the machine''s'
+Confirm-Equal ((Get-StatusNow $clockPin).ToString('HH\:mm')) '14:05' 'clock seam: the wall clock of a +00:00 instant is its UTC time in any zone'
+Confirm-Equal ((Get-StatusNow "  $clockPin`t").ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: surrounding whitespace is trimmed before the value is read'
+Confirm-Equal ((Get-StatusNow '2026-01-15T14:05:00Z').ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: Z is an offset'
+Confirm-Equal ((Get-StatusNow '2026-01-15T14:05:00.1234567Z').ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: a fractional second is allowed and floors to the same epoch'
+Confirm-Equal ((Get-StatusNow '2026-01-15T09:05:00-05:00').ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: a negative offset names the same instant'
+Confirm-True ($null -eq (Get-StatusNow '2026-01-15T14:05:00-15:00')) 'clock seam: an offset no zone has is refused by the parse the pattern hands it to'
+# THE ZONE RULE, stated as two assertions: the offset in the string is the zone the wall clock is drawn
+# in, and two spellings of one instant agree on every countdown while printing their own local times.
+Confirm-Equal ((Get-StatusNow '2026-01-15T16:05:00+02:00').ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: +02:00 at 16:05 is the same instant as +00:00 at 14:05'
+Confirm-Equal ((Get-StatusNow '2026-01-15T16:05:00+02:00').ToString('HH\:mm')) '16:05' 'clock seam: and its wall clock is 16:05, because the offset it carries is the zone'
+foreach ($bad in @(
+        @{ Label = 'no offset at all'; Value = '2026-01-15T14:05:00' }
+        @{ Label = 'epoch seconds'; Value = '1768485900' }
+        @{ Label = 'a date with no time'; Value = '2026-01-15' }
+        @{ Label = 'no seconds'; Value = '2026-01-15T14:05Z' }
+        @{ Label = 'a space where the T belongs'; Value = '2026-01-15 14:05:00Z' }
+        @{ Label = 'an offset with no colon in it'; Value = '2026-01-15T14:05:00+0000' }
+        @{ Label = 'a day that is not in the month'; Value = '2026-02-30T14:05:00Z' }
+        @{ Label = 'an hour that is not on the clock'; Value = '2026-01-15T25:05:00Z' }
+        @{ Label = 'a minute that is not on the clock'; Value = '2026-01-15T14:75:00Z' }
+        @{ Label = 'a word'; Value = 'now' }
+        @{ Label = 'a good value with something after it'; Value = '2026-01-15T14:05:00Z and then some' }
+        @{ Label = 'a good value on the first of two lines'; Value = "2026-01-15T14:05:00Z`n2026-01-15T14:05:00Z" })) {
+    Confirm-True ($null -eq (Get-StatusNow $bad.Value)) "clock seam: $($bad.Label) is refused, not repaired"
+}
+# Lifted builders share the typed baseline taken immediately after their definitions. A wrong type must
+# reach the caller rather than being silently repaired by a second clock reading.
+Confirm-True ($script:renderNow -is [DateTimeOffset]) 'clock seam: the lifted functions start from one DateTimeOffset reading'
+$clockWrongTypeFailed = $false
+try {
+    $script:renderNow = [datetime]::Now
+    $null = (Get-StatusClock).ToUnixTimeSeconds()
+} catch {
+    $clockWrongTypeFailed = $true
+} finally {
+    $script:renderNow = $clockTestNow
+}
+Confirm-True $clockWrongTypeFailed 'clock seam: a wrongly typed reading fails loudly rather than falling back to a new clock'
+# The four figures, through the builders the render loop actually calls, and then through the three
+# helpers CALLED WITH NO CLOCK AT ALL. The second half is the point: the seam lives in those defaults,
+# not in the call sites, so a helper that goes back to reading its own clock is caught here even though
+# every caller still compiles. Each expiry is months past on a real clock, so the fallback is loud.
+try {
+    $script:renderNow = $clockPinAt
+    Confirm-Equal (Get-TimeSegment).Text "$iconTime 14:05" 'clock seam: the wall clock segment draws the pinned instant'
+    $clockPinCache = Get-CacheSegment (Get-JsonPayload 'prompt_cache' ('{"warm":true,"expires_at":' + ($clockPinEpoch + 2550) + '}'))
+    Confirm-Equal $clockPinCache.Text "$iconCache cache 42m" 'clock seam: the cache countdown is measured against the pinned instant'
+    $clockPinLimits = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":23.5,"resets_at":' + ($clockPinEpoch + 4350) + '}}')) $quietOff
+    Confirm-Equal (ConvertTo-PlainText $clockPinLimits.Text) "$iconLimit 5h 24% $paceFlat (1h12m)" 'clock seam: the rate-limit countdown and the pace arrow are measured against it too'
+    # No $Now argument anywhere below. What is pinned is that the DEFAULT is Get-StatusClock: a default
+    # that read a clock of its own would answer these three from today and fail all three.
+    Confirm-Equal (Get-CacheSecondsLeft ($clockPinEpoch + 2550)) 2550 'clock seam: the seconds-left helper defaults to the reading, with no argument to carry it'
+    Confirm-Equal (TimeLeft ($clockPinEpoch + 4350)) ' (1h12m)' 'clock seam: TimeLeft defaults to the reading, with no argument to carry it'
+    Confirm-Equal (Get-PaceArrow ($clockPinEpoch + 4350) 23.5).Arrow $paceFlat 'clock seam: the pace arrow defaults to the reading, with no argument to carry it'
+    # And a $Now given explicitly still wins, which is what the boundary cases elsewhere in this file
+    # rely on: they hand in an epoch of their own and must not be moved by a pin or by the clock.
+    Confirm-Equal (Get-CacheSecondsLeft ($clockPinEpoch + 2550) ($clockPinEpoch + 150)) 2400 'clock seam: an explicit $Now still overrides the default'
+} finally { $script:renderNow = $clockTestNow }
+# Get-CacheSecondsLeft's cast used to be [int], and its bottom was held by -$Now alone, which was inside
+# an Int32 only while $Now was a reading of the clock. A far future instant - which the override accepts,
+# and which this machine's own clock reaches in 2038 - leaves a difference an Int32 cannot hold; the cast
+# failed, silently under the script's SilentlyContinue, and the segment read 'cache warm' over a cache
+# that lapsed decades ago. Found by the Codex review of this branch. [long] holds the whole domain, so
+# the answer remains a real count rather than silently vanishing. Pinned as the property every caller
+# actually tests, "gone", rather than as a sentinel none of them looks for.
+$clockPinStaleLeft = Get-CacheSecondsLeft 1768485900 4102444800
+Confirm-True ($null -ne $clockPinStaleLeft) 'clock seam: an expiry further past than an Int32 can hold still comes back as a number, not as nothing'
+Confirm-True ($clockPinStaleLeft -le 0) 'clock seam: and that number reads as gone, which is all any caller asks it'
+Confirm-Equal (Get-CacheSecondsLeft 1768485900 1768485000) 900 'clock seam: and an ordinary countdown is unchanged by the wider cast'
+Confirm-Equal (Get-CacheSecondsLeft 4102444800 1768485900) $null 'clock seam: the ceiling still refuses an expiry more than a day out'
+try {
+    # 1 January 2100, through the builder the render loop calls, with warm true beside it - the shape
+    # that used to print the reassuring answer.
+    $script:renderNow = [DateTimeOffset]::FromUnixTimeSeconds(4102444800)
+    $clockPinStale = Get-CacheSegment (Get-JsonPayload 'prompt_cache' '{"warm":true,"expires_at":1768485900}')
+    Confirm-Equal $clockPinStale.Text "$iconCache cache cold" 'clock seam: a cache that lapsed decades before the reading is cold, not warm'
+    Confirm-Equal $clockPinStale.Role 'bad' 'clock seam: and it is coloured as the bad news it is'
+} finally { $script:renderNow = $clockTestNow }
 
 Write-Host '== unit: badges' -ForegroundColor Cyan
 # $badgeNameCells and $defaultEffort are script-level constants in statusline.ps1 and the builder closes
@@ -9861,6 +9990,69 @@ $rowTwo = Invoke-StatusLine $samplePayloads['01-main-clean.json'] $rowTwoRight 1
 Confirm-True ($rowTwo.Err.Count -eq 0) 'right render row two: stderr empty'
 Confirm-Equal ($rowTwo.Lines -join "`n") ($twoNone.Lines -join "`n") 'right render row two: a group naming a row-two segment belongs to row one and so changes nothing'
 Confirm-True ((Measure-VisibleWidth $rowTwo.Lines[1]) -lt 119) 'right render row two: row two is not aligned to the width by a group that named one of its segments'
+
+Write-Host ''
+Write-Host '== render: the pinned clock' -ForegroundColor Cyan
+# The seam through a whole child render, which is the case docs/render-screenshot.ps1 depends on and
+# the unit section above cannot reach: the override has to survive being read from the environment by
+# another process, and the figures it pins have to come out of the same render the screenshot captures.
+# The payload is the screenshot's own - sample 06, with the two expiries built from the pinned instant
+# the way render-screenshot.ps1 builds them - so this section fails if that render stops being
+# reproducible, rather than the diff being noticed months later. It says nothing about the PNG's bytes,
+# which the rasteriser and the installed font decide and this file never touches.
+# $clockPin, from the unit section, is the one pin in this file and is already checked against the docs
+# script's own $fixedNow, so the instant here cannot drift from the instant the screenshots are drawn at.
+$pinPayloadObj = $samplePayloads[$sample06.Name] | ConvertFrom-Json -AsHashtable
+$pinPayloadObj.rate_limits.five_hour.resets_at = $clockPinEpoch + 4350
+$pinPayloadObj.prompt_cache = @{ warm = $true; expires_at = $clockPinEpoch + 2550 }
+$pinPayload = $pinPayloadObj | ConvertTo-Json -Depth 5
+$pinConfig = Write-TempConfig 'clock-pinned.json' '{ "layout": "two", "style": "plain", "segments": { "time": true } }'
+# FIRST, WITH NOTHING SET, and this is the assertion the whole group leans on. Every check below runs a
+# child that inherits this process's environment; if the variable were already set - here, or in the
+# shell that started the suite - the 72 child renders above would have run frozen and passed anyway.
+# This one says the clock those renders read is live, and the two pinned countdowns are absent, before
+# any of them is pinned. The wall clock is read either side, so the only way it matches neither is a
+# render that crossed two minute boundaries.
+$oldPinNow = $env:CLAUDE_STATUSLINE_NOW
+Confirm-True ($null -eq $oldPinNow) 'pinned clock: the suite reaches this group with no pin inherited, so every render above read a live clock'
+$liveBefore = Get-Date
+$live = Invoke-StatusLine $pinPayload $pinConfig 0
+$liveAfter = Get-Date
+$liveText = ConvertTo-PlainText ($live.Lines -join "`n")
+Confirm-True ($live.Err.Count -eq 0) 'pinned clock: the unpinned render writes nothing to stderr'
+Confirm-True ($liveText.Contains("$iconTime $($liveBefore.ToString('HH\:mm'))") -or $liveText.Contains("$iconTime $($liveAfter.ToString('HH\:mm'))")) "pinned clock: unpinned, the wall clock is this machine's, got '$liveText'"
+Confirm-True (-not $liveText.Contains('cache 42m')) 'pinned clock: unpinned, the pinned cache countdown is not on the line'
+Confirm-True (-not $liveText.Contains('(1h12m)')) 'pinned clock: unpinned, the pinned rate-limit countdown is not on the line'
+try {
+    $env:CLAUDE_STATUSLINE_NOW = $clockPin
+    $pinned = Invoke-StatusLine $pinPayload $pinConfig 0
+    Confirm-True ($pinned.ExitCode -eq 0) "pinned clock: exit code $($pinned.ExitCode)"
+    Confirm-True ($pinned.Err.Count -eq 0) "pinned clock: stderr empty, got '$($pinned.Err -join ' | ')'"
+    $pinnedText = ConvertTo-PlainText ($pinned.Lines -join "`n")
+    Confirm-True ($pinnedText.Contains('cache 42m')) "pinned clock: the cache countdown is the pinned 42m, got '$pinnedText'"
+    Confirm-True ($pinnedText.Contains('(1h12m)')) "pinned clock: the rate-limit countdown is the pinned 1h12m, got '$pinnedText'"
+    Confirm-True ($pinnedText.Contains($paceFlat)) 'pinned clock: the pace arrow is the flat one the pinned window projects'
+    Confirm-True ($pinnedText.Contains("$iconTime 14:05")) "pinned clock: the wall clock is 14:05 in any zone, got '$pinnedText'"
+    # The same render twice is the property the screenshots need, stated as an assertion: two child
+    # processes started seconds apart print the same bytes, which is what could not be said before.
+    $pinnedAgain = Invoke-StatusLine $pinPayload $pinConfig 0
+    Confirm-Equal ($pinnedAgain.Lines -join "`n") ($pinned.Lines -join "`n") 'pinned clock: two renders of one payload under one pinned instant are byte for byte the same'
+    # One no-offset value proves the process-level fallback. TryParse would have supplied this
+    # machine's offset, so the unit-level refusal alone cannot show that the render stays live.
+    $junk = '2026-01-15T14:05:00'
+    $env:CLAUDE_STATUSLINE_NOW = $junk
+    $before = Get-Date
+    $junked = Invoke-StatusLine $pinPayload $pinConfig 0
+    $after = Get-Date
+    $junkText = ConvertTo-PlainText ($junked.Lines -join "`n")
+    Confirm-True ($junked.Err.Count -eq 0) "pinned clock: '$junk' writes nothing to stderr"
+    Confirm-True (-not $junkText.Contains("$iconTime 14:05") -or $before.ToString('HH\:mm') -eq '14:05') "pinned clock: '$junk' is not read as the pinned instant"
+    Confirm-True ($junkText.Contains("$iconTime $($before.ToString('HH\:mm'))") -or $junkText.Contains("$iconTime $($after.ToString('HH\:mm'))")) "pinned clock: '$junk' falls back to this machine's clock, got '$junkText'"
+    # Unsetting again is the production path, and it is the $live render at the head of this group -
+    # same payload, same config, nothing in the environment - so it is not run a second time here.
+} finally {
+    if ($null -ne $oldPinNow) { $env:CLAUDE_STATUSLINE_NOW = $oldPinNow } else { Remove-Item Env:CLAUDE_STATUSLINE_NOW -ErrorAction SilentlyContinue }
+}
 
 # The taskbar sequence through the whole script. Every check here is against a second render of the
 # same payload with the key off, so what is pinned is "the sequence and nothing else changed" rather
