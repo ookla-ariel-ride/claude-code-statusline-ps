@@ -352,7 +352,7 @@ function Get-SubagentReply([string[]] $Lines) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-ConfigReadTimeout', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Invoke-BoundedFilePendingSweep', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Get-TintColour', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Move-AtomicFile', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent', 'Get-StatusNow', 'Get-StatusClock', 'Test-PathAbsent', 'Add-StatusDiagDrop', 'Clear-StatusDiagPendingHandle', 'Request-StatusDiagPendingCall', 'Add-StatusDiagPendingHandle'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-ConfigReadTimeout', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Invoke-BoundedFilePendingSweep', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Get-SegmentPalette', 'Get-TintColour', 'Get-StatuslineRgb', 'Get-StatuslineLuminance', 'Test-StatuslineJointClear', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Move-AtomicFile', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent', 'Get-StatusNow', 'Get-StatusClock', 'Test-PathAbsent', 'Add-StatusDiagDrop', 'Clear-StatusDiagPendingHandle', 'Request-StatusDiagPendingCall', 'Add-StatusDiagPendingHandle'))
 # Import-ScriptFunction lifts functions but not the script-level clock reading. Keep one typed baseline
 # for every lifted builder so an invalid test setup reaches the consumer instead of being repaired.
 $script:renderNow = [DateTimeOffset]::Now
@@ -2740,7 +2740,7 @@ $darkMarkSgr = $pal.Inline.track.Sgr
 # One palette table as a single sorted string, so two tables compare as text whatever order a
 # hashtable happens to enumerate its keys in.
 function Format-PaletteText($Palette) {
-    $rows = foreach ($group in 'Roles', 'Segments', 'Inline') {
+    $rows = foreach ($group in 'Roles', 'Inline') {
         foreach ($name in @($Palette[$group].Keys | Sort-Object)) {
             $e = $Palette[$group][$name]
             # Every key an entry can carry, sorted, so a table that differs anywhere differs here. Naming
@@ -2766,10 +2766,11 @@ Confirm-True ((Format-PaletteText (Get-Palette 'light')) -ne (Format-PaletteText
 $segmentNames = @((Get-SegmentRegistry).Name)
 $dark = Get-Palette 'dark'
 $light = Get-Palette 'light'
+Confirm-True (-not $dark.ContainsKey('Segments') -and -not $light.ContainsKey('Segments')) 'palette: segment rows are outside the shared helper'
+$dark['Segments'] = Get-SegmentPalette 'dark'
+$light['Segments'] = Get-SegmentPalette 'light'
 foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
-    Confirm-True ($p.T.ContainsKey('Segments')) "$($p.N) palette: carries a segment tint table"
-    if (-not $p.T.ContainsKey('Segments')) { continue }
-    Confirm-Equal (@($p.T.Segments.Keys | Sort-Object) -join ',') (@($segmentNames | Sort-Object) -join ',') "$($p.N) palette: one resting colour per segment"
+    Confirm-Equal (@($p.T.Segments.Keys | Sort-Object) -join ',') (@($segmentNames | Sort-Object) -join ',') "$($p.N) segment palette: one resting colour per segment"
     foreach ($n in $segmentNames) {
         $entry = $p.T.Segments[$n]
         Confirm-True ($null -ne $entry -and $null -ne $entry.Sgr -and $null -ne $entry.Fg -and $null -ne $entry.Bg -and $null -ne $entry.Ink) "$($p.N) segment ${n}: has the role colour shape"
@@ -2783,6 +2784,15 @@ if ($dark.ContainsKey('Segments') -and $light.ContainsKey('Segments')) {
     $badContext = @{ Name = 'context'; Text = 'C'; Short = $null; Role = 'bad'; Bold = $false }
     $badContextLine = Format-Line @($badContext) 'powerline' 'dark' 'segment'
     Confirm-True ($badContextLine.Contains("48;5;$($dark.Roles.bad.Bg)")) 'segment tint: a bad context still takes the bad semantic colour'
+}
+
+# The segment hand-back is part of the tint contract: the marker must restore the resting segment code,
+# not the semantic role code it would use when tint is role-owned.
+foreach ($styleName in @('plain', 'ascii', 'powerline')) {
+    $branchColour = (Get-SegmentPalette 'dark').branch
+    $inline = Format-Inline 'added' '+1' 'ok' $styleName 'dark' 'branch' 'segment'
+    $closer = if ($styleName -eq 'powerline') { "$esc[38;5;$($branchColour.Fg)m" } else { "$esc[$($branchColour.Sgr)m" }
+    Confirm-True ($inline.EndsWith($closer, [System.StringComparison]::Ordinal)) "segment tint inline ${styleName}: branch marker restores branch's own code"
 }
 
 Write-Host '== unit: light palette' -ForegroundColor Cyan
@@ -2850,6 +2860,8 @@ Confirm-Equal (Get-XtermRgb 44) @(0, 215, 215) 'xterm: 44 is #00D7D7 in the cube
 
 $dark = Get-Palette 'dark'
 $light = Get-Palette 'light'
+$dark['Segments'] = Get-SegmentPalette 'dark'
+$light['Segments'] = Get-SegmentPalette 'light'
 $roleNames = @('model', 'ok', 'warn', 'bad', 'dim', 'folder', 'branch')
 $inlineNames = @('added', 'removed', 'track', 'muted', 'cached')
 # The light table is the same shape as the dark one, role for role and inline role for inline role.
@@ -2902,7 +2914,7 @@ Confirm-Equal ((@(foreach ($r in $roleNames) { $light.Roles[$r].Bg }) | Sort-Obj
 # WHAT IS NOT HERE IS AS DELIBERATE AS WHAT IS, and each absence is measured below rather than asserted:
 #   model, folder and branch have no second shade at all: each is the role of exactly ONE segment, so no
 #     line can put two of them side by side. If a later layout ever does, Format-Line's divider covers
-#     it - it draws one whenever two neighbouring blocks come out the same colour, whatever the reason.
+#     it when the resolved neighbours are identical or fail either joint floor.
 #   dark `dim` has no second BACKGROUND. Its block is a grey wedged between its own light text above and
 #     the terminal's ground below, and the band that leaves is too narrow to hold a second NEUTRAL grey
 #     40 sRGB away. Its joints take the divider instead.
@@ -3047,6 +3059,20 @@ foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
         Confirm-True ($dist -ge 40) ("$($p.N) plain $r alt: $idx is {0:N1} from the base code $baseIdx in sRGB" -f $dist)
     }
     Write-Host ("   $($p.N) alternate plain codes on the terminal's own ground: worst {0:N2}:1 ($worstAltAt)" -f $worstAlt)
+}
+# Segment plain codes must not impersonate any semantic warning, error, or alarm code. An alarm is
+# rendered through the bad role, but it remains named here so its contract is not hidden by that reuse.
+foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
+    foreach ($segment in $segmentNames) {
+        $segmentIndex = Get-SgrColourIndex $p.T.Segments[$segment].Sgr
+        Confirm-True ($null -ne $segmentIndex) "$($p.N) segment ${segment}: plain code names a 256-colour index"
+        foreach ($semantic in @(@{ N = 'warn'; Role = 'warn' }, @{ N = 'bad'; Role = 'bad' }, @{ N = 'alarm'; Role = 'bad' })) {
+            $semanticIndex = Get-SgrColourIndex $p.T.Roles[$semantic.Role].Sgr
+            if ($null -eq $segmentIndex -or $null -eq $semanticIndex) { continue }
+            $distance = Get-RgbDistance (Get-XtermRgb $segmentIndex) (Get-XtermRgb $semanticIndex)
+            Confirm-True ($segmentIndex -ne $semanticIndex -and $distance -ge 40) ("$($p.N) segment ${segment}: code $segmentIndex is {0:N1} from semantic $($semantic.N) code $semanticIndex" -f $distance)
+        }
+    }
 }
 # 2. Powerline style. The block paints its own background, so the pair is what has to be readable and
 #    the terminal's own theme does not enter into it. BOTH tables are held to 4.5, with ONE EXEMPTION
@@ -3390,6 +3416,32 @@ function Confirm-JointClear([string] $Line, [string] $Label) {
         }
     }
 }
+# Every pair a segment layout can make reaches the rendered joint test, including a resting segment
+# beside each semantic override. Pairs below either arrow floor must draw the divider instead.
+foreach ($paletteName in @('dark', 'light')) {
+    $tab = Get-Palette $paletteName
+    $segmentTab = Get-SegmentPalette $paletteName
+    $semanticRecords = @(@{ Name = 'warn'; Role = 'warn' }, @{ Name = 'bad'; Role = 'bad' }, @{ Name = 'alarm'; Role = 'bad' })
+    foreach ($leftName in $segmentNames) {
+        $left = @{ Name = $leftName; Text = 'L'; Short = $null; Role = 'ok'; Bold = $false }
+        foreach ($rightName in $segmentNames) {
+            $right = @{ Name = $rightName; Text = 'R'; Short = $null; Role = 'ok'; Bold = $false }
+            $line = Format-Line @($left, $right) 'powerline' $paletteName 'segment'
+            $joint = @(Get-JointSet $line)[0]
+            $clear = Test-StatuslineJointClear $segmentTab[$leftName].Bg $segmentTab[$rightName].Bg
+            Confirm-Equal $joint.Glyph ($(if ($clear) { $arrow } else { $chevron })) "$paletteName segment joint $leftName/${rightName}: rendered glyph follows its floors"
+            Confirm-JointClear $line "$paletteName segment joint $leftName/$rightName"
+        }
+        foreach ($semantic in $semanticRecords) {
+            $right = @{ Name = $semantic.Name; Text = 'S'; Short = $null; Role = $semantic.Role; Bold = $false }
+            $line = Format-Line @($left, $right) 'powerline' $paletteName 'segment'
+            $joint = @(Get-JointSet $line)[0]
+            $clear = Test-StatuslineJointClear $segmentTab[$leftName].Bg $tab.Roles[$semantic.Role].Bg
+            Confirm-Equal $joint.Glyph ($(if ($clear) { $arrow } else { $chevron })) "$paletteName segment/$($semantic.Name) joint ${leftName}: rendered glyph follows its floors"
+            Confirm-JointClear $line "$paletteName segment/$($semantic.Name) joint $leftName"
+        }
+    }
+}
 # The plain and ascii answer to the same question. There is no background to measure, so what has to
 # hold is that two segments side by side are not one colour - and where they are, the role has to be one
 # the palette has no second code for, which is a fact about the table rather than about this line.
@@ -3455,6 +3507,7 @@ Confirm-Equal (Get-FittedLine @($segModel, $segFolder) 'plain' $null -Palette 'l
 Confirm-Equal (Get-FittedLine @($segModel, $segFolder) 'plain' 40 -Palette 'light') (Format-Line @($segModel, $segFolder) 'plain' 'light') 'fitted at a width that holds it: the light render'
 Confirm-Equal (Get-FittedLine @($segModel, $segFolder) 'plain' 40 -Right @('folder') -Palette 'light') (Join-AlignedLine (Format-Line @($segModel) 'plain' 'light') (Format-Line @($segFolder) 'plain' 'light') 40) 'fitted with a right group: both groups are light'
 Confirm-Equal (Get-FittedLine @($segModel, $segFolder) 'plain' 40) (Get-FittedLine @($segModel, $segFolder) 'plain' 40 -Palette 'dark') 'fitted: no palette argument is the dark render'
+Confirm-Equal (Get-FittedLine @($segModel) 'plain' 0 -Palette 'light' -Tint 'segment') (Format-Line @($segModel) 'plain' 'light' 'segment') 'fitted fallback: a too-small width retains segment tint'
 
 # ---- Adjacent segments of the same role ----
 # The shipped second row is context, cache and limits - all `ok` when nothing is warning - and then
@@ -3508,6 +3561,16 @@ Confirm-Equal (Format-Line @($segDim, $segClock) 'ascii') "$esc[90mX$esc[0m $esc
 # The light table has no second green plain code, so this pair is the one place the alternation cannot
 # reach and the chevron carries the joint on its own, exactly as it did before.
 Confirm-Equal (Format-Line @($segCtx, $segCache) 'plain' 'light') "$esc[$($light.Roles.ok.Sgr)mC$esc[0m $esc[$($light.Roles.dim.Sgr)m$chevron$esc[0m $esc[$($light.Roles.ok.Sgr)mK$esc[0m" 'light plain same role: no second green, so the pair is unchanged'
+# Semantic overrides resolve to their role colours even in segment mode. Their equal resolved colour,
+# rather than the tint switch, is what makes the second warning take the alternate code.
+foreach ($paletteName in @('dark', 'light')) {
+    $tab = Get-Palette $paletteName
+    $warnLeft = @{ Name = 'context'; Text = 'W'; Short = $null; Role = 'warn'; Bold = $false }
+    $warnRight = @{ Name = 'cache'; Text = 'X'; Short = $null; Role = 'warn'; Bold = $false }
+    $warnLine = Format-Line @($warnLeft, $warnRight) 'plain' $paletteName 'segment'
+    Confirm-True ($warnLine.Contains("$esc[$($tab.Roles.warn.Sgr)mW") -and $warnLine.Contains("$esc[$($tab.Roles.warn.AltSgr)mX")) "$paletteName segment tint: equal semantic warnings alternate by resolved colour"
+}
+
 # A MARKER INSIDE AN ALTERNATED SEGMENT. Format-Inline closes its run by handing the segment's own
 # colour back, and it chose that colour when the TEXT was built, long before this line existed - so a
 # segment drawn in the alternate has to have those hand-backs moved with it, or the text after the
@@ -10002,15 +10065,15 @@ foreach ($cfg in $configSet) {
                         if ($cfg.Style -eq 'plain') {
                             Confirm-True ($text.Contains($chevron) -and -not $text.Contains($arrow)) "${label}: plain uses chevron not arrow"
                         } else {
-                            # A powerline line can now carry the chevron too, but only where two blocks
-                            # came out one colour and the arrow between them would have been that colour
-                            # painted on itself - #106's divider. So it is COUNTED rather than forbidden:
+                            # A powerline line can now carry the chevron too, where resolved block backgrounds
+                            # fail either joint floor and the arrow would not be readable. So it is COUNTED
+                            # rather than forbidden:
                             # every chevron on the line has to be one of the divider joints the raw
                             # escapes name, which is what stops the plain separator leaking into this
                             # style under cover of the new rule.
                             $dividerCount = @(Get-JointSet ($lines -join "`n") | Where-Object { [string]::Equals($_.Glyph, $chevron, [System.StringComparison]::Ordinal) }).Count
                             $chevronCount = @([regex]::Matches($text, [regex]::Escape($chevron))).Count
-                            Confirm-True ($text.Contains($arrow) -and $chevronCount -eq $dividerCount) "${label}: powerline uses arrows, and its $chevronCount chevrons are all same-background dividers ($dividerCount)"
+                            Confirm-True ($text.Contains($arrow) -and $chevronCount -eq $dividerCount) "${label}: powerline uses arrows, and its $chevronCount chevrons are all resolved-background dividers ($dividerCount)"
                         }
                     }
                     # The alarm only changes a colour, so it is the one thing the plain-text markers
@@ -10964,10 +11027,12 @@ foreach ($case in @(
     Confirm-Equal (Measure-VisibleWidth $lightText) (Measure-VisibleWidth $darkText) "render light ${name}: the same width as dark"
 }
 # The upgrade promise, on every sample: no palette key, the dark key, and an unusable value all render
-# the same bytes. Nobody's line moves until they ask for it.
+# the same bytes. Cache the no-key render because the tint check below needs that identical baseline.
+$plainRenders = @{}
 foreach ($sample in $sampleFiles) {
     $p = $samplePayloads[$sample.Name]
     $none = (Invoke-StatusLine $p $plainConfig 0).Lines -join "`n"
+    $plainRenders[$sample.Name] = $none
     Confirm-Equal ((Invoke-StatusLine $p $darkConfig 0).Lines -join "`n") $none "render palette $($sample.Name): the dark key renders what no key renders"
     Confirm-Equal ((Invoke-StatusLine $p $bogusConfig 0).Lines -join "`n") $none "render palette $($sample.Name): an unusable value renders what no key renders"
 }
@@ -10986,12 +11051,39 @@ foreach ($tintPalette in @('dark', 'light')) {
         $roleText = $roleRender.Lines -join "`n"
         $segmentText = $segmentRender.Lines -join "`n"
         if ($tintPalette -eq 'dark') {
-            Confirm-Equal $roleText ((Invoke-StatusLine $payload $plainConfig 0).Lines -join "`n") "${label}: explicit role tint is the default render"
+            Confirm-Equal $roleText $plainRenders[$sample.Name] "${label}: explicit role tint is the cached default render"
         }
         Confirm-True (-not [string]::Equals($roleText, $segmentText, [System.StringComparison]::Ordinal)) "${label}: segment tint changes SGR codes"
         $roleWithoutSgr = [regex]::Replace($roleText, "$esc\[[0-9;]*m", '')
         $segmentWithoutSgr = [regex]::Replace($segmentText, "$esc\[[0-9;]*m", '')
         Confirm-True ([string]::Equals($roleWithoutSgr, $segmentWithoutSgr, [System.StringComparison]::Ordinal)) "${label}: SGR-stripped output is byte-identical to role tint"
+    }
+}
+
+# A compact real-render matrix covers the equality contract in every style and palette. Plain and ascii
+# cannot change any visible character under tint; powerline may swap an arrow and divider, so those two
+# glyphs are normalised only for that comparison and are pinned separately below.
+foreach ($matrixStyle in @('plain', 'ascii', 'powerline')) {
+    foreach ($matrixPalette in @('dark', 'light')) {
+        $roleCfg = Write-TempConfig "render-tint-matrix-$matrixStyle-$matrixPalette-role.json" ('{ "style": "' + $matrixStyle + '", "palette": "' + $matrixPalette + '", "tint": "role" }')
+        $segmentCfg = Write-TempConfig "render-tint-matrix-$matrixStyle-$matrixPalette-segment.json" ('{ "style": "' + $matrixStyle + '", "palette": "' + $matrixPalette + '", "tint": "segment" }')
+        $payload = $samplePayloads['06-limits-badges-lines.json']
+        $roleText = (Invoke-StatusLine $payload $roleCfg 0).Lines -join "`n"
+        $segmentText = (Invoke-StatusLine $payload $segmentCfg 0).Lines -join "`n"
+        $label = "render tint matrix $matrixStyle $matrixPalette"
+        $roleVisible = [regex]::Replace($roleText, "$esc\[[0-9;]*m", '')
+        $segmentVisible = [regex]::Replace($segmentText, "$esc\[[0-9;]*m", '')
+        if ($matrixStyle -eq 'powerline') {
+            $roleVisible = $roleVisible.Replace($arrow, '?').Replace($chevron, '?')
+            $segmentVisible = $segmentVisible.Replace($arrow, '?').Replace($chevron, '?')
+        }
+        Confirm-Equal $segmentVisible $roleVisible "${label}: tint changes no visible text"
+        if ($matrixStyle -eq 'powerline') {
+            $roleJoints = @(Get-JointSet $roleText)
+            $segmentJoints = @(Get-JointSet $segmentText)
+            Confirm-True (@($roleJoints | Where-Object { $_.Glyph -eq $arrow -or $_.Glyph -eq $chevron }).Count -eq $roleJoints.Count) "${label}: role joints are arrows or dividers"
+            Confirm-True (@($segmentJoints | Where-Object { $_.Glyph -eq $arrow -or $_.Glyph -eq $chevron }).Count -eq $segmentJoints.Count) "${label}: segment joints are arrows or dividers"
+        }
     }
 }
 
@@ -11009,14 +11101,18 @@ Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render light ascii: ex
 $asciiText = $r.Lines -join "`n"
 Confirm-Equal (Get-NonAsciiName (ConvertTo-PlainText $asciiText)) '' 'render light ascii: the palette breaks no part of the ascii promise'
 Confirm-True ($asciiText.Contains("$esc[38;5;240m>")) 'render light ascii: the ascii divider carries the light dim colour'
-# The stand-in line the script prints when a payload will not parse. It is one glyph and one word with
-# no segment behind it, so it never went through the palette; on a light terminal a raw cyan 36 is the
-# one thing left on screen and the least readable colour there is.
+# The stand-in line has no built segment, but it uses the same tint resolver as a model block.
 $r = Invoke-StatusLine 'not json' $lightConfig 0
 Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render light bad payload: exit code 0, stderr empty'
-Confirm-True (($r.Lines -join "`n").Contains("$esc[$($palLight.Roles.model.Sgr)m")) 'render light bad payload: the stand-in follows the palette'
-Confirm-Equal ((Invoke-StatusLine 'not json' $darkConfig 0).Lines -join "`n") ((Invoke-StatusLine 'not json' $plainConfig 0).Lines -join "`n") 'render dark bad payload: the stand-in is unchanged'
-Confirm-True (((Invoke-StatusLine 'not json' $plainConfig 0).Lines -join "`n").Contains("$esc[36m")) 'render dark bad payload: still the raw cyan it always was'
+Confirm-True (($r.Lines -join "`n").Contains("$esc[$($palLight.Roles.model.Sgr)m")) 'render light bad payload: role tint follows the palette'
+Confirm-Equal ((Invoke-StatusLine 'not json' $darkConfig 0).Lines -join "`n") ((Invoke-StatusLine 'not json' $plainConfig 0).Lines -join "`n") 'render dark bad payload: role tint is the default render'
+Confirm-True (((Invoke-StatusLine 'not json' $plainConfig 0).Lines -join "`n").Contains("$esc[1;36m")) 'render dark bad payload: role tint uses the model role code'
+foreach ($standinPalette in @('dark', 'light')) {
+    $standinConfig = Write-TempConfig "render-tint-$standinPalette-standin.json" ('{ "palette": "' + $standinPalette + '", "tint": "segment" }')
+    $standin = Invoke-StatusLine 'not json' $standinConfig 0
+    $want = (Get-SegmentPalette $standinPalette).model.Sgr
+    Confirm-True (($standin.Lines -join "`n").Contains("$esc[$want`m")) "render $standinPalette segment tint bad payload: the stand-in restores the model segment colour"
+}
 
 Write-Host ''
 Write-Host '== render: every joint of every layout' -ForegroundColor Cyan
@@ -11096,7 +11192,7 @@ foreach ($case in $jointCases) {
 # other end, on real lines built from real payloads.
 Confirm-True ($jointLines -gt 200) "joints: the walk rendered $jointLines lines"
 Confirm-True ($script:jointArrows -gt 0) "joints: $($script:jointArrows) arrows between two different backgrounds"
-Confirm-True ($script:jointDividers -gt 0) "joints: $($script:jointDividers) same-background joints carried by the divider"
+Confirm-True ($script:jointDividers -gt 0) "joints: $($script:jointDividers) resolved-background joints carried by the divider"
 Confirm-True ($script:jointPlainSame -gt 0) "joints: $($script:jointPlainSame) plain pairs share a code, all of them roles with no second one"
 Write-Host ("   $jointLines lines, $($script:jointArrows) arrows, $($script:jointDividers) dividers, $($script:jointPlainSame) plain pairs on one code")
 

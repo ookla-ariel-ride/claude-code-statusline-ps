@@ -1757,20 +1757,6 @@ function Get-Palette([string] $Palette = 'dark') {
                 folder = @{ Sgr = '38;5;25';   Fg = 16; Bg = 110; Ink = 'Dark' }
                 branch = @{ Sgr = '38;5;90';   Fg = 16; Bg = 213; Ink = 'Dark' }
             }
-            Segments = @{
-                model   = @{ Sgr = '38;5;24';  Fg = 16; Bg = 75;  Ink = 'Dark' }
-                context = @{ Sgr = '38;5;25';  Fg = 16; Bg = 145; Ink = 'Dark' }
-                cache   = @{ Sgr = '38;5;90';  Fg = 16; Bg = 213; Ink = 'Dark' }
-                cost    = @{ Sgr = '38;5;23';  Fg = 16; Bg = 40;  Ink = 'Dark' }
-                clock   = @{ Sgr = '38;5;22';  Fg = 16; Bg = 43;  Ink = 'Dark' }
-                time    = @{ Sgr = '38;5;58';  Fg = 16; Bg = 113; Ink = 'Dark' }
-                lines   = @{ Sgr = '38;5;17';  Fg = 16; Bg = 148; Ink = 'Dark' }
-                limits  = @{ Sgr = '38;5;61';  Fg = 16; Bg = 117; Ink = 'Dark' }
-                badges  = @{ Sgr = '38;5;94';  Fg = 16; Bg = 186; Ink = 'Dark' }
-                pr      = @{ Sgr = '38;5;95';  Fg = 16; Bg = 220; Ink = 'Dark' }
-                folder  = @{ Sgr = '38;5;26';  Fg = 16; Bg = 82;  Ink = 'Dark' }
-                branch  = @{ Sgr = '38;5;124'; Fg = 16; Bg = 120; Ink = 'Dark' }
-            }
             Inline = @{
                 added   = @{ Sgr = '38;5;22';    Dark = 22 }
                 removed = @{ Sgr = '38;5;124';   Dark = 124 }
@@ -1790,20 +1776,6 @@ function Get-Palette([string] $Palette = 'dark') {
             folder = @{ Sgr = '34';   Fg = 231; Bg = 25;  Ink = 'Light' }
             branch = @{ Sgr = '35';   Fg = 231; Bg = 90;  Ink = 'Light' }
         }
-            Segments = @{
-                model   = @{ Sgr = '38;5;39';  Fg = 231; Bg = 54;  Ink = 'Light' }
-                context = @{ Sgr = '38;5;40';  Fg = 231; Bg = 20;  Ink = 'Light' }
-                cache   = @{ Sgr = '38;5;69';  Fg = 231; Bg = 55;  Ink = 'Light' }
-                cost    = @{ Sgr = '38;5;70';  Fg = 231; Bg = 90;  Ink = 'Light' }
-                clock   = @{ Sgr = '38;5;104'; Fg = 231; Bg = 239; Ink = 'Light' }
-                time    = @{ Sgr = '38;5;105'; Fg = 231; Bg = 23;  Ink = 'Light' }
-                lines   = @{ Sgr = '38;5;137'; Fg = 231; Bg = 24;  Ink = 'Light' }
-                limits  = @{ Sgr = '38;5;138'; Fg = 231; Bg = 126; Ink = 'Light' }
-                badges  = @{ Sgr = '38;5;170'; Fg = 231; Bg = 127; Ink = 'Light' }
-                pr      = @{ Sgr = '38;5;171'; Fg = 231; Bg = 26;  Ink = 'Light' }
-                folder  = @{ Sgr = '38;5;201'; Fg = 231; Bg = 128; Ink = 'Light' }
-                branch  = @{ Sgr = '38;5;202'; Fg = 231; Bg = 242; Ink = 'Light' }
-            }
         Inline = @{
             added   = @{ Sgr = '32';        Light = 46;  Dark = 22 }
             removed = @{ Sgr = '31';        Light = 222; Dark = 124 }
@@ -1814,14 +1786,70 @@ function Get-Palette([string] $Palette = 'dark') {
     }
 }
 
+# Resting segment colours belong only to the main line. The agent panel uses role colours, so
+# keeping this table apart leaves Get-Palette as the exact shared roles-and-inline helper.
+function Get-SegmentPalette([string] $Palette = 'dark') {
+    if ($Palette -eq 'light') {
+        return @{
+            model   = @{ Sgr = '38;5;24';  Fg = 16; Bg = 75;  Ink = 'Dark' }
+            context = @{ Sgr = '38;5;25';  Fg = 16; Bg = 145; Ink = 'Dark' }
+            cache   = @{ Sgr = '38;5;90';  Fg = 16; Bg = 213; Ink = 'Dark' }
+            cost    = @{ Sgr = '38;5;23';  Fg = 16; Bg = 40;  Ink = 'Dark' }
+            clock   = @{ Sgr = '38;5;22';  Fg = 16; Bg = 43;  Ink = 'Dark' }
+            time    = @{ Sgr = '38;5;58';  Fg = 16; Bg = 113; Ink = 'Dark' }
+            lines   = @{ Sgr = '38;5;17';  Fg = 16; Bg = 148; Ink = 'Dark' }
+            limits  = @{ Sgr = '38;5;61';  Fg = 16; Bg = 117; Ink = 'Dark' }
+            badges  = @{ Sgr = '38;5;60';  Fg = 16; Bg = 186; Ink = 'Dark' }
+            pr      = @{ Sgr = '38;5;95';  Fg = 16; Bg = 220; Ink = 'Dark' }
+            folder  = @{ Sgr = '38;5;26';  Fg = 16; Bg = 82;  Ink = 'Dark' }
+            branch  = @{ Sgr = '38;5;160'; Fg = 16; Bg = 120; Ink = 'Dark' }
+        }
+    }
+    return @{
+        model   = @{ Sgr = '38;5;39';  Fg = 231; Bg = 54;  Ink = 'Light' }
+        context = @{ Sgr = '38;5;40';  Fg = 231; Bg = 20;  Ink = 'Light' }
+        cache   = @{ Sgr = '38;5;69';  Fg = 231; Bg = 55;  Ink = 'Light' }
+        cost    = @{ Sgr = '38;5;70';  Fg = 231; Bg = 90;  Ink = 'Light' }
+        clock   = @{ Sgr = '38;5;104'; Fg = 231; Bg = 239; Ink = 'Light' }
+        time    = @{ Sgr = '38;5;105'; Fg = 231; Bg = 23;  Ink = 'Light' }
+        lines   = @{ Sgr = '38;5;137'; Fg = 231; Bg = 24;  Ink = 'Light' }
+        limits  = @{ Sgr = '38;5;138'; Fg = 231; Bg = 126; Ink = 'Light' }
+        badges  = @{ Sgr = '38;5;170'; Fg = 231; Bg = 127; Ink = 'Light' }
+        pr      = @{ Sgr = '38;5;171'; Fg = 231; Bg = 26;  Ink = 'Light' }
+        folder  = @{ Sgr = '38;5;201'; Fg = 231; Bg = 128; Ink = 'Light' }
+        branch  = @{ Sgr = '38;5;202'; Fg = 231; Bg = 242; Ink = 'Light' }
+    }
+}
+
 # Resolves the colour a line will paint. Segment tint owns a resting colour for each named segment, but
 # warning and bad roles remain semantic states: a threshold, cold cache, conflict, or alarm still turns
 # yellow or red rather than merely becoming that segment's resting hue.
-function Get-TintColour($PaletteTable, [string] $Segment, [string] $Role, [string] $Tint = 'role') {
-    if ($Tint -eq 'segment' -and $Role -notin @('warn', 'bad') -and $Segment -and $PaletteTable.Segments.ContainsKey($Segment)) {
-        return $PaletteTable.Segments[$Segment]
+function Get-TintColour($PaletteTable, [string] $Segment, [string] $Role, [string] $Tint = 'role', [string] $Palette = 'dark') {
+    $segments = Get-SegmentPalette $Palette
+    if ($Tint -eq 'segment' -and $Role -notin @('warn', 'bad') -and $Segment -and $segments.ContainsKey($Segment)) {
+        return $segments[$Segment]
     }
     return $PaletteTable.Roles[$Role]
+}
+
+function Get-StatuslineRgb([int] $Index) {
+    if ($Index -ge 232) { $v = 8 + 10 * ($Index - 232); return @($v, $v, $v) }
+    $levels = @(0, 95, 135, 175, 215, 255)
+    $n = $Index - 16
+    return @($levels[[math]::Floor($n / 36)], $levels[[math]::Floor(($n % 36) / 6)], $levels[$n % 6])
+}
+function Get-StatuslineLuminance($Rgb) {
+    $linear = foreach ($v in $Rgb) { $s = $v / 255; if ($s -le 0.03928) { $s / 12.92 } else { [math]::Pow((($s + 0.055) / 1.055), 2.4) } }
+    return 0.2126 * $linear[0] + 0.7152 * $linear[1] + 0.0722 * $linear[2]
+}
+function Test-StatuslineJointClear([int] $Left, [int] $Right) {
+    $leftRgb = Get-StatuslineRgb $Left
+    $rightRgb = Get-StatuslineRgb $Right
+    $leftLum = Get-StatuslineLuminance $leftRgb
+    $rightLum = Get-StatuslineLuminance $rightRgb
+    $ratio = ([math]::Max($leftLum, $rightLum) + 0.05) / ([math]::Min($leftLum, $rightLum) + 0.05)
+    $distance = [math]::Sqrt((($leftRgb[0] - $rightRgb[0]) * ($leftRgb[0] - $rightRgb[0])) + (($leftRgb[1] - $rightRgb[1]) * ($leftRgb[1] - $rightRgb[1])) + (($leftRgb[2] - $rightRgb[2]) * ($leftRgb[2] - $rightRgb[2])))
+    return $ratio -ge 1.10 -and $distance -ge 40
 }
 
 # A foreground-only colour change inside a segment that restores the segment's own foreground afterwards,
@@ -1834,7 +1862,7 @@ function Get-TintColour($PaletteTable, [string] $Segment, [string] $Role, [strin
 # block text, so it keeps the single Sgr code it always had.
 function Format-Inline([string] $Role, [string] $Text, [string] $SegmentRole, [string] $Style, [string] $Palette = 'dark', [string] $Segment = '', [string] $Tint = 'role') {
     $pal = Get-Palette $Palette
-    $colour = Get-TintColour $pal $Segment $SegmentRole $Tint
+    $colour = Get-TintColour $pal $Segment $SegmentRole $Tint $Palette
     if ($Style -eq 'powerline') {
         $ink = $colour.Ink
         return "`e[38;5;$($pal.Inline[$Role][$ink])m$Text`e[38;5;$($colour.Fg)m"
@@ -1888,8 +1916,10 @@ function Format-Line($Segments, [string] $Style, [string] $Palette = 'dark', [st
     # back for the one after it, so a run of three reads base, alt, base and two alternate blocks can
     # never touch - which is what lets the palette leave the alt-against-alt pairs unmeasured.
     $alt = [bool[]]::new($segs.Count)
-    if ($Tint -eq 'role') {
-        for ($i = 1; $i -lt $segs.Count; $i++) { $alt[$i] = $segs[$i].Role -eq $segs[$i - 1].Role -and -not $alt[$i - 1] }
+    for ($i = 1; $i -lt $segs.Count; $i++) {
+        $previous = Get-TintColour $pal $segs[$i - 1].Name $segs[$i - 1].Role $Tint $Palette
+        $current = Get-TintColour $pal $segs[$i].Name $segs[$i].Role $Tint $Palette
+        $alt[$i] = $current.Bg -eq $previous.Bg -and -not $alt[$i - 1]
     }
     # The soft separator belongs to every style: ASCII chooses its '>' here and the other styles share the Nerd Font glyph.
     $divider = if ($Style -eq 'ascii') { '>' } else { [char]::ConvertFromUtf32(0xE0B1) }
@@ -1899,26 +1929,25 @@ function Format-Line($Segments, [string] $Style, [string] $Palette = 'dark', [st
         # two blocks is made of both of their backgrounds, so the second one has to be known already.
         $bg = [int[]]::new($segs.Count)
         for ($i = 0; $i -lt $segs.Count; $i++) {
-            $c = Get-TintColour $pal $segs[$i].Name $segs[$i].Role $Tint
+            $c = Get-TintColour $pal $segs[$i].Name $segs[$i].Role $Tint $Palette
             $bg[$i] = if ($alt[$i] -and $null -ne $c.AltBg) { $c.AltBg } else { $c.Bg }
         }
         $sb = [System.Text.StringBuilder]::new()
         for ($i = 0; $i -lt $segs.Count; $i++) {
             $s = $segs[$i]
-            $c = Get-TintColour $pal $s.Name $s.Role $Tint
+            $c = Get-TintColour $pal $s.Name $s.Role $Tint $Palette
             $bold = if ($s.Bold) { '1;' } else { '' }
             [void] $sb.Append("`e[0;${bold}48;5;$($bg[$i]);38;5;$($c.Fg)m $($s.Text) ")
             if ($i -lt $segs.Count - 1) {
-                if ($bg[$i + 1] -eq $bg[$i]) {
-                    # TWO NEIGHBOURS ON ONE BACKGROUND, which the alternation could not part: the role
-                    # has no second shade, because none clears the floors. An arrow here would be that
-                    # background painted on itself - nothing to see - so the joint is drawn as the thin
-                    # separator in the block's own ink instead. Thin rather than the solid arrow, since
-                    # a solid triangle in the text colour reads as a segment of its own; and the ink is
-                    # already known to clear the background, because it is what the block writes in.
-                    # The rule is on the RENDERED backgrounds rather than on the roles, so it covers a
-                    # role with no alternate, a role a layout was never expected to repeat, and any
-                    # future pair that comes out the same colour for a reason nobody has thought of.
+                if (-not (Test-StatuslineJointClear $bg[$i] $bg[$i + 1])) {
+                    # TWO NEIGHBOURS WHOSE RESOLVED BACKGROUNDS FAIL EITHER JOINT FLOOR: they may
+                    # be identical, too near in luminance, or too near in sRGB. An arrow here would
+                    # disappear into the pair, so the joint is drawn as the thin separator in the left
+                    # block's own ink instead. Thin rather than the solid arrow, since a solid triangle
+                    # in the text colour reads as a segment of its own; and the ink is already known to
+                    # clear the background, because it is what the block writes in. The rule is on the
+                    # RENDERED backgrounds rather than on roles, so it covers alternation gaps, semantic
+                    # overrides, and any future pair that resolves too close for an arrow.
                     [void] $sb.Append("`e[38;5;$($c.Fg);48;5;$($bg[$i])m$divider")
                 } else {
                     [void] $sb.Append("`e[38;5;$($bg[$i]);48;5;$($bg[$i + 1])m$arrow")
@@ -1939,7 +1968,7 @@ function Format-Line($Segments, [string] $Style, [string] $Palette = 'dark', [st
     $parts = [System.Collections.Generic.List[string]]::new()
     for ($i = 0; $i -lt $segs.Count; $i++) {
         $s = $segs[$i]
-        $c = Get-TintColour $pal $s.Name $s.Role $Tint
+        $c = Get-TintColour $pal $s.Name $s.Role $Tint $Palette
         if (-not ($alt[$i] -and $c.AltSgr)) { $parts.Add("`e[$($c.Sgr)m$($s.Text)`e[0m"); continue }
         # THE SEGMENT'S OWN CODE, INSIDE ITS TEXT AS WELL AS IN FRONT OF IT. Format-Inline closes every
         # marker it draws by handing the segment's colour back, and it chose that colour when the text
@@ -2063,8 +2092,8 @@ function Get-FittedLine($Segments, [string] $Style, $Width, [string[]] $ShrinkOr
     # edge, which is the one member stage 2 leaves standing, so this is the over-wide line the function
     # has always returned - joined by a single space in the one case where there is still a group to
     # join, because there is no room left to align it into.
-    $leftLine = Format-Line $segs $Style $Palette
-    $rightLine = Format-Line $rights $Style $Palette
+    $leftLine = Format-Line $segs $Style $Palette $Tint
+    $rightLine = Format-Line $rights $Style $Palette $Tint
     if (-not $rightLine) { return $leftLine }
     if (-not $leftLine) { return $rightLine }
     return "$leftLine $rightLine"
@@ -3769,13 +3798,10 @@ if ($taskbar) { Write-Host $taskbar -NoNewline }
 # It carries the style too, because the glyph it prints comes from the same set every builder reads: the
 # ascii style leaves the model stand-in empty, so this line is the bare word `claude` with no space in
 # front of it, which is what Format-Icon is here for.
-# THE COLOUR IS A RAW 36 ON THE DARK PALETTE AND THE MODEL ROLE ON THE LIGHT ONE. The ascii style
-# changes what is drawn and never what colour it is drawn in, so it left this literal alone; a palette
-# is nothing but what colour a thing is drawn in, so it cannot. The split keeps both promises at once:
-# the dark line is the same 36 it has been since #42, byte for byte, and the light line is not a bright
-# cyan on a pale ground - which on the one render where this is the ONLY thing on screen would be the
-# worst place in the script to leave a colour that does not follow the theme.
-$standInSgr = if ($cfg.Palette -eq 'light') { (Get-Palette $cfg.Palette).Roles.model.Sgr } else { '36' }
+# The stand-in resolves through the same tint chooser as a real model block. That keeps role tint on
+# the model role and lets segment tint use the model segment's resting colour even when no segment was
+# built, whether the payload was unusable or every configured segment was switched off.
+$standInSgr = (Get-TintColour (Get-Palette $cfg.Palette) 'model' 'model' $cfg.Tint $cfg.Palette).Sgr
 if (-not $payloadOk) {
     if ($modelWanted) { Write-Host (C $standInSgr (Format-Icon $iconModel 'claude')) }
     exit 0

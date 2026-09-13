@@ -184,20 +184,6 @@ function Get-Palette([string] $Palette = 'dark') {
                 folder = @{ Sgr = '38;5;25';   Fg = 16; Bg = 110; Ink = 'Dark' }
                 branch = @{ Sgr = '38;5;90';   Fg = 16; Bg = 213; Ink = 'Dark' }
             }
-            Segments = @{
-                model   = @{ Sgr = '38;5;24';  Fg = 16; Bg = 75;  Ink = 'Dark' }
-                context = @{ Sgr = '38;5;25';  Fg = 16; Bg = 145; Ink = 'Dark' }
-                cache   = @{ Sgr = '38;5;90';  Fg = 16; Bg = 213; Ink = 'Dark' }
-                cost    = @{ Sgr = '38;5;23';  Fg = 16; Bg = 40;  Ink = 'Dark' }
-                clock   = @{ Sgr = '38;5;22';  Fg = 16; Bg = 43;  Ink = 'Dark' }
-                time    = @{ Sgr = '38;5;58';  Fg = 16; Bg = 113; Ink = 'Dark' }
-                lines   = @{ Sgr = '38;5;17';  Fg = 16; Bg = 148; Ink = 'Dark' }
-                limits  = @{ Sgr = '38;5;61';  Fg = 16; Bg = 117; Ink = 'Dark' }
-                badges  = @{ Sgr = '38;5;94';  Fg = 16; Bg = 186; Ink = 'Dark' }
-                pr      = @{ Sgr = '38;5;95';  Fg = 16; Bg = 220; Ink = 'Dark' }
-                folder  = @{ Sgr = '38;5;26';  Fg = 16; Bg = 82;  Ink = 'Dark' }
-                branch  = @{ Sgr = '38;5;124'; Fg = 16; Bg = 120; Ink = 'Dark' }
-            }
             Inline = @{
                 added   = @{ Sgr = '38;5;22';    Dark = 22 }
                 removed = @{ Sgr = '38;5;124';   Dark = 124 }
@@ -217,20 +203,6 @@ function Get-Palette([string] $Palette = 'dark') {
             folder = @{ Sgr = '34';   Fg = 231; Bg = 25;  Ink = 'Light' }
             branch = @{ Sgr = '35';   Fg = 231; Bg = 90;  Ink = 'Light' }
         }
-            Segments = @{
-                model   = @{ Sgr = '38;5;39';  Fg = 231; Bg = 54;  Ink = 'Light' }
-                context = @{ Sgr = '38;5;40';  Fg = 231; Bg = 20;  Ink = 'Light' }
-                cache   = @{ Sgr = '38;5;69';  Fg = 231; Bg = 55;  Ink = 'Light' }
-                cost    = @{ Sgr = '38;5;70';  Fg = 231; Bg = 90;  Ink = 'Light' }
-                clock   = @{ Sgr = '38;5;104'; Fg = 231; Bg = 239; Ink = 'Light' }
-                time    = @{ Sgr = '38;5;105'; Fg = 231; Bg = 23;  Ink = 'Light' }
-                lines   = @{ Sgr = '38;5;137'; Fg = 231; Bg = 24;  Ink = 'Light' }
-                limits  = @{ Sgr = '38;5;138'; Fg = 231; Bg = 126; Ink = 'Light' }
-                badges  = @{ Sgr = '38;5;170'; Fg = 231; Bg = 127; Ink = 'Light' }
-                pr      = @{ Sgr = '38;5;171'; Fg = 231; Bg = 26;  Ink = 'Light' }
-                folder  = @{ Sgr = '38;5;201'; Fg = 231; Bg = 128; Ink = 'Light' }
-                branch  = @{ Sgr = '38;5;202'; Fg = 231; Bg = 242; Ink = 'Light' }
-            }
         Inline = @{
             added   = @{ Sgr = '32';        Light = 46;  Dark = 22 }
             removed = @{ Sgr = '31';        Light = 222; Dark = 124 }

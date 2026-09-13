@@ -73,13 +73,19 @@ model's name follows the glyph and on a panel row the glyph is the one thing tha
 used. That is why resting context, cache and limits can share one colour, and why the renderer
 alternates a role where two of those segments become neighbours.
 
-`{"tint": "segment"}` assigns a separate measured colour to each of the twelve resting segments.
-It does not alternate a repeated role because the segment names already make adjacent resting blocks
-different. Semantic state wins: a `warn` or `bad` context, cache, limits, or model alarm remains the
-role's yellow or red, so a useful alert never becomes merely a segment hue. The segment colours use
-the same text, marker, ground, and joint contrast checks as the role palette; the light segment
-backgrounds have a 1.05:1 joint floor because twelve distinct colours cannot meet the role table's
-1.10:1 floor in the readable light band.
+`{ "tint": "segment" }` assigns a separate measured colour to each of the twelve resting segments.
+It does not alternate a repeated resting role because the segment names already make the resting
+colours distinct. Semantic state wins: a `warn` or `bad` context, cache, limits, or model alarm remains
+the role's yellow or red, so a useful alert never becomes merely a segment hue.
+
+Each segment table is measured on both palettes: every resting foreground is measured against both
+plain-style grounds, every foreground against its own powerline background, every inline marker
+against every block it can inhabit, and every resting segment pair at **1.05:1 luminance and 40 sRGB**.
+The renderer then measures the resolved pair actually painted at every powerline joint — resting
+segment beside resting segment, or beside `warn`, `bad`, or an alarm — on both palettes. It draws an
+arrow only when that pair clears the stricter **1.10:1 luminance and 40 sRGB** floor; otherwise it
+draws the measured, readable divider. Segment plain codes are also kept at least 40 sRGB from the
+semantic warn, bad, and alarm codes, so a healthy resting segment cannot impersonate an alert.
 
 ## Light palette
 
