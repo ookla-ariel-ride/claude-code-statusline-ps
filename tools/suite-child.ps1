@@ -113,6 +113,7 @@ try {
     $launchConcurrent = if ($Concurrent -match '^(\d+)') { [int] $matches[1] } else { 0 }
     $sawConcurrent = $launchConcurrent -gt 0
     $lastProbe = [DateTime]::MinValue
+    $nextTreeSnapshot = [DateTime]::UtcNow.AddSeconds(15)
     $stdoutTask = $suite.StandardOutput.ReadLineAsync()
     $stderrTask = $suite.StandardError.ReadLineAsync()
     $stdoutDone = $false
@@ -150,7 +151,10 @@ try {
             $stdoutDone = $true
             $stderrDone = $true
         }
-        try { $null = Get-SuiteProcessTreeSnapshot $treeState } catch { Write-Verbose $_.Exception.Message }
+        if ([DateTime]::UtcNow -ge $nextTreeSnapshot -or $suite.HasExited) {
+            try { $null = Get-SuiteProcessTreeSnapshot $treeState } catch { Write-Verbose $_.Exception.Message }
+            $nextTreeSnapshot = [DateTime]::UtcNow.AddSeconds(15)
+        }
         if (([DateTime]::UtcNow - $lastProbe).TotalSeconds -ge 60) {
             try {
                 $foreign = @(Get-OtherSuitePid @($PID, $suite.Id))

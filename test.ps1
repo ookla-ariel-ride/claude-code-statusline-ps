@@ -11847,7 +11847,7 @@ exit $LASTEXITCODE
 Set-Content -LiteralPath $suiteRunnerFake -Value @'
 Write-Output first-line
 [Console]::Out.Close()
-Start-Sleep -Seconds 5
+Start-Sleep -Seconds 7
 Write-Output second-line
 exit 7
 '@ -Encoding utf8NoBOM
@@ -11863,10 +11863,6 @@ try {
     if ($launch.ExitCode -ne 0 -or -not $launchLog -or -not $launchPid -or -not (Test-Path -LiteralPath $launchLog -PathType Leaf)) {
         throw "suite runner launch did not acknowledge safely: exit=$($launch.ExitCode); output=$launchText"
     }
-    $wrapperCpuBefore = (Get-Process -Id $launchPid -ErrorAction Stop).TotalProcessorTime
-    Start-Sleep -Seconds 2
-    $wrapperCpuAfter = (Get-Process -Id $launchPid -ErrorAction Stop).TotalProcessorTime
-    Confirm-True (($wrapperCpuAfter - $wrapperCpuBefore).TotalSeconds -lt 1) "suite runner streaming: a closed stdout pipe does not busy-loop, got $(($wrapperCpuAfter - $wrapperCpuBefore).TotalSeconds) seconds CPU"
     Confirm-True ($launch.Ms -lt 10000) "suite runner detachment: launch acknowledges under ten seconds, got $($launch.Ms) ms"
     Confirm-True ($launchLog -match 'suite-\d{8}-\d{6}-[0-9a-f]{8}\.log$') 'suite runner detachment: runner chose the final unique log path before launch'
 
@@ -11874,7 +11870,11 @@ try {
     while ((Get-Content -LiteralPath $launchLog -Raw -ErrorAction Stop) -notmatch 'first-line' -and [DateTime]::UtcNow -lt $firstDeadline) { Start-Sleep -Milliseconds 100 }
     $streamedLog = Get-Content -LiteralPath $launchLog -Raw -ErrorAction Stop
     Confirm-True ($streamedLog -match 'first-line' -and $streamedLog -notmatch 'second-line') 'suite runner streaming: first fake line reaches the log before the delayed second line'
-    Confirm-True ($streamedLog -match ('(?m)^lock=' + [regex]::Escape($suiteRunnerLock) + '$')) 'suite runner lock seam: the child uses the injected test lock path'
+    Confirm-True ($streamedLog -match ('(?m)^lock=' + [regex]::Escape($suiteRunnerLock) + '\r?$')) 'suite runner lock seam: the child uses the injected test lock path'
+    $wrapperCpuBefore = (Get-Process -Id $launchPid -ErrorAction Stop).TotalProcessorTime
+    Start-Sleep -Seconds 5
+    $wrapperCpuAfter = (Get-Process -Id $launchPid -ErrorAction Stop).TotalProcessorTime
+    Confirm-True (($wrapperCpuAfter - $wrapperCpuBefore).TotalSeconds -lt 1) "suite runner streaming: a closed stdout pipe does not busy-loop across five seconds, got $(($wrapperCpuAfter - $wrapperCpuBefore).TotalSeconds) seconds CPU"
 
     $contender = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock) ''
     Confirm-True ($contender.ExitCode -eq 3) "suite runner lock: a second launch while the fake suite runs exits 3, got $($contender.ExitCode)"
