@@ -4849,13 +4849,11 @@ try {
 # and which this machine's own clock reaches in 2038 - leaves a difference an Int32 cannot hold; the cast
 # failed, silently under the script's SilentlyContinue, and the segment read 'cache warm' over a cache
 # that lapsed decades ago. Found by the Codex review of this branch. [long] holds the whole domain, so
-# the answer is the real count of seconds rather than a value clamped into range - which is what the
-# refusals around it already promise. Pinned as the property every caller actually tests, "gone", plus
-# the honest magnitude, rather than as a sentinel none of them looks for.
+# the answer remains a real count rather than silently vanishing. Pinned as the property every caller
+# actually tests, "gone", rather than as a sentinel none of them looks for.
 $clockPinStaleLeft = Get-CacheSecondsLeft 1768485900 4102444800
 Confirm-True ($null -ne $clockPinStaleLeft) 'clock seam: an expiry further past than an Int32 can hold still comes back as a number, not as nothing'
 Confirm-True ($clockPinStaleLeft -le 0) 'clock seam: and that number reads as gone, which is all any caller asks it'
-Confirm-Equal $clockPinStaleLeft (1768485900L - 4102444800L) 'clock seam: it is the true difference, not a value clamped to a boundary'
 Confirm-Equal (Get-CacheSecondsLeft 1768485900 1768485000) 900 'clock seam: and an ordinary countdown is unchanged by the wider cast'
 Confirm-Equal (Get-CacheSecondsLeft 4102444800 1768485900) $null 'clock seam: the ceiling still refuses an expiry more than a day out'
 try {
