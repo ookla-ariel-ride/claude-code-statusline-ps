@@ -243,8 +243,8 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   **Abandonment is literal**, and anything adopting this pattern adopts that: nothing here can cancel a
   blocking filesystem call, so a pool thread can stay stuck in the kernel until the process exits, a
   completed abandoned open and close tasks are retained in a small pending list and swept by the next
-  bounded read or cache write, within that later operation's own budget. A task that never answers remains
-  bounded and is reclaimed at process exit.
+  bounded read or cache write without waiting. A task that never answers remains bounded and is reclaimed
+  at process exit.
   `Read-CodePoint` admits a code point only when it draws as one glyph
   standing alone: no control, format, separator, mark, surrogate, noncharacter or unassigned value, and
   one or two cells wide by the script's own width rule, so a repository cannot reorder, hide or
@@ -263,9 +263,10 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   payload's directory, `Get-GitStamp` stat-ing the git directory, enumerating `refs` and reading
   `.git/commondir`, a file the repository writes); and the writes. The session-state write is after the
   line prints, but the git-cache write is in `Get-BranchSegment` while segments are being built and is
-  therefore before the print. Its only bounded wait is up to 50 ms for this process's pending reader
-  close, followed by one move; unrelated access failures are not retried. Those directories are also not
-  chosen the same way, which is worth writing down:
+  therefore before the print. It makes one immediate move and never waits for a pending reader close: a
+  refusal drops that render's cache entry, so the next render re-probes git. That costs one failed move,
+  not a render stall, and access failures are not retried. Those directories are also not chosen the same
+  way, which is worth writing down:
   `Write-StatusDiag` and `Get-GitCacheDir` go `TEMP` → `TMPDIR` → `GetTempPath()`, while
   `Get-SessionStateDir` goes `TEMP` → `$HOME/.claude/statusline-state`, so on Unix, where `TEMP` is
   normally unset, the log and the cache land in `/tmp` and the state file lands under the home

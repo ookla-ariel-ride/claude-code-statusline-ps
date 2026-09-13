@@ -153,8 +153,8 @@ class `Get-Content` decodes with, so the answer is the same one: UTF-8 with or w
 either byte order, UTF-32 in either byte order, and no mark means UTF-8. A config saved as UTF-16 by an
 editor keeps working. This is why the file was left unbounded when the project file was bounded, and it
 is what closing that gap needed first. A file another program is holding open *for writing* — an editor
-between its truncate and its flush, a sync client — is read too, rather than being refused for the
-moment that program holds it.
+between its truncate and its flush, a sync client — is refused until that writer releases it, rather
+than reading an in-flight snapshot.
 
 A relative `-Config` path means what PowerShell means by it, not what the process working directory
 means: those two part company after a `Set-Location`, so the path is resolved against your session
@@ -276,12 +276,11 @@ path, with its main repository's refs counted too. A `git status` that failed or
 remembered for the same lifetime, so a slow repository pays the wait once per lifetime, not once per
 render — and *is* remembered, which took a fix: a bounded read that times out can finish its open
 after the caller has moved on. The reader keeps that task in a small pending list, and the next bounded
-read or cache write disposes a completed handle within its own budget. The cache write is on the render
-path, before the line prints, so it waits at most 50 ms for this process's pending close and then makes
-one replacement attempt. It does not poll an access-denied number: a directory, a read-only destination
-or another process's holder is not evidence that this process's close will land, so each throws at once
-for the cache caller to swallow. This is a bounded best effort, not a claim that every cache write is
-free. A `statusline.json` from before this cache has no `git` block and gets the defaults: the
+read or cache write queues disposal of a completed handle without waiting. The cache write is on the
+render path, before the line prints, and makes one immediate replacement attempt. If a still-open handle
+refuses that move, the cache caller swallows it and the next render re-probes git: one lost cache entry
+and a microsecond-scale failed move, not a render stall. It does not poll an access-denied number or
+retry. This is a best effort, not a claim that every cache write is free. A `statusline.json` from before this cache has no `git` block and gets the defaults: the
 cache on, five seconds, a 1.5 second timeout. Add `"git": { "cache": false }` to turn it off. The
 folder is safe to delete at any time; the next render writes it again, and entries not written for a
 day are swept.
