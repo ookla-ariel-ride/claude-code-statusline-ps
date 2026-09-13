@@ -3070,7 +3070,13 @@ function Get-JointSet([string] $Line) {
     foreach ($m in [regex]::Matches($Line, "$esc\[38;5;(\d+);48;5;(\d+)m(.)")) {
         $out += @{ Fg = [int] $m.Groups[1].Value; Bg = [int] $m.Groups[2].Value; Glyph = $m.Groups[3].Value }
     }
-    return , $out
+    # The joints leave ONE AT A TIME, not as `, $out`. PowerShell unrolls a function's output exactly
+    # once, so a comma-wrapped array arrives at the next stage of a pipeline whole: `Get-JointSet $l |
+    # Where-Object { $_.Glyph -eq ... }` is then handed the entire set as a single object, reads .Glyph
+    # off it as an ARRAY of glyphs, matches nothing, and reports no joints at all on a line that has
+    # several. Every caller that wants the set as an array wraps the call in @(), which is exact for
+    # none, one and many now that nothing is wrapped on the way out.
+    return $out
 }
 $script:jointArrows = 0
 $script:jointDividers = 0
@@ -3079,7 +3085,7 @@ $script:jointPlainSame = 0
 # right block's, so the two colours are what has to be told apart; a divider is a glyph in the block's
 # own ink on the block's own background, so it is a mark on a ground like any inline marker, at 3:1.
 function Confirm-JointClear([string] $Line, [string] $Palette, [string] $Label) {
-    foreach ($j in (Get-JointSet $Line)) {
+    foreach ($j in @(Get-JointSet $Line)) {
         if ([string]::Equals($j.Glyph, $arrow, [System.StringComparison]::Ordinal)) {
             $script:jointArrows++
             $dist = Get-RgbDistance (Get-XtermRgb $j.Fg) (Get-XtermRgb $j.Bg)
@@ -3193,6 +3199,18 @@ Confirm-Equal (Format-Line @($segFolder, $segFolder2) 'powerline') "$esc[0;48;5;
 Confirm-Equal (Format-Line @($segCtx, $segDim) 'powerline') "$esc[0;48;5;28;38;5;231m C $esc[38;5;28;48;5;238m$arrow$esc[0;48;5;238;38;5;250m X $esc[0m$esc[38;5;238m$arrow$esc[0m" 'powerline different roles: unchanged'
 # The light table alternates the dim block, where the dark one cannot.
 Confirm-Equal (Format-Line @($segDim, $segClock, $segLines) 'powerline' 'light') "$esc[0;48;5;$($light.Roles.dim.Bg);38;5;$($light.Roles.dim.Fg)m X $esc[38;5;$($light.Roles.dim.Bg);48;5;$($light.Roles.dim.AltBg)m$arrow$esc[0;48;5;$($light.Roles.dim.AltBg);38;5;$($light.Roles.dim.Fg)m Y $esc[38;5;$($light.Roles.dim.AltBg);48;5;$($light.Roles.dim.Bg)m$arrow$esc[0;48;5;$($light.Roles.dim.Bg);38;5;$($light.Roles.dim.Fg)m Z $esc[0m$esc[38;5;$($light.Roles.dim.Bg)m$arrow$esc[0m" 'light powerline same role: the dim run alternates'
+# AND THE READER THE RENDER SECTIONS USE HAS TO SEE THOSE JOINTS. The divider is only ever checked
+# against Get-JointSet - Confirm-JointClear holds each joint to its floor, and the matrix counts the
+# chevrons on a line and demands that every one of them be a divider the raw escapes name. Both of those
+# read the same function and they read it in DIFFERENT SHAPES, one with foreach and one with a pipeline,
+# so the set is pinned in both here rather than in one of them by accident. A line with an alternated
+# pair, a role change and a run the alternation could not part carries all three joints at once.
+$jointProbe = Format-Line @($segCtx, $segCache, $segDim, $segClock) 'powerline'
+Confirm-Equal @(Get-JointSet $jointProbe).Count 3 'joint set: three joints on the line, read as three and not as one set'
+Confirm-Equal @(Get-JointSet $jointProbe | Where-Object { [string]::Equals($_.Glyph, $chevron, [System.StringComparison]::Ordinal) }).Count 1 'joint set: filtering it in a pipeline finds the one divider'
+Confirm-Equal @(Get-JointSet $jointProbe | Where-Object { [string]::Equals($_.Glyph, $arrow, [System.StringComparison]::Ordinal) }).Count 2 'joint set: filtering it in a pipeline finds both arrows'
+Confirm-Equal @(Get-JointSet (Format-Line @($segModel) 'powerline')).Count 0 'joint set: one block has no joint, and the trailing arrow carries no background'
+Confirm-Equal @(Get-JointSet (Format-Line @($segDim, $segClock) 'powerline') | Where-Object { [string]::Equals($_.Glyph, $chevron, [System.StringComparison]::Ordinal) }).Count 1 'joint set: a single joint filters to one, not to the set that holds it'
 # Plain style, where the complaint was one foreground code with only the chevron between two segments.
 Confirm-Equal (Format-Line @($segCtx, $segCache) 'plain') "$esc[32mC$esc[0m $esc[90m$chevron$esc[0m $esc[38;5;114mK$esc[0m" 'plain same role: the second segment takes the alternate code'
 Confirm-Equal (Format-Line @($segDim, $segClock, $segLines) 'plain') "$esc[90mX$esc[0m $esc[90m$chevron$esc[0m $esc[38;5;251mY$esc[0m $esc[90m$chevron$esc[0m $esc[90mZ$esc[0m" 'plain same role: base, alt, base, and the chevron is the dim role either way'
