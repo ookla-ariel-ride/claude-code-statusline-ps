@@ -5,6 +5,9 @@
 
 .DESCRIPTION
     Refuses overlapping suites by default, starts test.ps1 in a child wrapper, and records a durable log.
+
+.PARAMETER LockPath
+    Test seam for an isolated lock file. Production callers use the machine-wide default.
 #>
 [CmdletBinding()]
 param(
@@ -17,7 +20,8 @@ param(
     [string] $Attach,
     [switch] $Force,
     [switch] $DryRun,
-    [scriptblock] $SuiteProbe
+    [scriptblock] $SuiteProbe,
+    [string] $LockPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,7 +43,7 @@ function Test-ProcessAlive([int] $ProcessId) {
     return $ProcessId -gt 0 -and $null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
 }
 
-function Get-SuiteStamp([string] $ResolvedTestScript, [string] $RepoRoot, [int[]] $ConcurrentPids) {
+function Get-SuiteStamp([string] $ResolvedTestScript, [string] $RepoRoot, [int[]] $ConcurrentPids, [string] $RunLockPath) {
     $sha = 'unknown'
     $dirty = 0
     if ($RepoRoot) {
@@ -53,6 +57,7 @@ function Get-SuiteStamp([string] $ResolvedTestScript, [string] $RepoRoot, [int[]
         dirty = $dirty
         concurrent = ($ConcurrentPids.Count.ToString([Globalization.CultureInfo]::InvariantCulture) + ' pids=' + ($ConcurrentPids -join ','))
         freeMb = $freeMb.ToString([Globalization.CultureInfo]::InvariantCulture)
+        lock = $RunLockPath
         launch = ('pwsh -NoProfile -File "{0}"' -f $ResolvedTestScript)
     }
 }
@@ -112,11 +117,19 @@ function Wait-SuiteLog([string] $LogPath, [int] $PollIntervalSeconds, [int] $Max
         }
         $sleepMilliseconds = if ($MaximumWaitMinutes -gt 0) {
             [int] ([math]::Min($PollIntervalSeconds * 1000, [math]::Max(1, [math]::Floor($remaining * 1000))))
-        } else {
-            $PollIntervalSeconds * 1000
-        }
+        } else { $PollIntervalSeconds * 1000 }
         Start-Sleep -Milliseconds $sleepMilliseconds
     }
+}
+
+function Stop-UnacknowledgedSuiteChild {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Diagnostics.Process] $Process, [hashtable] $TreeState)
+    $unresolved = @()
+    if ($PSCmdlet.ShouldProcess("process $($Process.Id)", 'terminate unacknowledged suite child')) {
+        $unresolved = @(Stop-SuiteProcessTree $Process.Id $TreeState)
+    }
+    if ($unresolved.Count -gt 0) { Write-Output ('cleanup-failed=' + ($unresolved -join ',')) }
 }
 
 if ($PSBoundParameters.ContainsKey('Attach')) {
@@ -142,7 +155,7 @@ $testDirectory = Split-Path -Parent $resolvedTestScript
 $repoRootResult = @(& git -C $testDirectory rev-parse --show-toplevel 2>$null)
 $repoRoot = if ($LASTEXITCODE -eq 0 -and $repoRootResult.Count -gt 0) { $repoRootResult[0].Trim() } else { '' }
 $concurrentPids = @(Get-RunnerOtherSuitePid)
-$lockPath = Get-SuiteLockPath
+$lockPath = if ($PSBoundParameters.ContainsKey('LockPath')) { [IO.Path]::GetFullPath($LockPath) } else { Get-SuiteLockPath }
 $lockHeld = Test-SuiteLockHeld $lockPath
 $lockRecord = if ($lockHeld) { Get-LockRecord $lockPath } else { $null }
 if (($concurrentPids.Count -gt 0 -or $lockHeld) -and -not $Force) {
@@ -150,12 +163,10 @@ if (($concurrentPids.Count -gt 0 -or $lockHeld) -and -not $Force) {
         $ownerPid = if ($null -ne $lockRecord) { $lockRecord.Pid } else { 0 }
         $ownerLog = if ($null -ne $lockRecord) { $lockRecord.Log } else { '' }
         Write-Output "refusing to start beside suite PID $ownerPid log=$ownerLog"
-    } else {
-        Write-Output ('refusing to start beside suite PID(s): ' + ($concurrentPids -join ', '))
-    }
+    } else { Write-Output ('refusing to start beside suite PID(s): ' + ($concurrentPids -join ', ')) }
     exit 3
 }
-$stamp = Get-SuiteStamp $resolvedTestScript $repoRoot $concurrentPids
+$stamp = Get-SuiteStamp $resolvedTestScript $repoRoot $concurrentPids $lockPath
 $stampLines = ConvertTo-StampLine $stamp
 if ($DryRun) { $stampLines | Write-Output; exit 0 }
 
@@ -168,18 +179,18 @@ $pwshExe = (Get-Command pwsh -CommandType Application | Select-Object -First 1).
 $childScript = Join-Path $PSScriptRoot 'suite-child.ps1'
 try {
     $childArguments = @('-NoProfile', '-File', $childScript, '-TestScript', $resolvedTestScript, '-LogPath', $logPath, '-LockPath', $lockPath, '-Utc', $stamp.utc, '-Sha', $stamp.sha, '-Dirty', $stamp.dirty, '-Concurrent', $stamp.concurrent, '-FreeMb', $stamp.freeMb) | ForEach-Object {
-        if ($_ -match '[\s"]') { '"{0}"' -f $_ } else { $_ }
+        if ($_ -match '[\s"]') { '"{0}"' -f ($_ -replace '"', '\\"') } else { $_ }
     }
     $process = Start-Process -FilePath $pwshExe -ArgumentList ($childArguments -join ' ') -WindowStyle Hidden -PassThru
+    $treeState = Initialize-SuiteProcessTreeState $process.Id
 } catch {
     Write-Output "could not launch suite child: $($_.Exception.Message)"
     exit 2
 }
-Write-Output "log=$logPath"
-Write-Output "pid=$($process.Id)"
 $deadline = [DateTime]::UtcNow.AddSeconds(10)
 $acknowledged = $false
 while ([DateTime]::UtcNow -lt $deadline) {
+    try { $null = Get-SuiteProcessTreeSnapshot $treeState } catch { Write-Verbose $_.Exception.Message }
     if (Test-Path -LiteralPath $logPath -PathType Leaf) {
         try {
             if (@(Get-Content -LiteralPath $logPath -ErrorAction Stop | Where-Object { $_ -match '^wrapper=\d+$' }).Count -gt 0) { $acknowledged = $true; break }
@@ -191,6 +202,7 @@ while ([DateTime]::UtcNow -lt $deadline) {
 }
 $process.Refresh()
 if (-not $acknowledged) {
+    Stop-UnacknowledgedSuiteChild $process $treeState
     if ($process.HasExited) {
         $lines = if (Test-Path -LiteralPath $logPath -PathType Leaf) { @(Get-Content -LiteralPath $logPath -ErrorAction SilentlyContinue) } else { @() }
         $childError = Get-LogValue $lines 'child-error'
@@ -201,11 +213,11 @@ if (-not $acknowledged) {
         }
         Write-Output "child exited before acknowledgement exit=$($process.ExitCode)"
         Write-LogTail $logPath
-    } else {
-        Write-Output "no acknowledgement log=$logPath"
-    }
+    } else { Write-Output 'no acknowledgement' }
     exit 5
 }
+Write-Output "log=$logPath"
+Write-Output "pid=$($process.Id)"
 if ($Wait) {
     $script:waitExitCode = 1
     Wait-SuiteLog $logPath $PollSeconds $StallMinutes $TimeoutMinutes

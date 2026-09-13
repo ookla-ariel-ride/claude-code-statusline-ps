@@ -63,8 +63,9 @@ pwsh -NoProfile -File .\tools\Invoke-Suite.ps1 # full run; attach to its acknowl
 .\test.ps1 -Raw                                 # show ANSI escapes as <ESC>
 ```
 
-The detached child holds `%TEMP%\statusline-suite.lock` through its whole run, so the operating system
-rather than a stale file prevents two suites on one machine. Launch first and use `-Attach <log-path>` to
+The detached child holds `%ProgramData%\statusline-suite\suite.lock` through its whole run, so every user
+on the machine shares the operating-system lock rather than relying on a stale file. If that directory cannot
+be created, the log records its per-user temporary fallback lock path. Launch first and use `-Attach <log-path>` to
 observe the streaming log; `-Wait` and `-Attach` both stop observing at `-TimeoutMinutes` and return 6
 without stopping the suite. `-Force` skips only the runner's advisory probe for externally-started suites;
 it cannot bypass a held lock, and a forced child reports exit 3 with the holder's log. Exit 0 is a passing

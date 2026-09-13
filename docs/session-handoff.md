@@ -14,7 +14,7 @@ open on GitHub. Read this first when resuming work on this repo.
   loaded runs of the night took eighteen to twenty-four). Under any second suite the git-cache stamp cases,
   the `time` minute-boundary case and random render-matrix cells still fail; run alone before believing one.
   New full runs launch with `pwsh -NoProfile -File .\tools\Invoke-Suite.ps1`, which hands the child an
-  OS-held machine-wide lock and waits for its final log acknowledgement before printing `log=` and `pid=`.
+  OS-held machine-wide lock at `%ProgramData%\statusline-suite\suite.lock` and waits for its final log acknowledgement before printing `log=` and `pid=`.
   Attach to that log; `-Wait -TimeoutMinutes 9` is the bounded alternative. `-Force` bypasses only the
   advisory probe, not the OS lock, so a forced launch beside a holder is refused as exit 3 with its log.
   Exit 0 is a pass; 2 invalid input; 3 a lock/probe refusal; 5 a missing acknowledgement; 6 an observation
