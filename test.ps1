@@ -6240,6 +6240,11 @@ namespace StatuslineTest {
         [StatuslineTest.DiagSink]::CloseDelayMs = 0
         Write-StatusDiag 'a record after the close can complete'
         Confirm-Equal $script:diagDropped 0 'diag sink: a completed close clears the carried drop count'
+        Add-StatusDiagDrop 'a first distinct cap drop'
+        Add-StatusDiagDrop 'a second distinct cap drop'
+        Write-StatusDiag 'a record after distinct cap drops'
+        Confirm-True ("$([StatuslineTest.DiagSink]::LastLine)".Contains('a first distinct cap drop: 1; a second distinct cap drop: 1')) 'diag sink: a landed record preserves each cap-drop reason and count'
+        Confirm-Equal $script:diagDropped 0 'diag sink: the multi-reason note clears only after its close completes'
         # A length probe that never answers stops the record before it opens anything.
         [StatuslineTest.DiagSink]::CloseDelayMs = 0
         [StatuslineTest.DiagSink]::ResetLength()
@@ -6303,6 +6308,10 @@ namespace StatuslineTest {
         $diagSizeTimeoutRoom = Invoke-StatusDiagRollover 'unused' 120 $diagCapBytes 100
         Confirm-Equal $diagSizeTimeoutRoom 'the size read inside the rollover did not answer' 'diag rollover: the stalled second size read returns its drop reason'
         [StatuslineTest.DiagSink]::ResetLength()
+        $diagUnderCapRoom = Invoke-StatusDiagRollover 'unused' 120 $diagCapBytes 100
+        Confirm-Equal $diagUnderCapRoom $true 'diag rollover: a second read that finds room returns true'
+        $diagBudgetRoom = Invoke-StatusDiagRollover 'unused' 120 $diagCapBytes 0
+        Confirm-Equal $diagBudgetRoom 'the record budget was spent inside the rollover' 'diag rollover: a spent rollover budget returns its drop reason'
         # The reserve: below it the record is dropped rather than the rename attempted. A reserve larger
         # than the whole budget can never be met, so this pins the rule itself rather than a timing
         # coincidence - the sink answers at once and the rollover is still not entered.
