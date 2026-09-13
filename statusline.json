@@ -2,6 +2,7 @@
   "layout": "one",
   "style": "plain",
   "palette": "dark",
+  "tint": "role",
   "folder": "repo",
   "state": true,
   "links": true,

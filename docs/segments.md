@@ -1,7 +1,9 @@
 # What each segment shows
 
 The full description of every segment, its icon, the payload fields it reads and how it renders. The
-[README](../README.md#what-each-segment-shows) keeps a one-line version of each row.
+[README](../README.md#what-each-segment-shows) keeps a one-line version of each row. By default their
+resting colours follow their semantic roles; `{"tint": "segment"}` assigns each resting segment its
+own colour, while warning and error states below keep their yellow or red role colours.
 
 | Segment | Icon | Data | Rendering |
 |---|---|---|---|

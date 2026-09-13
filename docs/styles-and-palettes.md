@@ -66,6 +66,27 @@ is; the `model` row above is empty for a reason that does not hold there, becaus
 model's name follows the glyph and on a panel row the glyph is the one thing that always survives. See
 [Style and palette in the panel](agent-panel.md#style-and-palette).
 
+## Tint ownership
+
+`tint` chooses who owns a segment's resting colour; it is independent of both `style` and
+`palette`. The default, `{"tint": "role"}`, keeps the seven role colours the line has always
+used. That is why resting context, cache and limits can share one colour, and why the renderer
+alternates a role where two of those segments become neighbours.
+
+`{ "tint": "segment" }` assigns a separate measured colour to each of the twelve resting segments.
+It does not alternate a repeated resting role because the segment names already make the resting
+colours distinct. Semantic state wins: a `warn` or `bad` context, cache, limits, or model alarm remains
+the role's yellow or red, so a useful alert never becomes merely a segment hue.
+
+Each segment table is measured on both palettes: every resting foreground is measured against both
+plain-style grounds, every foreground against its own powerline background, every inline marker
+against every block it can inhabit, and every resting segment pair at **1.05:1 luminance and 40 sRGB**.
+The renderer then measures the resolved pair actually painted at every powerline joint — resting
+segment beside resting segment, or beside `warn`, `bad`, or an alarm — on both palettes. It draws an
+arrow only when that pair clears the stricter **1.10:1 luminance and 40 sRGB** floor; otherwise it
+draws the measured, readable divider. Segment plain codes are also kept at least 40 sRGB from the
+semantic warn, bad, and alarm codes, so a healthy resting segment cannot impersonate an alert.
+
 ## Light palette
 
 The colours the line has always used are chosen for a dark terminal. On a pale background a bright
