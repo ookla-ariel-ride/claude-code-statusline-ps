@@ -397,18 +397,14 @@ function Get-StatusNow([string] $Value) {
     return $parsed
 }
 
-# The one reading - or the machine's clock for a caller that has not taken one. It is the ONLY place
-# in this file that a figure on the line gets a clock from, and the three countdown helpers default
-# their $Now to it, so a new call site that says nothing about time is on the seam rather than off it:
-# opting in per call was how the four readings happened in the first place.
-# The fallback matters twice. In this script it fires only between the definitions here and the
-# assignment two lines down, where nothing is drawn. In test.ps1 it is the normal case: that file lifts
-# these builders out one at a time and runs most of them against the real clock exactly as production
-# does, and the fallback is what keeps a lifted builder honest rather than measuring a countdown
-# against a zero epoch.
+# The one reading. It is the ONLY place in this file that a figure on the line gets a clock from,
+# and the three countdown helpers default their $Now to it, so a new call site that says nothing about
+# time is on the seam rather than off it: opting in per call was how the four readings happened in the
+# first place. This accessor deliberately does not repair a wrong value. Production assigns a
+# DateTimeOffset immediately below; a caller or test that breaks that invariant must see the failure
+# rather than silently take a separate new reading.
 function Get-StatusClock() {
-    if ($script:renderNow -is [DateTimeOffset]) { return $script:renderNow }
-    return [DateTimeOffset]::Now
+    return $script:renderNow
 }
 $script:renderNow = Get-StatusNow $env:CLAUDE_STATUSLINE_NOW
 if ($null -eq $script:renderNow) {
@@ -421,10 +417,9 @@ if ($null -eq $script:renderNow) {
     if ($script:diagOn -and $env:CLAUDE_STATUSLINE_NOW) {
         Write-StatusDiag "clock: CLAUDE_STATUSLINE_NOW refused (wants an ISO-8601 instant carrying an offset), got '$($env:CLAUDE_STATUSLINE_NOW)'"
     }
-    # The machine's clock, taken once, through the same accessor everything else reads: $script:renderNow
-    # is still $null on this line, so this IS the fallback above, and [DateTimeOffset]::Now appears in
-    # exactly one place in the file.
-    $script:renderNow = Get-StatusClock
+    # The machine's clock, taken once. All later figures read this value through Get-StatusClock,
+    # and [DateTimeOffset]::Now appears in exactly one place in the file.
+    $script:renderNow = [DateTimeOffset]::Now
 }
 
 # The built-in code point of every glyph the segments use, keyed by the name the icons key of
