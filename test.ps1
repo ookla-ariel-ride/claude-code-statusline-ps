@@ -11773,11 +11773,24 @@ Confirm-True (($capBigLen + $capBigRotated) -le 2 * $capBigMax) 'capture oversiz
 Confirm-True (-not (Test-Path -LiteralPath "$capBigFile.2")) 'capture oversize: still only one generation is kept'
 
 
-# ---- Suite runner: detached launch stamp, lock and attach ----
-$suiteRunner = Join-Path $PSScriptRoot 'tools\Invoke-Suite.ps1'
-$suiteRunnerLogDir = Join-Path $subTmp 'suite-runner'
 
-$out = @(& $suiteRunner -DryRun -LogDir $suiteRunnerLogDir -SuiteProbe {})
+# ---- Suite runner: OS lock, durable acknowledgement and attach ----
+$suiteRunner = Join-Path $PSScriptRoot 'tools\Invoke-Suite.ps1'
+$suiteCommon = Join-Path $PSScriptRoot 'tools\suite-common.ps1'
+. $suiteCommon
+foreach ($case in @(
+        @{ Expected = $true; Command = 'pwsh -NoProfile -File C:\repo\test.ps1'; Label = 'an unquoted absolute test script' }
+        @{ Expected = $true; Command = 'pwsh -File "C:\space repo\test.ps1"'; Label = 'a quoted test script' }
+        @{ Expected = $true; Command = 'pwsh -File test.ps1'; Label = 'a bare test script' }
+        @{ Expected = $true; Command = 'pwsh -File .\test.ps1'; Label = 'a relative test script' }
+        @{ Expected = $true; Command = '"C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -File "C:\r\test.ps1"'; Label = 'a quoted executable and script' }
+        @{ Expected = $false; Command = 'pwsh -Command "Get-Content test.ps1"'; Label = 'a command that reads the suite' }
+        @{ Expected = $false; Command = 'pwsh -Command "Invoke-ScriptAnalyzer -Path ./test.ps1"'; Label = 'a command that names the suite' }
+        @{ Expected = $false; Command = 'pwsh -File C:\repo\tools\Invoke-Suite.ps1'; Label = 'the suite runner itself' })) {
+    Confirm-Equal (Test-SuiteCommandLine $case.Command) $case.Expected "suite matcher: $($case.Label)"
+}
+
+$out = @(& $suiteRunner -DryRun -LogDir (Join-Path $subTmp 'suite-runner') -SuiteProbe {})
 $code = $LASTEXITCODE
 $suiteRunnerStamp = $out -join "`n"
 Confirm-True ($code -eq 0) "suite runner dry run: returns exit code 0, got $code"
@@ -11790,89 +11803,79 @@ foreach ($field in @(
         @{ Pattern = '(?m)^launch=pwsh -NoProfile -File .+test\.ps1"$'; Label = 'suite launch command' })) {
     Confirm-True ($suiteRunnerStamp -match $field.Pattern) "suite runner dry run: stamp records $($field.Label)"
 }
-Confirm-True (-not (Test-Path -LiteralPath $suiteRunnerLogDir)) 'suite runner dry run: does not create its requested log directory'
 
-$out = @(& $suiteRunner -DryRun -LogDir $suiteRunnerLogDir -SuiteProbe { 8123 })
+$out = @(& $suiteRunner -DryRun -LogDir (Join-Path $subTmp 'suite-runner') -SuiteProbe { 8123 })
 $code = $LASTEXITCODE
 Confirm-True ($code -eq 3) "suite runner probe: injected PID refuses with exit 3, got $code"
 Confirm-True (($out -join "`n").Contains('8123')) 'suite runner probe: the refusal names the injected PID'
-$out = @(& $suiteRunner -DryRun -Force -LogDir $suiteRunnerLogDir -SuiteProbe { 8123 })
+$out = @(& $suiteRunner -DryRun -Force -LogDir (Join-Path $subTmp 'suite-runner') -SuiteProbe { 8123 })
 $code = $LASTEXITCODE
 Confirm-True ($code -eq 0) "suite runner force: bypasses the injected probe, got exit $code"
 Confirm-True (($out -join "`n") -match '(?m)^concurrent=1 pids=8123$') 'suite runner force: the stamp retains the forced concurrent PID'
 
-$suiteAttachSuccess = Join-Path $subTmp 'suite-attach-success.log'
-Set-Content -LiteralPath $suiteAttachSuccess -Value @('utc=2026-09-13T00:00:00Z', 'passed 7, failed 0', 'alone=true', 'exit=0') -Encoding utf8NoBOM
-$out = @(& $suiteRunner -Attach $suiteAttachSuccess -PollSeconds 1)
+$out = @(& $suiteRunner -Attach ' ')
 $code = $LASTEXITCODE
-Confirm-True ($code -eq 0) "suite runner attach success: returns exit 0, got $code"
-Confirm-True (($out -join "`n") -match '(?m)^passed 7, failed 0$') 'suite runner attach success: prints the suite passed line'
-Confirm-True (($out -join "`n") -match '(?m)^exit=0$') 'suite runner attach success: prints the exit line'
-Confirm-True (($out -join "`n") -match '(?m)^alone=true$') 'suite runner attach success: reads the run-owned isolation verdict'
-$suiteAttachFailure = Join-Path $subTmp 'suite-attach-failure.log'
-Set-Content -LiteralPath $suiteAttachFailure -Value @('utc=2026-09-13T00:00:00Z', 'passed 6, failed 1', 'alone=false', 'exit=1') -Encoding utf8NoBOM
-$out = @(& $suiteRunner -Attach $suiteAttachFailure -PollSeconds 1)
-$code = $LASTEXITCODE
-Confirm-True ($code -eq 1) "suite runner attach failure: returns the suite's exit 1, got $code"
+Confirm-True ($code -eq 2 -and ($out -join "`n") -match 'must not be empty') 'suite runner attach: an empty path is a usage error'
 
-$suiteAttachOwn = Join-Path $subTmp 'suite-attach-own.log'
-Set-Content -LiteralPath $suiteAttachOwn -Value @("wrapper=$PID", "suite=$PID", 'alone=true', 'exit=0') -Encoding utf8NoBOM
-$out = @(& $suiteRunner -Attach $suiteAttachOwn -PollSeconds 1 -SuiteProbe { $PID })
-$code = $LASTEXITCODE
-Confirm-True ($code -eq 0 -and ($out -join "`n") -match '(?m)^alone=true$') 'suite runner attach: a named wrapper from an injected probe stays alone'
-$suiteAttachConcurrent = Join-Path $subTmp 'suite-attach-concurrent.log'
-Set-Content -LiteralPath $suiteAttachConcurrent -Value @("wrapper=$PID", 'concurrent-seen=8123', 'alone=false', 'exit=0') -Encoding utf8NoBOM
-$out = @(& $suiteRunner -Attach $suiteAttachConcurrent -PollSeconds 1)
-$code = $LASTEXITCODE
-Confirm-True ($code -eq 0 -and ($out -join "`n") -match '(?m)^alone=false$') 'suite runner attach: a recorded concurrent suite remains not alone'
-$suiteAttachDead = Join-Path $subTmp 'suite-attach-dead.log'
-Set-Content -LiteralPath $suiteAttachDead -Value @('wrapper=999999', 'suite=999998') -Encoding utf8NoBOM
-$out = @(& $suiteRunner -Attach $suiteAttachDead -PollSeconds 1)
-$code = $LASTEXITCODE
-Confirm-True ($code -eq 5 -and ($out -join "`n") -match 'wrapper died') 'suite runner attach: a dead wrapper with no exit is reported promptly'
-
-$suiteRunnerFake = Join-Path (Split-Path -Parent $suiteRunner) 'suite-runner-fake.ps1'
+$suiteRunnerTemp = Join-Path $subTmp 'suite-runner'
+$suiteRunnerFake = Join-Path $suiteRunnerTemp 'suite-fake.ps1'
+$suiteRunnerLogDir = Join-Path $suiteRunnerTemp 'logs'
+New-Item -ItemType Directory -Path $suiteRunnerTemp -Force | Out-Null
 Set-Content -LiteralPath $suiteRunnerFake -Value @'
-Start-Sleep -Seconds 20
+Write-Output first-line
+Start-Sleep -Seconds 5
+Write-Output second-line
 exit 7
 '@ -Encoding utf8NoBOM
+$startedSuiteWrappers = [System.Collections.Generic.List[int]]::new()
 try {
-    $launch = Invoke-ChildPwsh $suiteRunner @('-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir) ''
-    $launchText = $launch.Lines -join "`n"
+    $launch = Invoke-ChildPwsh $suiteRunner @('-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-Force') ''
+    $launchText = $launch.Lines -join [Environment]::NewLine
     $launchLogLine = @($launch.Lines | Where-Object { $_ -match '^log=' } | Select-Object -Last 1)
-    $launchLog = if ($launchLogLine.Count -gt 0) { $launchLogLine[0].Substring(4) } else { '' }
-    Confirm-True ($launch.ExitCode -eq 0 -and $launch.Ms -lt 5000) "suite runner detachment: captured launch returns under five seconds, got exit $($launch.ExitCode) in $($launch.Ms) ms"
-    Confirm-True ($launchText -match '(?m)^log=.+$' -and $launchText -match '(?m)^pid=\d+$') 'suite runner detachment: captured launch prints log and child PID'
     $launchPidLine = @($launch.Lines | Where-Object { $_ -match '^pid=' } | Select-Object -Last 1)
+    $launchLog = if ($launchLogLine.Count -gt 0) { $launchLogLine[0].Substring(4) } else { '' }
     $launchPid = if ($launchPidLine.Count -gt 0) { $launchPidLine[0].Substring(4) } else { '' }
-    Confirm-True ($launchLog -match ('-{0}\.log$' -f $launchPid)) 'suite runner detachment: child PID makes the log name unique'
+    if ($launch.ExitCode -ne 0 -or -not $launchLog -or -not $launchPid -or -not (Test-Path -LiteralPath $launchLog -PathType Leaf)) {
+        throw "suite runner launch did not acknowledge safely: exit=$($launch.ExitCode); output=$launchText"
+    }
+    $startedSuiteWrappers.Add([int] $launchPid)
+    Confirm-True ($launch.Ms -lt 10000) "suite runner detachment: launch acknowledges under ten seconds, got $($launch.Ms) ms"
+    Confirm-True ($launchLog -match 'suite-\d{8}-\d{6}-[0-9a-f]{8}\.log$') 'suite runner detachment: runner chose the final unique log path before launch'
+
+    $firstDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    while ((Get-Content -LiteralPath $launchLog -Raw -ErrorAction Stop) -notmatch 'first-line' -and [DateTime]::UtcNow -lt $firstDeadline) { Start-Sleep -Milliseconds 100 }
+    $streamedLog = Get-Content -LiteralPath $launchLog -Raw -ErrorAction Stop
+    Confirm-True ($streamedLog -match 'first-line' -and $streamedLog -notmatch 'second-line') 'suite runner streaming: first fake line reaches the log before the delayed second line'
 
     $contender = Invoke-ChildPwsh $suiteRunner @('-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir) ''
     Confirm-True ($contender.ExitCode -eq 3) "suite runner lock: a second launch while the fake suite runs exits 3, got $($contender.ExitCode)"
-    Confirm-True (($contender.Lines -join "`n") -match 'PID \d+ log=') 'suite runner lock: the refusal names the lock owner and log'
+    Confirm-True (($contender.Lines -join [Environment]::NewLine) -match 'PID \d+ log=') 'suite runner lock: the advisory refusal names the OS lock holder and log'
+
     $forced = Invoke-ChildPwsh $suiteRunner @('-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-Force') ''
+    $forcedText = $forced.Lines -join [Environment]::NewLine
     $forcedLogLine = @($forced.Lines | Where-Object { $_ -match '^log=' } | Select-Object -Last 1)
+    $forcedPidLine = @($forced.Lines | Where-Object { $_ -match '^pid=' } | Select-Object -Last 1)
     $forcedLog = if ($forcedLogLine.Count -gt 0) { $forcedLogLine[0].Substring(4) } else { '' }
-    Confirm-True ($forced.ExitCode -eq 0 -and $forcedLog) 'suite runner lock: Force deliberately launches beside the lock owner'
+    $forcedPid = if ($forcedPidLine.Count -gt 0) { $forcedPidLine[0].Substring(4) } else { '' }
+    if (-not $forcedLog -or -not $forcedPid -or -not (Test-Path -LiteralPath $forcedLog -PathType Leaf)) {
+        throw "forced suite launch did not return a safe fake log and child PID: output=$forcedText"
+    }
+    $startedSuiteWrappers.Add([int] $forcedPid)
+    Confirm-True ($forced.ExitCode -eq 3 -and $forcedText -match 'lock held by pid=\d+ log=') 'suite runner force: a forced child cannot bypass the OS-held lock and reports its holder'
+    $forcedLines = @(Get-Content -LiteralPath $forcedLog -ErrorAction Stop)
+    Confirm-True (($forcedLines -contains 'alone=false') -and ($forcedLines -contains 'exit=3')) 'suite runner force: lock refusal is recorded as not alone and exit 3'
 
     $out = @(& $suiteRunner -Attach $launchLog -PollSeconds 1)
     $code = $LASTEXITCODE
     Confirm-True ($code -eq 7) "suite runner detachment: attach returns the fake suite's exit 7, got $code"
-    $out = @(& $suiteRunner -Attach $forcedLog -PollSeconds 1)
-    $code = $LASTEXITCODE
-    Confirm-True ($code -eq 7) "suite runner force: its deliberately concurrent fake suite reaches exit 7, got $code"
-
-    $staleLock = Join-Path $suiteRunnerLogDir 'suite.lock'
-    Set-Content -LiteralPath $staleLock -Value @('pid=999999', 'log=stale.log') -Encoding utf8NoBOM
-    $staleLaunch = Invoke-ChildPwsh $suiteRunner @('-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir) ''
-    $staleLogLine = @($staleLaunch.Lines | Where-Object { $_ -match '^log=' } | Select-Object -Last 1)
-    $staleLog = if ($staleLogLine.Count -gt 0) { $staleLogLine[0].Substring(4) } else { '' }
-    Confirm-True ($staleLaunch.ExitCode -eq 0 -and $staleLog -and $staleLog -notmatch 'stale') 'suite runner lock: a dead lock owner is cleared before launch'
-    $out = @(& $suiteRunner -Attach $staleLog -PollSeconds 1)
-    $code = $LASTEXITCODE
-    Confirm-True ($code -eq 7) "suite runner stale lock: the replacement run still reaches fake exit 7, got $code"
 } finally {
-    Remove-Item -LiteralPath $suiteRunnerFake -Force -ErrorAction SilentlyContinue
+    foreach ($wrapperPid in $startedSuiteWrappers) {
+        try {
+            $live = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
+            foreach ($id in @(Get-ProcessDescendantPid $live @($wrapperPid) | Sort-Object -Descending)) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
+        } catch { Stop-Process -Id $wrapperPid -Force -ErrorAction SilentlyContinue }
+    }
+    Remove-Item -LiteralPath $suiteRunnerTemp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 $mentionCommand = "Get-Content -LiteralPath '$PSScriptRoot\test.ps1' | Out-Null; Start-Sleep -Seconds 4"

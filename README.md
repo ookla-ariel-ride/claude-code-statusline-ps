@@ -218,11 +218,18 @@ Get-Content .\samples\subagent\01-two-agents.json -Raw | pwsh -NoProfile -File .
 
 ### Running the suite
 
-Use `pwsh -NoProfile -File .\tools\Invoke-Suite.ps1` to launch the full suite. It refuses a second
-suite by default, starts `test.ps1` detached and stamps the log path it prints. Under a tool with a
-ten-minute ceiling, launch first and attach in a loop with `pwsh -NoProfile -File
-.\tools\Invoke-Suite.ps1 -Attach <log-path>`; alternatively use `-Wait -TimeoutMinutes 9`, then
-attach if it prints `still-running`.
+Use `pwsh -NoProfile -File .\tools\Invoke-Suite.ps1` to launch the full suite. The child holds the
+machine-wide operating-system lock for the life of its run; a second normal launch exits 3. The runner
+prints a final log path and child PID only after the child has acknowledged its wrapper log. Under a tool
+with a ten-minute ceiling, launch first, then attach in a loop with `pwsh -NoProfile -File
+.\tools\Invoke-Suite.ps1 -Attach <log-path>`; alternatively use `-Wait -TimeoutMinutes 9`, then attach
+if it prints `still-running log=<path>`. `-Force` only skips the advisory process probe: it never bypasses
+the held lock, so a forced launch beside a holder is refused by its child with exit 3 and names the
+holder's log.
+
+Exit 0 means the suite passed; 2 is invalid use or launch input; 3 is a concurrent-suite refusal; 5 is a
+child that never acknowledged; and 6 means waiting or attaching timed out while the suite continues.
+After acknowledgement, the runner returns the suite's own exit code.
 
 The suite never touches your own repositories or your real `~/.claude`. What it covers, and how to
 add a segment or a sample: [docs/testing.md](docs/testing.md).

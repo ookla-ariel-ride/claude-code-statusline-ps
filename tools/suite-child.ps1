@@ -13,58 +13,72 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'suite-common.ps1')
 
-function Write-LockRecord([string] $Path, [int] $ProcessId, [string] $RunLogPath) {
-    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+function Write-LockRecord([IO.FileStream] $Stream, [int] $ProcessId, [int] $SuiteId, [string] $RunLogPath) {
+    $Stream.SetLength(0)
+    $Stream.Position = 0
+    $recordWriter = [IO.StreamWriter]::new($Stream, [Text.UTF8Encoding]::new($false), 1024, $true)
     try {
-        $writer = [System.IO.StreamWriter]::new($stream, [System.Text.UTF8Encoding]::new($false))
-        try {
-            $writer.WriteLine("pid=$ProcessId")
-            $writer.WriteLine("log=$RunLogPath")
-        } finally {
-            $writer.Dispose()
-        }
+        $recordWriter.WriteLine("pid=$ProcessId")
+        $recordWriter.WriteLine("suite=$SuiteId")
+        $recordWriter.WriteLine("log=$RunLogPath")
+        $recordWriter.Flush()
+        $Stream.Flush($true)
     } finally {
-        $stream.Dispose()
+        $recordWriter.Dispose()
     }
 }
 
-function Get-OtherSuitePid([int[]] $ExcludedPids) {
-    $processes = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
-    $ours = [System.Collections.Generic.HashSet[int]]::new()
-    foreach ($excludedPid in $ExcludedPids) {
-        if ($excludedPid -gt 0) { [void] $ours.Add($excludedPid) }
-    }
-    foreach ($excludedPid in @($ExcludedPids | Where-Object { $_ -gt 0 })) {
-        $cursor = $excludedPid
-        while ($cursor -gt 0) {
-            $current = $processes | Where-Object { [int] $_.ProcessId -eq $cursor } | Select-Object -First 1
-            if ($null -eq $current -or -not $ours.Add([int] $current.ParentProcessId)) { break }
-            $cursor = [int] $current.ParentProcessId
-        }
-    }
-    do {
-        $added = $false
-        foreach ($process in $processes) {
-            if ($ours.Contains([int] $process.ParentProcessId) -and $ours.Add([int] $process.ProcessId)) {
-                $added = $true
-            }
-        }
-    } while ($added)
-
-    return @($processes | Where-Object {
-        $_.Name -in @('pwsh.exe', 'powershell.exe') -and
-        $_.CommandLine -match '(?i)-File\s+"?[^"\s]*[\\/]test\.ps1"?(\s|$)' -and
-        -not $ours.Contains([int] $_.ProcessId)
-    } | ForEach-Object { [int] $_.ProcessId } | Sort-Object -Unique)
+function Get-LockHolderMessage([string] $Path) {
+    $record = Get-LockRecord $Path
+    $holderPid = if ($null -ne $record) { $record.Pid } else { 0 }
+    $log = if ($null -ne $record -and $record.Log) { $record.Log } else { '' }
+    return "lock held by pid=$holderPid log=$log"
 }
 
-$finalLogPath = $LogPath -replace '-pending\.log$', ('-{0}.log' -f $PID)
-if ($finalLogPath -eq $LogPath) { $finalLogPath = "$LogPath.$PID" }
+function Write-RefusalLog([string] $Path, [string] $Message) {
+    try {
+        $refusalWriter = [IO.StreamWriter]::new($Path, $false, [Text.UTF8Encoding]::new($false))
+        try {
+            $refusalWriter.WriteLine("child-error=$Message")
+            $refusalWriter.WriteLine('alone=false')
+            $refusalWriter.WriteLine('exit=3')
+            $refusalWriter.Flush()
+        } finally { $refusalWriter.Dispose() }
+    } catch { Write-Verbose $_.Exception.Message }
+}
+
+function Stop-SuiteProcessTree {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([int] $SuiteId)
+
+    if ($SuiteId -le 0) { return }
+    try {
+        $processes = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
+        $tree = Get-ProcessDescendantPid $processes @($SuiteId)
+        foreach ($id in @($tree | Sort-Object -Descending)) {
+            if ($PSCmdlet.ShouldProcess("process $id", 'stop')) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
+        }
+    } catch {
+        if ($PSCmdlet.ShouldProcess("process $SuiteId", 'stop')) { Stop-Process -Id $SuiteId -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+$lockStream = $null
 $writer = $null
+$suite = $null
 try {
-    Write-LockRecord $LockPath $PID $finalLogPath
-    $writer = [System.IO.StreamWriter]::new($finalLogPath, $false, [System.Text.UTF8Encoding]::new($false))
+    try {
+        $lockStream = [IO.File]::Open($LockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
+    } catch [IO.IOException] {
+        $message = Get-LockHolderMessage $LockPath
+        Write-RefusalLog $LogPath $message
+        exit 3
+    }
+    Write-LockRecord $lockStream $PID 0 $LogPath
+
+    $writer = [IO.StreamWriter]::new($LogPath, $false, [Text.UTF8Encoding]::new($false))
     foreach ($line in @(
             "utc=$Utc",
             "sha=$Sha",
@@ -78,51 +92,81 @@ try {
     $writer.Flush()
 
     $pwshExe = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
-    $startInfo = [System.Diagnostics.ProcessStartInfo]::new($pwshExe)
+    $startInfo = [Diagnostics.ProcessStartInfo]::new($pwshExe)
     foreach ($argument in @('-NoProfile', '-File', $TestScript)) { [void] $startInfo.ArgumentList.Add($argument) }
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
-    $suite = [System.Diagnostics.Process]::Start($startInfo)
+    $suite = [Diagnostics.Process]::Start($startInfo)
+    Write-LockRecord $lockStream $PID $suite.Id $LogPath
     $writer.WriteLine("suite=$($suite.Id)")
     $writer.Flush()
-    $stdout = $suite.StandardOutput.ReadToEndAsync()
-    $stderr = $suite.StandardError.ReadToEndAsync()
-    $lastProbe = [DateTime]::UtcNow
-    $sawConcurrent = $false
 
-    while (-not $suite.HasExited) {
-        $suite.WaitForExit(1000)
+    $launchConcurrent = if ($Concurrent -match '^(\d+)') { [int] $matches[1] } else { 0 }
+    $sawConcurrent = $launchConcurrent -gt 0
+    $lastProbe = [DateTime]::MinValue
+    $stdoutTask = $suite.StandardOutput.ReadLineAsync()
+    $stderrTask = $suite.StandardError.ReadLineAsync()
+    $stdoutDone = $false
+    $stderrDone = $false
+
+    while (-not ($suite.HasExited -and $stdoutDone -and $stderrDone)) {
+        [void] [Threading.Tasks.Task]::WaitAny(@($stdoutTask, $stderrTask), 1000)
+        if (-not $stdoutDone -and $stdoutTask.IsCompleted) {
+            $line = $stdoutTask.GetAwaiter().GetResult()
+            if ($null -eq $line) { $stdoutDone = $true }
+            else {
+                try { $writer.WriteLine($line); $writer.Flush() }
+                catch { try { [IO.File]::AppendAllText($LogPath, "log-error=$($_.Exception.Message)`r`n", [Text.UTF8Encoding]::new($false)) } catch { Write-Verbose $_.Exception.Message } }
+                $stdoutTask = $suite.StandardOutput.ReadLineAsync()
+            }
+        }
+        if (-not $stderrDone -and $stderrTask.IsCompleted) {
+            $line = $stderrTask.GetAwaiter().GetResult()
+            if ($null -eq $line) { $stderrDone = $true }
+            else {
+                try { $writer.WriteLine($line); $writer.Flush() }
+                catch { try { [IO.File]::AppendAllText($LogPath, "log-error=$($_.Exception.Message)`r`n", [Text.UTF8Encoding]::new($false)) } catch { Write-Verbose $_.Exception.Message } }
+                $stderrTask = $suite.StandardError.ReadLineAsync()
+            }
+        }
         if (([DateTime]::UtcNow - $lastProbe).TotalSeconds -ge 60) {
-            $foreign = @(Get-OtherSuitePid @($PID, $suite.Id))
-            if ($foreign.Count -gt 0) {
-                $sawConcurrent = $true
-                $writer.WriteLine('concurrent-seen=' + ($foreign -join ','))
-                $writer.Flush()
+            try {
+                $foreign = @(Get-OtherSuitePid @($PID, $suite.Id))
+                if ($foreign.Count -gt 0) {
+                    $sawConcurrent = $true
+                    try { $writer.WriteLine('concurrent-seen=' + ($foreign -join ',')); $writer.Flush() }
+                    catch {
+                        try { [IO.File]::AppendAllText($LogPath, "log-error=$($_.Exception.Message)`r`n", [Text.UTF8Encoding]::new($false)) } catch { Write-Verbose $_.Exception.Message }
+                    }
+                }
+            } catch {
+                try { $writer.WriteLine("probe-error=$($_.Exception.Message)"); $writer.Flush() }
+                catch { try { [IO.File]::AppendAllText($LogPath, "probe-error=$($_.Exception.Message)`r`n", [Text.UTF8Encoding]::new($false)) } catch { Write-Verbose $_.Exception.Message } }
             }
             $lastProbe = [DateTime]::UtcNow
         }
     }
     $suite.WaitForExit()
-    $outText = $stdout.GetAwaiter().GetResult()
-    $errText = $stderr.GetAwaiter().GetResult()
-    if ($outText) { $writer.Write($outText) }
-    if ($errText) { $writer.Write($errText) }
     $writer.WriteLine('alone=' + (-not $sawConcurrent).ToString().ToLowerInvariant())
     $writer.WriteLine("exit=$($suite.ExitCode)")
     $writer.Flush()
     exit $suite.ExitCode
 } catch {
+    if ($null -ne $suite -and -not $suite.HasExited) { Stop-SuiteProcessTree $suite.Id }
     if ($null -ne $writer) {
-        $writer.WriteLine("child-error=$($_.Exception.Message)")
-        $writer.WriteLine('alone=false')
-        $writer.WriteLine('exit=1')
-        $writer.Flush()
+        try {
+            $writer.WriteLine("child-error=$($_.Exception.Message)")
+            $writer.WriteLine('alone=false')
+            $writer.WriteLine('exit=1')
+            $writer.Flush()
+        } catch { Write-Verbose $_.Exception.Message }
+    } else {
+        Write-RefusalLog $LogPath $_.Exception.Message
     }
     exit 1
 } finally {
     if ($null -ne $writer) { $writer.Dispose() }
-    $lockLines = if (Test-Path -LiteralPath $LockPath -PathType Leaf) { @(Get-Content -LiteralPath $LockPath -ErrorAction SilentlyContinue) } else { @() }
-    if ($lockLines -contains "pid=$PID") { Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue }
+    if ($null -ne $lockStream) { $lockStream.Dispose() }
 }

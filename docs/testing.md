@@ -57,11 +57,19 @@ single payload larger than its own cap. The render matrix pipes every payload in
 reversed `order`, swapped `rows`) at each width:
 
 ```powershell
-pwsh -NoProfile -File .\tools\Invoke-Suite.ps1 # full run; attach to the printed log when it finishes
+pwsh -NoProfile -File .\tools\Invoke-Suite.ps1 # full run; attach to its acknowledged final log path
 .\test.ps1 -Columns 80                          # one width instead of 120, 60, 20 and unset
 .\test.ps1 -Config .\statusline.json            # one config instead of the seven
 .\test.ps1 -Raw                                 # show ANSI escapes as <ESC>
 ```
+
+The detached child holds `%TEMP%\statusline-suite.lock` through its whole run, so the operating system
+rather than a stale file prevents two suites on one machine. Launch first and use `-Attach <log-path>` to
+observe the streaming log; `-Wait` and `-Attach` both stop observing at `-TimeoutMinutes` and return 6
+without stopping the suite. `-Force` skips only the runner's advisory probe for externally-started suites;
+it cannot bypass a held lock, and a forced child reports exit 3 with the holder's log. Exit 0 is a passing
+suite, 2 is invalid input, 3 is a concurrent-suite refusal, 5 is missing child acknowledgement, 6 is an
+observation timeout, and all other completed exits are the suite's own code.
 
 Every render must exit 0 with nothing on stderr, print the number of lines its layout allows, and fit
 the terminal width. At a set width a segment with a short form (limits, context, branch, folder,

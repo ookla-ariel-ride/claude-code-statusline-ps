@@ -4,8 +4,7 @@
     Starts the full test suite in a detached PowerShell process.
 
 .DESCRIPTION
-    Refuses to overlap another test.ps1 suite by default, writes a stamp that identifies the run, and
-    can wait on the stamped log after the calling shell is lost.
+    Refuses overlapping suites by default, starts test.ps1 in a child wrapper, and records a durable log.
 #>
 [CmdletBinding()]
 param(
@@ -23,9 +22,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'suite-common.ps1')
 
-function Get-OtherSuitePid {
-    return @(& $SuiteProbe | ForEach-Object { [int] $_ } | Sort-Object -Unique)
+function Get-RunnerOtherSuitePid {
+    if ($null -ne $SuiteProbe) { return @(& $SuiteProbe | ForEach-Object { [int] $_ } | Sort-Object -Unique) }
+    return @(Get-OtherSuitePid @($PID))
 }
 
 function Get-LogValue([string[]] $Lines, [string] $Name) {
@@ -35,71 +36,35 @@ function Get-LogValue([string[]] $Lines, [string] $Name) {
 }
 
 function Test-ProcessAlive([int] $ProcessId) {
-    if ($ProcessId -le 0) { return $false }
-    return $null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
+    return $ProcessId -gt 0 -and $null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
 }
 
 function Get-SuiteStamp([string] $ResolvedTestScript, [string] $RepoRoot, [int[]] $ConcurrentPids) {
-    $sha = (& git -C $RepoRoot rev-parse --short HEAD).Trim()
-    $dirty = @(& git -C $RepoRoot status --porcelain).Count
+    $sha = 'unknown'
+    $dirty = 0
+    if ($RepoRoot) {
+        $sha = (& git -C $RepoRoot rev-parse --short HEAD).Trim()
+        $dirty = @(& git -C $RepoRoot status --porcelain).Count
+    }
     $freeMb = [math]::Floor((Get-CimInstance -ClassName Win32_OperatingSystem).FreePhysicalMemory / 1024)
     return [ordered]@{
-        utc = [DateTime]::UtcNow.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+        utc = [DateTime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
         sha = $sha
         dirty = $dirty
-        concurrent = ($ConcurrentPids.Count.ToString([System.Globalization.CultureInfo]::InvariantCulture) + ' pids=' + ($ConcurrentPids -join ','))
-        freeMb = $freeMb.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+        concurrent = ($ConcurrentPids.Count.ToString([Globalization.CultureInfo]::InvariantCulture) + ' pids=' + ($ConcurrentPids -join ','))
+        freeMb = $freeMb.ToString([Globalization.CultureInfo]::InvariantCulture)
         launch = ('pwsh -NoProfile -File "{0}"' -f $ResolvedTestScript)
     }
 }
 
-function ConvertTo-StampLine([System.Collections.Specialized.OrderedDictionary] $Stamp) {
+function ConvertTo-StampLine([Collections.Specialized.OrderedDictionary] $Stamp) {
     return @($Stamp.GetEnumerator() | ForEach-Object { '{0}={1}' -f $_.Key, $_.Value })
 }
 
-function Get-LockRecord([string] $LockPath) {
-    if (-not (Test-Path -LiteralPath $LockPath -PathType Leaf)) { return $null }
-    try {
-        $lines = @(Get-Content -LiteralPath $LockPath -ErrorAction Stop)
-        $pidText = Get-LogValue $lines 'pid'
-        $logPath = Get-LogValue $lines 'log'
-        return @{ Pid = if ($pidText -match '^\d+$') { [int] $pidText } else { 0 }; Log = $logPath }
-    } catch [System.IO.IOException] {
-        return $null
+function Write-LogTail([string] $LogPath) {
+    if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
+        try { @(Get-Content -LiteralPath $LogPath -Tail 20 -ErrorAction Stop) | Write-Output } catch { Write-Verbose $_.Exception.Message }
     }
-}
-
-function Write-LockRecord([string] $LockPath, [int] $ProcessId, [string] $LogPath, [bool] $CreateNew = $false) {
-    $mode = if ($CreateNew) { [System.IO.FileMode]::CreateNew } else { [System.IO.FileMode]::Create }
-    $stream = [System.IO.File]::Open($LockPath, $mode, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-    try {
-        $writer = [System.IO.StreamWriter]::new($stream, [System.Text.UTF8Encoding]::new($false))
-        try {
-            $writer.WriteLine("pid=$ProcessId")
-            $writer.WriteLine("log=$LogPath")
-        } finally {
-            $writer.Dispose()
-        }
-    } finally {
-        $stream.Dispose()
-    }
-}
-
-function Enter-SuiteLock([string] $LockPath, [string] $IntendedLogPath) {
-    for ($attempt = 0; $attempt -lt 2; $attempt++) {
-        try {
-            Write-LockRecord $LockPath $PID $IntendedLogPath $true
-            return @{ Acquired = $true; Existing = $null }
-        } catch [System.IO.IOException] {
-            $existing = Get-LockRecord $LockPath
-            if ($null -ne $existing -and (Test-ProcessAlive $existing.Pid)) {
-                return @{ Acquired = $false; Existing = $existing }
-            }
-            Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue
-        }
-    }
-    $existing = Get-LockRecord $LockPath
-    return @{ Acquired = $false; Existing = $existing }
 }
 
 function Wait-SuiteLog([string] $LogPath, [int] $PollIntervalSeconds, [int] $MaximumStallMinutes, [int] $MaximumWaitMinutes) {
@@ -107,38 +72,35 @@ function Wait-SuiteLog([string] $LogPath, [int] $PollIntervalSeconds, [int] $Max
     $lastWrite = $started
     $seenLog = $false
     $wrapperPid = 0
-
     while ($true) {
-        $item = Get-Item -LiteralPath $LogPath -ErrorAction SilentlyContinue
-        if ($null -ne $item) {
-            if (-not $seenLog) {
-                $lastWrite = $item.LastWriteTimeUtc
-                $seenLog = $true
-            } elseif ($item.LastWriteTimeUtc -gt $lastWrite) {
-                $lastWrite = $item.LastWriteTimeUtc
+        try {
+            $item = Get-Item -LiteralPath $LogPath -ErrorAction SilentlyContinue
+            if ($null -ne $item) {
+                if (-not $seenLog -or $item.LastWriteTimeUtc -gt $lastWrite) { $lastWrite = $item.LastWriteTimeUtc; $seenLog = $true }
+                $lines = @(Get-Content -LiteralPath $LogPath -ErrorAction Stop)
+                $wrapperText = Get-LogValue $lines 'wrapper'
+                if ($wrapperText -match '^\d+$') { $wrapperPid = [int] $wrapperText }
+                $exitText = Get-LogValue $lines 'exit'
+                if ($exitText -match '^-?\d+$') {
+                    $passedLine = @($lines | Where-Object { $_ -match 'passed \d+, failed \d+' } | Select-Object -Last 1)
+                    if ($passedLine.Count -gt 0) { Write-Output $passedLine[0] }
+                    Write-Output "exit=$exitText"
+                    $aloneText = Get-LogValue $lines 'alone'
+                    if ($null -eq $aloneText) { $aloneText = if (@($lines | Where-Object { $_ -match '^concurrent-seen=' }).Count -gt 0) { 'false' } else { 'true' } }
+                    Write-Output "alone=$aloneText"
+                    $script:waitExitCode = [int] $exitText
+                    return
+                }
             }
-            $lines = @(Get-Content -LiteralPath $LogPath)
-            $wrapperText = Get-LogValue $lines 'wrapper'
-            if ($wrapperText -match '^\d+$') { $wrapperPid = [int] $wrapperText }
-            $exitText = Get-LogValue $lines 'exit'
-            if ($exitText -match '^-?\d+$') {
-                $passedLine = @($lines | Where-Object { $_ -match 'passed \d+, failed \d+' } | Select-Object -Last 1)
-                if ($passedLine.Count -gt 0) { Write-Output $passedLine[0] }
-                Write-Output "exit=$exitText"
-                $aloneText = Get-LogValue $lines 'alone'
-                if ($null -eq $aloneText) { $aloneText = if (@($lines | Where-Object { $_ -match '^concurrent-seen=' }).Count -gt 0) { 'false' } else { 'true' } }
-                Write-Output "alone=$aloneText"
-                $script:waitExitCode = [int] $exitText
-                return
-            }
-        }
-
+        } catch { Write-Verbose $_.Exception.Message }
         if ($wrapperPid -gt 0 -and -not (Test-ProcessAlive $wrapperPid)) {
             Write-Output "suite wrapper died before writing exit=: $LogPath"
             $script:waitExitCode = 5
             return
         }
-        if ($MaximumWaitMinutes -gt 0 -and ([DateTime]::UtcNow - $started).TotalMinutes -ge $MaximumWaitMinutes) {
+        $elapsed = ([DateTime]::UtcNow - $started).TotalSeconds
+        $remaining = if ($MaximumWaitMinutes -gt 0) { ($MaximumWaitMinutes * 60) - $elapsed } else { [double]::PositiveInfinity }
+        if ($remaining -le 0) {
             Write-Output "still-running log=$LogPath"
             $script:waitExitCode = 6
             return
@@ -148,46 +110,26 @@ function Wait-SuiteLog([string] $LogPath, [int] $PollIntervalSeconds, [int] $Max
             $script:waitExitCode = 4
             return
         }
-        Start-Sleep -Seconds $PollIntervalSeconds
+        $sleepMilliseconds = if ($MaximumWaitMinutes -gt 0) {
+            [int] ([math]::Min($PollIntervalSeconds * 1000, [math]::Max(1, [math]::Floor($remaining * 1000))))
+        } else {
+            $PollIntervalSeconds * 1000
+        }
+        Start-Sleep -Milliseconds $sleepMilliseconds
     }
 }
 
-if ($null -eq $SuiteProbe) {
-    $SuiteProbe = {
-        $processes = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
-        $ours = [System.Collections.Generic.HashSet[int]]::new()
-        [void] $ours.Add($PID)
-        $cursor = $PID
-        while ($cursor -gt 0) {
-            $current = $processes | Where-Object { [int] $_.ProcessId -eq $cursor } | Select-Object -First 1
-            if ($null -eq $current -or -not $ours.Add([int] $current.ParentProcessId)) { break }
-            $cursor = [int] $current.ParentProcessId
-        }
-        do {
-            $added = $false
-            foreach ($process in $processes) {
-                if ($ours.Contains([int] $process.ParentProcessId) -and $ours.Add([int] $process.ProcessId)) {
-                    $added = $true
-                }
-            }
-        } while ($added)
-        foreach ($process in $processes) {
-            if ($process.Name -in @('pwsh.exe', 'powershell.exe') -and
-                $process.CommandLine -match '(?i)-File\s+"?[^"\s]*[\\/]test\.ps1"?(\s|$)' -and
-                -not $ours.Contains([int] $process.ProcessId)) {
-                [int] $process.ProcessId
-            }
-        }
+if ($PSBoundParameters.ContainsKey('Attach')) {
+    if ([string]::IsNullOrWhiteSpace($Attach)) {
+        Write-Output 'suite log path must not be empty'
+        exit 2
     }
-}
-
-if ($Attach) {
     if (-not (Test-Path -LiteralPath $Attach -PathType Leaf)) {
         Write-Output "suite log does not exist: $Attach"
         exit 2
     }
     $script:waitExitCode = 1
-    Wait-SuiteLog (Resolve-Path -LiteralPath $Attach) $PollSeconds $StallMinutes 0
+    Wait-SuiteLog (Resolve-Path -LiteralPath $Attach) $PollSeconds $StallMinutes $TimeoutMinutes
     exit $script:waitExitCode
 }
 
@@ -195,68 +137,75 @@ if (-not (Test-Path -LiteralPath $TestScript -PathType Leaf)) {
     Write-Output "test script does not exist: $TestScript"
     exit 2
 }
-
 $resolvedTestScript = (Resolve-Path -LiteralPath $TestScript).Path
 $testDirectory = Split-Path -Parent $resolvedTestScript
-$repoRoot = (& git -C $testDirectory rev-parse --show-toplevel 2>$null).Trim()
-if ($LASTEXITCODE -ne 0 -or -not $repoRoot) {
-    Write-Output "test script is not inside a git repository: $resolvedTestScript"
-    exit 2
-}
-$concurrentPids = @(Get-OtherSuitePid)
-if ($concurrentPids.Count -gt 0 -and -not $Force) {
-    Write-Output ('refusing to start beside suite PID(s): ' + ($concurrentPids -join ', '))
+$repoRootResult = @(& git -C $testDirectory rev-parse --show-toplevel 2>$null)
+$repoRoot = if ($LASTEXITCODE -eq 0 -and $repoRootResult.Count -gt 0) { $repoRootResult[0].Trim() } else { '' }
+$concurrentPids = @(Get-RunnerOtherSuitePid)
+$lockPath = Get-SuiteLockPath
+$lockHeld = Test-SuiteLockHeld $lockPath
+$lockRecord = if ($lockHeld) { Get-LockRecord $lockPath } else { $null }
+if (($concurrentPids.Count -gt 0 -or $lockHeld) -and -not $Force) {
+    if ($lockHeld) {
+        $ownerPid = if ($null -ne $lockRecord) { $lockRecord.Pid } else { 0 }
+        $ownerLog = if ($null -ne $lockRecord) { $lockRecord.Log } else { '' }
+        Write-Output "refusing to start beside suite PID $ownerPid log=$ownerLog"
+    } else {
+        Write-Output ('refusing to start beside suite PID(s): ' + ($concurrentPids -join ', '))
+    }
     exit 3
 }
-
 $stamp = Get-SuiteStamp $resolvedTestScript $repoRoot $concurrentPids
 $stampLines = ConvertTo-StampLine $stamp
-if ($DryRun) {
-    $stampLines | Write-Output
-    exit 0
-}
+if ($DryRun) { $stampLines | Write-Output; exit 0 }
 
-$resolvedLogDir = [System.IO.Path]::GetFullPath($LogDir)
+$resolvedLogDir = [IO.Path]::GetFullPath($LogDir)
 New-Item -ItemType Directory -Path $resolvedLogDir -Force | Out-Null
-$timestamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss', [System.Globalization.CultureInfo]::InvariantCulture)
-$intendedLogPath = Join-Path $resolvedLogDir "suite-$timestamp-$($stamp.sha)-pending.log"
-$lockPath = Join-Path $resolvedLogDir 'suite.lock'
-if ($Force) { $lockPath = Join-Path $resolvedLogDir "suite.force-$PID.lock" }
-$lock = Enter-SuiteLock $lockPath $intendedLogPath
-if (-not $lock.Acquired) {
-    $existingPid = if ($null -ne $lock.Existing) { $lock.Existing.Pid } else { 0 }
-    $existingLog = if ($null -ne $lock.Existing) { $lock.Existing.Log } else { '' }
-    Write-Output "refusing to start beside suite PID $existingPid log=$existingLog"
-    exit 3
-}
-
+$timestamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss', [Globalization.CultureInfo]::InvariantCulture)
+$randomHex = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(4)).ToLowerInvariant()
+$logPath = Join-Path $resolvedLogDir "suite-$timestamp-$randomHex.log"
 $pwshExe = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
 $childScript = Join-Path $PSScriptRoot 'suite-child.ps1'
 try {
-    $childArguments = @('-NoProfile', '-File', $childScript, '-TestScript', $resolvedTestScript, '-LogPath', $intendedLogPath, '-LockPath', $lockPath, '-Utc', $stamp.utc, '-Sha', $stamp.sha, '-Dirty', $stamp.dirty, '-Concurrent', $stamp.concurrent, '-FreeMb', $stamp.freeMb) | ForEach-Object {
+    $childArguments = @('-NoProfile', '-File', $childScript, '-TestScript', $resolvedTestScript, '-LogPath', $logPath, '-LockPath', $lockPath, '-Utc', $stamp.utc, '-Sha', $stamp.sha, '-Dirty', $stamp.dirty, '-Concurrent', $stamp.concurrent, '-FreeMb', $stamp.freeMb) | ForEach-Object {
         if ($_ -match '[\s"]') { '"{0}"' -f $_ } else { $_ }
     }
     $process = Start-Process -FilePath $pwshExe -ArgumentList ($childArguments -join ' ') -WindowStyle Hidden -PassThru
 } catch {
-    Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
     Write-Output "could not launch suite child: $($_.Exception.Message)"
     exit 2
 }
-
+Write-Output "log=$logPath"
+Write-Output "pid=$($process.Id)"
 $deadline = [DateTime]::UtcNow.AddSeconds(10)
-$logPath = $intendedLogPath
+$acknowledged = $false
 while ([DateTime]::UtcNow -lt $deadline) {
-    $record = Get-LockRecord $lockPath
-    if ($null -ne $record -and $record.Pid -eq $process.Id -and $record.Log) {
-        $logPath = $record.Log
-        break
+    if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+        try {
+            if (@(Get-Content -LiteralPath $logPath -ErrorAction Stop | Where-Object { $_ -match '^wrapper=\d+$' }).Count -gt 0) { $acknowledged = $true; break }
+        } catch { Write-Verbose $_.Exception.Message }
     }
+    $process.Refresh()
     if ($process.HasExited) { break }
     Start-Sleep -Milliseconds 100
 }
-
-Write-Output "log=$logPath"
-Write-Output "pid=$($process.Id)"
+$process.Refresh()
+if (-not $acknowledged) {
+    if ($process.HasExited) {
+        $lines = if (Test-Path -LiteralPath $logPath -PathType Leaf) { @(Get-Content -LiteralPath $logPath -ErrorAction SilentlyContinue) } else { @() }
+        $childError = Get-LogValue $lines 'child-error'
+        $childExit = Get-LogValue $lines 'exit'
+        if ($process.ExitCode -eq 3 -and $childExit -eq '3' -and $childError -match '^lock held by pid=') {
+            Write-Output $childError
+            exit 3
+        }
+        Write-Output "child exited before acknowledgement exit=$($process.ExitCode)"
+        Write-LogTail $logPath
+    } else {
+        Write-Output "no acknowledgement log=$logPath"
+    }
+    exit 5
+}
 if ($Wait) {
     $script:waitExitCode = 1
     Wait-SuiteLog $logPath $PollSeconds $StallMinutes $TimeoutMinutes
