@@ -11826,8 +11826,24 @@ $code = $LASTEXITCODE
 Confirm-True ($code -eq 2 -and ($out -join "`n") -match 'must not be empty') 'suite runner attach: an empty path is a usage error'
 
 $suiteRunnerFake = Join-Path $suiteRunnerTemp 'suite-fake.ps1'
+$suiteRunnerDriver = Join-Path $suiteRunnerTemp 'suite-runner-driver.ps1'
 $suiteRunnerLogDir = Join-Path $suiteRunnerTemp 'logs'
 New-Item -ItemType Directory -Path $suiteRunnerTemp -Force | Out-Null
+Set-Content -LiteralPath $suiteRunnerDriver -Value @'
+param(
+    [Parameter(Mandatory)] [string] $Runner,
+    [Parameter(Mandatory)] [string] $TestScript,
+    [Parameter(Mandatory)] [string] $LogDir,
+    [Parameter(Mandatory)] [string] $LockPath,
+    [switch] $Force
+)
+if ($Force) {
+    & $Runner -TestScript $TestScript -LogDir $LogDir -LockPath $LockPath -SuiteProbe { @() } -Force
+} else {
+    & $Runner -TestScript $TestScript -LogDir $LogDir -LockPath $LockPath -SuiteProbe { @() }
+}
+exit $LASTEXITCODE
+'@ -Encoding utf8NoBOM
 Set-Content -LiteralPath $suiteRunnerFake -Value @'
 Write-Output first-line
 [Console]::Out.Close()
@@ -11837,7 +11853,7 @@ exit 7
 '@ -Encoding utf8NoBOM
 $startedSuiteWrappers = [System.Collections.Generic.List[int]]::new()
 try {
-    $launch = Invoke-ChildPwsh $suiteRunner @('-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock, '-SuiteProbe', { @() }, '-Force') ''
+    $launch = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock, '-Force') ''
     $launchText = $launch.Lines -join [Environment]::NewLine
     $launchLogLine = @($launch.Lines | Where-Object { $_ -match '^log=' } | Select-Object -Last 1)
     $launchPidLine = @($launch.Lines | Where-Object { $_ -match '^pid=' } | Select-Object -Last 1)
@@ -11860,11 +11876,11 @@ try {
     Confirm-True ($streamedLog -match 'first-line' -and $streamedLog -notmatch 'second-line') 'suite runner streaming: first fake line reaches the log before the delayed second line'
     Confirm-True ($streamedLog -match ('(?m)^lock=' + [regex]::Escape($suiteRunnerLock) + '$')) 'suite runner lock seam: the child uses the injected test lock path'
 
-    $contender = Invoke-ChildPwsh $suiteRunner @('-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock, '-SuiteProbe', { @() }) ''
+    $contender = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock) ''
     Confirm-True ($contender.ExitCode -eq 3) "suite runner lock: a second launch while the fake suite runs exits 3, got $($contender.ExitCode)"
     Confirm-True (($contender.Lines -join [Environment]::NewLine) -match ("PID {0} log=" -f [regex]::Escape($launchPid))) 'suite runner lock: the advisory refusal names the winning fake child and log'
 
-    $forced = Invoke-ChildPwsh $suiteRunner @('-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock, '-SuiteProbe', { @() }, '-Force') ''
+    $forced = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock, '-Force') ''
     $forcedText = $forced.Lines -join [Environment]::NewLine
     Confirm-True ($forced.ExitCode -eq 3 -and $forcedText -match 'lock held by pid=\d+ log=') 'suite runner force: a forced child cannot bypass the OS-held lock and reports its holder'
     Confirm-True ($forcedText -notmatch '(?m)^(log|pid)=') 'suite runner acknowledgement: a failed child acknowledgement publishes no log or PID'

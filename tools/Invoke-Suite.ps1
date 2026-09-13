@@ -223,3 +223,4 @@ if ($Wait) {
     Wait-SuiteLog $logPath $PollSeconds $StallMinutes $TimeoutMinutes
     exit $script:waitExitCode
 }
+exit 0
