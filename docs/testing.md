@@ -87,6 +87,34 @@ nearly all of it `pwsh` start-up.
 The tests never touch your own repositories. They point `GIT_CEILING_DIRECTORIES` at the temp
 folder and pass an empty global git config, so the results do not depend on the machine.
 
+They also try not to depend on how busy it is. A check that fails because the machine was slow says
+nothing about the script, and several used to: the sample matrix renders in child processes that read a
+config the suite wrote a moment earlier, the diagnostics group needs a whole record to land inside its
+quarter-second budget, and a starved pool can make a cache hit miss. Under several suites at once, any
+of those can miss — and then a random cell of the matrix, or a run of cache checks, fails for a reason
+that is not in the script. Four things fix that, and none of them is a wider tolerance:
+
+- Child renders are given `CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS=30000` by default, so freshly written
+  configs cannot miss under load. `Invoke-ChildPwsh` sets that environment variable only while it
+  launches its child and restores the test process afterwards; the few timeout tests explicitly pass
+  `$false` to exercise the shipped 250 ms budget. See [how the config files are read](configuration.md#how-the-config-files-are-read).
+- The diagnostics group and the operation-count group pin their budgets — the record budget and the
+  bounded read's deadline — for the run of checks that are about *what* was written rather than about
+  how long it took. Each is rebuilt from the script's own numbers and put back from the script itself
+  afterwards, and the checks that are about a budget running out lift the pin for themselves.
+- The git cache group states each entry's age in its fixture instead of arranging one by waiting. Its
+  read deadline is pinned across the group too — a starved thread pool missing that 250 ms turns every
+  expected hit into a miss — and each case that changes the git directory waits for its change to be
+  visible to the stamp, because Windows publishes a file's timestamps to its directory entry after the
+  write rather than during it.
+- `Invoke-SharedFile` wraps the suite writes that can meet a bounded reader's still-closing handle,
+  including an untrusted project config and the diagnostics log's own writer. It retries only Windows
+  sharing and lock violations; access denied is not retried, because a directory and a read-only
+  destination can report it too and retrying it would hide a real test failure.
+
+So a failure in those groups is a failure. If you do run suites in parallel, run them from separate
+worktrees: each has its own temp tree, but two copies in one checkout share the sample and config files.
+
 To try a payload of your own:
 
 ```powershell

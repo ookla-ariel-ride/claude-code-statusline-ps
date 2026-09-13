@@ -192,27 +192,50 @@ function Measure-VisibleWidth([string] $Text) {
     return $width
 }
 
+# The config-read budget only matrix and sample children receive, through
+# CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS (see Get-ConfigReadTimeout in statusline.ps1). That is #99: a
+# child render reads a config this file wrote a moment ago under the same quarter-second deadline a
+# render gives a stranger's file, and on a machine running several suites at once one of those reads
+# misses it. The child then draws the built-in defaults and a cell of the render matrix fails on a
+# different sample every time, for a reason that is not in the script. Thirty seconds is the same
+# number the diagnostics group pins its record budget to, and for the same reason: far past anything a
+# local file takes, so what is left when a check still fails is the script.
+#
+# Only child runs inherit it: Invoke-ChildPwsh sets the environment for its child, then restores this
+# test process before it returns. Every in-process check here - including the ones that spend the
+# deadline on purpose - reads the shipped 250 ms, and the checks below that state what the variable
+# does set it themselves and put it back.
+$childConfigTimeoutMs = '30000'
+
 # Runs a script file in a child pwsh with $Payload on stdin, and collects stdout as Lines and stderr as Err.
-function Invoke-ChildPwsh([string] $File, [string[]] $Arguments, [string] $Payload) {
+function Invoke-ChildPwsh([string] $File, [string[]] $Arguments, [string] $Payload, [bool] $RaiseConfigTimeout = $true) {
     $pwshArgs = @('-NoProfile', '-NoLogo', '-NonInteractive', '-File', $File) + @($Arguments)
     $err = [System.Collections.Generic.List[string]]::new()
+    $oldChildTimeout = $env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $out = $Payload | pwsh @pwshArgs 2>&1 | ForEach-Object {
-        if ($_ -is [System.Management.Automation.ErrorRecord]) { $err.Add("$_") } else { "$_" }
+    try {
+        if ($RaiseConfigTimeout) { $env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS = $childConfigTimeoutMs }
+        else { Remove-Item Env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS -ErrorAction SilentlyContinue }
+        $out = $Payload | pwsh @pwshArgs 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { $err.Add("$_") } else { "$_" }
+        }
+    } finally {
+        if ($null -ne $oldChildTimeout) { $env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS = $oldChildTimeout }
+        else { Remove-Item Env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS -ErrorAction SilentlyContinue }
     }
     $sw.Stop()
     return @{ Lines = @($out); Err = @($err); ExitCode = $LASTEXITCODE; Ms = $sw.ElapsedMilliseconds }
 }
 
 # Runs statusline.ps1 in a child pwsh. $Columns 0 means COLUMNS unset. $PathPrefix is prepended to PATH for the child.
-function Invoke-StatusLine([string] $Payload, [string] $ConfigPath, [int] $Columns = 0, [string] $PathPrefix) {
+function Invoke-StatusLine([string] $Payload, [string] $ConfigPath, [int] $Columns = 0, [string] $PathPrefix, [bool] $RaiseConfigTimeout = $true) {
     $oldCols = $env:COLUMNS
     $oldPath = $env:PATH
     try {
         if ($Columns -gt 0) { $env:COLUMNS = "$Columns" } else { Remove-Item Env:COLUMNS -ErrorAction SilentlyContinue }
         if ($PathPrefix) { $env:PATH = $PathPrefix + [System.IO.Path]::PathSeparator + $env:PATH }
         $scriptArgs = if ($ConfigPath) { @('-Config', $ConfigPath) } else { @() }
-        return Invoke-ChildPwsh $script $scriptArgs $Payload
+        return Invoke-ChildPwsh $script $scriptArgs $Payload $RaiseConfigTimeout
     } finally {
         if ($null -ne $oldCols) { $env:COLUMNS = $oldCols } else { Remove-Item Env:COLUMNS -ErrorAction SilentlyContinue }
         $env:PATH = $oldPath
@@ -226,7 +249,7 @@ function Invoke-StatusLine([string] $Payload, [string] $ConfigPath, [int] $Colum
 # launched from here was being sent its payload at whatever the console happened to be on - which is
 # exactly the defect #80 fixed on the other side of the same pipe. Naming all three means the bytes a
 # test sends and the bytes it reads back are the test's own choice.
-function Get-ChildPwshStartInfo([string[]] $Arguments, [string] $PathPrefix) {
+function Get-ChildPwshStartInfo([string[]] $Arguments, [string] $PathPrefix, [bool] $RaiseConfigTimeout = $true) {
     $psi = [System.Diagnostics.ProcessStartInfo]::new($pwshExe)
     foreach ($a in @('-NoProfile', '-NoLogo', '-NonInteractive') + @($Arguments)) { $psi.ArgumentList.Add($a) }
     $psi.UseShellExecute = $false
@@ -238,6 +261,9 @@ function Get-ChildPwshStartInfo([string[]] $Arguments, [string] $PathPrefix) {
     $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
     $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
     [void] $psi.Environment.Remove('COLUMNS')
+    # Matrix and sample children use the raised budget; a caller that exercises shipped behavior leaves it absent.
+    if ($RaiseConfigTimeout) { $psi.Environment['CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS'] = $childConfigTimeoutMs }
+    else { [void] $psi.Environment.Remove('CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS') }
     if ($PathPrefix) { $psi.Environment['PATH'] = $PathPrefix + [System.IO.Path]::PathSeparator + $env:PATH }
     return $psi
 }
@@ -248,15 +274,19 @@ function Get-ChildPwshStartInfo([string[]] $Arguments, [string] $PathPrefix) {
 # way Invoke-StatusLine clears it for a width of 0. $ConfigPath is how the one caller widens the window
 # it has to look in: a render it means to watch mid-probe is no use if the probe is over before a pwsh
 # has finished starting.
-function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix, [string] $ConfigPath) {
+function Invoke-StatusLineAsync([string] $Payload, [string] $PathPrefix, [string] $ConfigPath, [bool] $RaiseConfigTimeout = $true) {
     $childArgs = if ($ConfigPath) { @('-File', $script, '-Config', $ConfigPath) } else { @('-File', $script) }
-    $p = [System.Diagnostics.Process]::Start((Get-ChildPwshStartInfo $childArgs $PathPrefix))
+    $p = [System.Diagnostics.Process]::Start((Get-ChildPwshStartInfo $childArgs $PathPrefix $RaiseConfigTimeout))
     $out = $p.StandardOutput.ReadToEndAsync()
     $err = $p.StandardError.ReadToEndAsync()
     $p.StandardInput.Write($Payload)
     $p.StandardInput.Close()
     return @{ Process = $p; Out = $out; Err = $err }
 }
+$childDefaultStartInfo = Get-ChildPwshStartInfo @('-Version') ''
+Confirm-Equal $childDefaultStartInfo.Environment['CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS'] $childConfigTimeoutMs 'child process helpers: the raised config budget is the default'
+$childShippedStartInfo = Get-ChildPwshStartInfo @('-Version') '' $false
+Confirm-True (-not $childShippedStartInfo.Environment.ContainsKey('CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS')) 'child process helpers: an explicit false keeps the shipped config budget'
 
 # A child pwsh with the payload written to its stdin as raw bytes. Invoke-ChildPwsh sends through the
 # pipeline, where $OutputEncoding chooses the bytes; here the bytes are the caller's, so a failure can
@@ -322,7 +352,7 @@ function Get-SubagentReply([string[]] $Lines) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Open-SharedConfigFile', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Clear-StatusDiagPendingLock', 'Test-PathAbsent', 'Add-StatusDiagDrop', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent', 'Get-StatusNow', 'Get-StatusClock'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-ConfigReadTimeout', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Invoke-BoundedFilePendingSweep', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Move-AtomicFile', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent', 'Get-StatusNow', 'Get-StatusClock', 'Clear-StatusDiagPendingLock', 'Test-PathAbsent', 'Add-StatusDiagDrop'))
 # Import-ScriptFunction lifts functions but not the script-level clock reading. Keep one typed baseline
 # for every lifted builder so an invalid test setup reaches the consumer instead of being repaired.
 $script:renderNow = [DateTimeOffset]::Now
@@ -556,9 +586,33 @@ New-Item -ItemType Directory -Force $tmp | Out-Null
 $oldGitCeiling = $env:GIT_CEILING_DIRECTORIES
 $env:GIT_CEILING_DIRECTORIES = (Split-Path $tmp -Parent).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
 try {
+# The two Windows sharing errors, and one retry rule for every write this file makes to a path the
+# script under test has just read. This is not defensiveness: the bounded reader CLOSES its handles on
+# the thread pool and never waits on the close, deliberately - see the note in Read-BoundedFileText -
+# so a config written here, read through the script, and written again on the same path meets the
+# previous read's handle still open. On a quiet machine the pool closes it in microseconds. On one
+# running six suites the close sits behind a starved pool, the write throws, and under this file's Stop
+# preference that takes the whole run down at whatever line came next - which is how four of five loaded
+# runs died in `unit: config`, on the one pair of lines that writes the same config name twice, and a
+# sixth in `unit: state`, deleting a file it had just read.
+#
+# Which errors, by number rather than by type, because the two do not line up: deleting or writing a
+# file that is open gives ERROR_SHARING_VIOLATION or ERROR_LOCK_VIOLATION as an IOException, while
+# REPLACING one by MoveFileEx can give ERROR_ACCESS_DENIED as an UnauthorizedAccessException, but a
+# directory or read-only destination gives the same result. Only sharing and lock violations are retried.
+$sharingHResult = @(-2147024864, -2147024863)  # 0x80070020, 0x80070021
+function Invoke-SharedFile([scriptblock] $Call, [int] $TimeoutMs = 5000) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
+        try { return & $Call } catch {
+            if ($_.Exception.GetBaseException().HResult -notin $sharingHResult -or $sw.ElapsedMilliseconds -ge $TimeoutMs) { throw }
+            Start-Sleep -Milliseconds 50
+        }
+    }
+}
 function Write-TempConfig([string] $Name, [string] $Json) {
     $p = Join-Path $tmp $Name
-    [System.IO.File]::WriteAllText($p, $Json, [System.Text.UTF8Encoding]::new($false))
+    $null = Invoke-SharedFile { [System.IO.File]::WriteAllText($p, $Json, [System.Text.UTF8Encoding]::new($false)) }
     return $p
 }
 # Every segment name in layout-one order, from the registry, so this list cannot drift from the script's.
@@ -1075,7 +1129,10 @@ function Write-TempProjectDir([string] $Name, $Json) {
     $dir = Join-Path $tmp $Name
     $claude = Join-Path $dir '.claude'
     New-Item -ItemType Directory -Force $claude | Out-Null
-    if ($null -ne $Json) { [System.IO.File]::WriteAllText((Join-Path $claude 'statusline.json'), $Json, [System.Text.UTF8Encoding]::new($false)) }
+    if ($null -ne $Json) {
+        $projectFile = Join-Path $claude 'statusline.json'
+        $null = Invoke-SharedFile { [System.IO.File]::WriteAllText($projectFile, $Json, [System.Text.UTF8Encoding]::new($false)) }
+    }
     return $dir
 }
 $missingConfig = Join-Path $tmp 'does-not-exist.json'
@@ -1317,6 +1374,61 @@ Confirm-Equal (Get-BoundedReadLimit).TimeoutMs $realLimit.TimeoutMs 'bounded rea
 Confirm-Equal (Get-BoundedReadLimit).MaxBytes $realLimit.MaxBytes 'bounded read: the real cap is back'
 Confirm-Equal (Read-BoundedFileText $smallProject) '{ "layout": "two" }' 'bounded read: the same file reads again with the deadline back'
 
+# ---- CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS: the one thing that can move a config read's deadline ----
+# #99. The suite renders its sample matrix in child processes that read a config this file wrote a
+# moment earlier, under the same quarter-second deadline a render gives a stranger's file; on a loaded
+# machine a child misses it, draws the built-in defaults, and a cell of the matrix fails on a different
+# sample every run. So the harness raises that budget for its children, and what is checked here is the
+# DECISION rather than any duration: the shipped budget is pinned to zero, which refuses the same file
+# that read back whole two lines ago, and the only thing that can make it read again is the larger
+# budget arriving from the variable. Nothing below waits on a clock or measures one.
+#
+# The variable is read only when it is set, the shape CLAUDE_STATUSLINE_DEBUG has, and it can only ever
+# RAISE the deadline - which is why no value of it, including a hostile one, can make a render's config
+# read stricter than the shipped 250 ms.
+$cfgTimeoutOld = $env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS
+try {
+    Remove-Item Env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS -ErrorAction SilentlyContinue
+    Confirm-Equal (Get-ConfigReadTimeout) 0 'config timeout: unset, the variable asks for nothing at all'
+    # Everything that is not a whole number of milliseconds asks for nothing either, and so does a
+    # number that would lower a budget rather than raise one.
+    foreach ($cfgBad in @('', '   ', 'yes', 'true', '250ms', '1e3', '2.5', '0', '-1', '-30000', '0x10')) {
+        $env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS = $cfgBad
+        Confirm-Equal (Get-ConfigReadTimeout) 0 "config timeout: '$cfgBad' is not a budget, so the shipped one stands"
+    }
+    $env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS = '30000'
+    Confirm-Equal (Get-ConfigReadTimeout) 30000 'config timeout: a whole number of milliseconds is taken as it is'
+    $env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS = "  30000`t"
+    Confirm-Equal (Get-ConfigReadTimeout) 30000 'config timeout: the whitespace around it is trimmed'
+    $env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS = '1'
+    Confirm-Equal (Get-ConfigReadTimeout) 1 'config timeout: a number below the shipped budget is still read, and the reader is what refuses to lower a deadline'
+    $env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS = '2147483647'
+    Confirm-Equal (Get-ConfigReadTimeout) 60000 'config timeout: past a minute a deadline has stopped being one, so it is capped at a minute'
+    # The decision itself, with the shipped budget spent. Unset: the config is refused and the defaults
+    # stand, which is the production behaviour and the thing that must not change.
+    . ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = 0 } }"))
+    Remove-Item Env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS -ErrorAction SilentlyContinue
+    Confirm-Equal (Merge-StatusConfigFile (Get-DefaultStatusConfig) $smallProject).Layout 'one' 'config timeout: with the variable unset a spent budget still refuses the config, so nothing is loosened by default'
+    $env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS = '30000'
+    Confirm-Equal (Merge-StatusConfigFile (Get-DefaultStatusConfig) $smallProject).Layout 'two' 'config timeout: the variable raises the budget the project file is read under, and the file applies'
+    Confirm-Equal (Merge-StatusConfigFile (Get-DefaultStatusConfig) $smallProject -Trusted).Layout 'two' 'config timeout: and the user file, read as trusted, is raised by the same variable'
+    # And only those two. The git cache entry and the session state file go through the same reader with
+    # no budget of their own to hand it, so the variable cannot reach them however it is set.
+    $env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS = '60000'
+    Confirm-Equal (Read-BoundedFileText $smallProject -Trusted) $null 'config timeout: a bounded read that is not a config read keeps the shipped budget whatever the variable says'
+    # A value below the shipped budget cannot tighten the config read either: the reader takes the
+    # larger of the two, so with the real deadline back a budget of 1 ms still reads the file.
+    . ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = $($realLimit.TimeoutMs) } }"))
+    $env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS = '1'
+    Confirm-Equal (Merge-StatusConfigFile (Get-DefaultStatusConfig) $smallProject).Layout 'two' 'config timeout: a value under the shipped budget is ignored rather than obeyed, so the read cannot be tightened'
+} finally {
+    . ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($realLimit.MaxBytes); TimeoutMs = $($realLimit.TimeoutMs) } }"))
+    if ($null -ne $cfgTimeoutOld) { $env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS = $cfgTimeoutOld }
+    else { Remove-Item Env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS -ErrorAction SilentlyContinue }
+}
+Confirm-Equal (Get-BoundedReadLimit).TimeoutMs $realLimit.TimeoutMs 'config timeout: the real deadline is back'
+Confirm-Equal (Get-ConfigReadTimeout) 0 'config timeout: the variable is unset again, so every check after this one reads the shipped budget'
+
 # What the handle says, not what the name said. The null device opens like a file on Windows and has the
 # shape a FIFO has on Unix - a handle that cannot seek - so it is the one non-regular file this machine
 # can produce without a privilege, and the check that refuses it is made after the open, from the handle.
@@ -1373,21 +1485,19 @@ Confirm-Equal (Read-BoundedFileText $tmp -Trusted) $null 'user config: a directo
 Confirm-Equal (Read-BoundedFileText 'NUL' -Trusted) $null 'user config: a handle that cannot seek is refused as a trusted read too'
 Confirm-Equal (Read-BoundedFileText $overCap -Trusted) $null 'user config: the cap is not skipped for a trusted read'
 Confirm-Equal (Read-BoundedFileText $smallProject -Trusted) '{ "layout": "two" }' 'user config: a trusted read of an ordinary file reads it back whole'
-# A config another process holds open FOR WRITING - an editor between its truncate and its flush, a sync
-# client, a script that did not dispose a StreamWriter. File.OpenRead asks to share with readers only and
-# is refused with a sharing violation; Get-Content asked to share with writers too and read it, so this
-# is what the file did before it was bounded and what it has to keep doing. The user's file re-opens
-# sharing with the writer; the project's file, whose path a repository chose, stays refused.
+# A config another process holds open FOR WRITING is not read while the writer is there. The bounded
+# reader deliberately uses File.OpenRead, whose BCL delegate asks to share with readers only; that
+# preserves one ordinary snapshot rule for both the user-chosen and repository-chosen paths rather than
+# accepting an editor's in-flight truncate or flush.
 $userShared = Write-TempConfig 'user-shared.json' '{ "style": "powerline", "layout": "two" }'
 $userWriter = [System.IO.File]::Open($userShared, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
 try {
-    $userSharedRefused = $null -eq (Read-BoundedFileText $userShared)
-    Write-Host "  writer-held case: $(if ($userSharedRefused) { 'the plain open is refused, so the shared re-open is what answers' } else { 'this filesystem shares a written file anyway, so both reads answer' })" -ForegroundColor DarkGray
-    Confirm-Equal (Read-BoundedFileText $userShared -Trusted) '{ "style": "powerline", "layout": "two" }' 'user config: a file another process holds open for writing is still read'
-    Confirm-Equal (Read-StatusConfig $userShared).Style 'powerline' 'user config: and it still applies, rather than falling back to the defaults'
-    Confirm-Equal "$(Get-Content -LiteralPath $userShared -Raw)" '{ "style": "powerline", "layout": "two" }' 'user config: Get-Content reads it too, which is what the bounded read has to match'
+    Confirm-Equal (Read-BoundedFileText $userShared) $null 'project config: a file another process holds open for writing is refused'
+    Confirm-Equal (Read-BoundedFileText $userShared -Trusted) $null 'user config: a file another process holds open for writing is refused too'
+    Confirm-Equal (Read-StatusConfig $userShared).Style 'plain' 'user config: a writer-held file falls back to the defaults'
+    Confirm-Equal "$(Get-Content -LiteralPath $userShared -Raw)" '{ "style": "powerline", "layout": "two" }' 'user config: Get-Content can read the writer-held file, which is deliberately not the bounded rule'
 } finally { $userWriter.Dispose() }
-Confirm-Equal (Read-BoundedFileText $userShared -Trusted) '{ "style": "powerline", "layout": "two" }' 'user config: and the same file reads the ordinary way once the writer has gone'
+Confirm-Equal (Read-BoundedFileText $userShared -Trusted) '{ "style": "powerline", "layout": "two" }' 'user config: the same file reads once the writer has gone'
 # A user config that is not there at all is a supported state - install.ps1 warns and carries on - so it
 # is not a refusal and leaves no record for the log. The project file keeps its refusal, because "there
 # is no project config" is the question that log line was added to answer.
@@ -1510,6 +1620,17 @@ namespace StatuslineTest {
         public override void Write(byte[] buffer, int offset, int count) { }
         protected override void Dispose(bool disposing) { Thread.Sleep(_disposeDelayMs); Disposed = true; }
     }
+    public class BlockingFileStream : FileStream {
+        private readonly int _disposeDelayMs;
+        private readonly ManualResetEventSlim _disposeGate;
+        public bool Disposed;
+        public bool DisposeStarted;
+        public BlockingFileStream(string path, int disposeDelayMs) : base(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete) { _disposeDelayMs = disposeDelayMs; }
+        public BlockingFileStream(string path, ManualResetEventSlim disposeGate) : base(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete) { _disposeGate = disposeGate; }
+        public static void ReleaseGate(object state) { ((BlockingFileStream)state).ReleaseGate(); }
+        public void ReleaseGate() { _disposeGate.Set(); }
+        protected override void Dispose(bool disposing) { DisposeStarted = true; if (_disposeGate != null) _disposeGate.Wait(); else Thread.Sleep(_disposeDelayMs); Disposed = true; base.Dispose(disposing); }
+    }
 }
 '@
     } catch { $null = $_ }
@@ -1541,6 +1662,34 @@ if ($null -eq $blockingType) {
     Confirm-True ($quickTask.Wait(5000)) 'bounded read: a close that answers finishes'
     Confirm-True ($quick.Disposed) 'bounded read: the queued close really closes the stream'
     Confirm-Equal ([System.Threading.Tasks.Task]::Run($quickCall.Length).Result) 0 'bounded read: the length delegate reads the stream it was closed over'
+}
+
+# A timed-out open can return a handle after its caller has given up. A completed abandoned open whose
+# Dispose blocks must not spend the next healthy read's budget; the close is queued and the healthy file
+# still reads back. Restoring the old timed wait makes the named read assertion fail.
+$blockingFileType = 'StatuslineTest.BlockingFileStream' -as [type]
+if ($null -ne $blockingFileType) {
+    $completed = [System.IO.File]::OpenRead($smallProject)
+    $completedOpen = [System.Threading.Tasks.TaskCompletionSource[System.IO.FileStream]]::new()
+    $completedOpen.SetResult($completed)
+    $script:boundedFilePending = [System.Collections.Generic.List[object]]::new()
+    $script:boundedFilePending.Add([pscustomobject]@{ Kind = 'Open'; Task = $completedOpen.Task })
+    Invoke-BoundedFilePendingSweep
+    $completedClose = $script:boundedFilePending[0].Task
+    Confirm-True $completedClose.Wait(5000) 'bounded read: the next sweep queues disposal of a completed abandoned open'
+    Confirm-True $completed.SafeFileHandle.IsClosed 'bounded read: the next sweep disposes a completed abandoned handle'
+
+    $swept = $blockingFileType::new($smallProject, 5000)
+    $openFinished = [System.Threading.Tasks.TaskCompletionSource[System.IO.FileStream]]::new()
+    $openFinished.SetResult($swept)
+    $script:boundedFilePending = [System.Collections.Generic.List[object]]::new()
+    $script:boundedFilePending.Add([pscustomobject]@{ Kind = 'Open'; Task = $openFinished.Task })
+    $sweepSw = [System.Diagnostics.Stopwatch]::StartNew()
+    $sweepText = Read-BoundedFileText $smallProject
+    $sweepMs = $sweepSw.ElapsedMilliseconds
+    Confirm-Equal $sweepText '{ "layout": "two" }' 'bounded read: a stuck prior close does not delay the next healthy read'
+    Confirm-True ($sweepMs -lt 1000) "bounded read: a stuck prior close leaves the healthy read prompt, took $sweepMs ms"
+    Confirm-True (-not $swept.Disposed) 'bounded read: the previous handle close remains queued rather than borrowed by the next read'
 }
 
 Write-Host '== unit: render cost' -ForegroundColor Cyan
@@ -1623,10 +1772,25 @@ if ($null -eq $costType) {
             Attributes = [System.Delegate]::CreateDelegate([Func[System.IO.FileAttributes]], $Path, [StatuslineTest.FsCount].GetMethod('GetAttributes'))
         }
     }
+    # Every read from here to the end of this group is of a real file on a real disk, and each one is
+    # under the shipped quarter-second deadline. That is #94: on a machine running four suites at once
+    # one of these reads misses it, and then the file did not read back whole and the counts are of a
+    # read that stopped early - a check about COST failing on a clock, which is the one thing this group
+    # was written to avoid. So the deadline is pinned once for the whole group, from the script's own
+    # numbers, and put back from the script itself at the end. The cap is left exactly as it ships,
+    # because the cap is a decision these checks do exercise.
+    $costRealLimit = Get-BoundedReadLimit
+    . ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($costRealLimit.MaxBytes); TimeoutMs = 30000 } }"))
     # The stand-in has to be the real thing first, or every count below would be counting a double that
     # does not behave like the script: it reads a file back whole and refuses one that is not there.
+    # Both are stated as counts as well as answers, so the case says the double was the thing that did
+    # the reading rather than only that a read happened: a real file is one open, one length, two reads.
+    [StatuslineTest.FsCount]::Reset()
     Confirm-Equal (Read-BoundedFileText $smallProject) '{ "layout": "two" }' 'render cost: the counting delegate reads a real file back whole'
+    Confirm-Equal ('opens {0}, attributes {1}, lengths {2}, reads {3}' -f [StatuslineTest.FsCount]::Opens, [StatuslineTest.FsCount]::Attributes, [StatuslineTest.FsCount]::Lengths, [StatuslineTest.FsCount]::Reads) 'opens 1, attributes 1, lengths 1, reads 2' 'render cost: and the counter saw that read, so the double is what did it'
+    [StatuslineTest.FsCount]::Reset()
     Confirm-Equal (Read-BoundedFileText (Join-Path $tmp 'cost-missing.json')) $null 'render cost: the counting delegate refuses a file that is not there'
+    Confirm-Equal ('opens {0}, attributes {1}, lengths {2}, reads {3}' -f [StatuslineTest.FsCount]::Opens, [StatuslineTest.FsCount]::Attributes, [StatuslineTest.FsCount]::Lengths, [StatuslineTest.FsCount]::Reads) 'opens 1, attributes 0, lengths 0, reads 0' 'render cost: a file that is not there costs one open and nothing after it'
     # Ops leaves the close out and Text keeps it. The close is queued on the pool and never waited on, by
     # design, so how many have run by the time a line here reads the counter is not decidable; every
     # comparison between two reads is made on Ops, and the close is only ever bounded, never pinned.
@@ -1759,8 +1923,12 @@ if ($null -eq $costType) {
         if ($null -ne $costFlagOld) { $env:CLAUDE_STATUSLINE_DEBUG = $costFlagOld } else { Remove-Item Env:CLAUDE_STATUSLINE_DEBUG -ErrorAction SilentlyContinue }
     }
 
-    # The counting stand-in goes away here, and the script's own delegate factory comes back.
-    . (Import-ScriptFunction $script @('Get-BoundedFileDelegate'))
+    # The counting stand-in goes away here, and the script's own delegate factory comes back - and with
+    # it the script's own deadline, read out of the script rather than retyped, so a restore that put
+    # back a replica agreeing on both keys would not be a restore.
+    . (Import-ScriptFunction $script @('Get-BoundedFileDelegate', 'Get-BoundedReadLimit'))
+    Confirm-Equal (Get-BoundedReadLimit).TimeoutMs $costRealLimit.TimeoutMs 'render cost: the real deadline is back'
+    Confirm-Equal (Get-BoundedReadLimit).MaxBytes $costRealLimit.MaxBytes 'render cost: and the real cap with it'
     [StatuslineTest.FsCount]::Reset()
     Confirm-Equal (Read-BoundedFileText $smallProject) '{ "layout": "two" }' 'render cost: the real delegate factory is back and still reads a file'
     Confirm-Equal ([StatuslineTest.FsCount]::Opens) 0 'render cost: the real delegate factory is back, so nothing counts any more'
@@ -2130,7 +2298,9 @@ Confirm-Equal (Read-SessionState 'abc').cost_usd 1.07 'state read: and the same 
 $stateHuge = Join-Path $stateDir 'huge.json'
 [System.IO.File]::WriteAllText($stateHuge, ('{ "v": 1, "cost_usd": 1.07, "pad": "' + ('x' * $stateRealLimit.MaxBytes) + '" }'))
 Confirm-Equal (Read-SessionState 'huge') $null 'state read: a file over the byte cap reads as no state'
-Remove-Item -LiteralPath $stateHuge -Force
+# Through the retry: the read above closed its handle on the pool without waiting, so on a loaded
+# machine this delete can meet it still open.
+$null = Invoke-SharedFile { Remove-Item -LiteralPath $stateHuge -Force }
 
 # The history ring gains an entry only when the cost moved.
 $same = Merge-SessionState $back (Get-StatePayload 1.07) 1767225660
@@ -4417,18 +4587,15 @@ Write-Host '== unit: time' -ForegroundColor Cyan
 # share of it went on the API; this one prints what time it is, and a session that has run 1h12m says
 # nothing about whether it is now 09:14 or 23:47.
 #
-# It reads no payload field, so there is nothing to feed it and nothing to pin but the shape, the glyph
-# and that the value really is this machine's clock. The time is read either side of the call and the
-# text has to match one of the two, which is exact rather than a regex: the only way the minute could be
-# neither is a call that crossed two minute boundaries.
-$timeBefore = Get-Date
+# It reads no payload field. It does share the render's one clock reading with the other rendered
+# clock-relative figures, so this lifted builder receives the typed baseline established at extraction.
+# The clock seam tests below separately change that baseline; this checks the ordinary render value.
 $timeSeg = Get-TimeSegment
-$timeAfter = Get-Date
 Confirm-Equal $timeSeg.Name 'time' 'time: the segment is named time'
 Confirm-Equal $timeSeg.Role 'dim' 'time: dim, with no threshold band and no alarm behind it'
 Confirm-Equal $timeSeg.Bold $false 'time: never bold'
 Confirm-Equal $timeSeg.Short $null 'time: no short form, because there is nothing in 14:05 to shed'
-Confirm-True ($timeSeg.Text -eq "$iconTime $($timeBefore.ToString('HH\:mm'))" -or $timeSeg.Text -eq "$iconTime $($timeAfter.ToString('HH\:mm'))") "time: the text is the glyph and this machine's local HH:mm, got '$($timeSeg.Text)'"
+Confirm-Equal $timeSeg.Text "$iconTime $($clockTestNow.ToString('HH\:mm'))" 'time: the text is the glyph and the render clock HH:mm'
 Confirm-True ($timeSeg.Text -match "^$([regex]::Escape($iconTime)) [0-2]\d:[0-5]\d$") 'time: the shape is the glyph, a space, and 24-hour HH:mm'
 Confirm-Equal (Get-VisibleWidth $timeSeg.Text) 7 'time: seven cells - one for the glyph, one space, five for the clock'
 # The separator is a literal colon whatever the culture calls its time separator. A format string of
@@ -5873,7 +6040,10 @@ function Get-CacheFileCount([string] $Dir) { return @(Get-ChildItem -LiteralPath
 function Edit-CacheEntry([string] $Path, [scriptblock] $Change) {
     $j = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
     & $Change $j
-    [System.IO.File]::WriteAllText($Path, ($j | ConvertTo-Json -Depth 4 -Compress), [System.Text.UTF8Encoding]::new($false))
+    # Through the retry: the call that just read this entry closed its handle on the pool without
+    # waiting, so on a loaded machine that handle can still be open here.
+    $entryJson = $j | ConvertTo-Json -Depth 4 -Compress
+    $null = Invoke-SharedFile { [System.IO.File]::WriteAllText($Path, $entryJson, [System.Text.UTF8Encoding]::new($false)) }
 }
 # Get-ShortHash is the one hash behind the state file name and the cache entry name.
 Confirm-Equal (Get-ShortHash 'abc') 'ba7816bf8f01cfea' 'short hash: first 16 hex characters of SHA-256("abc")'
@@ -5886,6 +6056,36 @@ $cacheDir = Join-Path $tmp 'cache-unit'
 $cacheHead = Join-Path $cacheGitDir 'HEAD'
 $cacheIndex = Join-Path $cacheGitDir 'index'
 $cacheEntry = Join-Path $cacheDir (Get-CacheEntryName $cacheRepo)
+
+# ---- The cache lifetime stays on the real clock ----
+# A cache entry's writtenAt is a filesystem timestamp, so freshness is measured against the real wall
+# clock. Age cases below state timestamps relative to a new reading instead of injecting a fake clock.
+# ---- And the deadline the entry itself is read under ----
+# The clock above is not the only wall clock in this group's way. An entry is read through the same
+# bounded reader the config files use, on the thread pool, under the shipped quarter-second deadline;
+# on a saturated machine the pool does not get to that read in time and the call reports "no entry yet"
+# and probes. Every check below that expects a HIT is then a check that can fail because the pool was
+# busy - which is the same defect as the clock, one layer down, and it is what was left of #102 after
+# the clock was pinned. So that deadline is pinned for the group too, from the script's own numbers and
+# leaving the cap exactly as it ships, because the cap IS exercised here. The two cases that spend the
+# deadline on purpose sit further down and set it to zero for themselves, which still works: they
+# rebuild the limit from whatever is in force and put that back.
+$cacheReadLimit = Get-BoundedReadLimit
+. ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($cacheReadLimit.MaxBytes); TimeoutMs = 30000 } }"))
+Confirm-Equal (Get-BoundedReadLimit).TimeoutMs 30000 'git cache read: the entry read''s deadline is pinned for this group, so a miss can only be the entry'
+Confirm-Equal (Get-BoundedReadLimit).MaxBytes $cacheReadLimit.MaxBytes 'git cache read: and the shipped cap is untouched, because the cap is one of the things checked here'
+
+# Waits, briefly, for a change made to the git directory to be visible to the stamp. Windows publishes
+# a file's timestamps to its directory entry after the write rather than during it, and on a loaded
+# machine that lag can outlast the next line of a test: the case then stamps the directory as it was,
+# the entry it writes carries the old stamps, and three checks about invalidation fail with nothing
+# wrong in the cache. Normally this returns on its first look. It cannot make a failing check pass -
+# a stamp that never moves fails the check that says so.
+function Wait-GitStampMoved([string] $GitDir, [string] $Was, [int] $TimeoutMs = 10000) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ((Get-GitStamp $GitDir) -ceq $Was -and $sw.ElapsedMilliseconds -lt $TimeoutMs) { Start-Sleep -Milliseconds 25 }
+    return ((Get-GitStamp $GitDir) -cne $Was)
+}
 
 # Get-GitRepoRoot: the walk up to the first .git entry that is a repository, as a WorkTree/GitDir pair.
 function Get-RootPair([string] $Dir) { $r = Get-GitRepoRoot $Dir; if ($r) { "$($r.WorkTree)|$($r.GitDir)" } else { $null } }
@@ -5992,7 +6192,6 @@ New-Item -ItemType Directory -Force $cacheWtGitDirMany | Out-Null
 Confirm-True ((Get-GitStamp $cacheWtGitDirMany).StartsWith('over-cap:')) 'git stamp: a worktree of a repository over the cap is over the cap too'
 
 # A miss probes and writes; a hit answers from the file and does not.
-$now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
 Confirm-Equal $g.Branch 'main' 'cache miss: the probe result comes back'
 Confirm-Equal $script:probeCalls 1 'cache miss: the probe ran once'
@@ -6009,7 +6208,7 @@ Confirm-Equal $entry.v 1 'cache file: version 1'
 Confirm-Equal $entry.root $cacheRepo 'cache file: root is the work tree'
 Confirm-Equal $entry.stamps (Get-GitStamp $cacheGitDir) 'cache file: stamps is the stamp string of the git directory'
 Confirm-True ($entry.stamps -is [string]) 'cache file: stamps is one string'
-Confirm-True ([math]::Abs($entry.writtenAt - $now) -le 5) 'cache file: writtenAt is now, in Unix seconds'
+Confirm-True ([math]::Abs($entry.writtenAt - [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) -le 5) 'cache file: writtenAt is now, in Unix seconds'
 Confirm-Equal (@($entry.PSObject.Properties.Name) -join ',') 'v,root,stamps,writtenAt,result' 'cache file: keys in schema order'
 Confirm-Equal $entry.result.Branch 'main' 'cache file: result holds the branch'
 Confirm-Equal @($entry.result.PSObject.Properties).Count 8 'cache file: result holds every key of the record'
@@ -6056,7 +6255,9 @@ $invalidations = @(
     @{ Name = 'info/exclude written';       Do = { New-Item -ItemType Directory -Force (Join-Path $cacheGitDir 'info') | Out-Null; [System.IO.File]::WriteAllText((Join-Path $cacheGitDir 'info' 'exclude'), "*.log`n") } }
     @{ Name = 'a line appended to info/exclude'; Do = { [System.IO.File]::AppendAllText((Join-Path $cacheGitDir 'info' 'exclude'), "build/`n") } }
     @{ Name = 'refs/heads touched';         Do = { [System.IO.Directory]::SetLastWriteTimeUtc((Join-Path $cacheGitDir 'refs' 'heads'), $later) } }
-    @{ Name = 'a ref written by rename';    Do = { $lock = Join-Path $cacheGitDir 'refs' 'heads' 'main.lock'; [System.IO.File]::WriteAllText($lock, "abc`n"); [System.IO.File]::Move($lock, (Join-Path $cacheGitDir 'refs' 'heads' 'main'), $true) } }
+    # The move goes through the retry for the reason Invoke-SharedFile states: replacing a file that
+    # something still has open is refused, and under load that something can be this run's own reader.
+    @{ Name = 'a ref written by rename';    Do = { $lock = Join-Path $cacheGitDir 'refs' 'heads' 'main.lock'; $ref = Join-Path $cacheGitDir 'refs' 'heads' 'main'; $null = Invoke-SharedFile { [System.IO.File]::WriteAllText($lock, "abc`n"); [System.IO.File]::Move($lock, $ref, $true) } } }
     @{ Name = 'refs/remotes/origin created'; Do = { New-Item -ItemType Directory -Force (Join-Path $cacheGitDir 'refs' 'remotes' 'origin') | Out-Null } }
     @{ Name = 'the git directory touched'; Do = { [System.IO.Directory]::SetLastWriteTimeUtc($cacheGitDir, $later.AddSeconds(5)) } }
 )
@@ -6065,6 +6266,11 @@ foreach ($case in $invalidations) {
     $before = $script:probeCalls
     $stampBefore = (Get-Content -LiteralPath $cacheEntry -Raw | ConvertFrom-Json).stamps
     & $case.Do
+    # The premise of the three checks below, asserted rather than assumed: the change is visible to the
+    # stamp. It normally is by the time this line runs; on a loaded machine the directory entry it is
+    # read from can lag the write, and then every check here would be about a change the cache was
+    # never shown.
+    Confirm-True (Wait-GitStampMoved $cacheGitDir $stampBefore) "$($case.Name): the change moved the directory's stamp, so there is something to invalidate on"
     $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
     Confirm-Equal $script:probeCalls ($before + 1) "$($case.Name): a miss, the probe ran"
     $stampAfter = (Get-Content -LiteralPath $cacheEntry -Raw | ConvertFrom-Json).stamps
@@ -6079,13 +6285,18 @@ $g = Get-CachedGitBranch $cacheWorktree 1500 $cacheDir 5
 $g = Get-CachedGitBranch $cacheWorktree 1500 $cacheDir 5
 $before = $script:probeCalls
 Confirm-True (Test-Path -LiteralPath (Join-Path $cacheDir (Get-CacheEntryName $cacheWorktree))) 'worktree: its entry is named for the worktree path'
+$cacheStampWas = Get-GitStamp $cacheWtGitDir
 [System.IO.Directory]::SetLastWriteTimeUtc((Join-Path $cacheGitDir 'refs' 'heads'), $later.AddSeconds(10))
+Confirm-True (Wait-GitStampMoved $cacheWtGitDir $cacheStampWas) 'worktree: the ref change moved the worktree''s stamp through its commondir'
 $g = Get-CachedGitBranch $cacheWorktree 1500 $cacheDir 5
 Confirm-Equal $script:probeCalls ($before + 1) 'worktree: a ref change in the main repository is a miss'
 $g = Get-CachedGitBranch $cacheWorktree 1500 $cacheDir 5
 Confirm-Equal $script:probeCalls ($before + 1) 'worktree: then a hit'
-# No index at all - a repository with no commits yet - stamps as 0 rather than failing.
+# No index at all - a repository with no commits yet - stamps as 0 rather than failing. Each change is
+# waited into the stamp first, for the reason the invalidation loop above gives.
+$cacheStampWas = Get-GitStamp $cacheGitDir
 Remove-Item -LiteralPath $cacheIndex -Force
+Confirm-True (Wait-GitStampMoved $cacheGitDir $cacheStampWas) 'index removed: the removal moved the directory''s stamp'
 $before = $script:probeCalls
 $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
 Confirm-Equal $script:probeCalls ($before + 1) 'index removed: a miss'
@@ -6093,7 +6304,9 @@ Confirm-Equal ((Get-Content -LiteralPath $cacheEntry -Raw | ConvertFrom-Json).st
 $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
 Confirm-Equal $g.Branch 'main' 'index removed: the entry with the sentinel hits'
 Confirm-Equal $script:probeCalls ($before + 1) 'index removed: no probe on the hit'
+$cacheStampWas = Get-GitStamp $cacheGitDir
 [System.IO.File]::WriteAllBytes($cacheIndex, [byte[]] @(68, 73, 82, 67))
+Confirm-True (Wait-GitStampMoved $cacheGitDir $cacheStampWas) 'index back: writing it moved the directory''s stamp'
 $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
 Confirm-Equal $script:probeCalls ($before + 2) 'index back: a miss'
 $cacheRepoUnborn = Write-FakeRepo 'cache-repo-unborn' $false
@@ -6118,7 +6331,6 @@ $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 300
 Confirm-Equal $script:probeCalls $before 'entry three seconds old: a hit with a lifetime of 300'
 $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 2
 Confirm-Equal $script:probeCalls ($before + 1) 'entry three seconds old: a miss with a lifetime of two'
-
 # A lifetime of 0 always probes and never writes.
 $stamp = (Get-Item -LiteralPath $cacheEntry).LastWriteTimeUtc
 $before = $script:probeCalls
@@ -6166,7 +6378,9 @@ Confirm-Equal $script:probeCalls ($before + 1) 'null probe: the second call did 
 $script:cacheProbe = Get-BranchRecord 'main' $false
 Confirm-Equal (Get-CachedGitBranch $cacheRepoNull 1500 $cacheDir 5) $null 'null probe: still null while the entry is fresh, even though git would answer now'
 Confirm-Equal $script:probeCalls ($before + 1) 'null probe: no probe while the entry is fresh'
+$cacheStampWas = Get-GitStamp (Join-Path $cacheRepoNull '.git')
 [System.IO.File]::SetLastWriteTimeUtc((Join-Path $cacheRepoNull '.git' 'HEAD'), $later)
+Confirm-True (Wait-GitStampMoved (Join-Path $cacheRepoNull '.git') $cacheStampWas) 'null probe: the touch moved the directory''s stamp'
 Confirm-Equal (Get-CachedGitBranch $cacheRepoNull 1500 $cacheDir 5).Branch 'main' 'null probe: a stamp change asks git again and the branch is back'
 Confirm-Equal $script:probeCalls ($before + 2) 'null probe: the stamp change probed'
 Edit-CacheEntry $cacheEntryNull { param($j) $j.writtenAt = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 10 }
@@ -6217,7 +6431,10 @@ $badEntries = @(
 foreach ($case in $badEntries) {
     $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
     $before = $script:probeCalls
-    if ($case.ContainsKey('Text')) { [System.IO.File]::WriteAllText($cacheEntry, $case.Text) } else { Edit-CacheEntry $cacheEntry $case.Change }
+    if ($case.ContainsKey('Text')) {
+        $badText = $case.Text
+        $null = Invoke-SharedFile { [System.IO.File]::WriteAllText($cacheEntry, $badText) }
+    } else { Edit-CacheEntry $cacheEntry $case.Change }
     $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
     Confirm-Equal $g.Branch 'main' "bad entry, $($case.Name): the probe answers"
     Confirm-Equal $script:probeCalls ($before + 1) "bad entry, $($case.Name): a miss"
@@ -6292,7 +6509,9 @@ $sweepFresh = Join-Path $cacheDir 'fresh-entry.json'
 foreach ($f in @($sweepOld, $sweepOldTmp, $sweepFresh)) { [System.IO.File]::WriteAllText($f, '{}') }
 foreach ($f in @($sweepOld, $sweepOldTmp)) { [System.IO.File]::SetLastWriteTimeUtc($f, [DateTime]::UtcNow.AddHours(-25)) }
 Remove-Item -LiteralPath (Join-Path $cacheDir '.sweep') -Force
+$cacheStampWas = Get-GitStamp $cacheGitDir
 [System.IO.File]::SetLastWriteTimeUtc($cacheHead, $later.AddSeconds(20))
+Confirm-True (Wait-GitStampMoved $cacheGitDir $cacheStampWas) 'cache sweep: the touch moved the stamp, so the call below is the miss that writes'
 $g = Get-CachedGitBranch $cacheRepo 1500 $cacheDir 5
 Confirm-True (-not (Test-Path -LiteralPath $sweepOld)) 'cache sweep: a day-old entry is deleted on the next write'
 Confirm-True (-not (Test-Path -LiteralPath $sweepOldTmp)) 'cache sweep: a day-old .tmp is deleted too'
@@ -6374,6 +6593,41 @@ try {
     if ($null -ne $oldTmp) { $env:TMP = $oldTmp } else { Remove-Item Env:TMP -ErrorAction SilentlyContinue }
 }
 
+# ---- Atomic writes make one immediate best-effort replacement ----
+$atomicPath = Join-Path $tmp 'atomic-write.json'
+Confirm-True (Write-AtomicJson $atomicPath ([ordered]@{ n = 1 }) 3) 'atomic write: a plain write lands'
+# Windows refuses File.Move(..., overwrite) over an open destination even when the reader granted delete
+# sharing. The cache caller swallows that one refused move; it does not wait, poll an error code, or retry.
+if ($IsWindows -and $null -ne $blockingFileType) {
+    $atomicHeld = $blockingFileType::new($atomicPath, 0)
+    $script:atomicMoveAttempts = 0
+    function Move-AtomicFile([string] $Source, [string] $Destination) { $script:atomicMoveAttempts++; [System.IO.File]::Move($Source, $Destination, $true) }
+    try {
+        $atomicMoveSw = [System.Diagnostics.Stopwatch]::StartNew()
+        $atomicRefused = $false
+        try { $null = Write-AtomicJson $atomicPath ([ordered]@{ n = 2 }) 3 } catch { $atomicRefused = $true }
+        $atomicMoveMs = $atomicMoveSw.ElapsedMilliseconds
+        Write-Host "  atomic refused move: $atomicMoveMs ms" -ForegroundColor DarkGray
+        Confirm-True $atomicRefused 'atomic write: a destination this reader still holds is refused for the cache caller to swallow'
+        Confirm-Equal $script:atomicMoveAttempts 1 'atomic write: a refused destination gets exactly one move'
+        Confirm-True ($atomicMoveMs -lt 1000) "atomic write: a refused move does not delay the render, took $atomicMoveMs ms"
+        Confirm-Equal (Get-Content -LiteralPath $atomicPath -Raw | ConvertFrom-Json).n 1 'atomic write: a refused move leaves the prior cache contents for this render'
+        Confirm-True (Test-Path -LiteralPath ($atomicPath + '.tmp')) 'atomic write: a refused one move leaves its tmp for caller cleanup'
+    } finally {
+        $atomicHeld.Dispose()
+        . (Import-ScriptFunction $script @('Move-AtomicFile'))
+    }
+}
+
+# ---- The entry read's deadline, put back ----
+# From the script rather than retyped, and checked, so the groups after this one read an entry under
+# the deadline a render gives it. It is put back here rather than before the cases above because those
+# are about the clock the lifetime is measured against, and a starved thread pool missing the read's
+# own deadline would fail them for the other reason entirely.
+. (Import-ScriptFunction $script @('Get-BoundedReadLimit'))
+Confirm-Equal (Get-BoundedReadLimit).TimeoutMs $cacheReadLimit.TimeoutMs 'git cache read: the real deadline is back'
+Confirm-Equal (Get-BoundedReadLimit).MaxBytes $cacheReadLimit.MaxBytes 'git cache read: and the real cap with it'
+
 Write-Host '== unit: diag' -ForegroundColor Cyan
 # The diagnostics log. Every failure the probe, the cache and the state file swallow stays swallowed;
 # with CLAUDE_STATUSLINE_DEBUG set, each one also appends a line to claude-statusline-diag.log in the
@@ -6394,31 +6648,19 @@ $diagStamp = '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \d+ '
 # being asserted; a loaded run of this group died on the very first record that way. The record budget
 # is pinned where that matters most, further down, but the sink checks expire it deliberately, so every
 # call these helpers make to the log is also retried briefly before it is allowed to throw.
-# Only the two Windows sharing errors are retried - ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION -
-# so a log that is missing, refused or on a broken path still fails the run at once, and only the wait
-# for another handle to close is absorbed.
-$diagSharingHResult = @(-2147024864, -2147024863)  # 0x80070020, 0x80070021
-function Invoke-DiagFile([scriptblock] $Call, [int] $TimeoutMs = 5000) {
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    while ($true) {
-        try { return & $Call } catch {
-            $ex = $_.Exception
-            while ($null -ne $ex -and ($ex -isnot [System.IO.IOException] -or $ex.HResult -notin $diagSharingHResult)) { $ex = $ex.InnerException }
-            if ($null -eq $ex -or $sw.ElapsedMilliseconds -ge $TimeoutMs) { throw }
-            Start-Sleep -Milliseconds 50
-        }
-    }
-}
+# That is the same rule Invoke-SharedFile up at the top of this file already states, for the same
+# reason - a handle the script deliberately abandoned to the thread pool - so this is that rule under
+# the name the checks below read by, rather than a second copy of it that could drift.
 function Get-DiagLine {
     # The comma keeps a one-line log an array rather than one string the caller would index by character.
     if (-not (Test-Path -LiteralPath $diagLog)) { return , @() }
-    $diagText = Invoke-DiagFile { [System.IO.File]::ReadAllText($diagLog) }
+    $diagText = Invoke-SharedFile { [System.IO.File]::ReadAllText($diagLog) }
     return , @($diagText -split "`n" | Where-Object { $_ -ne '' })
 }
-function Clear-DiagLog { if (Test-Path -LiteralPath $diagLog) { Invoke-DiagFile { Remove-Item -LiteralPath $diagLog -Force } } }
+function Clear-DiagLog { if (Test-Path -LiteralPath $diagLog) { Invoke-SharedFile { Remove-Item -LiteralPath $diagLog -Force } } }
 # The log filled to a size the next record cannot fit in, which is how every rollover check starts.
-function Write-DiagLogText([string] $Text) { Invoke-DiagFile { [System.IO.File]::WriteAllText($diagLog, $Text) } }
-function Measure-DiagMatch([string] $Pattern) { return @(Get-DiagLine | Where-Object { $_ -match $Pattern }).Count }
+function Write-DiagLogText([string] $Text) { Invoke-SharedFile { [System.IO.File]::WriteAllText($diagLog, $Text) } }
+function Measure-DiagMatch([string] $Pattern) { return @(@(Get-DiagLine) | ForEach-Object { $_ } | Where-Object { $_ -match $Pattern }).Count }
 # statusline.ps1 reads CLAUDE_STATUSLINE_DEBUG once at load into $script:diagOn, and every call site
 # tests that variable before it builds a reason or calls anything - which is what makes an unset
 # variable cost nothing. Import-ScriptFunction lifts functions and not the script-level assignment, and
@@ -6430,8 +6672,22 @@ function Sync-DiagFlag($Value) {
     if ($null -eq $Value) { Remove-Item Env:CLAUDE_STATUSLINE_DEBUG -ErrorAction SilentlyContinue } else { $env:CLAUDE_STATUSLINE_DEBUG = $Value }
     $script:diagOn = Test-StatusDiagFlag
 }
+# Almost every check in this group is about WHAT a record says and where its bytes go, never about how
+# long the filesystem took - and every one of them goes through a whole record, which carries a
+# quarter-second budget for all of its filesystem calls. On a machine running four suites at once that
+# budget is spent before the line is appended: the record is dropped, and a check about the log's
+# contents fails for a reason that is not in the script. Worse, a record whose close ran out of budget
+# leaves its writer handle open, so the next read here meets a sharing violation and takes the whole
+# group down. That is #94, the same shape as #63. So the record budget is pinned once for the whole
+# group and put back from the script itself in the finally. The sink checks further down expire it
+# deliberately - that is what they are about - so they lift the pin for themselves and set it again
+# afterwards, and the rollover section's own pin is this one carried on rather than a second copy.
+$diagShippedLimit = Get-StatusDiagLimit
+. ([scriptblock]::Create("function Get-StatusDiagLimit { return @{ TimeoutMs = 30000; RolloverMs = $($diagShippedLimit.RolloverMs) } }"))
 try {
     $script:cacheProbe = Get-BranchRecord 'main' $false
+    Confirm-Equal (Get-StatusDiagLimit).TimeoutMs 30000 'diag budget: the record budget is pinned for this group, so a dropped record can only be the script'
+    Confirm-Equal (Get-StatusDiagLimit).RolloverMs $diagShippedLimit.RolloverMs 'diag budget: and the shipped reserve is untouched by the pin'
     # Unset - the normal case - the helper writes nothing at all.
     Sync-DiagFlag $null
     Write-StatusDiag 'nobody asked for this'
@@ -6448,8 +6704,9 @@ try {
     $diagLines = Get-DiagLine
     Confirm-Equal $diagLines.Count 2 'diag on: the second call appends rather than replaces'
     Confirm-True ($diagLines[1] -match 'again$') 'diag on: the second line holds the second reason'
+    Confirm-Equal (Measure-DiagMatch ' (hello|again)$') 2 'diag helper: two matching lines count as two'
     # Cast back, because a helper that returns an array hands it to the pipeline element by element.
-    $diagBytes = [byte[]] (Invoke-DiagFile { [System.IO.File]::ReadAllBytes($diagLog) })
+    $diagBytes = [byte[]] (Invoke-SharedFile { [System.IO.File]::ReadAllBytes($diagLog) })
     Confirm-True (-not ($diagBytes[0] -eq 0xEF -and $diagBytes[1] -eq 0xBB -and $diagBytes[2] -eq 0xBF)) 'diag file: UTF-8 without a BOM'
     Confirm-Equal $diagBytes[$diagBytes.Count - 1] 10 'diag file: every line ends with a newline'
 
@@ -6488,8 +6745,14 @@ try {
     Confirm-True (-not $diagThrew) 'diag write failure: the helper does not throw'
     $env:TEMP = $diagTemp
 
-    # The cache says miss, then hit, and the record the caller gets is the same either way.
+    # The cache says miss, then hit, and the record the caller gets is the same either way. Its
+    # five-second freshness uses the actual wall clock, so the calls are adjacent and the entry is fresh.
     Clear-DiagLog
+    # The entry read's own deadline is pinned across these four, the way the git cache group pins it:
+    # they are about what the log SAYS about a hit and a miss, and a read that missed its quarter-second
+    # on a starved thread pool would turn the hit into a miss and the log line with it (#102).
+    $diagCacheReadLimit = Get-BoundedReadLimit
+    . ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($diagCacheReadLimit.MaxBytes); TimeoutMs = 30000 } }"))
     $diagCacheDir = Join-Path $diagTemp 'cache'
     $before = $script:probeCalls
     $diagMiss = Get-CachedGitBranch $cacheRepo 1500 $diagCacheDir 5
@@ -6513,6 +6776,8 @@ try {
     $diagCorrupt = Get-CachedGitBranch $cacheRepo 1500 $diagCacheDir 5
     Confirm-Equal $diagCorrupt.Branch 'main' 'diag cache: a corrupt entry still returns the probe record'
     Confirm-Equal (Measure-DiagMatch 'git cache: read failed') 1 'diag cache: a corrupt entry logs the read failure'
+    . ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($diagCacheReadLimit.MaxBytes); TimeoutMs = $($diagCacheReadLimit.TimeoutMs) } }"))
+    Confirm-Equal (Get-BoundedReadLimit).TimeoutMs $diagCacheReadLimit.TimeoutMs 'diag cache: the real entry-read deadline is back'
 
     # With the variable unset the same calls leave no log at all.
     Clear-DiagLog
@@ -6587,6 +6852,38 @@ try {
     Confirm-Equal (Measure-DiagMatch 'config read: .* was not read: the deadline was spent before the open') 1 "diag config: a spent budget says the deadline was spent, got '$((Get-DiagLine) -join ' | ')'"
     . ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($diagRealLimit.MaxBytes); TimeoutMs = $($diagRealLimit.TimeoutMs) } }"))
     Confirm-Equal (Get-BoundedReadLimit).TimeoutMs $diagRealLimit.TimeoutMs 'diag config: the real deadline is back'
+    # An open that outlasts its budget records its reason once. The open keeps running on the pool and
+    # is swept later; the diagnostic must not add a second, misleading abandoned-handle line for it.
+    if (-not ('StatuslineTest.BlockingOpen' -as [type])) {
+        Add-Type -ErrorAction Stop -TypeDefinition @'
+using System.IO;
+using System.Threading;
+namespace StatuslineTest {
+    public static class BlockingOpen {
+        public static FileStream Open(string path) { Thread.Sleep(100); return File.OpenRead(path); }
+    }
+}
+'@
+    }
+    $diagOpenLimit = Get-BoundedReadLimit
+    function Get-BoundedFileDelegate([string] $Path) {
+        return @{
+            Open = [System.Delegate]::CreateDelegate([Func[System.IO.FileStream]], $Path, [StatuslineTest.BlockingOpen].GetMethod('Open'))
+            Attributes = [System.Delegate]::CreateDelegate([Func[System.IO.FileAttributes]], $Path, [System.IO.File].GetMethod('GetAttributes', [type[]] @([string])))
+        }
+    }
+    . ([scriptblock]::Create("function Get-BoundedReadLimit { return @{ MaxBytes = $($diagOpenLimit.MaxBytes); TimeoutMs = 50 } }"))
+    Clear-DiagLog
+    try {
+        Confirm-Equal (Read-BoundedFileText $smallProject) $null 'diag config: an open that exceeds its deadline is refused'
+        Write-BoundedReadDiag
+        Confirm-Equal (Measure-DiagMatch 'config read: .* was not read: the open did not answer inside') 1 "diag config: an open timeout logs its reason once, got '$((Get-DiagLine) -join ' | ')'"
+        Confirm-Equal (Get-DiagLine).Count 1 'diag config: an open timeout produces exactly one diagnostic line'
+    } finally {
+        . (Import-ScriptFunction $script @('Get-BoundedFileDelegate', 'Get-BoundedReadLimit'))
+        Start-Sleep -Milliseconds 100
+        $null = Invoke-BoundedFilePendingSweep
+    }
     # A handle that is not an ordinary file: the null device, the one this machine can produce without a
     # privilege. Where it will not open at all the refusal is still logged, under the other reason.
     Clear-DiagLog
@@ -6602,7 +6899,7 @@ try {
     Clear-DiagLog
     Confirm-Equal (Read-BoundedFileText $smallProject) '{ "layout": "two" }' 'diag config: a file that reads still reads back exactly, with the log on'
     Write-BoundedReadDiag
-    Confirm-Equal (Measure-DiagMatch 'was not read') 0 'diag config: a file that reads is not reported as a refusal'
+    Confirm-Equal (Get-DiagLine).Count 0 'diag config: a file that reads has no diagnostic, including no abandoned-close warning'
     # A record is written once. A second caller finds the slot empty rather than repeating the last one.
     Clear-DiagLog
     $null = Read-BoundedFileText (Join-Path $tmp 'diag-twice-missing.json')
@@ -6723,7 +7020,13 @@ namespace StatuslineTest {
         Write-Host '  blocked log sink case: the double would not compile here, so the log bound is not covered' -ForegroundColor DarkGray
     } else {
         Write-Host '  blocked log sink case: a compiled double holds the log open and the log close for 5000 ms' -ForegroundColor DarkGray
+        # The group's pin comes off here and goes back on at the end of this block: every check in it is
+        # about a record giving up when its budget runs out, so the shipped budget is the subject rather
+        # than an obstacle. Read out of the script rather than retyped, the same way the restores below
+        # are, so this file cannot agree with itself about what the shipped number is.
+        . (Import-ScriptFunction $script @('Get-StatusDiagLimit'))
         $diagBudget = (Get-StatusDiagLimit).TimeoutMs
+        Confirm-Equal $diagBudget $diagShippedLimit.TimeoutMs 'diag sink: the shipped record budget is back for the checks that spend it'
         Confirm-True ($diagBudget -gt 0 -and $diagBudget -le 1000) 'diag sink: a record has a budget, and it is shorter than a render'
         function Get-StatusDiagDelegate([string] $Path) {
             $null = $Path
@@ -6939,8 +7242,12 @@ namespace StatuslineTest {
         Clear-DiagLog
         Write-StatusDiag 'into a sink that answers'
         Confirm-True ([StatuslineTest.DiagSink]::Closed) 'diag sink: a sink that answers is written to and closed'
-        # The real delegate factory comes back, and the log is a file again.
+        # The real delegate factory comes back, the log is a file again, and with a real file under it
+        # the group's pinned budget goes back on: from here on a record that does not land is the
+        # script's doing and not the machine's.
         . (Import-ScriptFunction $script @('Get-StatusDiagDelegate'))
+        . ([scriptblock]::Create("function Get-StatusDiagLimit { return @{ TimeoutMs = 30000; RolloverMs = $($diagShippedLimit.RolloverMs) } }"))
+        Confirm-Equal (Get-StatusDiagLimit).TimeoutMs 30000 'diag sink: the group''s record budget is pinned again for the real-file checks that follow'
         Clear-DiagLog
         Write-StatusDiag 'back to a real file'
         Confirm-Equal (Get-DiagLine).Count 1 'diag sink: the real delegate factory is back and the log is written again'
@@ -6964,16 +7271,17 @@ namespace StatuslineTest {
     # about how long the filesystem took, and they all go through a whole record - which carries a quarter-second
     # budget for all of its filesystem calls. On a machine running four test suites at once that budget
     # is spent before the line is appended: the record is dropped, the log sits at exactly the cap, and
-    # a check about rolling fails for a reason that is not in the script. That is #63. So the budget is
-    # pinned once for the whole run of them and put back from the script itself in the finally, rather
-    # than pinned around each one. The sink checks above keep the shipped budget on purpose: expiring it
-    # is what they are about.
-    $diagRealLimit = Get-StatusDiagLimit
-    . ([scriptblock]::Create("function Get-StatusDiagLimit { return @{ TimeoutMs = 30000; RolloverMs = $($diagRealLimit.RolloverMs) } }"))
+    # a check about rolling fails for a reason that is not in the script. That is #63, and #94 extended
+    # the same pin to the whole group above, so what happens here is that the group's pin is confirmed
+    # to still be in force rather than a second copy of it being made. It is put back from the script
+    # itself in the finally, which is also what takes the group's pin off for the child renders at the
+    # end. The sink checks above lift it on purpose: expiring the budget is what they are about.
+    $diagRealLimit = $diagShippedLimit
+    Confirm-Equal (Get-StatusDiagLimit).TimeoutMs 30000 'diag rollover: the record budget is still pinned for the rollover checks'
     try {
     $diagCap = 4194304
     $diagRolled = $diagLog + '.1'
-    function Clear-DiagRollover { if (Test-Path -LiteralPath $diagRolled) { Invoke-DiagFile { Remove-Item -LiteralPath $diagRolled -Recurse -Force } } }
+    function Clear-DiagRollover { if (Test-Path -LiteralPath $diagRolled) { Invoke-SharedFile { Remove-Item -LiteralPath $diagRolled -Recurse -Force } } }
     function Get-DiagLogSize { return (Get-Item -LiteralPath $diagLog).Length }
     Clear-DiagLog
     Clear-DiagRollover
@@ -9228,6 +9536,40 @@ $oldTemp = $env:TEMP
 $matrixTemp = Join-Path $tmp 'temp-matrix'
 New-Item -ItemType Directory -Force $matrixTemp | Out-Null
 $env:TEMP = $matrixTemp
+
+# What a child render itself says about reading its config, for a cell that failed. #99: a render whose
+# config read misses its budget draws the built-in defaults, and every content check below then fails
+# against a line built from a config the child never saw - on a different sample each run, and looking
+# for all the world like a regression in whatever segment it landed on. The budget is raised for these
+# children now, so it should not happen again; if it ever does, the failure has to name it. So a sample
+# whose checks failed is rendered once more with the diagnostics log on, into a temp folder of its own,
+# and whatever the child said about its config files is printed under the failure. Nothing here runs on
+# a passing run.
+function Get-RenderConfigReason([string] $Payload, [string] $ConfigPath, [int] $Columns) {
+    $reasonTemp = Join-Path $tmp ('matrix-diag-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $oldReasonTemp = $env:TEMP
+    $oldReasonDebug = $env:CLAUDE_STATUSLINE_DEBUG
+    try {
+        New-Item -ItemType Directory -Force $reasonTemp | Out-Null
+        $env:TEMP = $reasonTemp
+        $env:CLAUDE_STATUSLINE_DEBUG = '1'
+        $null = Invoke-StatusLine $Payload $ConfigPath $Columns
+        $reasonLog = Join-Path $reasonTemp 'claude-statusline-diag.log'
+        if (-not (Test-Path -LiteralPath $reasonLog)) { return 'the child wrote no diagnostics log at all' }
+        $said = @(Get-Content -LiteralPath $reasonLog | Where-Object { $_ -match 'config (read|merge):' })
+        if ($said.Count -eq 0) { return 'the child refused neither config file, so the config it drew is the one it was given' }
+        return ($said -join ' | ')
+    } catch { return "the diagnostic render itself failed: $($_.Exception.Message)" }
+    finally {
+        if ($null -ne $oldReasonTemp) { $env:TEMP = $oldReasonTemp } else { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }
+        if ($null -ne $oldReasonDebug) { $env:CLAUDE_STATUSLINE_DEBUG = $oldReasonDebug } else { Remove-Item Env:CLAUDE_STATUSLINE_DEBUG -ErrorAction SilentlyContinue }
+    }
+}
+function Show-RenderConfigReason([int] $FailedBefore, [string] $Label, [string] $Payload, [string] $ConfigPath, [int] $Columns) {
+    if ($script:failed -le $FailedBefore) { return }
+    Write-Host "  ${Label}: a fresh render with diagnostics on said: $(Get-RenderConfigReason $Payload $ConfigPath $Columns)" -ForegroundColor Yellow
+}
+
 try {
 foreach ($cfg in $configSet) {
     foreach ($c in $cfg.Widths) {
@@ -9238,6 +9580,7 @@ foreach ($cfg in $configSet) {
             $payload = $samplePayloads[$sample.Name]
             $r = Invoke-StatusLine $payload $cfg.Path $c
             $label = "$($cfg.Name) COLUMNS=$c $($sample.Name)"
+            $matrixFailedBefore = $script:failed
             Confirm-True ($r.ExitCode -eq 0) "${label}: exit code $($r.ExitCode)"
             Confirm-True ($r.Err.Count -eq 0) "${label}: stderr empty"
             $lines = $r.Lines
@@ -9253,9 +9596,14 @@ foreach ($cfg in $configSet) {
             $blank = [string]::IsNullOrWhiteSpace((ConvertTo-PlainText ($lines -join '')))
             if (-not $cfg.Enabled['model'] -and $couldShow.Count -eq 0) {
                 Confirm-True $blank "${label}: model off with nothing else buildable prints nothing"
+                Show-RenderConfigReason $matrixFailedBefore $label $payload $cfg.Path $c
                 continue
             }
-            if ($blank) { Confirm-True $false "${label}: empty output"; continue }
+            if ($blank) {
+                Confirm-True $false "${label}: empty output"
+                Show-RenderConfigReason $matrixFailedBefore $label $payload $cfg.Path $c
+                continue
+            }
             Confirm-True ($lines.Count -le $maxLines) "${label}: $($lines.Count) lines, layout allows $maxLines"
             foreach ($line in $lines) {
                 Confirm-True (-not [string]::IsNullOrWhiteSpace($line)) "${label}: empty line"
@@ -9437,6 +9785,7 @@ foreach ($cfg in $configSet) {
                     }
                 }
             }
+            Show-RenderConfigReason $matrixFailedBefore $label $payload $cfg.Path $c
             # @() or a one-line render collapses to a bare string here and $shown[0] echoes its first
             # character instead of the line.
             $shown = @(if ($Raw) { $lines -replace $esc, '<ESC>' } else { $lines })
@@ -10551,7 +10900,7 @@ Confirm-True ((ConvertTo-PlainText ($r.Lines -join "`n")).Contains($iconCost)) "
 # here is loose, and what it catches is a filesystem wait of the tens of seconds an SMB timeout runs to.
 $deadRender = $payload06 | ConvertFrom-Json
 $deadRender.workspace | Add-Member -NotePropertyName project_dir -NotePropertyValue '\\192.0.2.1\statusline-test' -Force
-$r = Invoke-StatusLine ($deadRender | ConvertTo-Json -Depth 20 -Compress) $null 0
+$r = Invoke-StatusLine ($deadRender | ConvertTo-Json -Depth 20 -Compress) $null 0 $null $false
 Write-Host "  unreachable render: $($r.Ms) ms" -ForegroundColor DarkGray
 Confirm-True ($r.ExitCode -eq 0) "render project: an unreachable project directory, exit code $($r.ExitCode)"
 Confirm-True ($r.Err.Count -eq 0) 'render project: an unreachable project directory prints nothing on stderr'
