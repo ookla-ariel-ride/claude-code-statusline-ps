@@ -92,18 +92,18 @@ function Read-StdinText() {
 # instead. Its answer is returned to the caller, which captures it: $true proves room, while every
 # other answer is a reason to count a cap drop. Losing a record to a holder is the same trade every
 # other call in this file makes with a filesystem that will not answer.
-# A RETURNED value and not a script variable, which is where the first draft of this had it. Carrying
-# the answer out through a variable reset on entry is fail-open: every future early return in here
-# defaults to "no skip", which the caller reads as room, and the bug this whole change exists to fix
-# comes back silently. A return has the opposite default - a path that forgets to say anything returns
+# The decision is a returned value, not a script variable. A variable reset on entry is fail-open:
+# a future early return can default to "no skip", which the caller reads as room, and silently bring
+# back the cap-growth bug. A return has the opposite default - a path that forgets to say anything
+# returns
 # $null, which is not $true, which the caller counts as a drop with the reason unknown. Wrong reason,
 # right action. $true is returned on exactly three grounds, all of them meaning the log is not over its
 # cap by the time this hands back: the rename happened, the size read under the lock found another
 # render had already rolled it, or the file is not there at all. Everything else is a non-empty string
 # saying which bound was hit, and the caller prints it.
-# The append itself is still not locked, and that is what is left of the old approximation, but not in
-# the shape the first draft of this comment claimed: FileInfo.AppendText opens with FileShare.Read, so
-# two renders appending at the same instant do not both write - the second one's open throws and that
+# The append itself is still not locked, which leaves the cap approximate: FileInfo.AppendText opens
+# with FileShare.Read, so two renders appending at the same instant do not both write - the second one's
+# open throws and that
 # record is dropped. Overlapping renders lose a line to each other, then, rather than each adding one
 # past the cap, and the file can still finish a little over it because each measured room before the
 # other wrote. What it can no longer do is go on growing for as long as somebody holds a lock.
@@ -139,9 +139,8 @@ function Read-StdinText() {
 # faulted continuation raises nothing anyone here would see. So the check is made eagerly instead, by
 # Clear-StatusDiagPendingLock, on whichever later record happens to come next: it looks at whatever
 # abandoned tasks earlier calls left running and disposes the result of any that have finished by then.
-# It runs at the top of EVERY record and not only of the ones that reach a rollover, which is where the
-# first draft of this had it and which drop-on-held-lock made untenable. A leaked handle of this
-# process's own holds Path.lock until something disposes it; while it does, every render on the machine
+# It runs at the top of EVERY record and not only of the ones that reach a rollover. A leaked handle in
+# this process holds Path.lock until something disposes it; while it does, every render on the machine
 # now loses every record it tries to write once the log is full, where before they merely overshot the
 # cap. Waiting for the next record that happens to find the log full is too long to wait for that, and
 # the sweep costs a null check and a Count on every record that has nothing to sweep, which is all of
@@ -185,7 +184,7 @@ function Clear-StatusDiagPendingLock([int] $TimeoutMs) {
 # raises FileNotFoundException for a missing directory as well as a missing file, verified on this
 # platform; DirectoryNotFoundException is named anyway because other calls in this file raise it and
 # because the .NET contract allows either.
-function Test-StatusDiagAbsent($Ex) {
+function Test-PathAbsent($Ex) {
     return ($Ex -is [System.IO.FileNotFoundException] -or $Ex -is [System.IO.DirectoryNotFoundException])
 }
 
@@ -194,7 +193,6 @@ function Test-StatusDiagAbsent($Ex) {
 # drop: the caller fails closed whenever the rollover did not prove there is room.
 function Add-StatusDiagDrop([string] $Why) {
     if ([string]::IsNullOrEmpty($Why)) { $Why = 'the rollover left the log full' }
-    $script:diagDropped = 1 + [int] $script:diagDropped
     if ($null -eq $script:diagDropReasons) { $script:diagDropReasons = @{} }
     $script:diagDropReasons[$Why] = 1 + [int] $script:diagDropReasons[$Why]
 }
@@ -225,7 +223,7 @@ function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [i
         # dropped by the caller's catch rather than appended past the cap forever. The absent cases are
         # excluded from the contention test rather than left to fall inside it: they derive from
         # IOException, and a temp folder that has gone is not a holder anybody is going to let go of.
-        if ($open.Exception.InnerException -is [System.IO.IOException] -and -not (Test-StatusDiagAbsent $open.Exception.InnerException)) {
+        if ($open.Exception.InnerException -is [System.IO.IOException] -and -not (Test-PathAbsent $open.Exception.InnerException)) {
             return 'another render holds the rollover lock'
         }
         throw $open.Exception.InnerException
@@ -241,7 +239,7 @@ function Invoke-StatusDiagRollover([string] $Path, [long] $Need, [long] $Cap, [i
             # is not over its cap when this returns, whoever it was that emptied it. Any OTHER fault is
             # a size this function does not know - a share that flapped reads exactly like an empty log
             # from here - and answering $true to that is what let a record through past the cap.
-            if (Test-StatusDiagAbsent $size.Exception.InnerException) { return $true }
+            if (Test-PathAbsent $size.Exception.InnerException) { return $true }
             return 'the size of the log could not be read inside the rollover'
         }
         # Under the cap with the lock held: the render that was holding it has already rolled the file,
@@ -318,6 +316,7 @@ function Write-StatusDiag([string] $Reason) {
     $writer = $null
     $budget = 0
     $landed = $false
+    $written = $false
     try {
         $limit = Get-StatusDiagLimit
         $budget = $limit.TimeoutMs
@@ -347,9 +346,10 @@ function Write-StatusDiag([string] $Reason) {
         if ($text.Length -gt 1000) { $text = $text.Substring(0, 1000) + ' [cut]' }
         # All cap drops are carried by the first record that really lands. A map, not one overwritten
         # reason, preserves the accounting when several different rollover answers happen in one host.
-        if ($script:diagDropped) {
+        if ($null -ne $script:diagDropReasons -and $script:diagDropReasons.Count -gt 0) {
+            $dropCount = [int] (($script:diagDropReasons.Values | Measure-Object -Sum).Sum)
             $dropWhy = @($script:diagDropReasons.Keys | Sort-Object | ForEach-Object { "$($_): $($script:diagDropReasons[$_])" }) -join '; '
-            $text += " [$($script:diagDropped) record$(if ($script:diagDropped -ne 1) { 's' }) dropped at the cap: $dropWhy]"
+            $text += " [$dropCount record$(if ($dropCount -ne 1) { 's' }) dropped at the cap: $dropWhy]"
         }
         $line = "$stamp $PID $text`n"
         $need = [System.Text.UTF8Encoding]::new($false).GetByteCount($line)
@@ -360,7 +360,7 @@ function Write-StatusDiag([string] $Reason) {
         if ([System.Threading.Tasks.Task]::WaitAny(@($size), [int] $left) -lt 0) { return }
         if ($size.IsCompletedSuccessfully) {
             $have = $size.Result
-        } elseif (Test-StatusDiagAbsent $size.Exception.InnerException) {
+        } elseif (Test-PathAbsent $size.Exception.InnerException) {
             $have = 0
         } else {
             Add-StatusDiagDrop 'the size of the log could not be read before the rollover'
@@ -392,19 +392,20 @@ function Write-StatusDiag([string] $Reason) {
         # Into the writer's buffer, which is memory: a record is far shorter than the buffer, so nothing
         # reaches the disk until the close below.
         $writer.Write($line)
+        $written = $true
     } catch { $null = $_ } finally {
-        # The close is what actually writes. Do not clear carried drops merely because the line entered a
-        # buffer: only a completed successful close means the next reader can observe the accounting.
+        # Write has handed the line to the writer before the close starts. A pending close is not a
+        # failure, so it consumes the carried accounting exactly once; only a close already known to have
+        # failed leaves the note for a later record.
         if ($null -ne $writer) {
             try {
                 $close = [System.Threading.Tasks.Task]::Run([System.Delegate]::CreateDelegate([Action], $writer, [System.IO.TextWriter].GetMethod('Dispose', [type[]] @())))
                 $left = $budget - $sw.ElapsedMilliseconds
                 if ($left -gt 0) { $null = [System.Threading.Tasks.Task]::WaitAny(@($close), [int] $left) }
-                $landed = $close.IsCompletedSuccessfully
+                $landed = $written -and -not $close.IsFaulted
             } catch { $null = $_ }
         }
         if ($landed) {
-            $script:diagDropped = 0
             $script:diagDropReasons = $null
         }
     }
@@ -1108,7 +1109,7 @@ function Read-BoundedFileText([string] $Path, [switch] $Trusted) {
             # exactly the question the log was added to answer.
             $err = $open.Exception
             $base = $err.GetBaseException()
-            if (-not ($Trusted -and ($base -is [System.IO.FileNotFoundException] -or $base -is [System.IO.DirectoryNotFoundException]))) {
+            if (-not ($Trusted -and (Test-PathAbsent $base))) {
                 $why = 'it could not be opened'
             }
             return $null

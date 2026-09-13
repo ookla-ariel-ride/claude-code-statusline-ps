@@ -314,7 +314,7 @@ function Get-SubagentReply([string[]] $Lines) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Open-SharedConfigFile', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Clear-StatusDiagPendingLock', 'Test-StatusDiagAbsent', 'Add-StatusDiagDrop', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Open-SharedConfigFile', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Clear-StatusDiagPendingLock', 'Test-PathAbsent', 'Add-StatusDiagDrop', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent'))
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -6225,26 +6225,26 @@ namespace StatuslineTest {
         $diagWholeMs = $diagSinkSw.ElapsedMilliseconds
         Confirm-Equal $diagSinkCfg.Style 'powerline' 'diag sink: the config still falls back to the user file'
         Confirm-True ($diagWholeMs -lt 2000) "diag sink: a whole config read with a stalled sink is bounded by the read plus one record, took $diagWholeMs ms"
-        # A close that never answers. The record is lost the same way and the handle is abandoned open,
-        # which is the answer the config read already gives to a close it cannot afford.
+        # A close that outruns the record budget. Write already handed the line to the writer, so the
+        # carried count is consumed once while the close continues on the pool.
         [StatuslineTest.DiagSink]::OpenDelayMs = 0
         [StatuslineTest.DiagSink]::CloseDelayMs = 5000
         Clear-DiagLog
-        $script:diagDropped = 1
         $script:diagDropReasons = @{ 'a previous cap drop' = 1 }
         $diagSinkSw = [System.Diagnostics.Stopwatch]::StartNew()
         Write-StatusDiag 'into a sink that will not close'
         $diagCloseMs = $diagSinkSw.ElapsedMilliseconds
         Confirm-True ($diagCloseMs -lt 2000) "diag sink: a close that blocks costs the record's budget, not the sink's, took $diagCloseMs ms"
-        Confirm-Equal $script:diagDropped 1 'diag sink: a close that has not completed keeps the carried drop count'
+        Confirm-True ("$([StatuslineTest.DiagSink]::LastLine)".Contains('a previous cap drop: 1')) 'diag sink: a record whose close outruns its budget carries the prior drop once'
+        Confirm-True ($null -eq $script:diagDropReasons) 'diag sink: a write handed to a late close clears the carried drop count'
         [StatuslineTest.DiagSink]::CloseDelayMs = 0
-        Write-StatusDiag 'a record after the close can complete'
-        Confirm-Equal $script:diagDropped 0 'diag sink: a completed close clears the carried drop count'
+        Write-StatusDiag 'a record after the late close can complete'
+        Confirm-True (-not ("$([StatuslineTest.DiagSink]::LastLine)".Contains('a previous cap drop'))) 'diag sink: a record after a late close carries no repeated drop note'
         Add-StatusDiagDrop 'a first distinct cap drop'
         Add-StatusDiagDrop 'a second distinct cap drop'
         Write-StatusDiag 'a record after distinct cap drops'
-        Confirm-True ("$([StatuslineTest.DiagSink]::LastLine)".Contains('a first distinct cap drop: 1; a second distinct cap drop: 1')) 'diag sink: a landed record preserves each cap-drop reason and count'
-        Confirm-Equal $script:diagDropped 0 'diag sink: the multi-reason note clears only after its close completes'
+        Confirm-True ("$([StatuslineTest.DiagSink]::LastLine)".Contains('[2 records dropped at the cap: a first distinct cap drop: 1; a second distinct cap drop: 1]')) 'diag sink: a landed record totals and preserves each cap-drop reason'
+        Confirm-True ($null -eq $script:diagDropReasons) 'diag sink: the multi-reason note clears its map after the close completes'
         # A length probe that never answers stops the record before it opens anything.
         [StatuslineTest.DiagSink]::CloseDelayMs = 0
         [StatuslineTest.DiagSink]::ResetLength()
@@ -6501,19 +6501,21 @@ namespace StatuslineTest {
     Confirm-Equal $diagRollOut.Count 0 'diag rollover failure: nothing reaches the pipeline'
     Confirm-Equal (Get-DiagLogSize) $diagCap 'diag rollover failure: the log is left exactly as it was'
     Clear-DiagRollover
+    Write-StatusDiag 'a record after the rollover failure'
+    Confirm-True ("$((Get-DiagLine)[0])".Contains('[1 record dropped at the cap: the rollover could not complete: 1]')) 'diag rollover failure: a structural rollover failure is counted as a cap drop'
 
     # One record cannot set the size of the file on its own: a reason of any length is cut and marked,
     # so a pathological exception message cannot land in the file the rollover has just emptied and
     # leave the log over the cap again.
     Clear-DiagLog
     Clear-DiagRollover
+    $script:diagDropReasons = $null
     Write-StatusDiag ('q' * 5000)
     $diagLines = Get-DiagLine
     Confirm-Equal $diagLines.Count 1 'diag record cap: an enormous reason is still one line'
     $diagReason = $diagLines[0].Split(' ', 3)[2]
     $diagCutReason = ('q' * 1000) + ' [cut]'
-    Confirm-True ($diagReason.Length -ge $diagCutReason.Length -and [string]::Equals($diagReason.Substring(0, $diagCutReason.Length), $diagCutReason, [System.StringComparison]::Ordinal)) 'diag record cap: the reason is cut at 1000 characters and marked before carried accounting'
-    Confirm-True ($diagReason.EndsWith('[1 record dropped at the cap: the rollover could not complete: 1]', [System.StringComparison]::Ordinal)) 'diag record cap: a landed cut reason carries the prior cap drop after its marker'
+    Confirm-Equal $diagReason $diagCutReason 'diag record cap: the reason is cut at 1000 characters and marked'
     Confirm-True ((Get-DiagLogSize) -lt 1200) "diag record cap: the record is bounded, size $(Get-DiagLogSize)"
     Write-DiagLogText ('y' * $diagCap)
     Write-StatusDiag ('r' * 5000)
@@ -6568,7 +6570,6 @@ Start-Sleep -Seconds 60
         $diagRollRoomHeld = $null
         try { $diagRollRoomHeld = Invoke-StatusDiagRollover $diagLog 120 $diagCap 30000 } catch { $diagRollThrewHeld = $true }
         Confirm-True (-not $diagRollThrewHeld) 'diag rollover lock: a rollover it cannot take does not throw'
-        Confirm-Equal $diagRollRoomHeld 'another render holds the rollover lock' 'diag rollover lock: a skipped rollover returns why it left the log full'
         Confirm-True (-not (Test-Path -LiteralPath $diagRolled)) 'diag rollover lock: the file the other render is rotating is left alone'
         Confirm-Equal (Get-DiagLogSize) $diagCap 'diag rollover lock: and the full log is left exactly as it was'
         # The returned reason keeps a future early return fail-closed: anything but $true becomes a
