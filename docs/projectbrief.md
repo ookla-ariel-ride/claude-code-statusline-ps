@@ -242,8 +242,9 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   never waited on, and with the budget gone the stream is abandoned unclosed, whichever step spent it.
   **Abandonment is literal**, and anything adopting this pattern adopts that: nothing here can cancel a
   blocking filesystem call, so a pool thread can stay stuck in the kernel until the process exits, a
-  handle opened after the deadline is never closed, and a stream still open is left open. That is the
-  right trade in a process that draws one line and exits, and it would not be in something long-lived.
+  completed abandoned open and close tasks are retained in a small pending list and swept by the next
+  bounded read or cache write without waiting. A task that never answers remains bounded and is reclaimed
+  at process exit.
   `Read-CodePoint` admits a code point only when it draws as one glyph
   standing alone: no control, format, separator, mark, surrogate, noncharacter or unassigned value, and
   one or two cells wide by the script's own width rule, so a repository cannot reorder, hide or
@@ -260,8 +261,12 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   they really are: `Get-GitBranch`'s `Test-Path` on the payload's directory; the cache's repository
   work, all of it before git runs and none of it under `TEMP` (`Get-GitRepoRoot` walking up from the
   payload's directory, `Get-GitStamp` stat-ing the git directory, enumerating `refs` and reading
-  `.git/commondir`, a file the repository writes); and every write, which happens after the line is
-  printed. Those directories are also not chosen the same way, which is worth writing down:
+  `.git/commondir`, a file the repository writes); and the writes. The session-state write is after the
+  line prints, but the git-cache write is in `Get-BranchSegment` while segments are being built and is
+  therefore before the print. It makes one immediate move and never waits for a pending reader close: a
+  refusal drops that render's cache entry, so the next render re-probes git. That costs one failed move,
+  not a render stall, and access failures are not retried. Those directories are also not chosen the same
+  way, which is worth writing down:
   `Write-StatusDiag` and `Get-GitCacheDir` go `TEMP` → `TMPDIR` → `GetTempPath()`, while
   `Get-SessionStateDir` goes `TEMP` → `$HOME/.claude/statusline-state`, so on Unix, where `TEMP` is
   normally unset, the log and the cache land in `/tmp` and the state file lands under the home
@@ -588,11 +593,17 @@ named mutex, which was session-scoped on Unix (#49), and a render that cannot ta
 record instead of appending past the cap, so a stalled holder can no longer grow the log without bound
 (#93). The timing tests inject their clocks instead of
 racing them (#63). The installer's backups live at project-owned names and are provenance-checked
-(#52). The screenshots are regenerated from the shipped samples (#77). The four clock-relative figures
-on a line — the cache countdown, the rate-limit countdown, the pace arrow and the wall clock — come
-out of one reading, taken once and replaceable through `CLAUDE_STATUSLINE_NOW`, so a screenshot
-regenerates to the same text (#98). The reads that compare against file times, the git cache's TTL and
-the state sweep, stay on the real clock on purpose.
+(#52). The screenshots are regenerated from the shipped samples (#77). Three more test families decide
+rather than wait: a child render's config budget can be raised through
+`CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS`, and the diagnostics record budget is pinned for the checks about
+where its bytes go (#99, #94). An open that completed after a bounded read had returned could leave its
+FileStream open in a long-lived host. Later bounded operations now sweep completed opens and close them;
+a git-cache write waits at most 50 ms for this process's pending close before its one replacement attempt,
+because that write occurs before the line prints. The four clock-relative figures on a line — the cache
+countdown, the rate-limit countdown, the pace arrow and the wall clock — come out of one reading, taken
+once and replaceable through `CLAUDE_STATUSLINE_NOW`, so a screenshot regenerates to the same text (#98).
+The reads that compare against file times, the git cache's TTL and the state sweep, stay on the real clock
+on purpose.
 
 
 

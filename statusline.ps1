@@ -982,15 +982,40 @@ function Get-ConfigPreset($Name) {
 # So a second budget would have been two numbers to keep in step for no case either of them separates.
 function Get-BoundedReadLimit { return @{ MaxBytes = 65536; TimeoutMs = 250 } }
 
-# The two calls the bounded read makes, each closed over the path so it can go straight to the thread
+# How many milliseconds a CONFIG read may take when the environment asks for more than the shipped
+# budget, or 0 when it does not - which is every render outside a test harness, because the variable is
+# read only when it is set, the shape CLAUDE_STATUSLINE_DEBUG already has here. Nothing else reads it:
+# the git cache entry and the session state file keep the shipped budget, so what this can move is the
+# two config files and nothing else.
+#
+# It exists for #99. test.ps1 renders the sample matrix in child processes that read a config the test
+# itself wrote a moment earlier, under the same quarter-second budget a render gives a stranger's file;
+# on a machine running four suites at once one of those reads misses it, that child draws the built-in
+# defaults, and a random cell of the matrix fails for a reason the render is not responsible for. The
+# suite sets this for its own children rather than the checks being loosened.
+#
+# It can only ever RAISE the budget, and that is the whole of its safety argument: the value is used
+# only where it is larger than the shipped one, so no setting of it - not 0, not a negative number, not
+# a word - can make a render's config read stricter than it is today. Anything that is not a whole
+# number is ignored, and a value larger than a minute is capped at one, because past that the deadline
+# has stopped being a deadline.
+function Get-ConfigReadTimeout {
+    $raw = $env:CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS
+    if (-not $raw) { return 0 }
+    $n = 0
+    if (-not [int]::TryParse($raw.Trim(), [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref] $n)) { return 0 }
+    if ($n -le 0) { return 0 }
+    return [math]::Min($n, 60000)
+}
+
+# The two calls the bounded read makes, each closed over the path so the open can go straight to the
 # pool. Nothing here can be a script block: converted to a delegate one needs a runspace, and a thread
-# pool thread has none. Delegate.CreateDelegate over a one-argument static method is plain .NET, needs no
-# runspace, and the pair costs a fraction of a millisecond - which is what makes it possible to put a
-# blocking open behind a deadline without starting a process, and a process per render would cost more
-# than everything else the line does. Both APIs are .NET Standard, so they hold on the 7.0 floor.
-# Most of that fraction was the two reflection lookups rather than the delegates, and the two methods
-# are the same two every render, so they are looked up once and kept. Nothing here can go stale: a
-# MethodInfo for a method of the base class library is the same object for the life of the process.
+# pool thread has none. Delegate.CreateDelegate closes over the BCL File.OpenRead and File.GetAttributes
+# methods, so it needs no runspace or emitted IL. File.OpenRead keeps FileShare.Read: a writer-held file
+# is refused instead of read partway through that writer's truncate or flush, for either trust level.
+# Ten fresh pwsh -NoProfile processes measured the shipped OpenRead delegate at min 11.864 ms and median
+# 16.7369 ms. The rejected DynamicMethod measured min 31.427 ms and median 38.2225 ms by the same method,
+# so emitted IL adds a real per-render cost. Both APIs are .NET Standard, so they hold on the 7.0 floor.
 function Get-BoundedFileDelegate([string] $Path) {
     if ($null -eq $script:openMethod) {
         $script:openMethod = [System.IO.File].GetMethod('OpenRead', [type[]] @([string]))
@@ -1015,38 +1040,6 @@ function Get-BoundedStreamDelegate($Stream) {
     }
 }
 
-# The user's own config re-opened sharing with a writer, or $null when that is not what went wrong.
-#
-# File.OpenRead asks for FileShare.Read, which is .NET's default and means "other handles may read this
-# while I do". A process that has the file open FOR WRITING - an editor between its truncate and its
-# flush, a sync client, a script that forgot to dispose a StreamWriter - is therefore refused, with
-# ERROR_SHARING_VIOLATION. Get-Content asks for FileShare.ReadWrite and reads it fine, so #48 would have
-# turned a config that always loaded into one that silently fell back to the defaults for as long as the
-# other process held it. This puts that back.
-#
-# It is not a delegate on the pool like the first open, because there is no way to make one cheaply:
-# Delegate.CreateDelegate binds one argument, and the four-argument File.Open cannot be closed down to
-# the parameterless delegate a pool dispatch needs. Building one at run time can be done - an expression
-# tree compiles to exactly that - and it was measured at 61 ms per process, which is thirty times what a
-# whole config read costs and more than this script spends on everything else put together. So the
-# re-open happens on this thread, and what makes that acceptable is WHICH failure gets here: a sharing
-# violation is a completed round trip to the filesystem, inside the budget, saying the file is there and
-# in use. It is the same reasoning the diagnostics rollover uses for its rename - not a bound on the
-# call, but a test of the filesystem about to be called. A share that hangs never answers at all, so it
-# cannot reach this line, and the reads that follow are back under the clock either way.
-#
-# The user's file only. For the project file a sharing violation stays a refusal: it is a repository's
-# path, and an unbounded open on one is the thing #19 exists to refuse.
-function Open-SharedConfigFile([string] $Path, $Fault, [bool] $Trusted, [long] $Left) {
-    if (-not $Trusted -or $Left -le 0 -or $null -eq $Fault) { return $null }
-    $base = $Fault.GetBaseException()
-    # 0x80070020 is ERROR_SHARING_VIOLATION as an HResult. Tested by number rather than by type, because
-    # the type is the plain IOException that every other filesystem failure also lands on.
-    if ($base -isnot [System.IO.IOException] -or $base.HResult -ne 0x80070020) { return $null }
-    $shared = try { [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite) } catch { $null }
-    return $shared
-}
-
 # ---- EVERY FILESYSTEM CALL A RENDER CAN MAKE, AND WHAT BOUNDS IT ----
 # The audit #48 asked for, kept here beside the reader it is mostly about. A status line runs on every
 # event, so any call here that does not answer is a line that does not draw. Each row is a decision, not
@@ -1064,6 +1057,10 @@ function Open-SharedConfigFile([string] $Path, $Fault, [bool] $Trusted, [long] $
 #       Both were one File.Exists and one ReadAllText on the render's thread, which is the same shape
 #       the config read has and therefore cost one bounded read to fix rather than any new machinery.
 #       Both files are written by this script, so both are read as trusted.
+#     The two config files, and only those two, will take a LARGER budget from
+#     CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS when it is set; see Get-ConfigReadTimeout for why and for
+#     why it cannot make any of these reads stricter. Unset - which is every render this script was
+#     written for - all four are the 250 ms above.
 #   BOUNDED, by their own clock:
 #     - the diagnostics log's size probe, rollover and append, in Write-StatusDiag: 250 ms for a whole
 #       record, every call on the pool, with the rename attempted only above a reserve. Off entirely
@@ -1081,8 +1078,14 @@ function Open-SharedConfigFile([string] $Path, $Fault, [bool] $Trusted, [long] $
 #       Get-GitRepoRoot walking up from the payload's directory looking for a .git, Get-GitStamp
 #       stat-ing that git directory, enumerating the directories under refs and reading .git/commondir,
 #       a file the repository itself writes.
-#     - the writes, which are all after the line has been printed: the cache entry, the state file, and
-#       the sweep of either directory. Nothing waits on them but the process exit.
+#     - the writes. The state file and its sweep are after the line has been printed and nothing waits
+#       on them but the process exit. THE CACHE ENTRY AND ITS SWEEP ARE NOT, and this row said they
+#       were until a review checked it: Get-BranchSegment calls Get-CachedGitBranch while the segments
+#       are being built, which is before anything is printed, so the entry write and the sweep that
+#       follows it are in front of the line. Write-AtomicJson makes one move and never waits for an
+#       open destination: a refusal drops this render's cache write, so the next render re-probes git.
+#       That is a microsecond-scale failed move, not a render stall; a directory, read-only file or
+#       another process's handle gets the same one attempt and no HResult-based retry.
 #     - Get-SessionStateDir and Get-SessionStatePath, one Directory.Exists on the way to the state read.
 #     Where those directories are is worth writing down, because the two are not the same rule.
 #     Write-StatusDiag and Get-GitCacheDir go TEMP, then TMPDIR, then Path.GetTempPath();
@@ -1115,10 +1118,29 @@ function Open-SharedConfigFile([string] $Path, $Fault, [bool] $Trusted, [long] $
 # ABANDONMENT IS LITERAL, and anything that copies this pattern copies that too. When the budget is
 # gone the reader does not cancel anything, because there is nothing here that can cancel a blocking
 # filesystem call: it stops waiting and returns. A pool thread can stay stuck in the kernel until the
-# process exits, a handle opened after the deadline passed is never closed, and a stream still open is
-# left open rather than closed on the way out, because closing it would wait on the same thing that is
-# already stuck. That is harmless in a process that draws one line and exits, and it is the right trade
-# there. It is not "nothing happened", and it would not be the right trade in something long-lived.
+# process exits. A completed abandoned open is queued for a pool close, and a later bounded operation
+# removes completed opens and closes without waiting; a task that never answers remains in the capped list
+# until the process exits.
+
+# Disposes completed abandoned opens on the pool and forgets completed close tasks. The sweep never
+# waits: a stalled filesystem from one read must not spend a later healthy read's budget.
+function Invoke-BoundedFilePendingSweep {
+    if ($null -eq $script:boundedFilePending) { $script:boundedFilePending = [System.Collections.Generic.List[object]]::new() }
+    if ($null -eq $script:boundedDisposeMethod) { $script:boundedDisposeMethod = [System.IDisposable].GetMethod('Dispose', [type[]] @()) }
+    for ($i = $script:boundedFilePending.Count - 1; $i -ge 0; $i--) {
+        $pending = $script:boundedFilePending[$i]
+        $task = $pending.Task
+        if ($pending.Kind -eq 'Open' -and $task.IsCompleted) {
+            $script:boundedFilePending.RemoveAt($i)
+            if ($task.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion -and $null -ne $task.Result) {
+                $close = [System.Threading.Tasks.Task]::Run([System.Delegate]::CreateDelegate([Action], $task.Result, $script:boundedDisposeMethod))
+                $script:boundedFilePending.Add([pscustomobject]@{ Kind = 'Close'; Task = $close; Path = $pending.Path })
+            }
+        } elseif ($pending.Kind -eq 'Close' -and $task.IsCompleted) {
+            $script:boundedFilePending.RemoveAt($i)
+        }
+    }
+}
 
 # The text of a config file, or $null when it is anything but a small, promptly readable one - and, for
 # the project's file, an ordinary one. Test-Path and Get-Content are not enough here: they follow a link
@@ -1155,18 +1177,23 @@ function Open-SharedConfigFile([string] $Path, $Fault, [bool] $Trusted, [long] $
 # raised and caught an exception on every render - about 300 microseconds measured here, more than the
 # pooled call itself costs. WaitAny returns -1 for the deadline and an index otherwise, and the task is
 # then asked whether it succeeded, so the deadline and the failure are told apart instead of both
-# arriving as one caught exception. File.OpenRead still throws on the pool thread - a file that is not
-# there is the only answer that API has - but the fault is now read off the task rather than rethrown
-# into a PowerShell catch, and the catch was where the cost was.
-function Read-BoundedFileText([string] $Path, [switch] $Trusted) {
+# arriving as one caught exception. The shared FileStream open still throws on the pool thread when a file
+# is not there, but the fault is now read off the task rather than rethrown into a PowerShell catch, and the catch was where the cost was.
+#
+# $TimeoutMs is a caller's larger budget, or 0 for the shipped one. Only the config merge passes it, and
+# only ever from Get-ConfigReadTimeout; it is taken when it is LARGER than the shipped deadline and
+# ignored otherwise, so a caller cannot use it to tighten the clock on a file it is reading.
+function Read-BoundedFileText([string] $Path, [switch] $Trusted, [int] $TimeoutMs = 0) {
     $limit = Get-BoundedReadLimit
+    if ($TimeoutMs -gt $limit.TimeoutMs) { $limit = @{ MaxBytes = $limit.MaxBytes; TimeoutMs = $TimeoutMs } }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $stream = $null
     $why = $null
     $err = $null
-    $abandoned = $false
     $closeErr = $null
+    $closeStillPending = $false
     try {
+         $null = Invoke-BoundedFilePendingSweep
         if (-not $Path) { $why = 'no path was given'; return $null }
         $call = Get-BoundedFileDelegate $Path
         # The open goes first and what it hands back is what gets judged, so there is no gap between a
@@ -1177,8 +1204,12 @@ function Read-BoundedFileText([string] $Path, [switch] $Trusted) {
         $left = $limit.TimeoutMs - $sw.ElapsedMilliseconds
         if ($left -le 0) { $why = 'the deadline was spent before the open'; return $null }
         $open = [System.Threading.Tasks.Task]::Run($call.Open)
-        if ([System.Threading.Tasks.Task]::WaitAny(@($open), [int] $left) -lt 0) { $why = "the open did not answer inside $($limit.TimeoutMs) ms"; return $null }
-        $fs = if ($open.IsCompletedSuccessfully) { $open.Result } else { Open-SharedConfigFile $Path $open.Exception $Trusted ($limit.TimeoutMs - $sw.ElapsedMilliseconds) }
+        if ([System.Threading.Tasks.Task]::WaitAny(@($open), [int] $left) -lt 0) {
+            if ($script:boundedFilePending.Count -lt 8) { $script:boundedFilePending.Add([pscustomobject]@{ Kind = 'Open'; Task = $open; Path = $Path }) }
+            $why = "the open did not answer inside $($limit.TimeoutMs) ms"
+            return $null
+        }
+        $fs = if ($open.IsCompletedSuccessfully) { $open.Result } else { $null }
         if ($null -eq $fs) {
             # A file that is not there is not a refusal for the user's own config: an install without one
             # is a supported state (install.ps1 warns and carries on), and every render would otherwise
@@ -1257,15 +1288,17 @@ function Read-BoundedFileText([string] $Path, [switch] $Trusted) {
         $err = $_.Exception
         return $null
     } finally {
-        # Cleanup obeys the same clock, and goes first, with nothing on this thread in front of it. With
-        # budget left the close is queued on the pool and not waited on, so it cannot become the thing
-        # that overruns; with the budget gone the stream is abandoned outright, whichever stage spent it,
-        # because a close would only wait on what is already stuck. An abandoned handle is closed by the
-        # process exit that follows the line.
-        if ($null -ne $stream -and ($limit.TimeoutMs - $sw.ElapsedMilliseconds) -gt 0) {
-            try { $null = [System.Threading.Tasks.Task]::Run($stream.Dispose) } catch { $closeErr = $_.Exception }
-        } elseif ($null -ne $stream) {
-            $abandoned = $true
+        # Cleanup stays on the pool. If the close has not finished when this frame returns, retain that
+        # task so the next bounded operation can observe it; no close is allowed to turn this read into a
+        # filesystem wait on the render thread.
+        if ($null -ne $stream) {
+            try {
+                $close = [System.Threading.Tasks.Task]::Run($stream.Dispose)
+                if (-not $close.IsCompleted) {
+                    if ($script:boundedFilePending.Count -lt 8) { $script:boundedFilePending.Add([pscustomobject]@{ Kind = 'Close'; Task = $close; Path = $Path }) }
+                    else { $closeStillPending = $true }
+                }
+            } catch { $closeErr = $_.Exception }
         }
         # The reason is recorded here and written by the caller, once this function has returned and its
         # clock has stopped. Writing it is filesystem work of its own - a size probe, possibly a rename,
@@ -1273,8 +1306,8 @@ function Read-BoundedFileText([string] $Path, [switch] $Trusted) {
         # function exists to keep, and would delay the close above behind them. That is the property
         # #19 bought, and a diagnostic added for #64 is not a good enough reason to give it up. Outside,
         # Write-StatusDiag bounds itself, so handing the record out is not handing the problem on.
-        if ($script:diagOn -and ($why -or $abandoned -or $closeErr)) {
-            $script:diagBoundedRead = @{ Path = $Path; Why = $why; Err = $err; Abandoned = $abandoned; CloseErr = $closeErr }
+        if ($script:diagOn -and ($why -or $closeErr -or $closeStillPending)) {
+            $script:diagBoundedRead = @{ Path = $Path; Why = $why; Err = $err; CloseErr = $closeErr; CloseStillPending = $closeStillPending }
         }
     }
 }
@@ -1294,8 +1327,8 @@ function Write-BoundedReadDiag([string] $Label = 'config read') {
         $detail = if ($record.Err) { " ($($record.Err.GetBaseException().Message))" } else { '' }
         Write-StatusDiag "${Label}: $($record.Path) was not read: $($record.Why)$detail"
     }
-    if ($script:diagOn -and $record.Abandoned) { Write-StatusDiag "${Label}: the handle on $($record.Path) was left open, the deadline was spent" }
     if ($script:diagOn -and $record.CloseErr) { Write-StatusDiag "${Label}: the close of $($record.Path) could not be queued: $($record.CloseErr.Message)" }
+    if ($script:diagOn -and $record.CloseStillPending) { Write-StatusDiag "${Label}: the close of $($record.Path) is still pending; the pending list is full" }
 }
 
 # Applies one config file over a table and returns it. Anything missing or invalid silently falls back to
@@ -1312,7 +1345,11 @@ function Write-BoundedReadDiag([string] $Label = 'config read') {
 function Merge-StatusConfigFile([hashtable] $Cfg, [string] $Path, [switch] $Trusted) {
     try {
         if (-not $Path) { return $Cfg }
-        $text = Read-BoundedFileText $Path -Trusted:$Trusted
+        # Both config files, the user's and the project's, are read under the same budget, and
+        # CLAUDE_STATUSLINE_CONFIG_TIMEOUT_MS moves both or neither: which of them is being read is not
+        # something the machine's load knows about, so a variable that raised one and not the other
+        # would leave half the problem it exists for (#99).
+        $text = Read-BoundedFileText $Path -Trusted:$Trusted -TimeoutMs (Get-ConfigReadTimeout)
         # The read records why it refused rather than writing it, because writing is filesystem work
         # and the read is under a clock that must not carry any. Out here that clock has stopped, so
         # the record goes to the log now.
@@ -2026,16 +2063,24 @@ function Get-ShortHash([string] $Text) {
     return [BitConverter]::ToString($digest, 0, 8).Replace('-', '').ToLowerInvariant()
 }
 
-# Writes an object as compact UTF-8 JSON without a BOM: to a sibling .tmp file first, then moved over
-# the real one, which is atomic on both Windows and Linux, so a reader never sees half a file and an
-# interrupted write costs nothing. $false, and nothing written, when the JSON came out empty. Anything
-# that throws is the caller's to swallow.
+# The cache write is in front of the line, while the state write is after it. A bounded reader may
+# still hold a destination while its pool close finishes, and Windows can refuse even that reader's
+# delete-sharing handle. The cache write therefore makes one immediate best-effort move: a refusal is
+# swallowed by the cache caller, leaves this render without a fresh entry, and the next render re-probes
+# git. It never waits or retries an HResult, because one refused move costs microseconds while waiting
+# could put an unbounded filesystem close in front of the line.
+function Move-AtomicFile([string] $Source, [string] $Destination) {
+    [System.IO.File]::Move($Source, $Destination, $true)
+}
+
+# Writes compact UTF-8 JSON to a sibling .tmp then atomically replaces the destination exactly once.
 function Write-AtomicJson([string] $Path, $Object, [int] $Depth) {
     $json = ConvertTo-Json -InputObject $Object -Depth $Depth -Compress -ErrorAction Stop
     if (-not $json) { return $false }
     $tmp = "$Path.tmp"
     [System.IO.File]::WriteAllText($tmp, $json, [System.Text.UTF8Encoding]::new($false))
-    [System.IO.File]::Move($tmp, $Path, $true)
+    $null = Invoke-BoundedFilePendingSweep
+    Move-AtomicFile $tmp $Path
     return $true
 }
 
@@ -2168,6 +2213,10 @@ function Get-GitCacheDir {
 # cap) this is a plain probe, and nothing is written. The stamps are read before git runs, so a change
 # that lands during the probe invalidates the entry. The directory is created only when there is
 # something to write, and a failure to create it, or to write, costs nothing but the cache.
+#
+# Cache freshness is always measured against the real wall clock. A render never supplies a clock here:
+# writtenAt is a filesystem fact, not a figure that is drawn. Tests pin entry ages in their fixtures
+# instead of injecting a clock into this function.
 function Get-CachedGitBranch([string] $Dir, [int] $TimeoutMs, [string] $CacheDir, [int] $Ttl) {
     $repo = if ($CacheDir -and $Ttl -gt 0) { Get-GitRepoRoot $Dir } else { $null }
     if (-not $repo) {
