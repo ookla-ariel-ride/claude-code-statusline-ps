@@ -210,12 +210,18 @@ The full rules for every segment, the branch counts and the worktree name are in
 ## Test without Claude Code
 
 ```powershell
-.\test.ps1                                # full run, about twelve minutes on a quiet machine
-.\test.ps1 -Columns 80                    # one width instead of 120, 60, 20 and unset
-.\test.ps1 -Config .\statusline.json      # one config instead of the seven
+pwsh -NoProfile -File .\tools\Invoke-Suite.ps1 -Wait # full suite, detached and locked to one run
+.\test.ps1 -Columns 80                              # one width instead of 120, 60, 20 and unset
+.\test.ps1 -Config .\statusline.json                # one config instead of the seven
 Get-Content my-payload.json -Raw | pwsh -NoProfile -File .\statusline.ps1
 Get-Content .\samples\subagent\01-two-agents.json -Raw | pwsh -NoProfile -File .\subagent-statusline.ps1 -Style ascii
 ```
+
+### Running the suite
+
+Use `pwsh -NoProfile -File .\tools\Invoke-Suite.ps1 -Wait` for the full suite. It refuses a second
+suite by default, starts `test.ps1` detached and stamps the log path it prints. If the calling shell is
+lost, resume it with `pwsh -NoProfile -File .\tools\Invoke-Suite.ps1 -Attach <log-path>`.
 
 The suite never touches your own repositories or your real `~/.claude`. What it covers, and how to
 add a segment or a sample: [docs/testing.md](docs/testing.md).
