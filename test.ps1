@@ -2998,8 +2998,8 @@ $plainGrounds = @{
 #    One loop rather than hand-unrolled copies, because that is how the dark half came to be missing.
 #    WHAT IS NOT HERE. Six dark role hues and three markers are basic-sixteen codes with no fixed hex
 #    for Get-SgrColourIndex to return. `dim` is 251, the chevron and cost, clock, time, lines and badges
-#    text; its 254 alternate is measured below and both codes separately clear the 85-distance rule
-#    against the unchanged 246 markers inside those same segments.
+#    text; its 254 alternate is measured below. `dim` never shares a segment with `track` or `cached`,
+#    so no marker-distance rule joins those codes.
 $darkPlainMeasuredRoles = @($roleNames | Where-Object { $null -ne (Get-SgrColourIndex $dark.Roles[$_].Sgr) } | Sort-Object)
 $darkPlainMeasuredInline = @($inlineNames | Where-Object { $null -ne (Get-SgrColourIndex $dark.Inline[$_].Sgr) } | Sort-Object)
 Confirm-Equal ($darkPlainMeasuredRoles -join ',') 'dim' 'dark palette: the role whose plain code is a measurable 256-colour index'
@@ -3014,9 +3014,9 @@ foreach ($row in @(
     $worstPlain = 99.0; $worstPlainAt = 'nothing measurable'
     foreach ($n in $row.Names) {
         $idx = Get-SgrColourIndex $row.T[$row.Group][$n].Sgr
-        # Asserted for the two sets whose names are fixed lists; NOT for the dark row, whose names are
-        # the ones that already passed this test to get into the matching measured set. The pins above
-        # hold those sets, and are the assertions a role or marker slipping back to a basic-sixteen code fails.
+        # Asserted for the four rows whose names are fixed lists; NOT for the two dark measured rows,
+        # whose names already passed this test to enter their matching set. The pins above hold those
+        # sets, and are the assertions a role or marker slipping back to a basic-sixteen code fails.
         if ($row.Require) { Confirm-True ($null -ne $idx) "$($row.P) palette: $($row.Kind) $n names a 256-colour index, not one of the 16 the terminal picks" }
         if ($null -eq $idx) { continue }
         foreach ($g in $plainGrounds[$row.P]) {
@@ -3058,16 +3058,6 @@ foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
         Confirm-True ($dist -ge 40) ("$($p.N) plain $r alt: $idx is {0:N1} from the base code $baseIdx in sRGB" -f $dist)
     }
     Write-Host ("   $($p.N) alternate plain codes on the terminal's own ground: worst {0:N2}:1 ($worstAltAt)" -f $worstAlt)
-}
-# The dim role's plain text is the neighbour of track and cached in the cost, clock, time, lines,
-# and badges segments. The role and its alternate must remain distinct from both marker runs.
-foreach ($dimCode in @(@{ N = 'base'; Sgr = $dark.Roles.dim.Sgr }, @{ N = 'alternate'; Sgr = $dark.Roles.dim.AltSgr })) {
-    $dimIndex = Get-SgrColourIndex $dimCode.Sgr
-    foreach ($markerName in @('track', 'cached')) {
-        $markerIndex = Get-SgrColourIndex $dark.Inline[$markerName].Sgr
-        $distance = Get-RgbDistance (Get-XtermRgb $dimIndex) (Get-XtermRgb $markerIndex)
-        Confirm-True ($distance -ge 85) ("dark plain dim $($dimCode.N): code $dimIndex is {0:N1} from $markerName marker code $markerIndex in sRGB" -f $distance)
-    }
 }
 # Segment plain codes must not impersonate any semantic warning, error, or alarm code. An alarm is
 # rendered through the bad role, but it remains named here so its contract is not hidden by that reuse.
@@ -3283,8 +3273,8 @@ Confirm-True ($null -eq (Get-ColourHue @(188, 188, 188))) 'hue: a neutral grey h
 Confirm-Equal (Get-HueDistance 350 10) 20 'hue: 350 and 10 are 20 degrees apart, not 340'
 #    (a) EVERY ALTERNATE WHOSE BASE HAS A HEX is within 20 degrees of it. That is the whole of "an
 #        alternate yellow is still yellow", and it is what rules out reaching across the cube for a
-#        colour that happens to clear the floors. The dark table's seven PLAIN codes are the basic
-#        sixteen and have no hex, so their alternates are held to (b) instead.
+#        colour that happens to clear the floors. Six dark PLAIN role bases are basic sixteen and have
+#        no hex, so their alternates are held to (b) instead; indexed dim is measured here as neutral.
 $hueChecked = 0
 foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
     foreach ($r in $roleNames) {
@@ -3295,10 +3285,9 @@ foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
             $bh = Get-ColourHue (Get-XtermRgb $axis.Base)
             $ah = Get-ColourHue (Get-XtermRgb $axis.Alt)
             if ($null -eq $bh) {
-                # The one pair whose base is a neutral: the light dim role. Its block has no second
-                # background at all since #89 - the search below this loop is what measures that - so
-                # what is left to ask is that its plain half, where a second neutral IS available,
-                # takes one.
+                # The two neutral-base plain pairs are light and dark dim. Light dim's block has no
+                # second background at all since #89 - the search below this loop measures that - and
+                # each available plain alternate must remain neutral.
                 if ($p.T.Roles[$r].AltSgr -and $axis.K -eq 'AltSgr') { Confirm-True ($null -eq $ah) "$($p.N) $r alt $($axis.Label): a neutral base keeps a neutral alternate" }
                 continue
             }
@@ -3309,9 +3298,10 @@ foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
     }
 }
 Confirm-Equal $hueChecked 5 'palette: five alternate shades have a measurable base to be compared against'
-#    (b) THE DARK TABLE'S PLAIN ALTERNATES, whose bases are theme colours, are held to the role's own
-#        window instead: a green stays inside the greens whatever the terminal thinks green is. The
-#        windows are wide on purpose - this is the difference between an amber and a red, not a tuning.
+#    (b) THE THREE DARK PLAIN ALTERNATES whose bases are terminal-defined theme hues are held to the
+#        role's own window instead: a green stays inside the greens whatever the terminal thinks green
+#        is. Dark dim's indexed neutral base is checked above. The windows are wide on purpose - this
+#        is the difference between an amber and a red, not a tuning.
 $darkPlainWindow = @{ ok = @{ Lo = 90; Hi = 150 }; warn = @{ Lo = 30; Hi = 70 }; bad = @{ Lo = 340; Hi = 20 }; dim = $null }
 foreach ($r in $roleNames) {
     if (-not $dark.Roles[$r].AltSgr) { continue }
@@ -3488,7 +3478,6 @@ $lightModelSgr = $light.Roles.model.Sgr
 $lightFolderSgr = $light.Roles.folder.Sgr
 $lightDimSgr = $light.Roles.dim.Sgr
 Confirm-Equal (Format-Line @($segModel, $segFolder) 'plain' 'light') "$esc[${lightModelSgr}mM$esc[0m $esc[${lightDimSgr}m$chevron$esc[0m $esc[${lightFolderSgr}mF$esc[0m" 'light plain: two segments, and the chevron follows the palette'
-Confirm-True (-not (Format-Line @($segModel, $segFolder) 'plain' 'light').Contains("$esc[90m")) 'light plain: the hardcoded bright-black chevron is gone'
 Confirm-True (-not (Format-Line @($segModel, $segFolder) 'plain' 'light').Contains("$esc[1;36m")) 'light plain: no bright cyan model'
 # The dark render uses the indexed dim chevron selected for #111; default palette selection remains
 # byte-identical to an explicit dark selection.
@@ -10988,9 +10977,8 @@ foreach ($case in @(
 Write-Host ''
 Write-Host '== render: light palette' -ForegroundColor Cyan
 # The palette key through the whole script, at the unset width, on the two samples with the most on
-# them. The codes checked for are the light table's; the codes checked against are the dark table's,
-# including the chevron's `e[90m, which used to be written into Format-Line rather than read from a
-# palette and is the one code that could survive a palette change by being hardcoded.
+# them. The codes checked for are the light table's; the codes checked against are derived from the
+# dark table, including the palette-driven dim chevron, so every current dark plain SGR run is covered.
 $lightConfig = Write-TempConfig 'render-palette-light.json' '{ "palette": "light" }'
 $darkConfig = Write-TempConfig 'render-palette-dark.json' '{ "palette": "dark" }'
 $bogusConfig = Write-TempConfig 'render-palette-bogus.json' '{ "palette": "beige" }'
@@ -11004,9 +10992,19 @@ foreach ($tintPalette in @('dark', 'light')) {
     $tintRoleConfigs[$tintPalette] = Write-TempConfig "render-tint-$tintPalette-role.json" ('{ "palette": "' + $tintPalette + '", "tint": "role" }')
     $tintSegmentConfigs[$tintPalette] = Write-TempConfig "render-tint-$tintPalette-segment.json" ('{ "palette": "' + $tintPalette + '", "tint": "segment" }')
 }
-# Every SGR run the dark table can put on a plain line, so "none of these" is a claim about the whole
-# table rather than about the two codes the issue named.
-$darkPlainCodes = @("$esc[1;36m", "$esc[32m", "$esc[33m", "$esc[31m", "$esc[38;5;251m", "$esc[34m", "$esc[35m", "$esc[22;36m", "$esc[38;5;246m")
+# Every SGR run the dark table can put on a plain line, derived from every role base and alternate plus
+# every inline base, so "none of these" is a claim about the whole table rather than a hand-kept list.
+$darkPlainPalette = Get-Palette 'dark'
+$darkPlainSgr = @(
+    foreach ($entry in $darkPlainPalette.Roles.Values) {
+        $entry.Sgr
+        if ($entry.AltSgr) { $entry.AltSgr }
+    }
+    foreach ($entry in $darkPlainPalette.Inline.Values) { $entry.Sgr }
+) | Sort-Object -Unique
+$expectedDarkPlainSgr = @('1;36', '22;36', '31', '32', '33', '34', '35', '38;5;114', '38;5;210', '38;5;221', '38;5;246', '38;5;251', '38;5;254')
+Confirm-Equal ($darkPlainSgr -join ',') ($expectedDarkPlainSgr -join ',') 'dark palette: derived plain SGR set is today''s real set'
+$darkPlainCodes = @($darkPlainSgr | ForEach-Object { "$esc[${_}m" })
 # WHICH SAMPLE REACHES THE MARKER IS NAMED, not left to whichever one happens to. 06 carries a cache
 # share and a dirty branch, so its dark plain line draws 38;5;246; 01 is clean and reaches neither, so
 # "the light line has none of the dark codes" says nothing about that code on 01. Stating the

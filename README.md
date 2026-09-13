@@ -242,7 +242,10 @@ The line still wraps: width is measured with a small approximation, and wide gly
 folder or branch name can be counted short on some terminals. At very narrow widths the model segment
 prints even when it does not fit.
 
-Colours look washed out on a pale terminal: `"palette": "light"`, or `.\install.ps1 -DetectTheme`.
+Colours look washed out on a pale terminal: the default dark table's dim `251` is 1.71:1 on white and
+1.58:1 on Solarized Light, while alternate `254` is 1.27:1 on white (SGR `90` was Campbell `#767676`,
+4.54:1 on white). A light terminal using the default palette should set `"palette": "light"`, or run
+`.\install.ps1 -DetectTheme`.
 
 `]8;;` or a URL printed as text: the terminal does not know OSC 8 hyperlinks. Set `"links": false`.
 Ctrl-click on the branch opening the repository home rather than the branch is expected off `github.com`.

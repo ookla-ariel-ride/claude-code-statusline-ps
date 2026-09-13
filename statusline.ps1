@@ -1687,19 +1687,18 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
 # `1;36`, `32`, `33`, `31`, `34` and `35`: a scheme's own hue is better tuned to its ground than an
 # index picked here. `dim` is the neutral exception #111 measured. Its old `90` was 2.79:1 on
 # Solarized Dark; base 251 (#C6C6C6) is 8.79:1 and alternate 254 (#E4E4E4) is 11.81:1. The pair is
-# 52.0 sRGB apart; unchanged 246 (#949494) markers inside these segments are 86.6 and 138.6 away
-# respectively, clearing rule 4b without moving either marker.
+# 52.0 sRGB apart. `dim` never shares a segment with `track` or `cached`: the latter belong only to
+# branch and context respectively, while dim segments carry added/removed markers or plain text. No
+# marker-distance rule therefore joins dim to either marker.
 #
-# WHAT 246 COSTS, ON THE ONE CONFIGURATION IT IS NOT FOR. `dark` is the default, so a reader on a LIGHT
-# terminal who never set `palette` gets this table anyway, and there 246 is a fixed 3.03:1 on white and
-# 2.81:1 on Solarized Light's #FDF6E3. `90` on that reader's screen was not better so much as unknown:
-# a scheme drawing brightBlack #767676 gave 4.54:1 on white, one drawing #93A1A1 gave 2.48:1 - the
-# same coin toss this whole table exists to stop, landing the other way up. So the change trades a
-# figure nobody could state for one anybody can, and the honest reading is that a dark table on a light
-# ground is out of contrast either way. THE REMEDY IS THE PALETTE KEY, not a compromise colour that
-# clears neither ground: `"palette": "light"`, or `install.ps1 -DetectTheme`, which reads Windows
-# Terminal's background and writes the key. Every bar in this note is measured against the ground its
-# own table is for, and a table measured against both would be a table that reads well on neither.
+# WHAT THE DARK DIM CODES COST, ON THE ONE CONFIGURATION THEY ARE NOT FOR. `dark` is the default, so a
+# reader on a LIGHT terminal who never set `palette` gets this table anyway. There dim 251 (#C6C6C6) is
+# 1.71:1 on white and 1.58:1 on Solarized Light's #FDF6E3; its alternate 254 (#E4E4E4) is 1.27:1 on
+# white. `90` on a Campbell terminal was #767676, 4.54:1 on white. The dark table on a light ground is
+# out of contrast either way. A light terminal using the default palette should set `"palette": "light"`,
+# or run `install.ps1 -DetectTheme`, which reads Windows Terminal's background and writes the key.
+# Every bar in this note is measured against the ground its own table is for, and a table measured
+# against both would be a table that reads well on neither.
 #
 # THE SECOND SHADE, AltBg AND AltSgr (#106). Seven distinct role colours are still one colour where the
 # LAYOUT puts two segments of the same role side by side, and the shipped second row does exactly that:
@@ -1739,8 +1738,8 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
 # The plain alternates are 256-colour indices in BOTH tables. Six dark bases are basic-sixteen hues,
 # but dim is indexed because its terminal-defined bright black failed contrast. Solarized Dark maps the
 # bright half of the sixteen onto greys, so `32` beside `92` could be a green beside a grey rather than
-# a green beside a lighter green. Dim base 251 is 86.6 sRGB from the unchanged 246 markers and alternate
-# 254 is 138.6 away; #111 therefore changes no marker code.
+# a green beside a lighter green. Dim never shares a segment with `track` or `cached`, so #111 applies
+# no distance rule between them and changes no marker code.
 function Get-Palette([string] $Palette = 'dark') {
     if ($Palette -eq 'light') {
         return @{
@@ -1956,10 +1955,10 @@ function Format-Line($Segments, [string] $Style, [string] $Palette = 'dark', [st
     }
     # Powerline is not offered an ASCII block substitute: its look is a solid background, so ASCII renders
     # like plain instead. Its '>' and plain's Nerd Font glyph were both selected above.
-    # The divider's colour comes from the palette's dim role rather than a literal 90, which is what it
-    # used to be. The dark table spells that role 90, so this line renders the same bytes it always did;
-    # on a light terminal 90 is a pale grey on a pale ground and the chevron would be the one mark on
-    # the line that did not follow the theme.
+    # The divider's colour comes from the palette's dim role rather than the literal 90 it used to be.
+    # The dark table now spells that role 38;5;251 and the light table its own 38;5;240, so the chevron
+    # follows the selected palette rather than making a terminal-defined bright black the one mark on
+    # the line that does not follow the theme.
     $sep = " `e[$($pal.Roles.dim.Sgr)m$divider`e[0m "
     $parts = [System.Collections.Generic.List[string]]::new()
     for ($i = 0; $i -lt $segs.Count; $i++) {

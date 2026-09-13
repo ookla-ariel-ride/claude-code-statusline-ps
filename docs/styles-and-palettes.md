@@ -136,7 +136,6 @@ its backgrounds cannot carry a second shade at all and its repeated roles take t
 | An inline marker (`+156`, `92% cached`, `1M`, `↑2`) against the background of the block it sits in | 3:1 | worst 3.06 (`muted` in `folder`) | worst 3.01 |
 | The same marker against that block's **own text**, which it sits beside | 85 apart in sRGB | worst 95.0 | worst 89.6 |
 | An inline marker on the terminal's background in plain style | 4.5:1, on the two grounds each palette has: `#FFFFFF` and `#F5F5F5` for light, Campbell `#0C0C0C` and Solarized Dark `#002B36` for dark | worst 6.45 (`muted`) | worst 4.95 — `track` and `cached` are both 246; the other three markers are hues on the basic sixteen and are not asserted |
-| A dark `dim` plain code against `track` and `cached` inside a dim segment | 85 apart in sRGB | n/a | base 251 is 86.6 and alternate 254 is 138.6 from the unchanged 246 markers |
 | An alternate shade against the base it alternates with | within 20° of hue, on top of every rule above | 18° at worst (`warn`'s plain code, an amber to a darker olive-amber) | 8° at worst (`warn`'s block) |
 
 **Why the light bar against the terminal's background is 1.25 where the dark one is 1.7.** It is the
@@ -182,19 +181,19 @@ suffix and the `↑2 ↓1 +3 ~1 ?2` branch counts — were moved from `90`, brig
 by #88: the lowest grey ramp index that clears 4.5 on Campbell and Solarized Dark alike. #111 found the
 same 2.79:1 Solarized-Dark failure in the `dim` role: the chevron and cost, clock, time, lines, and
 badges text. `dim` is now `251` (`#C6C6C6`), 8.79:1 on Solarized Dark; its alternating code is `254`
-(`#E4E4E4`), 11.81:1. They are 52.0 sRGB apart, and are respectively 86.6 and 138.6 from the unchanged
-246 markers, so each clears the 85-distance rule for a marker beside dim text. The other six dark role
-codes — `1;36`, `32`, `33`, `31`, `34`, `35` — remain terminal-scheme hues: a scheme's tuned hue is preferable to turning that visual choice into a fixed cube colour.
+(`#E4E4E4`), 11.81:1. They are 52.0 sRGB apart. The `dim` role never shares a segment with `track` or
+`cached`: `cached` is context-only, `track` branch-only, and dim segments carry added/removed markers
+or plain text. No distance rule applies between dim and either marker. The other six dark role codes —
+`1;36`, `32`, `33`, `31`, `34`, `35` — remain terminal-scheme hues: a scheme's tuned hue is preferable
+to turning that visual choice into a fixed cube colour.
 
 **What that costs on the one configuration it is not for.** `dark` is the default, so somebody on a
-*light* terminal who never set `palette` gets this table anyway, and there `246` is a fixed **3.03:1**
-on white and **2.81:1** on Solarized Light's `#FDF6E3` — under the bar. `90` was not better there so
-much as unknown: a scheme drawing bright black as `#767676` gave 4.54:1 on white, one drawing `#93A1A1`
-gave 2.48:1. The change trades a figure nobody could state for one anybody can, and a dark table on a
-light ground is out of contrast either way. The remedy is the palette key rather than a compromise
-colour that clears neither ground: set `"palette": "light"`, or run `.\install.ps1 -DetectTheme` and
-let it read your terminal's background. Every bar in this page is measured against the ground its own
-table is for.
+*light* terminal who never set `palette` gets this table anyway. There `dim` `251` (`#C6C6C6`) is
+**1.71:1** on white and **1.58:1** on Solarized Light's `#FDF6E3`; alternate `254` (`#E4E4E4`) is
+**1.27:1** on white. By comparison, SGR `90` was Campbell bright black `#767676`, **4.54:1** on white.
+A dark table on a light ground is out of contrast either way. A light terminal using the default palette
+should set `"palette": "light"`, or run `.\install.ps1 -DetectTheme` and let it read the terminal
+background. Every bar in this page is measured against the ground its own table is for.
 
 To check a value by hand: the indices 16–231 are a 6×6×6 cube on the levels 0, 95, 135, 175, 215, 255
 (so index `24` is `16 + 0×36 + 1×6 + 2`, giving `#005F87`), and 232–255 are a grey ramp at `8 + 10n`.
@@ -282,8 +281,9 @@ arrow the rule exists to close.
 hues, but dim is indexed because its terminal-defined bright black could not promise contrast. A colour
 chosen now has no reason to be a theme's own green, and one concrete reason not to be: Solarized Dark
 maps the bright half of the sixteen onto greys, so `32` beside `92` there would be a green beside a grey
-rather than a green beside a lighter green. The `dim` base `251` is 86.6 sRGB from the unchanged `246`
-markers inside those segments and its alternate `254` is 138.6 away; both satisfy [#111](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/111)'s 85-distance constraint.
+rather than a green beside a lighter green. The `dim` role never shares a segment with the `track` or
+`cached` markers, so [#111](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/111)
+does not apply a distance rule between them.
 
 **Every layout is walked.** `test.ps1` builds every sample through the real segment builders, lays them
 out with both layouts *and* all three presets, renders each row in both palettes and all three styles,

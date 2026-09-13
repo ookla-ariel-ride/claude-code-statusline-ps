@@ -649,10 +649,10 @@ on purpose.
 The feature backlog is done. #89 closed the six isoluminant light pairs: all seven light backgrounds
 now clear the arrow's 1.10:1 and 40 sRGB floors, worst 1.101:1 (`bad`/`dim`) and 56.6 sRGB, while the
 light table deliberately has no second backgrounds. What remains open are limits recorded under review,
-none of them a feature: the dark palette's plain-style `dim` role is still SGR 90, the terminal's own bright black,
-which measures 2.79:1 on Solarized Dark and colours the chevron and five segments (#111) — #88 moved
-the two markers off it and left this deliberately, because a quiet grey near the markers' 246 would
-reopen #82's distinctness rule; two more test families fail under parallel load rather
+none of them a feature: #111 closed the dark palette's plain-style `dim` role with `251` (`#C6C6C6`)
+and alternate `254` (`#E4E4E4`), 8.79:1 and 11.81:1 on Solarized Dark; the two codes are 52.0 sRGB
+apart, while the unchanged `246` markers are 86.6 and 138.6 away. Two more test families fail under
+parallel load rather
 than on a defect (#94), the git-cache stamp tests do the same (#102), and a parallel suite run can trip
 the 250 ms user-config clock and fail random matrix cells (#99). A registry refactor that let the two scripts share segment
 builders would remove the copied helpers in `subagent-statusline.ps1`; it is not worth it for fifteen
