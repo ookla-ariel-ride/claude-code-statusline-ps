@@ -155,7 +155,7 @@ $testDirectory = Split-Path -Parent $resolvedTestScript
 $repoRootResult = @(& git -C $testDirectory rev-parse --show-toplevel 2>$null)
 $repoRoot = if ($LASTEXITCODE -eq 0 -and $repoRootResult.Count -gt 0) { $repoRootResult[0].Trim() } else { '' }
 $concurrentPids = @(Get-RunnerOtherSuitePid)
-$lockPath = if ($PSBoundParameters.ContainsKey('LockPath')) { [IO.Path]::GetFullPath($LockPath) } else { Get-SuiteLockPath }
+$lockPath = if ($PSBoundParameters.ContainsKey('LockPath')) { $LockPath } else { Get-SuiteLockPath }
 $lockHeld = Test-SuiteLockHeld $lockPath
 $lockRecord = if ($lockHeld) { Get-LockRecord $lockPath } else { $null }
 if (($concurrentPids.Count -gt 0 -or $lockHeld) -and -not $Force) {

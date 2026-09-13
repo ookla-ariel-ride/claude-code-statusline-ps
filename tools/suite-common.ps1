@@ -19,17 +19,17 @@ function Split-WindowsCommandLine([string] $CommandLine) {
             $index++
             continue
         }
-        if ($character -eq '\\') {
+        if ($character -eq '\') {
             $slashes = 0
-            while ($index + $slashes -lt $CommandLine.Length -and $CommandLine[$index + $slashes] -eq '\\') { $slashes++ }
+            while ($index + $slashes -lt $CommandLine.Length -and $CommandLine[$index + $slashes] -eq '\') { $slashes++ }
             if ($index + $slashes -lt $CommandLine.Length -and $CommandLine[$index + $slashes] -eq '"') {
-                [void] $token.Append(('\\' * [math]::Floor($slashes / 2)))
+                [void] $token.Append(('\' * [math]::Floor($slashes / 2)))
                 if (($slashes % 2) -eq 0) { $quoted = -not $quoted } else { [void] $token.Append('"') }
                 $started = $true
                 $index += $slashes + 1
                 continue
             }
-            [void] $token.Append(('\\' * $slashes))
+            [void] $token.Append(('\' * $slashes))
             $started = $true
             $index += $slashes
             continue

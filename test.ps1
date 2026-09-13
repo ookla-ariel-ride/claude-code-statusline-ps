@@ -11784,6 +11784,7 @@ foreach ($case in @(
         @{ Expected = $true; Command = 'pwsh -File test.ps1'; Label = 'a bare test script' }
         @{ Expected = $true; Command = 'pwsh -File .\test.ps1'; Label = 'a relative test script' }
         @{ Expected = $true; Command = 'pwsh -File "C:\space repo"\test.ps1'; Label = 'a path assembled from quoted and unquoted segments' }
+        @{ Expected = $true; Command = 'pwsh -File C:\repo\"quoted"\test.ps1"'; Label = 'a path containing an escaped quote' }
         @{ Expected = $true; Command = '"C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -File "C:\r\test.ps1"'; Label = 'a quoted executable and script' }
         @{ Expected = $false; Command = 'pwsh -Command "Get-Content test.ps1"'; Label = 'a command that reads the suite' }
         @{ Expected = $false; Command = 'pwsh -Command "Invoke-ScriptAnalyzer -Path ./test.ps1"'; Label = 'a command that names the suite' }
@@ -11791,6 +11792,8 @@ foreach ($case in @(
         @{ Expected = $false; Command = 'pwsh -File C:\repo\tools\Invoke-Suite.ps1'; Label = 'the suite runner itself' })) {
     Confirm-Equal (Test-SuiteCommandLine $case.Command) $case.Expected "suite matcher: $($case.Label)"
 }
+$escapedQuoteTokens = @(Split-WindowsCommandLine 'pwsh -File C:\repo\"quoted"\test.ps1"')
+Confirm-Equal $escapedQuoteTokens[2] 'C:\repo"quoted\test.ps1' 'suite tokenizer: an escaped quote stays in the file argument'
 
 $suiteRunnerTemp = Join-Path $subTmp 'suite-runner'
 $suiteRunnerLock = Join-Path $suiteRunnerTemp 'suite.lock'
@@ -11840,10 +11843,10 @@ try {
     $launchPidLine = @($launch.Lines | Where-Object { $_ -match '^pid=' } | Select-Object -Last 1)
     $launchLog = if ($launchLogLine.Count -gt 0) { $launchLogLine[0].Substring(4) } else { '' }
     $launchPid = if ($launchPidLine.Count -gt 0) { $launchPidLine[0].Substring(4) } else { '' }
+    if ($launchPid -match '^\d+$') { $startedSuiteWrappers.Add([int] $launchPid) }
     if ($launch.ExitCode -ne 0 -or -not $launchLog -or -not $launchPid -or -not (Test-Path -LiteralPath $launchLog -PathType Leaf)) {
         throw "suite runner launch did not acknowledge safely: exit=$($launch.ExitCode); output=$launchText"
     }
-    $startedSuiteWrappers.Add([int] $launchPid)
     $wrapperCpuBefore = (Get-Process -Id $launchPid -ErrorAction Stop).TotalProcessorTime
     Start-Sleep -Seconds 2
     $wrapperCpuAfter = (Get-Process -Id $launchPid -ErrorAction Stop).TotalProcessorTime
@@ -11859,7 +11862,7 @@ try {
 
     $contender = Invoke-ChildPwsh $suiteRunner @('-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock, '-SuiteProbe', { @() }) ''
     Confirm-True ($contender.ExitCode -eq 3) "suite runner lock: a second launch while the fake suite runs exits 3, got $($contender.ExitCode)"
-    Confirm-True (($contender.Lines -join [Environment]::NewLine) -match 'PID \d+ log=') 'suite runner lock: the advisory refusal names the OS lock holder and log'
+    Confirm-True (($contender.Lines -join [Environment]::NewLine) -match ("PID {0} log=" -f [regex]::Escape($launchPid))) 'suite runner lock: the advisory refusal names the winning fake child and log'
 
     $forced = Invoke-ChildPwsh $suiteRunner @('-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock, '-SuiteProbe', { @() }, '-Force') ''
     $forcedText = $forced.Lines -join [Environment]::NewLine
