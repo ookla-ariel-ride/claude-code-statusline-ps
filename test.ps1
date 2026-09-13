@@ -30,6 +30,14 @@ $PSNativeCommandUseErrorActionPreference = $false
 # bytes, went on passing. That is the sending half of the very defect #80 was about.
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $PSStyle.OutputRendering = 'Ansi'
+# CLEARED BEFORE ANYTHING RUNS, the way COLUMNS is cleared for every child render, and for a sharper
+# reason. Every child this file starts inherits the environment, and CLAUDE_STATUSLINE_NOW pins the
+# clock every render reads: a shell that still had it set - a screenshot regeneration interrupted
+# before its restore, a value left in a profile - would run every render in this file frozen at that
+# instant, and every one of them would pass, because the cases above the pinned group assert shapes
+# and not times. A green suite that never touched the clock is the failure this line prevents; the
+# pinned group sets the variable itself, for the length of its own renders, and puts it back.
+Remove-Item Env:CLAUDE_STATUSLINE_NOW -ErrorAction SilentlyContinue
 $script = Join-Path $PSScriptRoot 'statusline.ps1'
 $subScript = Join-Path $PSScriptRoot 'subagent-statusline.ps1'
 # One lookup for every child this file starts, rather than one per launcher.
@@ -314,7 +322,11 @@ function Get-SubagentReply([string[]] $Lines) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Open-SharedConfigFile', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Clear-StatusDiagPendingLock', 'Test-PathAbsent', 'Add-StatusDiagDrop', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Open-SharedConfigFile', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Clear-StatusDiagPendingLock', 'Test-PathAbsent', 'Add-StatusDiagDrop', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent', 'Get-StatusNow', 'Get-StatusClock'))
+# Import-ScriptFunction lifts functions but not the script-level clock reading. Keep one typed baseline
+# for every lifted builder so an invalid test setup reaches the consumer instead of being repaired.
+$script:renderNow = [DateTimeOffset]::Now
+$clockTestNow = $script:renderNow
 
 # Get-BranchSegment, Get-FolderSegment, Get-LimitsSegment, Get-ModelSegment, Get-PrSegment,
 # Get-BadgesSegment and Get-ClippedText close over these script-level names in statusline.ps1, so the
@@ -2250,7 +2262,7 @@ Confirm-Equal $neg.five_hour_percentage 23.5 'state read: the five-hour gauge re
 Confirm-Equal @($neg.history).Count 1 'state read: a ring entry with a negative cost is dropped'
 Confirm-Equal $neg.history[0].cost_usd 0.5 'state read: and the honest entry is kept'
 # The pace arrow is where a negative five-hour figure would land, and it refuses one already.
-Confirm-Equal (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) (-3)) $null 'pace arrow: a negative percentage draws no arrow'
+Confirm-Equal (Get-PaceArrow ((Get-StatusClock).ToUnixTimeSeconds() + 9000) (-3)) $null 'pace arrow: a negative percentage draws no arrow'
 
 # The file name is the id itself when it is clean and at most 64 characters, as a UUID is. An id that had
 # characters stripped, or was longer than that, gets a hash of the whole id as a suffix, so two ids that
@@ -2672,6 +2684,58 @@ Confirm-Equal ((@(foreach ($r in $roleNames) { $dark.Roles[$r].Bg }) | Sort-Obje
 # arrow between them is never a colour painted on itself.
 Confirm-Equal ((@(foreach ($r in $roleNames) { $light.Roles[$r].Bg }) | Sort-Object -Unique).Count) 7 'light palette: seven distinct block backgrounds'
 
+# THE SECOND SHADE. Seven distinct backgrounds is not enough on its own, because the layout can put two
+# segments of the SAME role side by side: the shipped second row is context, cache and limits, all `ok`,
+# then cost, clock and lines, all `dim`. Three blocks of one background are one band with an invisible
+# arrow inside it, and in plain style one foreground code with only the chevron to break it. So the four
+# roles a VALUE moves between carry a second shade - a background one step along for powerline, a second
+# plain code for plain and ascii - and Format-Line gives it to a block whose immediate predecessor on
+# the line carries the same role, so a run of three reads base, alt, base.
+# WHAT IS NOT HERE IS AS DELIBERATE AS WHAT IS, and each absence is measured below rather than asserted:
+#   model, folder and branch have no second shade at all: each is the role of exactly ONE segment, so no
+#     line can put two of them side by side. If a later layout ever does, Format-Line's divider covers
+#     it - it draws one whenever two neighbouring blocks come out the same colour, whatever the reason.
+#   dark `dim` has no second BACKGROUND. Its block is a grey wedged between its own light text above and
+#     the terminal's ground below, and the band that leaves is too narrow to hold a second NEUTRAL grey
+#     40 sRGB away. Its joints take the divider instead.
+#   light `ok` has no second PLAIN code, the mirror-image case: every green in the cube 40 sRGB from
+#     #005F00 is too light to clear 4.5:1 on a white ground. Its plain joints keep the chevron.
+# The values are written out here rather than read back off the table, so moving one is a decision this
+# file has to be told about; the rules below are what say whether the new value is allowed.
+$expectedShades = @{
+    dark  = @{ ok = @{ Bg = 22; Sgr = '38;5;114' }; warn = @{ Bg = 214; Sgr = '38;5;221' }; bad = @{ Bg = 124; Sgr = '38;5;210' }; dim = @{ Bg = $null; Sgr = '38;5;251' } }
+    light = @{ ok = @{ Bg = 114; Sgr = $null }; warn = @{ Bg = 178; Sgr = '38;5;58' }; bad = @{ Bg = 210; Sgr = '38;5;88' }; dim = @{ Bg = 144; Sgr = '38;5;237' } }
+}
+foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
+    foreach ($r in $roleNames) {
+        $want = $expectedShades[$p.N][$r]
+        Confirm-Equal $p.T.Roles[$r].AltBg ($(if ($want) { $want.Bg })) "$($p.N) palette: role $r's alternate background"
+        Confirm-Equal $p.T.Roles[$r].AltSgr ($(if ($want) { $want.Sgr })) "$($p.N) palette: role $r's alternate plain code"
+    }
+}
+# One row per background a line can paint: the seven roles, and the alternate shade of every role that
+# has one. Rules 2, 2b, 3 and 4 below all run over these rows rather than over $roleNames, so a second
+# shade is held to exactly what a first one is held to - its own text, its joints, the terminal's ground
+# behind it, and every marker drawn inside it - instead of to a shorter list written for it.
+function Get-ShadeTable($Tab) {
+    $rows = @()
+    foreach ($r in $roleNames) {
+        $c = $Tab.Roles[$r]
+        $rows += @{ Role = $r; N = $r; Alt = $false; Bg = $c.Bg; Fg = $c.Fg; Ink = $c.Ink }
+        if ($null -ne $c.AltBg) { $rows += @{ Role = $r; N = "$r alt"; Alt = $true; Bg = $c.AltBg; Fg = $c.Fg; Ink = $c.Ink } }
+    }
+    return $rows
+}
+$darkShades = @(Get-ShadeTable $dark)
+$lightShades = @(Get-ShadeTable $light)
+foreach ($shadeTable in @(@{ N = 'dark'; T = $dark; S = $darkShades }, @{ N = 'light'; T = $light; S = $lightShades })) {
+    Confirm-Equal ((@($shadeTable.S | ForEach-Object { $_.Role } | Sort-Object -Unique) -join ',')) ((@($roleNames | Sort-Object) -join ',')) "$($shadeTable.N) shade table: covers every named role"
+    $alternateCount = @($roleNames | Where-Object { $null -ne $shadeTable.T.Roles[$_].AltBg }).Count
+    Confirm-Equal $shadeTable.S.Count ($roleNames.Count + $alternateCount) "$($shadeTable.N) shade table: one background per named role plus every alternate"
+}
+Confirm-Equal ((@(foreach ($s in $darkShades) { $s.Bg }) | Sort-Object -Unique).Count) 10 'dark palette: every shade is its own colour'
+Confirm-Equal ((@(foreach ($s in $lightShades) { $s.Bg }) | Sort-Object -Unique).Count) 11 'light palette: every shade is its own colour'
+
 # THE FOUR CONTRAST RULES. Ratios are printed as well as asserted, so a reader can see the margin
 # rather than only that a bar was cleared.
 #
@@ -2726,24 +2790,58 @@ foreach ($row in @(
     }
     Write-Host ("   $($row.Label) on the terminal's own ground: worst {0:N2}:1 ($worstPlainAt)" -f $worstPlain)
 }
+# 1b. THE ALTERNATE PLAIN CODES, held to rule 1 and to nothing weaker. The second code a repeated role
+#    draws in is drawn on the terminal's own ground exactly like the first one, so 4.5:1 against both of
+#    its palette's grounds is the whole of the question for it too.
+#    EVERY ALTERNATE NAMES A 256-COLOUR INDEX, in the dark table as well as the light one, where the
+#    seven base codes are the basic sixteen and have no fixed hex. That is not an oversight the way the
+#    base codes' is: a colour being chosen now has no reason to be a theme's own green and every reason
+#    to be a number, and #88 made the same move for the two markers. It also settles the one thing a
+#    basic-sixteen alternate could not settle - that the pair looks like a pair. Solarized Dark maps the
+#    bright half of the sixteen onto GREYS, so `32` beside `92` there is a green beside a grey rather
+#    than a green beside a lighter green, and the role's meaning would depend on the theme.
+#    The distance to the base code is asserted only where the base names an index - the light table -
+#    because there is no hex to measure a theme colour against.
+foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
+    $worstAlt = 99.0; $worstAltAt = 'no alternate'
+    foreach ($r in $roleNames) {
+        $altSgr = $p.T.Roles[$r].AltSgr
+        if (-not $altSgr) { continue }
+        $idx = Get-SgrColourIndex $altSgr
+        Confirm-True ($null -ne $idx) "$($p.N) palette: the alternate plain code for $r names a 256-colour index"
+        if ($null -eq $idx) { continue }
+        foreach ($g in $plainGrounds[$p.N]) {
+            $ratio = Get-ContrastRatio (Get-XtermRgb $idx) $g.Rgb
+            if ($ratio -lt $worstAlt) { $worstAlt = $ratio; $worstAltAt = "$r on $($g.N)" }
+            Confirm-True ($ratio -ge 4.5) ("$($p.N) plain $r alt: colour $idx on $($g.N) is {0:N2}:1" -f $ratio)
+        }
+        $baseIdx = Get-SgrColourIndex $p.T.Roles[$r].Sgr
+        if ($null -eq $baseIdx) { continue }
+        $dist = Get-RgbDistance (Get-XtermRgb $idx) (Get-XtermRgb $baseIdx)
+        Confirm-True ($dist -ge 40) ("$($p.N) plain $r alt: $idx is {0:N1} from the base code $baseIdx in sRGB" -f $dist)
+    }
+    Write-Host ("   $($p.N) alternate plain codes on the terminal's own ground: worst {0:N2}:1 ($worstAltAt)" -f $worstAlt)
+}
 # 2. Powerline style. The block paints its own background, so the pair is what has to be readable and
 #    the terminal's own theme does not enter into it. BOTH tables are held to 4.5, with ONE EXEMPTION
 #    NAMED IN THE LIST BELOW rather than a lowered bar: the dark model block, 231 on 31, is 4.13 and
 #    predates the rule. Naming it keeps the debt legible and keeps the other six at 4.5, where a bar
 #    lowered to 4.0 for the whole table would have quietly let any of them slide to 4.0 as well.
+#    A SECOND SHADE IS NOT EXEMPT FROM THIS, and the exemption is keyed on the shade rather than on the
+#    role, so `dark.model` covers the one block that has the debt and not a second one added later.
 $pairExempt = @{ 'dark.model' = 4.0 }   # 4.13, older than this rule; retuning the model block is its own decision
 $worstPair = 99.0
-foreach ($r in $roleNames) {
-    $ratio = Get-ContrastRatio (Get-XtermRgb $light.Roles[$r].Fg) (Get-XtermRgb $light.Roles[$r].Bg)
+foreach ($s in $lightShades) {
+    $ratio = Get-ContrastRatio (Get-XtermRgb $s.Fg) (Get-XtermRgb $s.Bg)
     if ($ratio -lt $worstPair) { $worstPair = $ratio }
-    Confirm-True ($ratio -ge 4.5) ("light powerline ${r}: $($light.Roles[$r].Fg) on $($light.Roles[$r].Bg) is {0:N2}:1" -f $ratio)
+    Confirm-True ($ratio -ge 4.5) ("light powerline $($s.N): $($s.Fg) on $($s.Bg) is {0:N2}:1" -f $ratio)
 }
 $worstDarkPair = 99.0
-foreach ($r in $roleNames) {
-    $ratio = Get-ContrastRatio (Get-XtermRgb $dark.Roles[$r].Fg) (Get-XtermRgb $dark.Roles[$r].Bg)
+foreach ($s in $darkShades) {
+    $ratio = Get-ContrastRatio (Get-XtermRgb $s.Fg) (Get-XtermRgb $s.Bg)
     if ($ratio -lt $worstDarkPair) { $worstDarkPair = $ratio }
-    $bar = if ($pairExempt.ContainsKey("dark.$r")) { $pairExempt["dark.$r"] } else { 4.5 }
-    Confirm-True ($ratio -ge $bar) ("dark powerline ${r}: $($dark.Roles[$r].Fg) on $($dark.Roles[$r].Bg) is {0:N2}:1, bar $bar" -f $ratio)
+    $bar = if ($pairExempt.ContainsKey("dark.$($s.N)")) { $pairExempt["dark.$($s.N)"] } else { 4.5 }
+    Confirm-True ($ratio -ge $bar) ("dark powerline $($s.N): $($s.Fg) on $($s.Bg) is {0:N2}:1, bar $bar" -f $ratio)
 }
 Write-Host ("   powerline block pair: light {0:N2}:1, dark {1:N2}:1" -f $worstPair, $worstDarkPair)
 # 2b. PROPERTY (c): THE ARROW BETWEEN TWO BLOCKS. A powerline arrow is the left block's BACKGROUND
@@ -2764,13 +2862,20 @@ Write-Host ("   powerline block pair: light {0:N2}:1, dark {1:N2}:1" -f $worstPa
 #    about the light table and it is filed rather than fixed here, because fixing it means retuning a
 #    light background, which is not this issue - it is #89. Its distance half is asserted, and its worst luminance
 #    pair is printed on every run so the number is visible rather than merely true.
-foreach ($p in @(@{ N = 'dark'; T = $dark; Lum = $true }, @{ N = 'light'; T = $light; Lum = $false })) {
+#    EVERY PAIR THAT CAN MEET, WHICH IS EVERY SHADE AGAINST EVERY BASE AND NOT THE WHOLE CROSS PRODUCT.
+#    A block only takes its alternate shade when the block before it carries the same role, and the flag
+#    flips back for the one after, so two alternate blocks can never touch: proving it is one line -
+#    alt[i] and alt[i+1] both true would need role[i+1] = role[i] and alt[i] false at once. Measuring
+#    the alt/alt pairs anyway would be measuring a joint that cannot be drawn, and it would fail: the
+#    dark `ok` and `bad` alternates are 1.07:1 apart, which is fine for two colours that never meet.
+foreach ($p in @(@{ N = 'dark'; T = $dark; Lum = $true; S = $darkShades }, @{ N = 'light'; T = $light; Lum = $false; S = $lightShades })) {
     $worstLum = 99.0; $worstLumPair = ''; $worstDist = 9999.0
-    for ($i = 0; $i -lt $roleNames.Count; $i++) {
-        for ($j = $i + 1; $j -lt $roleNames.Count; $j++) {
-            $a = $p.T.Roles[$roleNames[$i]].Bg
-            $b = $p.T.Roles[$roleNames[$j]].Bg
-            $pair = "$($roleNames[$i])/$($roleNames[$j])"
+    for ($i = 0; $i -lt $p.S.Count; $i++) {
+        for ($j = $i + 1; $j -lt $p.S.Count; $j++) {
+            if ($p.S[$i].Alt -and $p.S[$j].Alt) { continue }
+            $a = $p.S[$i].Bg
+            $b = $p.S[$j].Bg
+            $pair = "$($p.S[$i].N)/$($p.S[$j].N)"
             $ratio = Get-ContrastRatio (Get-XtermRgb $a) (Get-XtermRgb $b)
             $dist = Get-RgbDistance (Get-XtermRgb $a) (Get-XtermRgb $b)
             if ($ratio -lt $worstLum) { $worstLum = $ratio; $worstLumPair = $pair }
@@ -2787,16 +2892,16 @@ foreach ($p in @(@{ N = 'dark'; T = $dark; Lum = $true }, @{ N = 'light'; T = $l
 #    disappear and the blocks stop reading as blocks. The bar is the same for both palettes, and the
 #    dark table is measured against the same ground here so neither is special-cased.
 $worstBg = 99.0
-foreach ($r in $roleNames) {
-    $ratio = Get-ContrastRatio (Get-XtermRgb $light.Roles[$r].Bg) $groundWhite
+foreach ($s in $lightShades) {
+    $ratio = Get-ContrastRatio (Get-XtermRgb $s.Bg) $groundWhite
     if ($ratio -lt $worstBg) { $worstBg = $ratio }
-    Confirm-True ($ratio -ge 1.7) ("light powerline ${r}: background $($light.Roles[$r].Bg) against white is {0:N2}:1" -f $ratio)
+    Confirm-True ($ratio -ge 1.7) ("light powerline $($s.N): background $($s.Bg) against white is {0:N2}:1" -f $ratio)
 }
 $worstDarkBg = 99.0
-foreach ($r in $roleNames) {
-    $ratio = Get-ContrastRatio (Get-XtermRgb $dark.Roles[$r].Bg) $groundBlack
+foreach ($s in $darkShades) {
+    $ratio = Get-ContrastRatio (Get-XtermRgb $s.Bg) $groundBlack
     if ($ratio -lt $worstDarkBg) { $worstDarkBg = $ratio }
-    Confirm-True ($ratio -ge 1.7) ("dark powerline ${r}: background $($dark.Roles[$r].Bg) against #0C0C0C is {0:N2}:1" -f $ratio)
+    Confirm-True ($ratio -ge 1.7) ("dark powerline $($s.N): background $($s.Bg) against #0C0C0C is {0:N2}:1" -f $ratio)
 }
 Write-Host ("   block edge against the terminal's ground: light {0:N2}:1, dark {1:N2}:1" -f $worstBg, $worstDarkBg)
 # 4. The inline roles. In plain style they are drawn on the terminal's ground like everything else; in
@@ -2823,20 +2928,210 @@ Write-Host ("   block edge against the terminal's ground: light {0:N2}:1, dark {
 #    own ground is exactly what rule 1 measures, so both tables' plain marker codes are held to 4.5:1
 #    up there, against the two grounds each palette has - see the note over $plainGrounds. What is
 #    left below is the pair of halves that exist only inside a block.
-foreach ($p in @(@{ N = 'light'; T = $light }, @{ N = 'dark'; T = $dark })) {
+#    A SECOND SHADE CHANGES THE BACKGROUND UNDER A MARKER AND NOT THE MARKER, which is why every row of
+#    $darkShades and $lightShades is measured here: the marker a segment's text carries was chosen when
+#    the text was BUILT, by the role's ink, and the alternation happens later, in Format-Line, once the
+#    line is known. The marker cannot follow the shade, so the shade has to be safe for the marker. The
+#    ink column and the block's own text are the base role's either way - an alternate moves the
+#    background alone - so (b) is the same measurement twice for the two rows of one role, and it costs
+#    nothing to leave it that way rather than to write a rule about which half to skip.
+foreach ($p in @(@{ N = 'light'; T = $light; S = $lightShades }, @{ N = 'dark'; T = $dark; S = $darkShades })) {
     $worstBlock = 99.0; $worstBlockAt = ''; $worstInk = 9999.0; $worstInkAt = ''
     foreach ($i in $inlineNames) {
-        foreach ($r in $roleNames) {
-            $mk = $p.T.Inline[$i][$p.T.Roles[$r].Ink]
-            $ratio = Get-ContrastRatio (Get-XtermRgb $mk) (Get-XtermRgb $p.T.Roles[$r].Bg)
-            $dist = Get-RgbDistance (Get-XtermRgb $mk) (Get-XtermRgb $p.T.Roles[$r].Fg)
-            if ($ratio -lt $worstBlock) { $worstBlock = $ratio; $worstBlockAt = "$i in $r" }
-            if ($dist -lt $worstInk) { $worstInk = $dist; $worstInkAt = "$i in $r" }
-            Confirm-True ($ratio -ge 3.0) ("$($p.N) inline ${i}: $mk inside the $r block is {0:N2}:1 against its background" -f $ratio)
-            Confirm-True ($dist -ge 85) ("$($p.N) inline ${i}: $mk inside the $r block is {0:N1} from that block's text $($p.T.Roles[$r].Fg)" -f $dist)
+        foreach ($s in $p.S) {
+            $mk = $p.T.Inline[$i][$s.Ink]
+            $ratio = Get-ContrastRatio (Get-XtermRgb $mk) (Get-XtermRgb $s.Bg)
+            $dist = Get-RgbDistance (Get-XtermRgb $mk) (Get-XtermRgb $s.Fg)
+            if ($ratio -lt $worstBlock) { $worstBlock = $ratio; $worstBlockAt = "$i in $($s.N)" }
+            if ($dist -lt $worstInk) { $worstInk = $dist; $worstInkAt = "$i in $($s.N)" }
+            Confirm-True ($ratio -ge 3.0) ("$($p.N) inline ${i}: $mk inside the $($s.N) block is {0:N2}:1 against its background" -f $ratio)
+            Confirm-True ($dist -ge 85) ("$($p.N) inline ${i}: $mk inside the $($s.N) block is {0:N1} from that block's text $($s.Fg)" -f $dist)
         }
     }
     Write-Host ("   $($p.N) inline: worst against a background {0:N2}:1 ($worstBlockAt), worst against block text {1:N1} ($worstInkAt)" -f $worstBlock, $worstInk)
+}
+# 5. A SECOND SHADE MAY CHANGE ITS LIGHTNESS AND NOT ITS MEANING. The four rules above would be cleared
+#    by an `ok` alternate that is a teal and a `warn` alternate that is a red, and either would make the
+#    line say something different about the session on every other segment. Contrast cannot see that, so
+#    hue is measured here: the same arithmetic every colour picker uses, from the same hex the rules
+#    above read, with a neutral - under 30 sRGB between its strongest and weakest channel - reported as
+#    having no hue at all rather than as some arbitrary angle.
+function Get-ColourHue($Rgb) {
+    $mx = [math]::Max($Rgb[0], [math]::Max($Rgb[1], $Rgb[2]))
+    $mn = [math]::Min($Rgb[0], [math]::Min($Rgb[1], $Rgb[2]))
+    if ($mx - $mn -lt 30) { return $null }
+    $c = $mx - $mn
+    $h = if ($mx -eq $Rgb[0]) { 60 * ((($Rgb[1] - $Rgb[2]) / $c) % 6) }
+    elseif ($mx -eq $Rgb[1]) { 60 * ((($Rgb[2] - $Rgb[0]) / $c) + 2) }
+    else { 60 * ((($Rgb[0] - $Rgb[1]) / $c) + 4) }
+    return (($h + 360) % 360)
+}
+# Degrees between two hues the short way round the circle, so 350 and 10 are 20 apart rather than 340.
+function Get-HueDistance([double] $A, [double] $B) {
+    $d = [math]::Abs($A - $B) % 360
+    return $(if ($d -gt 180) { 360 - $d } else { $d })
+}
+Confirm-Equal ([math]::Round((Get-ColourHue @(255, 0, 0)))) 0 'hue: pure red is 0 degrees'
+Confirm-Equal ([math]::Round((Get-ColourHue @(0, 255, 0)))) 120 'hue: pure green is 120 degrees'
+Confirm-Equal ([math]::Round((Get-ColourHue @(0, 0, 255)))) 240 'hue: pure blue is 240 degrees'
+Confirm-Equal ([math]::Round((Get-ColourHue @(255, 215, 0)))) 51 'hue: #FFD700 is an amber at 51 degrees'
+Confirm-True ($null -eq (Get-ColourHue @(188, 188, 188))) 'hue: a neutral grey has none'
+Confirm-Equal (Get-HueDistance 350 10) 20 'hue: 350 and 10 are 20 degrees apart, not 340'
+#    (a) EVERY ALTERNATE WHOSE BASE HAS A HEX is within 20 degrees of it. That is the whole of "an
+#        alternate yellow is still yellow", and it is what rules out reaching across the cube for a
+#        colour that happens to clear the floors. The dark table's seven PLAIN codes are the basic
+#        sixteen and have no hex, so their alternates are held to (b) instead.
+$hueChecked = 0
+foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
+    foreach ($r in $roleNames) {
+        foreach ($axis in @(
+                @{ K = 'AltBg'; Label = 'background'; Base = $p.T.Roles[$r].Bg; Alt = $p.T.Roles[$r].AltBg }
+                @{ K = 'AltSgr'; Label = 'plain code'; Base = (Get-SgrColourIndex $p.T.Roles[$r].Sgr); Alt = (Get-SgrColourIndex ([string] $p.T.Roles[$r].AltSgr)) })) {
+            if ($null -eq $axis.Alt -or $null -eq $axis.Base) { continue }
+            $bh = Get-ColourHue (Get-XtermRgb $axis.Base)
+            $ah = Get-ColourHue (Get-XtermRgb $axis.Alt)
+            if ($null -eq $bh) {
+                # The one pair whose base is a neutral: the light dim block. There is no second neutral
+                # the floors allow, which is what the pin below this loop measures, so all that is asked
+                # here is that its plain half - where a second neutral IS available - takes one.
+                if ($p.T.Roles[$r].AltSgr -and $axis.K -eq 'AltSgr') { Confirm-True ($null -eq $ah) "$($p.N) $r alt $($axis.Label): a neutral base keeps a neutral alternate" }
+                continue
+            }
+            $hueChecked++
+            $gap = Get-HueDistance $bh $ah
+            Confirm-True ($null -ne $ah -and $gap -le 20) ("$($p.N) $r alt $($axis.Label): colour $($axis.Alt) is {0:N0} degrees from the base $($axis.Base), so it is still the same colour" -f $gap)
+        }
+    }
+}
+Confirm-Equal $hueChecked 8 'palette: eight alternate shades have a measurable base to be compared against'
+#    (b) THE DARK TABLE'S PLAIN ALTERNATES, whose bases are theme colours, are held to the role's own
+#        window instead: a green stays inside the greens whatever the terminal thinks green is. The
+#        windows are wide on purpose - this is the difference between an amber and a red, not a tuning.
+$darkPlainWindow = @{ ok = @{ Lo = 90; Hi = 150 }; warn = @{ Lo = 30; Hi = 70 }; bad = @{ Lo = 340; Hi = 20 }; dim = $null }
+foreach ($r in $roleNames) {
+    if (-not $dark.Roles[$r].AltSgr) { continue }
+    Confirm-True ($darkPlainWindow.ContainsKey($r)) "dark plain $r alt: the role has a hue window"
+    $w = $darkPlainWindow[$r]
+    $h = Get-ColourHue (Get-XtermRgb (Get-SgrColourIndex $dark.Roles[$r].AltSgr))
+    if ($null -eq $w) { Confirm-True ($null -eq $h) "dark plain $r alt: a neutral role takes a neutral alternate"; continue }
+    $inWindow = if ($w.Lo -le $w.Hi) { $null -ne $h -and $h -ge $w.Lo -and $h -le $w.Hi } else { $null -ne $h -and ($h -ge $w.Lo -or $h -le $w.Hi) }
+    Confirm-True $inWindow ("dark plain $r alt: hue {0:N0} is inside the role's window $($w.Lo)..$($w.Hi)" -f $h)
+}
+#    (c) THE TWO GAPS, SEARCHED RATHER THAN CLAIMED. Both absences above are statements about the whole
+#        256-colour cube, so both are made by walking it here with exactly the floors the rules above
+#        apply. If a floor is ever loosened, the search finds the colour that has become available and
+#        the gap has to be closed or re-argued; the comment on its own could not do that.
+$dimCandidates = @()
+foreach ($idx in 16..255) {
+    $rgb = Get-XtermRgb $idx
+    if ((Get-ContrastRatio (Get-XtermRgb $dark.Roles.dim.Fg) $rgb) -lt 4.5) { continue }
+    if ((Get-ContrastRatio $rgb $groundBlack) -lt 1.7) { continue }
+    $clears = $true
+    foreach ($y in $roleNames) {
+        $other = Get-XtermRgb $dark.Roles[$y].Bg
+        if ((Get-RgbDistance $rgb $other) -lt 40 -or (Get-ContrastRatio $rgb $other) -lt 1.10) { $clears = $false; break }
+    }
+    if ($clears) {
+        foreach ($i in $inlineNames) {
+            if ((Get-ContrastRatio (Get-XtermRgb $dark.Inline[$i][$dark.Roles.dim.Ink]) $rgb) -lt 3.0) { $clears = $false; break }
+        }
+    }
+    if ($clears) { $dimCandidates += $idx }
+}
+$dimNeutral = @($dimCandidates | Where-Object { $null -eq (Get-ColourHue (Get-XtermRgb $_)) })
+Confirm-Equal ($dimNeutral -join ',') '' "dark dim: no neutral colour in the cube clears every floor as a second background, so the role keeps one shade (what does clear them: $(if ($dimCandidates.Count) { $dimCandidates -join ', ' } else { 'nothing at all' }))"
+$okPlainCandidates = @()
+$lightOkPlain = Get-XtermRgb (Get-SgrColourIndex $light.Roles.ok.Sgr)
+foreach ($idx in 16..255) {
+    $rgb = Get-XtermRgb $idx
+    $clears = $true
+    foreach ($g in $plainGrounds['light']) { if ((Get-ContrastRatio $rgb $g.Rgb) -lt 4.5) { $clears = $false; break } }
+    if (-not $clears -or (Get-RgbDistance $rgb $lightOkPlain) -lt 40) { continue }
+    $okPlainCandidates += $idx
+}
+$okPlainGreen = @($okPlainCandidates | Where-Object { $h = Get-ColourHue (Get-XtermRgb $_); $null -ne $h -and (Get-HueDistance $h 120) -le 20 })
+Confirm-Equal ($okPlainGreen -join ',') '' 'light plain ok: no green in the cube is 40 sRGB from #005F00 and still 4.5:1 on both light grounds, so the role keeps one plain code'
+#    (d) AND THE ONE SHADE CHOSEN BY MEASUREMENT RATHER THAN BY HUE: the light dim block, whose base is
+#        a neutral and whose alternate cannot be one. What is pinned is that it is the LEAST coloured
+#        colour the floors leave, so "a warm grey" is the best available answer and not a preference.
+$lightDimBest = $null
+$lightDimChroma = 999
+foreach ($idx in 16..255) {
+    $rgb = Get-XtermRgb $idx
+    if ((Get-ContrastRatio (Get-XtermRgb $light.Roles.dim.Fg) $rgb) -lt 4.5) { continue }
+    if ((Get-ContrastRatio $rgb $groundWhite) -lt 1.7) { continue }
+    $clears = $true
+    foreach ($y in $roleNames) { if ((Get-RgbDistance $rgb (Get-XtermRgb $light.Roles[$y].Bg)) -lt 40) { $clears = $false; break } }
+    if ($clears) {
+        foreach ($i in $inlineNames) {
+            if ((Get-ContrastRatio (Get-XtermRgb $light.Inline[$i][$light.Roles.dim.Ink]) $rgb) -lt 3.0) { $clears = $false; break }
+        }
+    }
+    if (-not $clears) { continue }
+    $chroma = [math]::Max($rgb[0], [math]::Max($rgb[1], $rgb[2])) - [math]::Min($rgb[0], [math]::Min($rgb[1], $rgb[2]))
+    if ($chroma -lt $lightDimChroma) { $lightDimChroma = $chroma; $lightDimBest = $idx }
+}
+Confirm-Equal $light.Roles.dim.AltBg $lightDimBest "light dim: the alternate background is the least coloured shade the floors leave (chroma $lightDimChroma)"
+
+# READING A RENDERED LINE BACK. The rules above measure a table; these three read the joints out of a
+# line that has been drawn and hold them to the same numbers, which is what lets the render sections
+# below - the matrix, and the walk over every layout and preset - check the bytes the script actually
+# printed instead of the colours it was supposed to use. They live here, beside the floors they apply.
+# A joint opens `38;5;X;48;5;Y`, foreground first, which nothing else on a line can be read as: a block
+# opens `0;[1;]48;5;X;38;5;Y`, background first, and the arrow after the last block is `38;5;X` with no
+# background in it at all.
+function Get-JointSet([string] $Line) {
+    $out = @()
+    foreach ($m in [regex]::Matches($Line, "$esc\[38;5;(\d+);48;5;(\d+)m(.)")) {
+        $out += @{ Fg = [int] $m.Groups[1].Value; Bg = [int] $m.Groups[2].Value; Glyph = $m.Groups[3].Value }
+    }
+    # The joints leave ONE AT A TIME, not as `, $out`. PowerShell unrolls a function's output exactly
+    # once, so a comma-wrapped array arrives at the next stage of a pipeline whole: `Get-JointSet $l |
+    # Where-Object { $_.Glyph -eq ... }` is then handed the entire set as a single object, reads .Glyph
+    # off it as an ARRAY of glyphs, matches nothing, and reports no joints at all on a line that has
+    # several. Every caller that wants the set as an array wraps the call in @(), which is exact for
+    # none, one and many now that nothing is wrapped on the way out.
+    return $out
+}
+$script:jointArrows = 0
+$script:jointDividers = 0
+$script:jointPlainSame = 0
+# One joint, held to whichever floor is its own: an arrow is the left block's background painted on the
+# right block's, so the two colours are what has to be told apart; a divider is a glyph in the block's
+# own ink on the block's own background, so it is a mark on a ground like any inline marker, at 3:1.
+function Confirm-JointClear([string] $Line, [string] $Palette, [string] $Label) {
+    foreach ($j in @(Get-JointSet $Line)) {
+        if ([string]::Equals($j.Glyph, $arrow, [System.StringComparison]::Ordinal)) {
+            $script:jointArrows++
+            $dist = Get-RgbDistance (Get-XtermRgb $j.Fg) (Get-XtermRgb $j.Bg)
+            Confirm-True ($dist -ge 40) ("${Label}: the arrow between $($j.Fg) and $($j.Bg) is {0:N1} apart in sRGB" -f $dist)
+            if ($Palette -eq 'dark') {
+                $ratio = Get-ContrastRatio (Get-XtermRgb $j.Fg) (Get-XtermRgb $j.Bg)
+                Confirm-True ($ratio -ge 1.10) ("${Label}: the arrow between $($j.Fg) and $($j.Bg) is {0:N3}:1 apart in luminance" -f $ratio)
+            }
+        } elseif ([string]::Equals($j.Glyph, $chevron, [System.StringComparison]::Ordinal)) {
+            $script:jointDividers++
+            $ratio = Get-ContrastRatio (Get-XtermRgb $j.Fg) (Get-XtermRgb $j.Bg)
+            Confirm-True ($ratio -ge 3.0) ("${Label}: the divider, ink $($j.Fg) on $($j.Bg), is {0:N2}:1" -f $ratio)
+        } else {
+            Confirm-True $false "${Label}: a joint drawn with neither the arrow nor the divider"
+        }
+    }
+}
+# The plain and ascii answer to the same question. There is no background to measure, so what has to
+# hold is that two segments side by side are not one colour - and where they are, the role has to be one
+# the palette has no second code for, which is a fact about the table rather than about this line.
+function Confirm-PlainJointClear([string] $Line, [string] $Palette, [string] $Style, [string] $Label) {
+    $tab = Get-Palette $Palette
+    $mark = if ($Style -eq 'ascii') { '>' } else { $chevron }
+    $sep = " $esc[$($tab.Roles.dim.Sgr)m$mark$esc[0m "
+    $noAlt = @(foreach ($r in $roleNames) { if (-not $tab.Roles[$r].AltSgr) { $tab.Roles[$r].Sgr } })
+    $codes = @(foreach ($part in ($Line -split [regex]::Escape($sep))) { if ($part -match "^$esc\[([0-9;]+)m") { $Matches[1] } else { '' } })
+    for ($i = 1; $i -lt $codes.Count; $i++) {
+        $same = [string]::Equals($codes[$i], $codes[$i - 1], [System.StringComparison]::Ordinal)
+        if ($same) { $script:jointPlainSame++ }
+        Confirm-True (-not $same -or $codes[$i] -in $noAlt) "${Label}: segments $($i - 1) and $i are $(if ($same) { "both $($codes[$i])" } else { 'different colours' })"
+    }
 }
 # A contrast floor is only worth having if the colour it names is the one the terminal ends up in, so
 # the ratios above are joined to the bytes here. This one exact string carries all three of the things
@@ -2888,6 +3183,75 @@ Confirm-Equal (Get-FittedLine @($segModel, $segFolder) 'plain' $null -Palette 'l
 Confirm-Equal (Get-FittedLine @($segModel, $segFolder) 'plain' 40 -Palette 'light') (Format-Line @($segModel, $segFolder) 'plain' 'light') 'fitted at a width that holds it: the light render'
 Confirm-Equal (Get-FittedLine @($segModel, $segFolder) 'plain' 40 -Right @('folder') -Palette 'light') (Join-AlignedLine (Format-Line @($segModel) 'plain' 'light') (Format-Line @($segFolder) 'plain' 'light') 40) 'fitted with a right group: both groups are light'
 Confirm-Equal (Get-FittedLine @($segModel, $segFolder) 'plain' 40) (Get-FittedLine @($segModel, $segFolder) 'plain' 40 -Palette 'dark') 'fitted: no palette argument is the dark render'
+
+# ---- Adjacent segments of the same role ----
+# The shipped second row is context, cache and limits - all `ok` when nothing is warning - and then
+# cost, clock and lines, all `dim`. Every one of those joints used to be a colour painted on itself.
+# Format-Line settles them from the records IT is handed, which is the only place the question can be
+# answered: a line can be missing the cache block, the lines block or the pull request, so which
+# segments end up side by side is not a property of the registry.
+$segCtx = @{ Name = 'context'; Text = 'C'; Short = $null; Role = 'ok'; Bold = $false }
+$segCache = @{ Name = 'cache'; Text = 'K'; Short = $null; Role = 'ok'; Bold = $false }
+$segLimits = @{ Name = 'limits'; Text = 'L'; Short = $null; Role = 'ok'; Bold = $false }
+$segClock = @{ Name = 'clock'; Text = 'Y'; Short = $null; Role = 'dim'; Bold = $false }
+$segLines = @{ Name = 'lines'; Text = 'Z'; Short = $null; Role = 'dim'; Bold = $false }
+$segFolder2 = @{ Name = 'folder'; Text = 'G'; Short = $null; Role = 'folder'; Bold = $false }
+# Two blocks of one role: the second takes the role's second background, and the arrow between them is
+# the first background painted on the second, which is what makes it visible at all.
+Confirm-Equal (Format-Line @($segCtx, $segCache) 'powerline') "$esc[0;48;5;28;38;5;231m C $esc[38;5;28;48;5;22m$arrow$esc[0;48;5;22;38;5;231m K $esc[0m$esc[38;5;22m$arrow$esc[0m" 'powerline same role: the second block takes the alternate shade'
+# Three of them alternate rather than drift: base, alt, base. Two alternate blocks never touch, which
+# is what lets the palette leave the alt/alt pairs unmeasured.
+Confirm-Equal (Format-Line @($segCtx, $segCache, $segLimits) 'powerline') "$esc[0;48;5;28;38;5;231m C $esc[38;5;28;48;5;22m$arrow$esc[0;48;5;22;38;5;231m K $esc[38;5;22;48;5;28m$arrow$esc[0;48;5;28;38;5;231m L $esc[0m$esc[38;5;28m$arrow$esc[0m" 'powerline same role: a run of three reads base, alt, base'
+# The dark `dim` role has no second background, so its joint falls back to a divider: the thin chevron
+# in the block's own ink, on the block's own background, instead of a solid arrow of one colour on
+# itself. The blocks either side are unchanged, and so is the trailing arrow.
+Confirm-Equal (Format-Line @($segDim, $segClock) 'powerline') "$esc[0;48;5;238;38;5;250m X $esc[38;5;250;48;5;238m$chevron$esc[0;48;5;238;38;5;250m Y $esc[0m$esc[38;5;238m$arrow$esc[0m" 'powerline same role, no second shade: a divider in the block ink'
+Confirm-Equal (Format-Line @($segDim, $segClock, $segLines) 'powerline') "$esc[0;48;5;238;38;5;250m X $esc[38;5;250;48;5;238m$chevron$esc[0;48;5;238;38;5;250m Y $esc[38;5;250;48;5;238m$chevron$esc[0;48;5;238;38;5;250m Z $esc[0m$esc[38;5;238m$arrow$esc[0m" 'powerline same role, no second shade: every joint in the run gets one'
+# A role that no line can repeat gets the same fallback if one ever does, so the rule is total.
+Confirm-Equal (Format-Line @($segFolder, $segFolder2) 'powerline') "$esc[0;48;5;25;38;5;231m F $esc[38;5;231;48;5;25m$chevron$esc[0;48;5;25;38;5;231m G $esc[0m$esc[38;5;25m$arrow$esc[0m" 'powerline same role: a role with no alternate at all still gets a visible joint'
+# Two different roles are the render they always were, to the byte: the arrow between them is still
+# the left background on the right one and nothing else moved.
+Confirm-Equal (Format-Line @($segCtx, $segDim) 'powerline') "$esc[0;48;5;28;38;5;231m C $esc[38;5;28;48;5;238m$arrow$esc[0;48;5;238;38;5;250m X $esc[0m$esc[38;5;238m$arrow$esc[0m" 'powerline different roles: unchanged'
+# The light table alternates the dim block, where the dark one cannot.
+Confirm-Equal (Format-Line @($segDim, $segClock, $segLines) 'powerline' 'light') "$esc[0;48;5;$($light.Roles.dim.Bg);38;5;$($light.Roles.dim.Fg)m X $esc[38;5;$($light.Roles.dim.Bg);48;5;$($light.Roles.dim.AltBg)m$arrow$esc[0;48;5;$($light.Roles.dim.AltBg);38;5;$($light.Roles.dim.Fg)m Y $esc[38;5;$($light.Roles.dim.AltBg);48;5;$($light.Roles.dim.Bg)m$arrow$esc[0;48;5;$($light.Roles.dim.Bg);38;5;$($light.Roles.dim.Fg)m Z $esc[0m$esc[38;5;$($light.Roles.dim.Bg)m$arrow$esc[0m" 'light powerline same role: the dim run alternates'
+# AND THE READER THE RENDER SECTIONS USE HAS TO SEE THOSE JOINTS. The divider is only ever checked
+# against Get-JointSet - Confirm-JointClear holds each joint to its floor, and the matrix counts the
+# chevrons on a line and demands that every one of them be a divider the raw escapes name. Both of those
+# read the same function and they read it in DIFFERENT SHAPES, one with foreach and one with a pipeline,
+# so the set is pinned in both here rather than in one of them by accident. A line with an alternated
+# pair, a role change and a run the alternation could not part carries all three joints at once.
+$jointProbe = Format-Line @($segCtx, $segCache, $segDim, $segClock) 'powerline'
+Confirm-Equal @(Get-JointSet $jointProbe).Count 3 'joint set: three joints on the line, read as three and not as one set'
+Confirm-Equal @(Get-JointSet $jointProbe | Where-Object { [string]::Equals($_.Glyph, $chevron, [System.StringComparison]::Ordinal) }).Count 1 'joint set: filtering it in a pipeline finds the one divider'
+Confirm-Equal @(Get-JointSet $jointProbe | Where-Object { [string]::Equals($_.Glyph, $arrow, [System.StringComparison]::Ordinal) }).Count 2 'joint set: filtering it in a pipeline finds both arrows'
+Confirm-Equal @(Get-JointSet (Format-Line @($segModel) 'powerline')).Count 0 'joint set: one block has no joint, and the trailing arrow carries no background'
+Confirm-Equal @(Get-JointSet (Format-Line @($segDim, $segClock) 'powerline') | Where-Object { [string]::Equals($_.Glyph, $chevron, [System.StringComparison]::Ordinal) }).Count 1 'joint set: a single joint filters to one, not to the set that holds it'
+# Plain style, where the complaint was one foreground code with only the chevron between two segments.
+Confirm-Equal (Format-Line @($segCtx, $segCache) 'plain') "$esc[32mC$esc[0m $esc[90m$chevron$esc[0m $esc[38;5;114mK$esc[0m" 'plain same role: the second segment takes the alternate code'
+Confirm-Equal (Format-Line @($segDim, $segClock, $segLines) 'plain') "$esc[90mX$esc[0m $esc[90m$chevron$esc[0m $esc[38;5;251mY$esc[0m $esc[90m$chevron$esc[0m $esc[90mZ$esc[0m" 'plain same role: base, alt, base, and the chevron is the dim role either way'
+Confirm-Equal (Format-Line @($segDim, $segClock) 'ascii') "$esc[90mX$esc[0m $esc[90m>$esc[0m $esc[38;5;251mY$esc[0m" 'ascii same role: the alternation is the palette, not the shape'
+# The light table has no second green plain code, so this pair is the one place the alternation cannot
+# reach and the chevron carries the joint on its own, exactly as it did before.
+Confirm-Equal (Format-Line @($segCtx, $segCache) 'plain' 'light') "$esc[$($light.Roles.ok.Sgr)mC$esc[0m $esc[$($light.Roles.dim.Sgr)m$chevron$esc[0m $esc[$($light.Roles.ok.Sgr)mK$esc[0m" 'light plain same role: no second green, so the pair is unchanged'
+# A MARKER INSIDE AN ALTERNATED SEGMENT. Format-Inline closes its run by handing the segment's own
+# colour back, and it chose that colour when the TEXT was built, long before this line existed - so a
+# segment drawn in the alternate has to have those hand-backs moved with it, or the text after the
+# first marker reverts to the base code and the segment is two colours.
+$segCached = @{ Name = 'cache'; Text = "64k $(Format-Inline 'cached' '92% cached' 'ok' 'plain')"; Short = $null; Role = 'ok'; Bold = $false }
+Confirm-Equal (Format-Line @($segCtx, $segCached) 'plain') "$esc[32mC$esc[0m $esc[90m$chevron$esc[0m $esc[38;5;114m64k $esc[38;5;246m92% cached$esc[38;5;114m$esc[0m" 'plain same role: a marker inside the alternated segment hands the alternate back, not the base'
+Confirm-Equal (Format-Line @($segCached, $segCtx) 'plain') "$esc[32m64k $esc[38;5;246m92% cached$esc[32m$esc[0m $esc[90m$chevron$esc[0m $esc[38;5;114mC$esc[0m" 'plain: the same segment in the base position is untouched'
+# `muted` opens with 22;, so this is the hand-back replacement where a marker also turns bold text normal.
+$segMuted = @{ Name = 'cache'; Text = "K $(Format-Inline 'muted' '1M' 'ok' 'plain')"; Short = $null; Role = 'ok'; Bold = $false }
+Confirm-Equal (Format-Line @($segCtx, $segMuted) 'plain') "$esc[32mC$esc[0m $esc[90m$chevron$esc[0m $esc[38;5;114mK $esc[22;36m1M$esc[38;5;114m$esc[0m" 'plain same role: muted marker hands the alternate back after its 22; marker'
+# Light's alternated dim segment exercises its palette's exact hand-back, not the dark table by default.
+$segAddedLight = @{ Name = 'clock'; Text = "Y $(Format-Inline 'added' '+1' 'dim' 'plain' 'light')"; Short = $null; Role = 'dim'; Bold = $false }
+Confirm-Equal (Format-Line @($segDim, $segAddedLight) 'plain' 'light') "$esc[$($light.Roles.dim.Sgr)mX$esc[0m $esc[$($light.Roles.dim.Sgr)m$chevron$esc[0m $esc[$($light.Roles.dim.AltSgr)mY $esc[$($light.Inline.added.Sgr)m+1$esc[$($light.Roles.dim.AltSgr)m$esc[0m" 'light plain same role: added marker hands the alternate back'
+# In powerline the marker needs no such move, and must not be given one: an alternate changes the
+# background and never the block text, so the foreground Format-Inline hands back is already right, and
+# the marker itself is the one the block's ink chose. The whole segment comes through untouched inside
+# a block whose background is the alternate.
+$segCachedPl = @{ Name = 'cache'; Text = "64k $(Format-Inline 'cached' '92% cached' 'ok' 'powerline')"; Short = $null; Role = 'ok'; Bold = $false }
+Confirm-Equal (Format-Line @($segCtx, $segCachedPl) 'powerline') "$esc[0;48;5;28;38;5;231m C $esc[38;5;28;48;5;22m$arrow$esc[0;48;5;22;38;5;231m 64k $esc[38;5;86m92% cached$esc[38;5;231m $esc[0m$esc[38;5;22m$arrow$esc[0m" 'powerline same role: the alternated block keeps its marker and hands its own foreground back'
 
 Write-Host '== unit: fitting' -ForegroundColor Cyan
 function Get-FitSegmentSet {
@@ -3640,10 +4004,9 @@ Confirm-True ($null -eq (Get-CacheSecondsLeft 0 $cacheClock)) 'cache seconds: an
 Confirm-True ($null -eq (Get-CacheSecondsLeft (-600) $cacheClock)) 'cache seconds: a negative epoch is refused rather than called expired'
 Confirm-True ($null -eq (Get-CacheSecondsLeft 4102444800 $cacheClock)) 'cache seconds: a far-future epoch is refused rather than clamped to the ceiling'
 # The default clock, which is the only path the script itself takes, so the pinned parameter above
-# cannot become the only thing under test. Real time moves forward between the epoch being built here
-# and the function reading its own clock, which only lowers the answer, so each case sits clear of its
-# boundary on the side that drift carries it towards.
-$cacheReal = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+# cannot become the only thing under test. Extracted functions share the typed reading set above, so
+# these epochs are built against that same default and each case still exercises the omitted parameter.
+$cacheReal = (Get-StatusClock).ToUnixTimeSeconds()
 Confirm-True ((Get-CacheSecondsLeft ($cacheReal + 600)) -in 590..600) 'cache seconds on the default clock: ten minutes out'
 Confirm-True ((Get-CacheSecondsLeft ($cacheReal - 100)) -le -100) 'cache seconds on the default clock: a hundred seconds past'
 Confirm-True ($null -eq (Get-CacheSecondsLeft 4102444800)) 'cache seconds on the default clock: the 2100 epoch is refused'
@@ -3693,21 +4056,18 @@ Confirm-Equal (Get-CacheRole 301) 'ok' 'cache role: a second past five minutes i
 
 # A prompt_cache payload built through ConvertFrom-Json, so `warm` is a real JSON boolean and `requests`
 # arrives as an Int64 the way a payload sends it. <AT> is replaced with an epoch $In seconds from the
-# clock read at the moment of the call, so the gap between building the payload and the builder reading
-# its own clock is a fraction of a second however long this section has been running.
+# clock reading used by the lifted builders, so this payload and its builder share the default value
+# no matter how long the rest of the suite has been running.
 function Get-PromptCachePayload([string] $Json, [int] $In = 0) {
-    $at = [string] ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + $In)
+    $at = [string] ((Get-StatusClock).ToUnixTimeSeconds() + $In)
     return Get-JsonPayload 'prompt_cache' ($Json -replace '<AT>', $at)
 }
 # EVERY OFFSET HERE IS MID-MINUTE, AND THAT IS THE POINT. These cases go through Get-CacheSegment,
-# which calls Get-CacheSecondsLeft on the default clock, so the payload's expiry is built against one
-# reading and measured against another. An offset sitting exactly on a minute - 300, 360, 120 - renders
-# `5m`, `6m`, `2m` when no second ticks in between and `4m`, `5m`, `1m` when one does, which is a test
-# that FAILS CORRECT CODE roughly whenever the run is unlucky. The fix is not a tolerance: it is to put
-# every case half a minute away from the edge, where a second of drift cannot change the floor, and to
-# pin the two real boundaries - the five-minute line and the under-a-minute line - where no clock is
-# involved at all: Get-CacheRole and Format-MinutesLeft above, both pure functions of whole seconds.
-# What is left here is the wiring, tested the way production runs it, on the real clock.
+# which calls Get-CacheSecondsLeft on the default clock. The payload and builder share the one lifted
+# reading, and offsets sitting exactly on a minute - 300, 360, 120 - would otherwise make a timing
+# boundary look like a formatting result. The two real boundaries remain pinned above in Get-CacheRole
+# and Format-MinutesLeft, both pure functions of whole seconds. What is left here is the omitted-$Now
+# wiring; the child-render group covers the production clock separately.
 $cacheTable = @(
     @{ Label = 'forty-two minutes left'; Json = '{"warm":true,"expires_at":<AT>}'; In = 2550; Text = 'cache 42m'; Short = '42m'; Role = 'ok' }
     @{ Label = 'two hours five minutes left'; Json = '{"warm":true,"expires_at":<AT>}'; In = 7530; Text = 'cache 2h05m'; Short = '2h05m'; Role = 'ok' }
@@ -4407,20 +4767,19 @@ foreach ($paceRow in $noPaceTable) {
     Confirm-True ($null -eq (Get-PaceArrow $paceRow.Reset $paceRow.Used $paceClock)) "pace: $($paceRow.Label) gives no arrow"
 }
 # The default clock, which is the only path the script itself ever takes, so the parameter above cannot
-# become the only thing under test. Real time moves on between the epoch being built here and
-# Get-PaceArrow reading it, always forward, which only raises the elapsed fraction and only lowers the
-# projection. Every case below therefore sits clear of its threshold on the side drift carries it
-# towards, well outside a second's worth of movement. The boundaries themselves are pinned above.
-$pace = Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) 80
+# become the only thing under test. The extracted builders share the typed reading set above, and these
+# epochs are built from it so each case exercises the omitted parameter without depending on suite time.
+# The boundaries themselves are pinned above.
+$pace = Get-PaceArrow ((Get-StatusClock).ToUnixTimeSeconds() + 9000) 80
 Confirm-Equal $pace.Arrow $paceUp 'pace on the default clock: half a window gone at 80% points up'
 Confirm-Equal $pace.Red $true 'pace on the default clock: 160% projected is red'
 Confirm-Equal $pace.Over $true 'pace on the default clock: 160% projected is an overrun'
-$pace = Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000) 40
+$pace = Get-PaceArrow ((Get-StatusClock).ToUnixTimeSeconds() + 9000) 40
 Confirm-Equal $pace.Arrow $paceFlat 'pace on the default clock: half a window gone at 40% holds'
 Confirm-Equal $pace.Red $false 'pace on the default clock: 80% projected is not red'
 Confirm-Equal $pace.Over $false 'pace on the default clock: 80% projected is not an overrun'
-Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 100) 80)) 'pace on the default clock: a reset already past gives no arrow'
-Confirm-True ($null -eq (Get-PaceArrow ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 16400) 90)) 'pace on the default clock: the first half hour gives no arrow'
+Confirm-True ($null -eq (Get-PaceArrow ((Get-StatusClock).ToUnixTimeSeconds() - 100) 80)) 'pace on the default clock: a reset already past gives no arrow'
+Confirm-True ($null -eq (Get-PaceArrow ((Get-StatusClock).ToUnixTimeSeconds() + 16400) 90)) 'pace on the default clock: the first half hour gives no arrow'
 Confirm-True ($null -eq (Get-PaceArrow 4102444800 80)) 'pace on the default clock: a far-future reset gives no arrow'
 
 Write-Host '== unit: TimeLeft' -ForegroundColor Cyan
@@ -4536,7 +4895,7 @@ Confirm-True ($null -eq $seg.Short) 'limits 7d alone: short would equal text, so
 # 200 days out rather than sample 06's fixed 2100 epoch: since #44 capped TimeLeft's countdown at a
 # year, a reset built from the live clock is what keeps this a "definitely still live, definitely
 # still countable" case rather than one the cap now empties out from under it.
-$liveReset = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + (200 * 86400)
+$liveReset = (Get-StatusClock).ToUnixTimeSeconds() + (200 * 86400)
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":70,"resets_at":' + $liveReset + '},"seven_day":{"used_percentage":12,"resets_at":' + $liveReset + '}}')) $bandCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 70% (") -and $seg.Text.EndsWith(') 7d 12%')) 'limits 5h worst with a live reset: text carries the countdown'
 Confirm-Equal $seg.Short "$iconLimit 5h 70%" 'limits 5h worst with a live reset: short drops the countdown'
@@ -4601,7 +4960,7 @@ Confirm-Equal (Get-LimitsSegment $limits5h15 $quietRoleAlarm) $null 'limits quie
 # Get-PaceArrow without a clock parameter. A tenth of the window gone (16200 seconds left) makes the
 # projection ten times the current figure; real time only moves the reading further into the window,
 # which lowers the projection, so each case sits far clear of the limit it is on the safe side of.
-$paceNow = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+$paceNow = (Get-StatusClock).ToUnixTimeSeconds()
 function Get-PaceLimitsPayload([double] $Used, [long] $Left) {
     return Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":' + ([string]::Format([cultureinfo]::InvariantCulture, '{0}', $Used)) + ',"resets_at":' + ($paceNow + $Left) + '}}')
 }
@@ -4708,41 +5067,163 @@ Confirm-Equal $seg.Short "$iconLimit 5h 10%" 'limits 10 and 15 at 20/40: short i
 # that has not opened.
 $paceCfg = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Style = 'plain' }
 $pacePlCfg = @{ Thresholds = @{ Warn = 60; Bad = 85 }; Style = 'powerline' }
-$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$paceLive = (Get-StatusClock).ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":40,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $paceCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 40% $paceFlat (") -and $seg.Text.EndsWith(') 7d 12%')) 'limits on pace: the right arrow sits after the figure and before the countdown'
 Confirm-Equal $seg.Short "$iconLimit 5h 40%" 'limits on pace: the short form drops the arrow with the countdown'
 Confirm-Equal $seg.Role 'ok' 'limits on pace: the arrow does not touch the role'
 
-$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$paceLive = (Get-StatusClock).ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":55,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $paceCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 55% $paceUp (")) 'limits overrunning under 120: a plain up arrow, no colour'
 Confirm-Equal $seg.Role 'ok' 'limits overrunning under 120: the role is still the worse of the figures'
 
 # At 80% with half the window gone the projection is 160, so the arrow goes through the removed inline
 # role and restores the segment's own foreground - the warn one here, which the 80 earns on its own.
-$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$paceLive = (Get-StatusClock).ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":80,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $paceCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'plain') (")) 'limits well over pace: the up arrow takes the removed role and hands the warn colour back'
 Confirm-Equal $seg.Role 'warn' 'limits well over pace: the role is the worse figure, not the projection'
 Confirm-Equal $seg.Short "$iconLimit 5h 80%" 'limits well over pace: the short form keeps the figure without the arrow'
 
-$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$paceLive = (Get-StatusClock).ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":80,"resets_at":' + $paceLive + '},"seven_day":{"used_percentage":12,"resets_at":1700000000}}')) $pacePlCfg
 Confirm-True ($seg.Text.StartsWith("$iconLimit 5h 80% $(Format-Inline 'removed' $paceUp 'warn' 'powerline') (")) 'limits well over pace in powerline: the removed-role arrow restores the segment foreground'
 
 # The 7-day figure never gets an arrow, whatever its reset says: one payload cannot pace a week.
-$paceLive = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 9000
+$paceLive = (Get-StatusClock).ToUnixTimeSeconds() + 9000
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"seven_day":{"used_percentage":80,"resets_at":' + $paceLive + '},"spend_limit":{"used_percentage":80,"resets_at":' + $paceLive + '}}')) $paceCfg
 Confirm-Equal $seg.Text "$iconLimit 7d 80% `$ 80%" 'limits without a 5h figure: no arrow on the 7d or the spend figure'
 
 # A reset under a minute out leaves TimeLeft empty, so the arrow is the only thing the Text has that the
 # Short form does not. Fifty seconds is far enough from both ends - past the reset, or past the minute
 # TimeLeft needs - that no plausible drift moves the answer.
-$paceEnd = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 50
+$paceEnd = (Get-StatusClock).ToUnixTimeSeconds() + 50
 $seg = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":55,"resets_at":' + $paceEnd + '}}')) $paceCfg
 Confirm-Equal $seg.Text "$iconLimit 5h 55% $paceFlat" 'limits at the end of a window: the arrow with no countdown behind it'
 Confirm-Equal $seg.Short "$iconLimit 5h 55%" 'limits at the end of a window: a short form exists purely to drop the arrow'
+
+Write-Host '== unit: clock seam' -ForegroundColor Cyan
+# statusline.ps1 reads the wall clock once, at the top, and the four things on a line that move with it
+# - the cache countdown, the rate-limit countdown, the pace arrow's position in the window, and the
+# `time` segment - all take that one reading. CLAUDE_STATUSLINE_NOW replaces it. This section proves
+# three things and nothing wider: what the override accepts and refuses, that the offset it carries is
+# the zone the wall clock is drawn in, and that the four figures come out of the reading rather than
+# out of a clock of their own. What it does NOT prove is that a whole render is reproducible - that is
+# the child-render group further down - or that a PNG comes out to the same bytes, which depends on the
+# rasteriser and not on this file.
+#
+# Everything above this section deliberately runs on the real clock, the way production does.
+#
+# The pinned instant is well in the past, and that is deliberate: a figure that stopped taking the
+# reading and fell back to its own clock would measure these expiries as long gone, so every assertion
+# below fails loudly rather than agreeing with a fresh reading by luck.
+#
+# $clockPin IS THE ONE PIN IN THIS FILE. The child-render group below reads it from here rather than
+# spelling it again, and it is checked against docs/render-screenshot.ps1's own $fixedNow, so a pin
+# changed in one place and not the other fails here instead of quietly testing a different instant
+# from the one the screenshots are drawn at.
+$clockPin = '2026-01-15T14:05:00+00:00'
+$clockPinAt = [DateTimeOffset]::Parse($clockPin, [System.Globalization.CultureInfo]::InvariantCulture)
+$clockPinEpoch = $clockPinAt.ToUnixTimeSeconds()
+Confirm-Equal $clockPinEpoch 1768485900L 'clock seam: the pinned instant is the epoch every case below is built from'
+# Read out of the docs script by the parser rather than by running it: render-screenshot.ps1 needs a
+# font and a drawing surface, and this is the same way the OSC-pattern pin above reads $pattern out of
+# it. A $null Right means the assignment was renamed, which Get-ScriptAssignment has already failed by
+# name, so the comparison below reports a mismatch rather than dereferencing nothing.
+$clockPinRight = Get-ScriptAssignment (Join-Path $PSScriptRoot 'docs/render-screenshot.ps1') '$fixedNow'
+if ($null -ne $clockPinRight) {
+    # [string] over the invoked result for the same reason the pattern check above casts: a bare
+    # Collection[PSObject] would compare as its own type name and pass or fail for the wrong reason.
+    $clockPinShot = [string] [scriptblock]::Create($clockPinRight.Extent.Text).Invoke()
+    Confirm-Equal $clockPinShot $clockPin 'clock seam: docs/render-screenshot.ps1 pins the same instant this file does'
+}
+# The override is refused unless it carries an offset, because a wall clock without a zone is not
+# reproducible - which is the whole point - and [DateTimeOffset]::TryParse would silently supply the
+# MACHINE'S offset for a value that left it out.
+Confirm-True ($null -eq (Get-StatusNow $null)) 'clock seam: no override is no reading'
+Confirm-True ($null -eq (Get-StatusNow '')) 'clock seam: an empty override is no reading'
+Confirm-True ($null -eq (Get-StatusNow '   ')) 'clock seam: a whitespace-only override is no reading'
+Confirm-Equal ((Get-StatusNow $clockPin).ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: an ISO-8601 instant with an offset is the instant it names'
+Confirm-Equal ((Get-StatusNow $clockPin).Offset.TotalMinutes) 0.0 'clock seam: and it keeps the offset it carried, not the machine''s'
+Confirm-Equal ((Get-StatusNow $clockPin).ToString('HH\:mm')) '14:05' 'clock seam: the wall clock of a +00:00 instant is its UTC time in any zone'
+Confirm-Equal ((Get-StatusNow "  $clockPin`t").ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: surrounding whitespace is trimmed before the value is read'
+Confirm-Equal ((Get-StatusNow '2026-01-15T14:05:00Z').ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: Z is an offset'
+Confirm-Equal ((Get-StatusNow '2026-01-15T14:05:00.1234567Z').ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: a fractional second is allowed and floors to the same epoch'
+Confirm-Equal ((Get-StatusNow '2026-01-15T09:05:00-05:00').ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: a negative offset names the same instant'
+Confirm-True ($null -eq (Get-StatusNow '2026-01-15T14:05:00-15:00')) 'clock seam: an offset no zone has is refused by the parse the pattern hands it to'
+# THE ZONE RULE, stated as two assertions: the offset in the string is the zone the wall clock is drawn
+# in, and two spellings of one instant agree on every countdown while printing their own local times.
+Confirm-Equal ((Get-StatusNow '2026-01-15T16:05:00+02:00').ToUnixTimeSeconds()) $clockPinEpoch 'clock seam: +02:00 at 16:05 is the same instant as +00:00 at 14:05'
+Confirm-Equal ((Get-StatusNow '2026-01-15T16:05:00+02:00').ToString('HH\:mm')) '16:05' 'clock seam: and its wall clock is 16:05, because the offset it carries is the zone'
+foreach ($bad in @(
+        @{ Label = 'no offset at all'; Value = '2026-01-15T14:05:00' }
+        @{ Label = 'epoch seconds'; Value = '1768485900' }
+        @{ Label = 'a date with no time'; Value = '2026-01-15' }
+        @{ Label = 'no seconds'; Value = '2026-01-15T14:05Z' }
+        @{ Label = 'a space where the T belongs'; Value = '2026-01-15 14:05:00Z' }
+        @{ Label = 'an offset with no colon in it'; Value = '2026-01-15T14:05:00+0000' }
+        @{ Label = 'a day that is not in the month'; Value = '2026-02-30T14:05:00Z' }
+        @{ Label = 'an hour that is not on the clock'; Value = '2026-01-15T25:05:00Z' }
+        @{ Label = 'a minute that is not on the clock'; Value = '2026-01-15T14:75:00Z' }
+        @{ Label = 'a word'; Value = 'now' }
+        @{ Label = 'a good value with something after it'; Value = '2026-01-15T14:05:00Z and then some' }
+        @{ Label = 'a good value on the first of two lines'; Value = "2026-01-15T14:05:00Z`n2026-01-15T14:05:00Z" })) {
+    Confirm-True ($null -eq (Get-StatusNow $bad.Value)) "clock seam: $($bad.Label) is refused, not repaired"
+}
+# Lifted builders share the typed baseline taken immediately after their definitions. A wrong type must
+# reach the caller rather than being silently repaired by a second clock reading.
+Confirm-True ($script:renderNow -is [DateTimeOffset]) 'clock seam: the lifted functions start from one DateTimeOffset reading'
+$clockWrongTypeFailed = $false
+try {
+    $script:renderNow = [datetime]::Now
+    $null = (Get-StatusClock).ToUnixTimeSeconds()
+} catch {
+    $clockWrongTypeFailed = $true
+} finally {
+    $script:renderNow = $clockTestNow
+}
+Confirm-True $clockWrongTypeFailed 'clock seam: a wrongly typed reading fails loudly rather than falling back to a new clock'
+# The four figures, through the builders the render loop actually calls, and then through the three
+# helpers CALLED WITH NO CLOCK AT ALL. The second half is the point: the seam lives in those defaults,
+# not in the call sites, so a helper that goes back to reading its own clock is caught here even though
+# every caller still compiles. Each expiry is months past on a real clock, so the fallback is loud.
+try {
+    $script:renderNow = $clockPinAt
+    Confirm-Equal (Get-TimeSegment).Text "$iconTime 14:05" 'clock seam: the wall clock segment draws the pinned instant'
+    $clockPinCache = Get-CacheSegment (Get-JsonPayload 'prompt_cache' ('{"warm":true,"expires_at":' + ($clockPinEpoch + 2550) + '}'))
+    Confirm-Equal $clockPinCache.Text "$iconCache cache 42m" 'clock seam: the cache countdown is measured against the pinned instant'
+    $clockPinLimits = Get-LimitsSegment (Get-JsonPayload 'rate_limits' ('{"five_hour":{"used_percentage":23.5,"resets_at":' + ($clockPinEpoch + 4350) + '}}')) $quietOff
+    Confirm-Equal (ConvertTo-PlainText $clockPinLimits.Text) "$iconLimit 5h 24% $paceFlat (1h12m)" 'clock seam: the rate-limit countdown and the pace arrow are measured against it too'
+    # No $Now argument anywhere below. What is pinned is that the DEFAULT is Get-StatusClock: a default
+    # that read a clock of its own would answer these three from today and fail all three.
+    Confirm-Equal (Get-CacheSecondsLeft ($clockPinEpoch + 2550)) 2550 'clock seam: the seconds-left helper defaults to the reading, with no argument to carry it'
+    Confirm-Equal (TimeLeft ($clockPinEpoch + 4350)) ' (1h12m)' 'clock seam: TimeLeft defaults to the reading, with no argument to carry it'
+    Confirm-Equal (Get-PaceArrow ($clockPinEpoch + 4350) 23.5).Arrow $paceFlat 'clock seam: the pace arrow defaults to the reading, with no argument to carry it'
+    # And a $Now given explicitly still wins, which is what the boundary cases elsewhere in this file
+    # rely on: they hand in an epoch of their own and must not be moved by a pin or by the clock.
+    Confirm-Equal (Get-CacheSecondsLeft ($clockPinEpoch + 2550) ($clockPinEpoch + 150)) 2400 'clock seam: an explicit $Now still overrides the default'
+} finally { $script:renderNow = $clockTestNow }
+# Get-CacheSecondsLeft's cast used to be [int], and its bottom was held by -$Now alone, which was inside
+# an Int32 only while $Now was a reading of the clock. A far future instant - which the override accepts,
+# and which this machine's own clock reaches in 2038 - leaves a difference an Int32 cannot hold; the cast
+# failed, silently under the script's SilentlyContinue, and the segment read 'cache warm' over a cache
+# that lapsed decades ago. Found by the Codex review of this branch. [long] holds the whole domain, so
+# the answer remains a real count rather than silently vanishing. Pinned as the property every caller
+# actually tests, "gone", rather than as a sentinel none of them looks for.
+$clockPinStaleLeft = Get-CacheSecondsLeft 1768485900 4102444800
+Confirm-True ($null -ne $clockPinStaleLeft) 'clock seam: an expiry further past than an Int32 can hold still comes back as a number, not as nothing'
+Confirm-True ($clockPinStaleLeft -le 0) 'clock seam: and that number reads as gone, which is all any caller asks it'
+Confirm-Equal (Get-CacheSecondsLeft 1768485900 1768485000) 900 'clock seam: and an ordinary countdown is unchanged by the wider cast'
+Confirm-Equal (Get-CacheSecondsLeft 4102444800 1768485900) $null 'clock seam: the ceiling still refuses an expiry more than a day out'
+try {
+    # 1 January 2100, through the builder the render loop calls, with warm true beside it - the shape
+    # that used to print the reassuring answer.
+    $script:renderNow = [DateTimeOffset]::FromUnixTimeSeconds(4102444800)
+    $clockPinStale = Get-CacheSegment (Get-JsonPayload 'prompt_cache' '{"warm":true,"expires_at":1768485900}')
+    Confirm-Equal $clockPinStale.Text "$iconCache cache cold" 'clock seam: a cache that lapsed decades before the reading is cold, not warm'
+    Confirm-Equal $clockPinStale.Role 'bad' 'clock seam: and it is coloured as the bad news it is'
+} finally { $script:renderNow = $clockTestNow }
 
 Write-Host '== unit: badges' -ForegroundColor Cyan
 # $badgeNameCells and $defaultEffort are script-level constants in statusline.ps1 and the builder closes
@@ -8599,6 +9080,14 @@ $sampleMarkers = @{
 # what holds the rest of the matrix to the colours it printed before this key existed. The markers are
 # plain text and cannot see any of it, so the colour is checked raw below.
 $alarmSamples = @('02-feature-dirty-high.json', '12-context-alarm.json')
+# THE ALARM COLOUR IS THE `bad` ROLE, AND A ROLE IS TWO SHADES. When the segment before the model on
+# the line is also `bad` - and on an alarm sample the context segment is, so the reversed order, which
+# puts context immediately before the model, does exactly that - the model takes the role's alternate
+# shade. Both spellings are accepted below and the check is unchanged in what it asks: the alarm draws
+# the model in `bad` rather than in the model's own colour. Read off the table rather than retyped, so
+# a retune of either shade has to answer to the palette group instead of quietly passing here.
+$alarmPlainSgr = @($pal.Roles.bad.Sgr, $pal.Roles.bad.AltSgr)
+$alarmBlockBg = @($pal.Roles.bad.Bg, $pal.Roles.bad.AltBg)
 # Every glyph a segment can put on the line: a segment the config turns off must show none of them, and
 # the two-line checks use them to say which row a segment landed on.
 $segmentGlyphs = @{
@@ -8633,7 +9122,7 @@ function Get-ConfigRecord([string] $Name, [string] $Path, $Parsed, [int[]] $Widt
     $listed = @($rows | ForEach-Object { $_ })
     $enabled = @{}
     foreach ($n in $allSegments) { $enabled[$n] = [bool] ($Parsed.Segments[$n] -and $n -in $listed) }
-    return @{ Name = $Name; Path = $Path; Layout = $Parsed.Layout; Style = $Parsed.Style; Folder = $Parsed.Folder; Enabled = $enabled; Rows = $rows; Widths = $Widths }
+    return @{ Name = $Name; Path = $Path; Layout = $Parsed.Layout; Style = $Parsed.Style; Palette = $Parsed.Palette; Folder = $Parsed.Folder; Enabled = $enabled; Rows = $rows; Widths = $Widths }
 }
 # The oracle turns off every registry segment but model, so a new segment is off here without an edit.
 $modelOnlySegments = @($allSegments | Where-Object { $_ -ne 'model' } | ForEach-Object { '"' + $_ + '": false' }) -join ', '
@@ -8720,6 +9209,10 @@ foreach ($cfg in $configSet) {
             Confirm-True ($lines.Count -le $maxLines) "${label}: $($lines.Count) lines, layout allows $maxLines"
             foreach ($line in $lines) {
                 Confirm-True (-not [string]::IsNullOrWhiteSpace($line)) "${label}: empty line"
+                # Every joint on a line the SCRIPT drew, at every width in the matrix - so the shrink
+                # and drop stages are covered too, where segments close up around a dropped one and put
+                # neighbours together that the full line never had side by side.
+                if ($cfg.Style -eq 'powerline') { Confirm-JointClear $line $cfg.Palette $label } else { Confirm-PlainJointClear $line $cfg.Palette $cfg.Style $label }
                 if ($c -le 0) { continue }
                 $w = Measure-VisibleWidth $line
                 if ($w -le $c - 1) { $script:passed++; continue }
@@ -8738,9 +9231,9 @@ foreach ($cfg in $configSet) {
             if ($cfg.Enabled['model'] -and $sample.Name -in $alarmSamples) {
                 $rawAlarm = $lines -join "`n"
                 if ($cfg.Style -eq 'plain') {
-                    Confirm-True ($rawAlarm.Contains("$esc[31m$iconModel")) "${label}: the alarm keeps the plain model segment red"
+                    Confirm-True (@($alarmPlainSgr | Where-Object { $rawAlarm.Contains("$esc[${_}m$iconModel") }).Count -gt 0) "${label}: the alarm keeps the plain model segment red, in either shade of the role"
                 } else {
-                    Confirm-True ($rawAlarm.Contains("$esc[0;1;48;5;160;38;5;231m $iconModel")) "${label}: the alarm keeps the model block on background 160"
+                    Confirm-True (@($alarmBlockBg | Where-Object { $rawAlarm.Contains("$esc[0;1;48;5;${_};38;5;231m $iconModel") }).Count -gt 0) "${label}: the alarm keeps the model block on a red background, in either shade of the role"
                 }
             }
             if ($c -gt 0 -and $sampleShortForms.ContainsKey($sample.Name)) {
@@ -8856,7 +9349,15 @@ foreach ($cfg in $configSet) {
                         if ($cfg.Style -eq 'plain') {
                             Confirm-True ($text.Contains($chevron) -and -not $text.Contains($arrow)) "${label}: plain uses chevron not arrow"
                         } else {
-                            Confirm-True ($text.Contains($arrow) -and -not $text.Contains($chevron)) "${label}: powerline uses arrow not chevron"
+                            # A powerline line can now carry the chevron too, but only where two blocks
+                            # came out one colour and the arrow between them would have been that colour
+                            # painted on itself - #106's divider. So it is COUNTED rather than forbidden:
+                            # every chevron on the line has to be one of the divider joints the raw
+                            # escapes name, which is what stops the plain separator leaking into this
+                            # style under cover of the new rule.
+                            $dividerCount = @(Get-JointSet ($lines -join "`n") | Where-Object { [string]::Equals($_.Glyph, $chevron, [System.StringComparison]::Ordinal) }).Count
+                            $chevronCount = @([regex]::Matches($text, [regex]::Escape($chevron))).Count
+                            Confirm-True ($text.Contains($arrow) -and $chevronCount -eq $dividerCount) "${label}: powerline uses arrows, and its $chevronCount chevrons are all same-background dividers ($dividerCount)"
                         }
                     }
                     # The alarm only changes a colour, so it is the one thing the plain-text markers
@@ -8865,11 +9366,11 @@ foreach ($cfg in $configSet) {
                     if ($cfg.Enabled['model'] -and $cfg.Style -eq 'plain') {
                         $rawText = $lines -join "`n"
                         if ($sample.Name -in $alarmSamples) {
-                            Confirm-True ($rawText.Contains("$esc[31m$iconModel")) "${label}: the alarm turns the plain model segment red"
+                            Confirm-True (@($alarmPlainSgr | Where-Object { $rawText.Contains("$esc[${_}m$iconModel") }).Count -gt 0) "${label}: the alarm turns the plain model segment red, in either shade of the role"
                             Confirm-True (-not $rawText.Contains("$esc[1;36m$iconModel")) "${label}: no bold cyan model segment beside the alarm"
                         } else {
                             Confirm-True ($rawText.Contains("$esc[1;36m$iconModel")) "${label}: the plain model segment is bold cyan"
-                            Confirm-True (-not $rawText.Contains("$esc[31m$iconModel")) "${label}: no alarm, so the model segment is not red"
+                            Confirm-True (@($alarmPlainSgr | Where-Object { $rawText.Contains("$esc[${_}m$iconModel") }).Count -eq 0) "${label}: no alarm, so the model segment is neither shade of red"
                         }
                     }
                     if ($cfg.Style -eq 'powerline') {
@@ -9560,6 +10061,69 @@ Confirm-True ($rowTwo.Err.Count -eq 0) 'right render row two: stderr empty'
 Confirm-Equal ($rowTwo.Lines -join "`n") ($twoNone.Lines -join "`n") 'right render row two: a group naming a row-two segment belongs to row one and so changes nothing'
 Confirm-True ((Measure-VisibleWidth $rowTwo.Lines[1]) -lt 119) 'right render row two: row two is not aligned to the width by a group that named one of its segments'
 
+Write-Host ''
+Write-Host '== render: the pinned clock' -ForegroundColor Cyan
+# The seam through a whole child render, which is the case docs/render-screenshot.ps1 depends on and
+# the unit section above cannot reach: the override has to survive being read from the environment by
+# another process, and the figures it pins have to come out of the same render the screenshot captures.
+# The payload is the screenshot's own - sample 06, with the two expiries built from the pinned instant
+# the way render-screenshot.ps1 builds them - so this section fails if that render stops being
+# reproducible, rather than the diff being noticed months later. It says nothing about the PNG's bytes,
+# which the rasteriser and the installed font decide and this file never touches.
+# $clockPin, from the unit section, is the one pin in this file and is already checked against the docs
+# script's own $fixedNow, so the instant here cannot drift from the instant the screenshots are drawn at.
+$pinPayloadObj = $samplePayloads[$sample06.Name] | ConvertFrom-Json -AsHashtable
+$pinPayloadObj.rate_limits.five_hour.resets_at = $clockPinEpoch + 4350
+$pinPayloadObj.prompt_cache = @{ warm = $true; expires_at = $clockPinEpoch + 2550 }
+$pinPayload = $pinPayloadObj | ConvertTo-Json -Depth 5
+$pinConfig = Write-TempConfig 'clock-pinned.json' '{ "layout": "two", "style": "plain", "segments": { "time": true } }'
+# FIRST, WITH NOTHING SET, and this is the assertion the whole group leans on. Every check below runs a
+# child that inherits this process's environment; if the variable were already set - here, or in the
+# shell that started the suite - the 72 child renders above would have run frozen and passed anyway.
+# This one says the clock those renders read is live, and the two pinned countdowns are absent, before
+# any of them is pinned. The wall clock is read either side, so the only way it matches neither is a
+# render that crossed two minute boundaries.
+$oldPinNow = $env:CLAUDE_STATUSLINE_NOW
+Confirm-True ($null -eq $oldPinNow) 'pinned clock: the suite reaches this group with no pin inherited, so every render above read a live clock'
+$liveBefore = Get-Date
+$live = Invoke-StatusLine $pinPayload $pinConfig 0
+$liveAfter = Get-Date
+$liveText = ConvertTo-PlainText ($live.Lines -join "`n")
+Confirm-True ($live.Err.Count -eq 0) 'pinned clock: the unpinned render writes nothing to stderr'
+Confirm-True ($liveText.Contains("$iconTime $($liveBefore.ToString('HH\:mm'))") -or $liveText.Contains("$iconTime $($liveAfter.ToString('HH\:mm'))")) "pinned clock: unpinned, the wall clock is this machine's, got '$liveText'"
+Confirm-True (-not $liveText.Contains('cache 42m')) 'pinned clock: unpinned, the pinned cache countdown is not on the line'
+Confirm-True (-not $liveText.Contains('(1h12m)')) 'pinned clock: unpinned, the pinned rate-limit countdown is not on the line'
+try {
+    $env:CLAUDE_STATUSLINE_NOW = $clockPin
+    $pinned = Invoke-StatusLine $pinPayload $pinConfig 0
+    Confirm-True ($pinned.ExitCode -eq 0) "pinned clock: exit code $($pinned.ExitCode)"
+    Confirm-True ($pinned.Err.Count -eq 0) "pinned clock: stderr empty, got '$($pinned.Err -join ' | ')'"
+    $pinnedText = ConvertTo-PlainText ($pinned.Lines -join "`n")
+    Confirm-True ($pinnedText.Contains('cache 42m')) "pinned clock: the cache countdown is the pinned 42m, got '$pinnedText'"
+    Confirm-True ($pinnedText.Contains('(1h12m)')) "pinned clock: the rate-limit countdown is the pinned 1h12m, got '$pinnedText'"
+    Confirm-True ($pinnedText.Contains($paceFlat)) 'pinned clock: the pace arrow is the flat one the pinned window projects'
+    Confirm-True ($pinnedText.Contains("$iconTime 14:05")) "pinned clock: the wall clock is 14:05 in any zone, got '$pinnedText'"
+    # The same render twice is the property the screenshots need, stated as an assertion: two child
+    # processes started seconds apart print the same bytes, which is what could not be said before.
+    $pinnedAgain = Invoke-StatusLine $pinPayload $pinConfig 0
+    Confirm-Equal ($pinnedAgain.Lines -join "`n") ($pinned.Lines -join "`n") 'pinned clock: two renders of one payload under one pinned instant are byte for byte the same'
+    # One no-offset value proves the process-level fallback. TryParse would have supplied this
+    # machine's offset, so the unit-level refusal alone cannot show that the render stays live.
+    $junk = '2026-01-15T14:05:00'
+    $env:CLAUDE_STATUSLINE_NOW = $junk
+    $before = Get-Date
+    $junked = Invoke-StatusLine $pinPayload $pinConfig 0
+    $after = Get-Date
+    $junkText = ConvertTo-PlainText ($junked.Lines -join "`n")
+    Confirm-True ($junked.Err.Count -eq 0) "pinned clock: '$junk' writes nothing to stderr"
+    Confirm-True (-not $junkText.Contains("$iconTime 14:05") -or $before.ToString('HH\:mm') -eq '14:05') "pinned clock: '$junk' is not read as the pinned instant"
+    Confirm-True ($junkText.Contains("$iconTime $($before.ToString('HH\:mm'))") -or $junkText.Contains("$iconTime $($after.ToString('HH\:mm'))")) "pinned clock: '$junk' falls back to this machine's clock, got '$junkText'"
+    # Unsetting again is the production path, and it is the $live render at the head of this group -
+    # same payload, same config, nothing in the environment - so it is not run a second time here.
+} finally {
+    if ($null -ne $oldPinNow) { $env:CLAUDE_STATUSLINE_NOW = $oldPinNow } else { Remove-Item Env:CLAUDE_STATUSLINE_NOW -ErrorAction SilentlyContinue }
+}
+
 # The taskbar sequence through the whole script. Every check here is against a second render of the
 # same payload with the key off, so what is pinned is "the sequence and nothing else changed" rather
 # than one expected line that would have to be rewritten every time a segment moves.
@@ -9766,6 +10330,88 @@ Confirm-True ($r.ExitCode -eq 0 -and $r.Err.Count -eq 0) 'render light bad paylo
 Confirm-True (($r.Lines -join "`n").Contains("$esc[$($palLight.Roles.model.Sgr)m")) 'render light bad payload: the stand-in follows the palette'
 Confirm-Equal ((Invoke-StatusLine 'not json' $darkConfig 0).Lines -join "`n") ((Invoke-StatusLine 'not json' $plainConfig 0).Lines -join "`n") 'render dark bad payload: the stand-in is unchanged'
 Confirm-True (((Invoke-StatusLine 'not json' $plainConfig 0).Lines -join "`n").Contains("$esc[36m")) 'render dark bad payload: still the raw cyan it always was'
+
+Write-Host ''
+Write-Host '== render: every joint of every layout' -ForegroundColor Cyan
+# THE CHECK NEITHER HALF COULD MAKE ON ITS OWN. The contrast rules measure every ordered pair of ROLES
+# and cannot see that two adjacent SEGMENTS carry the same one, because the palette does not know the
+# layout; the layout does not know the colours either. This is where the two are put together: every
+# sample, built by the real segment builders, laid out by both shipped layouts AND by all three presets,
+# rendered in both palettes and all three styles, and then every joint on the rendered line is held to
+# the floors the palette group applies to a pair of neighbouring blocks.
+# THE JOINTS ARE READ BACK OUT OF THE RENDERED LINE, not out of the records, so what is measured is the
+# bytes a terminal receives - and so a sample that drops a segment (no cache block, no lines, no pull
+# request) is measured as the line it actually draws rather than as the one the registry describes.
+# Built once per style and palette rather than once per layout: which segments a payload can build, and
+# what each of them says, does not depend on how the rows are arranged - only on the style's glyphs and
+# the palette's marker codes, which is exactly what the two loops here are. The git cache is off so this
+# walk leaves nothing behind; the three samples with no git object probe a directory that is provably
+# not a repository, the same one the render matrix points them at.
+$jointBuilt = @{}
+foreach ($jointStyle in @('plain', 'powerline', 'ascii')) {
+    foreach ($jointPalette in @('dark', 'light')) {
+        $jointCfg = Get-DefaultStatusConfig
+        $jointCfg.Style = $jointStyle
+        $jointCfg.Palette = $jointPalette
+        $jointCfg.Git.Cache = $false
+        foreach ($sample in $sampleFiles) {
+            $d = $samplePayloads[$sample.Name] | ConvertFrom-Json
+            $set = @{}
+            foreach ($rec in Get-SegmentRegistry) {
+                $seg = & $rec.Build $d $jointCfg $null
+                if ($seg) { $set[$rec.Name] = $seg }
+            }
+            $jointBuilt["$jointStyle|$jointPalette|$($sample.Name)"] = $set
+        }
+    }
+}
+# The layouts a line can have: the two the config offers, and the three presets, which are where the
+# NEW adjacencies come from - `cost` turns folder, branch, badges and the pull request off, and the
+# segments that were on either side of them close up.
+$jointCases = @()
+foreach ($jointLayout in @('one', 'two')) {
+    $c = Get-DefaultStatusConfig
+    $c.Layout = $jointLayout
+    $jointCases += @{ N = "layout $jointLayout"; Cfg = $c }
+}
+foreach ($presetName in @('minimal', 'cost', 'full')) {
+    $c = Get-DefaultStatusConfig
+    $preset = Get-ConfigPreset $presetName
+    $c.Layout = $preset.Layout
+    foreach ($n in @($preset.Segments.Keys)) { $c.Segments[$n] = $preset.Segments[$n] }
+    $jointCases += @{ N = "preset $presetName"; Cfg = $c }
+}
+Confirm-Equal $jointCases.Count 5 'joints: both layouts and all three presets are walked'
+$jointLines = 0
+foreach ($case in $jointCases) {
+    $rows = @(if ($case.Cfg.Layout -eq 'two') { $case.Cfg.Rows } else { , $case.Cfg.Order })
+    foreach ($jointStyle in @('plain', 'powerline', 'ascii')) {
+        foreach ($jointPalette in @('dark', 'light')) {
+            foreach ($sample in $sampleFiles) {
+                $set = $jointBuilt["$jointStyle|$jointPalette|$($sample.Name)"]
+                foreach ($row in $rows) {
+                    $onLine = @(foreach ($n in $row) { if ($case.Cfg.Segments[$n] -and $set.ContainsKey($n)) { $set[$n] } })
+                    if ($onLine.Count -lt 2) { continue }
+                    $jointLines++
+                    $label = "joints $($case.N) $jointStyle $jointPalette $($sample.Name)"
+                    $rendered = Format-Line $onLine $jointStyle $jointPalette
+                    if ($jointStyle -eq 'powerline') { Confirm-JointClear $rendered $jointPalette $label }
+                    else { Confirm-PlainJointClear $rendered $jointPalette $jointStyle $label }
+                }
+            }
+        }
+    }
+}
+# A walk that measured nothing would pass every assertion above it, so the three things it is here to
+# find are counted: joints between different backgrounds, joints the divider had to carry, and plain
+# pairs the palette has no second code for. The middle one is the dark dim run - cost, clock and lines -
+# and the last is the light green pair; both are the gaps the palette group measured, seen from the
+# other end, on real lines built from real payloads.
+Confirm-True ($jointLines -gt 200) "joints: the walk rendered $jointLines lines"
+Confirm-True ($script:jointArrows -gt 0) "joints: $($script:jointArrows) arrows between two different backgrounds"
+Confirm-True ($script:jointDividers -gt 0) "joints: $($script:jointDividers) same-background joints carried by the divider"
+Confirm-True ($script:jointPlainSame -gt 0) "joints: $($script:jointPlainSame) plain pairs share a code, all of them roles with no second one"
+Write-Host ("   $jointLines lines, $($script:jointArrows) arrows, $($script:jointDividers) dividers, $($script:jointPlainSame) plain pairs on one code")
 
 Write-Host ''
 Write-Host '== render: links' -ForegroundColor Cyan
