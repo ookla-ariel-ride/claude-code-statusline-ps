@@ -455,8 +455,8 @@ clobbering other keys, and renders glyphs correctly regardless of file encoding.
   its cap until a render with room to spare rolls it; it heals on its own once the filesystem does. That
   is the same answer a rollover that is entered and cannot take the lock now gets (#93), so the reserve
   is one more road to it rather than a hole beside it. Every cap drop, including this reserve drop, is
-  counted by reason and carried only after a later close really completes; timing does not decide whether
-  the accounting exists.
+  counted by reason and carried until a record has handed its line to a writer whose close has not
+  already failed; a still-running close does not make the next record repeat the accounting.
   `Read-BoundedFileText` writes no record at all: it records the
   reason and `Merge-StatusConfigFile` writes it once the read has returned and its clock has stopped,
   because a size probe, a rename, an open and a close inside that clock would be exactly the unbounded
