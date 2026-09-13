@@ -853,11 +853,19 @@ function Get-ConfigReadTimeout {
 # MethodInfo for a method of the base class library is the same object for the life of the process.
 function Get-BoundedFileDelegate([string] $Path) {
     if ($null -eq $script:openMethod) {
-        $script:openMethod = [System.IO.File].GetMethod('OpenRead', [type[]] @([string]))
+        $ctor = [System.IO.FileStream].GetConstructor([type[]] @([string], [System.IO.FileMode], [System.IO.FileAccess], [System.IO.FileShare]))
+        $script:openMethod = [System.Reflection.Emit.DynamicMethod]::new('OpenBoundedFile', [System.IO.FileStream], [type[]] @([string]), [System.IO.FileStream].Module, $true)
+        $il = $script:openMethod.GetILGenerator()
+        $il.Emit([System.Reflection.Emit.OpCodes]::Ldarg_0)
+        $il.Emit([System.Reflection.Emit.OpCodes]::Ldc_I4, [int] [System.IO.FileMode]::Open)
+        $il.Emit([System.Reflection.Emit.OpCodes]::Ldc_I4, [int] [System.IO.FileAccess]::Read)
+        $il.Emit([System.Reflection.Emit.OpCodes]::Ldc_I4, [int] ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+        $il.Emit([System.Reflection.Emit.OpCodes]::Newobj, $ctor)
+        $il.Emit([System.Reflection.Emit.OpCodes]::Ret)
         $script:attributesMethod = [System.IO.File].GetMethod('GetAttributes', [type[]] @([string]))
     }
     return @{
-        Open       = [System.Delegate]::CreateDelegate([Func[System.IO.FileStream]], $Path, $script:openMethod)
+        Open       = $script:openMethod.CreateDelegate([Func[System.IO.FileStream]], $Path)
         Attributes = [System.Delegate]::CreateDelegate([Func[System.IO.FileAttributes]], $Path, $script:attributesMethod)
     }
 }
@@ -873,38 +881,6 @@ function Get-BoundedStreamDelegate($Stream) {
         Length  = [System.Delegate]::CreateDelegate([Func[long]], $Stream, [System.IO.Stream].GetProperty('Length').GetMethod)
         Dispose = [System.Delegate]::CreateDelegate([Action], $Stream, [System.IO.Stream].GetMethod('Dispose', [type[]] @()))
     }
-}
-
-# The user's own config re-opened sharing with a writer, or $null when that is not what went wrong.
-#
-# File.OpenRead asks for FileShare.Read, which is .NET's default and means "other handles may read this
-# while I do". A process that has the file open FOR WRITING - an editor between its truncate and its
-# flush, a sync client, a script that forgot to dispose a StreamWriter - is therefore refused, with
-# ERROR_SHARING_VIOLATION. Get-Content asks for FileShare.ReadWrite and reads it fine, so #48 would have
-# turned a config that always loaded into one that silently fell back to the defaults for as long as the
-# other process held it. This puts that back.
-#
-# It is not a delegate on the pool like the first open, because there is no way to make one cheaply:
-# Delegate.CreateDelegate binds one argument, and the four-argument File.Open cannot be closed down to
-# the parameterless delegate a pool dispatch needs. Building one at run time can be done - an expression
-# tree compiles to exactly that - and it was measured at 61 ms per process, which is thirty times what a
-# whole config read costs and more than this script spends on everything else put together. So the
-# re-open happens on this thread, and what makes that acceptable is WHICH failure gets here: a sharing
-# violation is a completed round trip to the filesystem, inside the budget, saying the file is there and
-# in use. It is the same reasoning the diagnostics rollover uses for its rename - not a bound on the
-# call, but a test of the filesystem about to be called. A share that hangs never answers at all, so it
-# cannot reach this line, and the reads that follow are back under the clock either way.
-#
-# The user's file only. For the project file a sharing violation stays a refusal: it is a repository's
-# path, and an unbounded open on one is the thing #19 exists to refuse.
-function Open-SharedConfigFile([string] $Path, $Fault, [bool] $Trusted, [long] $Left) {
-    if (-not $Trusted -or $Left -le 0 -or $null -eq $Fault) { return $null }
-    $base = $Fault.GetBaseException()
-    # 0x80070020 is ERROR_SHARING_VIOLATION as an HResult. Tested by number rather than by type, because
-    # the type is the plain IOException that every other filesystem failure also lands on.
-    if ($base -isnot [System.IO.IOException] -or $base.HResult -ne 0x80070020) { return $null }
-    $shared = try { [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite) } catch { $null }
-    return $shared
 }
 
 # ---- EVERY FILESYSTEM CALL A RENDER CAN MAKE, AND WHAT BOUNDS IT ----
@@ -949,10 +925,10 @@ function Open-SharedConfigFile([string] $Path, $Fault, [bool] $Trusted, [long] $
 #       on them but the process exit. THE CACHE ENTRY AND ITS SWEEP ARE NOT, and this row said they
 #       were until a review checked it: Get-BranchSegment calls Get-CachedGitBranch while the segments
 #       are being built, which is before anything is printed, so the entry write and the sweep that
-#       follows it are in front of the line. When the cache reader has a pending close from this process,
-#       Write-AtomicJson waits only through its 50 ms budget and then attempts one move. A directory,
-#       read-only file or another process's handle is not inferred from an HResult and gets no retry -
-#       see Get-AtomicWriteLimit.
+#       follows it are in front of the line. Windows File.Move still refuses an open destination even
+#       with delete sharing, so Write-AtomicJson waits only for that destination's pending close before
+#       making one move. A directory, read-only file or another process's handle is not inferred from an
+#       HResult and gets no retry.
 #     - Get-SessionStateDir and Get-SessionStatePath, one Directory.Exists on the way to the state read.
 #     Where those directories are is worth writing down, because the two are not the same rule.
 #     Write-StatusDiag and Get-GitCacheDir go TEMP, then TMPDIR, then Path.GetTempPath();
@@ -985,40 +961,32 @@ function Open-SharedConfigFile([string] $Path, $Fault, [bool] $Trusted, [long] $
 # ABANDONMENT IS LITERAL, and anything that copies this pattern copies that too. When the budget is
 # gone the reader does not cancel anything, because there is nothing here that can cancel a blocking
 # filesystem call: it stops waiting and returns. A pool thread can stay stuck in the kernel until the
-# process exits. A completed abandoned open or close is retained in a small pending list and the next
-# bounded operation disposes it within that operation's own budget; a task that never answers remains
-# bounded and is eventually reclaimed at process exit.
+# process exits. A completed abandoned open is queued for a pool close, and a later bounded operation
+# removes completed opens and closes without waiting; a task that never answers remains in the capped list
+# until the process exits.
 
-# Returns a pending close task after disposing completed open tasks, and otherwise $null. A timed-out
-# open can still hand a live FileStream back after its caller has returned; keeping the task lets a later
-# bounded operation own that handle rather than leaking it for the life of a long-lived host. PowerShell
-# script blocks cannot run safely in a task continuation, so the later call sweeps eagerly on its own
-# runspace. A close remains bounded by this call's budget (with a small ordinary-close floor), and the
-# list is capped so a permanently stalled filesystem cannot retain unbounded task references.
-function Invoke-BoundedFilePendingSweep([int] $TimeoutMs, [System.Diagnostics.Stopwatch] $Stopwatch) {
+# Disposes completed abandoned opens on the pool and forgets completed close tasks. The sweep never
+# waits: a stalled filesystem from one read must not spend a later healthy read's budget. A caller may
+# receive only the uncompleted close for its own path, for the one Windows replacement fallback below.
+function Invoke-BoundedFilePendingSweep([string] $Path = '') {
     if ($null -eq $script:boundedFilePending) { $script:boundedFilePending = [System.Collections.Generic.List[object]]::new() }
     if ($null -eq $script:boundedDisposeMethod) { $script:boundedDisposeMethod = [System.IDisposable].GetMethod('Dispose', [type[]] @()) }
-    $pendingClose = $null
+    $pathClose = $null
     for ($i = $script:boundedFilePending.Count - 1; $i -ge 0; $i--) {
         $pending = $script:boundedFilePending[$i]
         $task = $pending.Task
         if ($pending.Kind -eq 'Open' -and $task.IsCompleted) {
             $script:boundedFilePending.RemoveAt($i)
             if ($task.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion -and $null -ne $task.Result) {
-                $closeLeft = [Math]::Max($TimeoutMs - [int] $Stopwatch.ElapsedMilliseconds, 20)
                 $close = [System.Threading.Tasks.Task]::Run([System.Delegate]::CreateDelegate([Action], $task.Result, $script:boundedDisposeMethod))
-                if ([System.Threading.Tasks.Task]::WaitAny(@($close), $closeLeft) -lt 0) {
-                    $script:boundedFilePending.Add([pscustomobject]@{ Kind = 'Close'; Task = $close })
-                    $pendingClose = $close
-                }
+                $script:boundedFilePending.Add([pscustomobject]@{ Kind = 'Close'; Task = $close; Path = $pending.Path })
             }
         } elseif ($pending.Kind -eq 'Close') {
             if ($task.IsCompleted) { $script:boundedFilePending.RemoveAt($i) }
-            else { $pendingClose = $task }
+            elseif ($Path -and $pending.Path -and [string]::Equals($pending.Path, $Path, [System.StringComparison]::OrdinalIgnoreCase)) { $pathClose = $task }
         }
     }
-    while ($script:boundedFilePending.Count -gt 8) { $script:boundedFilePending.RemoveAt(0) }
-    return $pendingClose
+    return $pathClose
 }
 
 # The text of a config file, or $null when it is anything but a small, promptly readable one - and, for
@@ -1056,9 +1024,8 @@ function Invoke-BoundedFilePendingSweep([int] $TimeoutMs, [System.Diagnostics.St
 # raised and caught an exception on every render - about 300 microseconds measured here, more than the
 # pooled call itself costs. WaitAny returns -1 for the deadline and an index otherwise, and the task is
 # then asked whether it succeeded, so the deadline and the failure are told apart instead of both
-# arriving as one caught exception. File.OpenRead still throws on the pool thread - a file that is not
-# there is the only answer that API has - but the fault is now read off the task rather than rethrown
-# into a PowerShell catch, and the catch was where the cost was.
+# arriving as one caught exception. The shared FileStream open still throws on the pool thread when a file
+# is not there, but the fault is now read off the task rather than rethrown into a PowerShell catch, and the catch was where the cost was.
 #
 # $TimeoutMs is a caller's larger budget, or 0 for the shipped one. Only the config merge passes it, and
 # only ever from Get-ConfigReadTimeout; it is taken when it is LARGER than the shipped deadline and
@@ -1072,8 +1039,9 @@ function Read-BoundedFileText([string] $Path, [switch] $Trusted, [int] $TimeoutM
     $err = $null
     $abandoned = $false
     $closeErr = $null
+    $closeStillPending = $false
     try {
-        $null = Invoke-BoundedFilePendingSweep $limit.TimeoutMs $sw
+         $null = Invoke-BoundedFilePendingSweep
         if (-not $Path) { $why = 'no path was given'; return $null }
         $call = Get-BoundedFileDelegate $Path
         # The open goes first and what it hands back is what gets judged, so there is no gap between a
@@ -1085,12 +1053,12 @@ function Read-BoundedFileText([string] $Path, [switch] $Trusted, [int] $TimeoutM
         if ($left -le 0) { $why = 'the deadline was spent before the open'; return $null }
         $open = [System.Threading.Tasks.Task]::Run($call.Open)
         if ([System.Threading.Tasks.Task]::WaitAny(@($open), [int] $left) -lt 0) {
-            $script:boundedFilePending.Add([pscustomobject]@{ Kind = 'Open'; Task = $open })
+            if ($script:boundedFilePending.Count -lt 8) { $script:boundedFilePending.Add([pscustomobject]@{ Kind = 'Open'; Task = $open; Path = $Path }) }
             $abandoned = $true
             $why = "the open did not answer inside $($limit.TimeoutMs) ms"
             return $null
         }
-        $fs = if ($open.IsCompletedSuccessfully) { $open.Result } else { Open-SharedConfigFile $Path $open.Exception $Trusted ($limit.TimeoutMs - $sw.ElapsedMilliseconds) }
+        $fs = if ($open.IsCompletedSuccessfully) { $open.Result } else { $null }
         if ($null -eq $fs) {
             # A file that is not there is not a refusal for the user's own config: an install without one
             # is a supported state (install.ps1 warns and carries on), and every render would otherwise
@@ -1176,20 +1144,19 @@ function Read-BoundedFileText([string] $Path, [switch] $Trusted, [int] $TimeoutM
             try {
                 $close = [System.Threading.Tasks.Task]::Run($stream.Dispose)
                 if (-not $close.IsCompleted) {
-                    $script:boundedFilePending.Add([pscustomobject]@{ Kind = 'Close'; Task = $close })
-                    $abandoned = $true
+                    if ($script:boundedFilePending.Count -lt 8) { $script:boundedFilePending.Add([pscustomobject]@{ Kind = 'Close'; Task = $close; Path = $Path }) }
+                    else { $closeStillPending = $true }
                 }
             } catch { $closeErr = $_.Exception }
         }
-        while ($script:boundedFilePending.Count -gt 8) { $script:boundedFilePending.RemoveAt(0) }
         # The reason is recorded here and written by the caller, once this function has returned and its
         # clock has stopped. Writing it is filesystem work of its own - a size probe, possibly a rename,
         # an open and a close - and doing that work here would put calls inside the one clock this
         # function exists to keep, and would delay the close above behind them. That is the property
         # #19 bought, and a diagnostic added for #64 is not a good enough reason to give it up. Outside,
         # Write-StatusDiag bounds itself, so handing the record out is not handing the problem on.
-        if ($script:diagOn -and ($why -or $abandoned -or $closeErr)) {
-            $script:diagBoundedRead = @{ Path = $Path; Why = $why; Err = $err; Abandoned = $abandoned; CloseErr = $closeErr }
+        if ($script:diagOn -and ($why -or $abandoned -or $closeErr -or $closeStillPending)) {
+            $script:diagBoundedRead = @{ Path = $Path; Why = $why; Err = $err; Abandoned = $abandoned; CloseErr = $closeErr; CloseStillPending = $closeStillPending }
         }
     }
 }
@@ -1211,6 +1178,7 @@ function Write-BoundedReadDiag([string] $Label = 'config read') {
     }
     if ($script:diagOn -and $record.Abandoned) { Write-StatusDiag "${Label}: the handle on $($record.Path) was left open, the deadline was spent" }
     if ($script:diagOn -and $record.CloseErr) { Write-StatusDiag "${Label}: the close of $($record.Path) could not be queued: $($record.CloseErr.Message)" }
+    if ($script:diagOn -and $record.CloseStillPending) { Write-StatusDiag "${Label}: the close of $($record.Path) is still pending; the pending list is full" }
 }
 
 # Applies one config file over a table and returns it. Anything missing or invalid silently falls back to
@@ -1868,20 +1836,18 @@ function Get-ShortHash([string] $Text) {
     return [BitConverter]::ToString($digest, 0, 8).Replace('-', '').ToLowerInvariant()
 }
 
-# The cache write is in front of the line, while the state write is after it. The only wait here is
-# for a close this process already queued through Read-BoundedFileText; the shared pending list identifies
-# that exact case. A directory, read-only destination, or another process's handle is not guessed from an
-# HResult and receives exactly one move attempt.
+# The cache write is in front of the line, while the state write is after it. Bounded readers share
+# read, write and delete access, but File.Move(..., overwrite) still refuses an open destination on
+# Windows. The only fallback wait is for this exact path's pending close; unrelated handles get one move.
 function Get-AtomicWriteLimit { return @{ TimeoutMs = 50 } }
 
 function Move-AtomicFile([string] $Source, [string] $Destination) {
     [System.IO.File]::Move($Source, $Destination, $true)
 }
 
-# Writes compact UTF-8 JSON to a sibling .tmp then atomically replaces the destination. A pending close
-# from this process is waited only through the remaining 50 ms foreground budget; after that one move
-# either lands or throws for the caller to swallow. This bounds the cache-write cost on the render path
-# and does not mistake unrelated access failures for an eventually releasable handle.
+# Writes compact UTF-8 JSON to a sibling .tmp then atomically replaces the destination exactly once.
+# The sweep itself is disposal-only. Windows needs a short wait only when its own destination still has a
+# pending bounded-reader close; a completed or unrelated pending task cannot spend this write's budget.
 function Write-AtomicJson([string] $Path, $Object, [int] $Depth) {
     $json = ConvertTo-Json -InputObject $Object -Depth $Depth -Compress -ErrorAction Stop
     if (-not $json) { return $false }
@@ -1889,7 +1855,7 @@ function Write-AtomicJson([string] $Path, $Object, [int] $Depth) {
     [System.IO.File]::WriteAllText($tmp, $json, [System.Text.UTF8Encoding]::new($false))
     $limit = Get-AtomicWriteLimit
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $pendingClose = Invoke-BoundedFilePendingSweep $limit.TimeoutMs $sw
+    $pendingClose = Invoke-BoundedFilePendingSweep $Path
     if ($pendingClose) {
         $left = $limit.TimeoutMs - [int] $sw.ElapsedMilliseconds
         if ($left -gt 0) { [void] [System.Threading.Tasks.Task]::WaitAny(@($pendingClose), $left) }
