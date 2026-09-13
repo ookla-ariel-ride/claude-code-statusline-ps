@@ -276,10 +276,8 @@ screenshots, is described in [docs/testing.md](docs/testing.md). Commits are sca
 ## Roadmap
 
 The feature backlog is done. [The open issues](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues)
-record limits found under review: the dark palette's `dim` role still on the terminal's own bright
-black, 2.79:1 on Solarized Dark (#111), and test
-families that fail under parallel load (#94, #99, #102). The
-design record is [docs/projectbrief.md](docs/projectbrief.md).
+record the test families that can fail under parallel load (#94, #99, #102). The design record is
+[docs/projectbrief.md](docs/projectbrief.md).
 
 ## License
 

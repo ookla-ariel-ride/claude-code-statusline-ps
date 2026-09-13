@@ -199,7 +199,7 @@ function Get-Palette([string] $Palette = 'dark') {
             ok     = @{ Sgr = '32';   Fg = 231; Bg = 28;  Ink = 'Light'; AltBg = 22;  AltSgr = '38;5;114' }
             warn   = @{ Sgr = '33';   Fg = 16;  Bg = 178; Ink = 'Dark';  AltBg = 214; AltSgr = '38;5;221' }
             bad    = @{ Sgr = '31';   Fg = 231; Bg = 160; Ink = 'Light'; AltBg = 124; AltSgr = '38;5;210' }
-            dim    = @{ Sgr = '90';   Fg = 250; Bg = 238; Ink = 'Light'; AltSgr = '38;5;251' }
+            dim    = @{ Sgr = '38;5;251'; Fg = 250; Bg = 238; Ink = 'Light'; AltSgr = '38;5;254' }
             folder = @{ Sgr = '34';   Fg = 231; Bg = 25;  Ink = 'Light' }
             branch = @{ Sgr = '35';   Fg = 231; Bg = 90;  Ink = 'Light' }
         }
