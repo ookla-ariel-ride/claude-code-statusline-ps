@@ -176,13 +176,13 @@ function Get-Palette([string] $Palette = 'dark') {
     if ($Palette -eq 'light') {
         return @{
             Roles = @{
-                model  = @{ Sgr = '1;38;5;24'; Fg = 16; Bg = 44;  Ink = 'Dark' }
-                ok     = @{ Sgr = '38;5;22';   Fg = 16; Bg = 77;  Ink = 'Dark'; AltBg = 114 }
-                warn   = @{ Sgr = '38;5;94';   Fg = 16; Bg = 214; Ink = 'Dark'; AltBg = 178; AltSgr = '38;5;58' }
-                bad    = @{ Sgr = '38;5;124';  Fg = 16; Bg = 217; Ink = 'Dark'; AltBg = 210; AltSgr = '38;5;88' }
-                dim    = @{ Sgr = '38;5;240';  Fg = 16; Bg = 250; Ink = 'Dark'; AltBg = 144; AltSgr = '38;5;237' }
-                folder = @{ Sgr = '38;5;25';   Fg = 16; Bg = 147; Ink = 'Dark' }
-                branch = @{ Sgr = '38;5;90';   Fg = 16; Bg = 182; Ink = 'Dark' }
+                model  = @{ Sgr = '1;38;5;24'; Fg = 16; Bg = 51;  Ink = 'Dark' }
+                ok     = @{ Sgr = '38;5;22';   Fg = 16; Bg = 76;  Ink = 'Dark' }
+                warn   = @{ Sgr = '38;5;94';   Fg = 16; Bg = 221; Ink = 'Dark'; AltSgr = '38;5;58' }
+                bad    = @{ Sgr = '38;5;124';  Fg = 16; Bg = 218; Ink = 'Dark'; AltSgr = '38;5;88' }
+                dim    = @{ Sgr = '38;5;240';  Fg = 16; Bg = 252; Ink = 'Dark'; AltSgr = '38;5;237' }
+                folder = @{ Sgr = '38;5;25';   Fg = 16; Bg = 110; Ink = 'Dark' }
+                branch = @{ Sgr = '38;5;90';   Fg = 16; Bg = 213; Ink = 'Dark' }
             }
             Inline = @{
                 added   = @{ Sgr = '38;5;22';    Dark = 22 }

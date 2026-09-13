@@ -642,16 +642,17 @@ on purpose.
 - [x] Installer backups at project-owned names with their provenance checked before they are touched
 - [x] Screenshots regenerated from the shipped samples, showing every segment
 - [x] The dark plain markers on a measurable 256-colour index, and both tables' plain markers asserted
-- [x] A second shade per role, so two segments of one role side by side stop reading as one block
+- [x] Second shades where their tables clear the floors, and dividers where they do not, so repeated roles stay distinct
 
 ## Future work
 
-The feature backlog is done. What remains open are limits recorded under review, none of them a
-feature: the dark palette's plain-style `dim` role is still SGR 90, the terminal's own bright black,
+The feature backlog is done. #89 closed the six isoluminant light pairs: all seven light backgrounds
+now clear the arrow's 1.10:1 and 40 sRGB floors, worst 1.101:1 (`bad`/`dim`) and 56.6 sRGB, while the
+light table deliberately has no second backgrounds. What remains open are limits recorded under review,
+none of them a feature: the dark palette's plain-style `dim` role is still SGR 90, the terminal's own bright black,
 which measures 2.79:1 on Solarized Dark and colours the chevron and five segments (#111) — #88 moved
 the two markers off it and left this deliberately, because a quiet grey near the markers' 246 would
-reopen #82's distinctness rule; six of the light palette's block-background pairs are
-isoluminant, so the arrow between them vanishes (#89); two more test families fail under parallel load rather
+reopen #82's distinctness rule; two more test families fail under parallel load rather
 than on a defect (#94), the git-cache stamp tests do the same (#102), and a parallel suite run can trip
 the 250 ms user-config clock and fail random matrix cells (#99). A registry refactor that let the two scripts share segment
 builders would remove the copied helpers in `subagent-statusline.ps1`; it is not worth it for fifteen
