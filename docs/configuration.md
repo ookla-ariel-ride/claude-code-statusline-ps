@@ -13,6 +13,7 @@ The script reads `statusline.json` from its own folder, so after installing that
   "layout": "one",
   "style": "plain",
   "palette": "dark",
+  "tint": "role",
   "folder": "repo",
   "state": true,
   "links": true,
@@ -70,6 +71,7 @@ where it was. See [Style and palette in the panel](agent-panel.md#style-and-pale
 | `layout` | `one`, `two` | `two` puts model, folder, branch, pr, badges and time on the first line and context, cache, limits, cost, clock and lines on the second, unless `rows` says otherwise. |
 | `style` | `plain`, `powerline`, `ascii` | `plain` is coloured text with a dim chevron between segments. `powerline` is coloured blocks joined by solid arrows. `ascii` is `plain` with every character drawn from printable ASCII and a `>` between segments, for a terminal whose font you cannot change. See [ASCII style](styles-and-palettes.md#ascii-style). |
 | `palette` | `dark`, `light` | Which colour table the line is drawn with. `dark` is what the line has always been and stays the default, so nothing changes until you ask. `light` swaps every colour for one that reads on a pale background. **This is a separate key from `style`, not a fourth style**: `style` is the shape of the line and `palette` is the colours it is drawn in, so all six pairings work — `ascii` with `light` is the ASCII characters in the light colours. `.\install.ps1 -DetectTheme` can set it for you. See [Light palette](styles-and-palettes.md#light-palette). |
+| `tint` | `role`, `segment` | `role` is the default and keeps the existing role colours, including the alternate shade that separates adjacent segments with the same resting role. `segment` gives each resting segment its own colour instead, so it does not alternate repeated roles. A `warn` or `bad` segment still uses the semantic yellow or red role colour: tint changes only resting colours. It is independent of `style` and `palette`. See [Tint ownership](styles-and-palettes.md#tint-ownership). |
 | `folder` | `repo`, `leaf` | `repo` shows `owner/name` from `workspace.repo` when the payload has one, with the current directory's name after a `›` when it differs from the project root. `leaf` always shows the directory name alone. |
 | `segments.<name>` | `true`, `false` | `false` hides that segment. The names are the ones in the file above, plus `time`, the wall clock, which is the one segment off by default and so is not written there; `segments.pr` is the pull-request link. |
 | `state` | `true`, `false` | `false` stops the script writing a state file for the session. |

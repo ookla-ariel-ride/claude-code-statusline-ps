@@ -352,7 +352,7 @@ function Get-SubagentReply([string[]] $Lines) {
 }
 
 # ---- Unit group: functions extracted from statusline.ps1 ----
-. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-ConfigReadTimeout', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Invoke-BoundedFilePendingSweep', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Move-AtomicFile', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent', 'Get-StatusNow', 'Get-StatusClock', 'Clear-StatusDiagPendingLock', 'Test-PathAbsent', 'Add-StatusDiagDrop'))
+. (Import-ScriptFunction $script @('Get-VisibleWidth', 'Get-ClippedText', 'Get-IconDefault', 'Get-IconAscii', 'Get-IconRefusedCategory', 'Read-CodePoint', 'Get-IconSet', 'Format-Icon', 'Get-MarkSet', 'Read-SegmentNameList', 'Get-DefaultStatusConfig', 'Get-StatusConfigKey', 'Get-ConfigPreset', 'Get-BoundedReadLimit', 'Get-ConfigReadTimeout', 'Get-BoundedFileDelegate', 'Get-BoundedStreamDelegate', 'Invoke-BoundedFilePendingSweep', 'Read-BoundedFileText', 'Merge-StatusConfigFile', 'Resolve-ConfigPath', 'Read-StatusConfig', 'Get-Palette', 'Get-TintColour', 'Format-Inline', 'Format-Line', 'Get-FittedLine', 'Read-PorcelainStatus', 'Get-GitBranch', 'G', 'K', 'Get-ThresholdRole', 'Get-WholePercent', 'Test-WideWindow', 'Test-AlarmLevel', 'Test-AlarmState', 'Get-TaskbarSequence', 'Get-ModelSegment', 'Test-QuietValue', 'Get-ContextSegment', 'Get-CostSegment', 'Get-PayloadNumber', 'Format-PayloadText', 'Test-PayloadText', 'Get-PayloadText', 'Test-PayloadDirty', 'Get-PayloadCount', 'Read-PayloadStatus', 'Get-WorktreeName', 'Get-BranchSegment', 'Get-FolderSegment', 'Get-SegmentRegistry', 'Get-SegmentOrder', 'TimeLeft', 'Get-LimitsSegment', 'Get-BadgesSegment', 'Format-Link', 'Test-LinkWanted', 'Get-FolderUrl', 'Get-BranchUrl', 'Get-PrSegment', 'Format-Elapsed', 'Get-ClockSegment', 'Get-TimeSegment', 'Join-AlignedLine', 'Get-FiniteNumber', 'Get-SessionStateDir', 'Get-SessionStatePath', 'Get-StateNumber', 'Read-SessionState', 'Merge-SessionState', 'Write-SessionState', 'Invoke-SessionStateSweep', 'Get-DefaultGitConfig', 'Get-ConfigInteger', 'Get-GitRepoRoot', 'Get-CachedGitBranch', 'Get-ShortHash', 'Move-AtomicFile', 'Write-AtomicJson', 'Get-GitStamp', 'Read-CachedRecord', 'Get-GitCacheDir', 'Get-PaceArrow', 'Write-StatusDiag', 'Test-StatusDiagFlag', 'Get-StatusDiagLimit', 'Get-StatusDiagDelegate', 'Write-BoundedReadDiag', 'Invoke-StatusDiagRollover', 'Get-CacheShare', 'Get-CountedNumber', 'Get-CacheSecondsLeft', 'Format-MinutesLeft', 'Get-CacheRole', 'Get-CacheSegment', 'Get-LinesSegment', 'Get-PayloadPercent', 'Get-StatusNow', 'Get-StatusClock', 'Clear-StatusDiagPendingLock', 'Test-PathAbsent', 'Add-StatusDiagDrop'))
 # Import-ScriptFunction lifts functions but not the script-level clock reading. Keep one typed baseline
 # for every lifted builder so an invalid test setup reaches the consumer instead of being repaired.
 $script:renderNow = [DateTimeOffset]::Now
@@ -678,6 +678,17 @@ Confirm-Equal (Read-StatusConfig (Write-TempConfig 'palette-number.json' '{ "pal
 Confirm-Equal (Read-StatusConfig (Write-TempConfig 'palette-array.json' '{ "palette": ["light"] }')).Palette 'dark' 'config palette: an array falls back to dark'
 Confirm-Equal ((Get-StatusConfigKey | Where-Object { $_.Json -eq 'palette' }).Allowed -join ',') 'dark,light' 'config palette: two allowed values'
 Confirm-Equal ((Get-StatusConfigKey | Where-Object { $_.Json -eq 'palette' }).Kind) 'Enum' 'config palette: read as an enum, like layout and style'
+# Tint is a separate opt-in choice of colour ownership: role preserves the existing semantic
+# colours, while segment gives every resting segment its own colour. Bad input must leave the older
+# semantic behaviour in place rather than reaching a table the renderer does not know.
+Confirm-Equal (Get-DefaultStatusConfig).Tint 'role' 'config defaults: tint role'
+Confirm-Equal (Read-StatusConfig (Join-Path $tmp 'does-not-exist.json')).Tint 'role' 'config missing: tint defaults to role'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'tint-segment.json' '{ "tint": "segment" }')).Tint 'segment' 'config tint segment'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'tint-segment-caps.json' '{ "tint": "SEGMENT" }')).Tint 'segment' 'config tint SEGMENT: case folded'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'tint-bogus.json' '{ "tint": "rainbow" }')).Tint 'role' 'config tint: an unknown value falls back to role'
+Confirm-Equal (Read-StatusConfig (Write-TempConfig 'tint-number.json' '{ "tint": 3 }')).Tint 'role' 'config tint: a non-string falls back to role'
+Confirm-Equal ((Get-StatusConfigKey | Where-Object { $_.Json -eq 'tint' }).Allowed -join ',') 'role,segment' 'config tint: two allowed values'
+
 # Every style crossed with every palette, from one file each, so the two keys are shown not to
 # interfere: a palette value never moves the style and a style value never moves the palette.
 $comboN = 0
@@ -1946,6 +1957,8 @@ Confirm-Equal $c.Style 'plain' 'shipped config: style plain'
 # been. It is a separate key from style rather than a fourth style value, so both are in the file.
 Confirm-Equal $c.Palette 'dark' 'shipped config: palette dark'
 Confirm-Equal $shippedJson.palette 'dark' 'shipped config: the file itself says palette dark'
+Confirm-Equal $c.Tint 'role' 'shipped config: tint role'
+Confirm-Equal $shippedJson.tint 'role' 'shipped config: the file itself says tint role'
 Confirm-Equal $shippedJson.style 'plain' 'shipped config: and still says style plain beside it'
 Confirm-Equal $c.Folder 'repo' 'shipped config: folder repo'
 Confirm-Equal $shippedJson.folder 'repo' 'shipped config: the file itself says folder repo'
@@ -2727,7 +2740,7 @@ $darkMarkSgr = $pal.Inline.track.Sgr
 # One palette table as a single sorted string, so two tables compare as text whatever order a
 # hashtable happens to enumerate its keys in.
 function Format-PaletteText($Palette) {
-    $rows = foreach ($group in 'Roles', 'Inline') {
+    $rows = foreach ($group in 'Roles', 'Segments', 'Inline') {
         foreach ($name in @($Palette[$group].Keys | Sort-Object)) {
             $e = $Palette[$group][$name]
             # Every key an entry can carry, sorted, so a table that differs anywhere differs here. Naming
@@ -2747,6 +2760,30 @@ Confirm-Equal (Format-PaletteText (Get-Palette 'DARK')) (Format-PaletteText $pal
 Confirm-Equal (Format-PaletteText (Get-Palette 'beige')) (Format-PaletteText $pal) 'palette: an unknown name is the dark table'
 Confirm-Equal (Format-PaletteText (Get-Palette '')) (Format-PaletteText $pal) 'palette: an empty name is the dark table'
 Confirm-True ((Format-PaletteText (Get-Palette 'light')) -ne (Format-PaletteText $pal)) 'palette: the light table is not the dark one'
+
+# A segment tint owns one resting colour for every registry name. Warning and bad roles remain
+# semantic overrides: colour should still say that a context limit, cold cache, or model alarm is bad.
+$segmentNames = @((Get-SegmentRegistry).Name)
+$dark = Get-Palette 'dark'
+$light = Get-Palette 'light'
+foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
+    Confirm-True ($p.T.ContainsKey('Segments')) "$($p.N) palette: carries a segment tint table"
+    if (-not $p.T.ContainsKey('Segments')) { continue }
+    Confirm-Equal (@($p.T.Segments.Keys | Sort-Object) -join ',') (@($segmentNames | Sort-Object) -join ',') "$($p.N) palette: one resting colour per segment"
+    foreach ($n in $segmentNames) {
+        $entry = $p.T.Segments[$n]
+        Confirm-True ($null -ne $entry -and $null -ne $entry.Sgr -and $null -ne $entry.Fg -and $null -ne $entry.Bg -and $null -ne $entry.Ink) "$($p.N) segment ${n}: has the role colour shape"
+    }
+}
+if ($dark.ContainsKey('Segments') -and $light.ContainsKey('Segments')) {
+    $roleTint = Format-Line @($segModel, $segFolder) 'powerline' 'dark' 'role'
+    $segmentTint = Format-Line @($segModel, $segFolder) 'powerline' 'dark' 'segment'
+    Confirm-True (-not [string]::Equals($roleTint, $segmentTint, [System.StringComparison]::Ordinal)) 'segment tint: resting blocks differ from role tint'
+    Confirm-Equal (ConvertTo-PlainText $segmentTint) (ConvertTo-PlainText $roleTint) 'segment tint: direct renderer output differs only in SGR'
+    $badContext = @{ Name = 'context'; Text = 'C'; Short = $null; Role = 'bad'; Bold = $false }
+    $badContextLine = Format-Line @($badContext) 'powerline' 'dark' 'segment'
+    Confirm-True ($badContextLine.Contains("48;5;$($dark.Roles.bad.Bg)")) 'segment tint: a bad context still takes the bad semantic colour'
+}
 
 Write-Host '== unit: light palette' -ForegroundColor Cyan
 # CONTRAST IS THE WHOLE POINT OF THIS TABLE, so the numbers are checked rather than eyeballed. The two
@@ -2894,24 +2931,34 @@ foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
 # has one. Rules 2, 2b, 3 and 4 below all run over these rows rather than over $roleNames, so a second
 # shade is held to exactly what a first one is held to - its own text, its joints, the terminal's ground
 # behind it, and every marker drawn inside it - instead of to a shorter list written for it.
-function Get-ShadeTable($Tab) {
+function Get-ShadeTable($Tab, [string] $Group = 'Roles', [string[]] $Names = $roleNames) {
     $rows = @()
-    foreach ($r in $roleNames) {
-        $c = $Tab.Roles[$r]
+    foreach ($r in $Names) {
+        $c = $Tab[$Group][$r]
         $rows += @{ Role = $r; N = $r; Alt = $false; Bg = $c.Bg; Fg = $c.Fg; Ink = $c.Ink }
-        if ($null -ne $c.AltBg) { $rows += @{ Role = $r; N = "$r alt"; Alt = $true; Bg = $c.AltBg; Fg = $c.Fg; Ink = $c.Ink } }
+        if ($Group -eq 'Roles' -and $null -ne $c.AltBg) { $rows += @{ Role = $r; N = "$r alt"; Alt = $true; Bg = $c.AltBg; Fg = $c.Fg; Ink = $c.Ink } }
     }
     return $rows
 }
 $darkShades = @(Get-ShadeTable $dark)
 $lightShades = @(Get-ShadeTable $light)
-foreach ($shadeTable in @(@{ N = 'dark'; T = $dark; S = $darkShades }, @{ N = 'light'; T = $light; S = $lightShades })) {
-    Confirm-Equal ((@($shadeTable.S | ForEach-Object { $_.Role } | Sort-Object -Unique) -join ',')) ((@($roleNames | Sort-Object) -join ',')) "$($shadeTable.N) shade table: covers every named role"
-    $alternateCount = @($roleNames | Where-Object { $null -ne $shadeTable.T.Roles[$_].AltBg }).Count
-    Confirm-Equal $shadeTable.S.Count ($roleNames.Count + $alternateCount) "$($shadeTable.N) shade table: one background per named role plus every alternate"
+$darkSegmentShades = @(Get-ShadeTable $dark 'Segments' $segmentNames)
+$lightSegmentShades = @(Get-ShadeTable $light 'Segments' $segmentNames)
+$darkBlockShades = @($darkShades + $darkSegmentShades)
+$lightBlockShades = @($lightShades + $lightSegmentShades)
+foreach ($shadeTable in @(
+        @{ N = 'dark role'; T = $dark; S = $darkShades; Names = $roleNames; Group = 'Roles' },
+        @{ N = 'light role'; T = $light; S = $lightShades; Names = $roleNames; Group = 'Roles' },
+        @{ N = 'dark segment'; T = $dark; S = $darkSegmentShades; Names = $segmentNames; Group = 'Segments' },
+        @{ N = 'light segment'; T = $light; S = $lightSegmentShades; Names = $segmentNames; Group = 'Segments' })) {
+    Confirm-Equal ((@($shadeTable.S | ForEach-Object { $_.Role } | Sort-Object -Unique) -join ',')) ((@($shadeTable.Names | Sort-Object) -join ',')) "$($shadeTable.N) shade table: covers every named entry"
+    $alternateCount = if ($shadeTable.Group -eq 'Roles') { @($shadeTable.Names | Where-Object { $null -ne $shadeTable.T.Roles[$_].AltBg }).Count } else { 0 }
+    Confirm-Equal $shadeTable.S.Count ($shadeTable.Names.Count + $alternateCount) "$($shadeTable.N) shade table: one background per entry plus every alternate"
 }
-Confirm-Equal ((@(foreach ($s in $darkShades) { $s.Bg }) | Sort-Object -Unique).Count) 10 'dark palette: every shade is its own colour'
-Confirm-Equal ((@(foreach ($s in $lightShades) { $s.Bg }) | Sort-Object -Unique).Count) 7 'light palette: every shade is its own colour'
+Confirm-Equal ((@(foreach ($s in $darkBlockShades) { $s.Bg }) | Sort-Object -Unique).Count) 10 'dark palette: every role shade is its own colour'
+Confirm-Equal ((@(foreach ($s in $lightBlockShades) { $s.Bg }) | Sort-Object -Unique).Count) 7 'light palette: every role shade is its own colour'
+Confirm-Equal ((@(foreach ($s in $darkSegmentShades) { $s.Bg }) | Sort-Object -Unique).Count) 12 'dark segment tint: every resting block is its own colour'
+Confirm-Equal ((@(foreach ($s in $lightSegmentShades) { $s.Bg }) | Sort-Object -Unique).Count) 12 'light segment tint: every resting block is its own colour'
 
 # THE FOUR CONTRAST RULES. Ratios are printed as well as asserted, so a reader can see the margin
 # rather than only that a bar was cleared.
@@ -2950,6 +2997,8 @@ Confirm-Equal ($darkPlainMeasured -join ',') 'cached,track' 'dark palette: the i
 foreach ($row in @(
         @{ P = 'light'; T = $light; Group = 'Roles';  Kind = 'role';   Names = $roleNames;         Label = 'light plain';  Require = $true }
         @{ P = 'light'; T = $light; Group = 'Inline'; Kind = 'inline'; Names = $inlineNames;       Label = 'light inline'; Require = $true }
+        @{ P = 'light'; T = $light; Group = 'Segments'; Kind = 'segment'; Names = $segmentNames;     Label = 'light segment plain'; Require = $true }
+        @{ P = 'dark';  T = $dark;  Group = 'Segments'; Kind = 'segment'; Names = $segmentNames;     Label = 'dark segment plain'; Require = $true }
         @{ P = 'dark';  T = $dark;  Group = 'Inline'; Kind = 'inline'; Names = $darkPlainMeasured; Label = 'dark inline';  Require = $false })) {
     $worstPlain = 99.0; $worstPlainAt = 'nothing measurable'
     foreach ($n in $row.Names) {
@@ -3008,13 +3057,13 @@ foreach ($p in @(@{ N = 'dark'; T = $dark }, @{ N = 'light'; T = $light })) {
 #    role, so `dark.model` covers the one block that has the debt and not a second one added later.
 $pairExempt = @{ 'dark.model' = 4.0 }   # 4.13, older than this rule; retuning the model block is its own decision
 $worstPair = 99.0
-foreach ($s in $lightShades) {
+foreach ($s in $lightBlockShades) {
     $ratio = Get-ContrastRatio (Get-XtermRgb $s.Fg) (Get-XtermRgb $s.Bg)
     if ($ratio -lt $worstPair) { $worstPair = $ratio }
     Confirm-True ($ratio -ge 4.5) ("light powerline $($s.N): $($s.Fg) on $($s.Bg) is {0:N2}:1" -f $ratio)
 }
 $worstDarkPair = 99.0
-foreach ($s in $darkShades) {
+foreach ($s in $darkBlockShades) {
     $ratio = Get-ContrastRatio (Get-XtermRgb $s.Fg) (Get-XtermRgb $s.Bg)
     if ($ratio -lt $worstDarkPair) { $worstDarkPair = $ratio }
     $bar = if ($pairExempt.ContainsKey("dark.$($s.N)")) { $pairExempt["dark.$($s.N)"] } else { 4.5 }
@@ -3053,7 +3102,13 @@ Write-Host ("   powerline block pair: light {0:N2}:1, dark {1:N2}:1" -f $worstPa
 #    dark `ok` and `bad` alternates are 1.07:1 apart, which is fine for two colours that never meet.
 #    It is also why a run of alternates costs a table only ONE more 1.10 step however long the run is,
 #    which is the arithmetic the light search under rule 5 turns on.
-foreach ($p in @(@{ N = 'dark'; T = $dark; S = $darkShades }, @{ N = 'light'; T = $light; S = $lightShades })) {
+# Twelve resting segment colours cannot fit the seven-role 1.10 floor in the light band; their
+# measured floor is 1.05, while semantic roles keep 1.10. Both use this one joint loop.
+foreach ($p in @(
+        @{ N = 'dark role'; T = $dark; S = $darkShades; Floor = 1.10 },
+        @{ N = 'light role'; T = $light; S = $lightShades; Floor = 1.10 },
+        @{ N = 'dark segment'; T = $dark; S = $darkSegmentShades; Floor = 1.05 },
+        @{ N = 'light segment'; T = $light; S = $lightSegmentShades; Floor = 1.05 })) {
     $worstLum = 99.0; $worstLumPair = ''; $worstDist = 9999.0
     for ($i = 0; $i -lt $p.S.Count; $i++) {
         for ($j = $i + 1; $j -lt $p.S.Count; $j++) {
@@ -3065,7 +3120,7 @@ foreach ($p in @(@{ N = 'dark'; T = $dark; S = $darkShades }, @{ N = 'light'; T 
             $dist = Get-RgbDistance (Get-XtermRgb $a) (Get-XtermRgb $b)
             if ($ratio -lt $worstLum) { $worstLum = $ratio; $worstLumPair = $pair }
             if ($dist -lt $worstDist) { $worstDist = $dist }
-            Confirm-True ($ratio -ge 1.10) ("$($p.N) arrow ${pair}: backgrounds $a and $b are {0:N3}:1 apart in luminance" -f $ratio)
+            Confirm-True ($ratio -ge $p.Floor) ("$($p.N) arrow ${pair}: backgrounds $a and $b are {0:N3}:1 apart in luminance, bar $($p.Floor)" -f $ratio)
             Confirm-True ($dist -ge 40) ("$($p.N) arrow ${pair}: backgrounds $a and $b are {0:N1} apart in sRGB" -f $dist)
         }
     }
@@ -3097,7 +3152,7 @@ $darkGroundBar = 1.7
 $groundDistanceBar = 80
 $worstBg = 99.0
 $worstLightGroundDistance = 9999.0
-foreach ($s in $lightShades) {
+foreach ($s in $lightBlockShades) {
     $rgb = Get-XtermRgb $s.Bg
     $ratio = Get-ContrastRatio $rgb $groundWhite
     $distance = Get-RgbDistance $rgb $groundWhite
@@ -3108,7 +3163,7 @@ foreach ($s in $lightShades) {
 }
 $worstDarkBg = 99.0
 $worstDarkGroundDistance = 9999.0
-foreach ($s in $darkShades) {
+foreach ($s in $darkBlockShades) {
     $rgb = Get-XtermRgb $s.Bg
     $ratio = Get-ContrastRatio $rgb $groundBlack
     $distance = Get-RgbDistance $rgb $groundBlack
@@ -3149,7 +3204,7 @@ Write-Host ("   block edge against the terminal's ground: light {0:N2}:1, {1:N1}
 #    ink column and the block's own text are the base role's either way - an alternate moves the
 #    background alone - so (b) is the same measurement twice for the two rows of one role, and it costs
 #    nothing to leave it that way rather than to write a rule about which half to skip.
-foreach ($p in @(@{ N = 'light'; T = $light; S = $lightShades }, @{ N = 'dark'; T = $dark; S = $darkShades })) {
+foreach ($p in @(@{ N = 'light'; T = $light; S = $lightBlockShades }, @{ N = 'dark'; T = $dark; S = $darkBlockShades })) {
     $worstBlock = 99.0; $worstBlockAt = ''; $worstInk = 9999.0; $worstInkAt = ''
     foreach ($i in $inlineNames) {
         foreach ($s in $p.S) {
@@ -10667,6 +10722,15 @@ $lightConfig = Write-TempConfig 'render-palette-light.json' '{ "palette": "light
 $darkConfig = Write-TempConfig 'render-palette-dark.json' '{ "palette": "dark" }'
 $bogusConfig = Write-TempConfig 'render-palette-bogus.json' '{ "palette": "beige" }'
 $plainConfig = Write-TempConfig 'render-palette-none.json' '{}'
+# Explicit role tint is the compatibility spelling; segment is opt-in on each palette. Keep these
+# dedicated matrix configs rather than adding tint to every general layout cell: the assertion below
+# compares the two renderings from the same payload, style and palette byte for byte after SGR removal.
+$tintRoleConfigs = @{}
+$tintSegmentConfigs = @{}
+foreach ($tintPalette in @('dark', 'light')) {
+    $tintRoleConfigs[$tintPalette] = Write-TempConfig "render-tint-$tintPalette-role.json" ('{ "palette": "' + $tintPalette + '", "tint": "role" }')
+    $tintSegmentConfigs[$tintPalette] = Write-TempConfig "render-tint-$tintPalette-segment.json" ('{ "palette": "' + $tintPalette + '", "tint": "segment" }')
+}
 # Every SGR run the dark table can put on a plain line, so "none of these" is a claim about the whole
 # table rather than about the two codes the issue named.
 $darkPlainCodes = @("$esc[1;36m", "$esc[32m", "$esc[33m", "$esc[31m", "$esc[90m", "$esc[34m", "$esc[35m", "$esc[22;36m", "$esc[38;5;246m")
@@ -10707,6 +10771,30 @@ foreach ($sample in $sampleFiles) {
     Confirm-Equal ((Invoke-StatusLine $p $darkConfig 0).Lines -join "`n") $none "render palette $($sample.Name): the dark key renders what no key renders"
     Confirm-Equal ((Invoke-StatusLine $p $bogusConfig 0).Lines -join "`n") $none "render palette $($sample.Name): an unusable value renders what no key renders"
 }
+# Segment tint changes only SGR codes. Every status-line sample and both palette tables go through
+# the real child script here, so segment builders, inline markers, fitting-independent layout and the
+# config reader all agree on the same visible bytes. The raw texts must differ as well: equality after
+# stripping SGR alone would pass if the opt-in key were silently ignored.
+foreach ($tintPalette in @('dark', 'light')) {
+    foreach ($sample in $sampleFiles) {
+        $payload = $samplePayloads[$sample.Name]
+        $roleRender = Invoke-StatusLine $payload $tintRoleConfigs[$tintPalette] 0
+        $segmentRender = Invoke-StatusLine $payload $tintSegmentConfigs[$tintPalette] 0
+        $label = "render tint $tintPalette $($sample.Name)"
+        Confirm-True ($roleRender.ExitCode -eq 0 -and $roleRender.Err.Count -eq 0) "${label}: explicit role tint exits cleanly"
+        Confirm-True ($segmentRender.ExitCode -eq 0 -and $segmentRender.Err.Count -eq 0) "${label}: opt-in segment tint exits cleanly"
+        $roleText = $roleRender.Lines -join "`n"
+        $segmentText = $segmentRender.Lines -join "`n"
+        if ($tintPalette -eq 'dark') {
+            Confirm-Equal $roleText ((Invoke-StatusLine $payload $plainConfig 0).Lines -join "`n") "${label}: explicit role tint is the default render"
+        }
+        Confirm-True (-not [string]::Equals($roleText, $segmentText, [System.StringComparison]::Ordinal)) "${label}: segment tint changes SGR codes"
+        $roleWithoutSgr = [regex]::Replace($roleText, "$esc\[[0-9;]*m", '')
+        $segmentWithoutSgr = [regex]::Replace($segmentText, "$esc\[[0-9;]*m", '')
+        Confirm-True ([string]::Equals($roleWithoutSgr, $segmentWithoutSgr, [System.StringComparison]::Ordinal)) "${label}: SGR-stripped output is byte-identical to role tint"
+    }
+}
+
 # Powerline and ascii with the light palette, so all three styles are covered against it. The block
 # background is the light table's, and the ascii style's promise is unaffected: a colour code is
 # digits and semicolons, so changing the numbers cannot put a non-ASCII character on the line.

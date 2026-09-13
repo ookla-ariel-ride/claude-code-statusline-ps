@@ -106,6 +106,7 @@ The script reads `~/.claude/statusline.json`. The installed file holds the defau
   "layout": "one",
   "style": "plain",
   "palette": "dark",
+  "tint": "role",
   "folder": "repo",
   "state": true,
   "links": true,
@@ -130,6 +131,7 @@ merged over yours key by key. Anything missing or invalid falls back to the valu
 | `layout` | `one`, `two` | One line, or model/folder/branch/pr/badges (and the wall clock, when on) on the first and the figures on the second. |
 | `style` | `plain`, `powerline`, `ascii` | Coloured text with a chevron, coloured blocks with arrows, or printable ASCII throughout. |
 | `palette` | `dark`, `light` | The colour table, separate from `style`; all six pairings work. |
+| `tint` | `role`, `segment` | `role` keeps the existing semantic colours. `segment` gives each resting segment a distinct colour; warnings and errors stay yellow or red. |
 | `folder` | `repo`, `leaf` | `owner/name › dir` from the payload's repository, or the directory name alone. |
 | `segments.<name>` | `true`, `false` | Turns a segment off. `time`, the wall clock, is the one that is off by default. |
 | `order`, `rows` | lists of names | The segments of layout `one`, or the two rows of layout `two`. Left out, the script's order applies, new segments included. |
@@ -166,9 +168,10 @@ Fable 5.1 > ctx 32% ###....... 64k/200k 92% cached > $1.07 > 1h12m | api 38%
 ```
 
 `{"palette": "light"}` swaps the colour table for one chosen against white, in any style. Every value
-in both tables is held to a measured contrast floor by the test suite. Where the layout puts two
-segments of the same role side by side — context, cache and limits, or cost, clock and lines — the
-second uses that role's alternate shade where the palette supplies one; [the measured absences](docs/styles-and-palettes.md#the-second-shade) keep their existing divider or chevron.
+in both tables is held to a measured contrast floor by the test suite. `{"tint": "role"}` is the
+default and keeps those semantic role colours, including their alternating shades where a repeated
+role needs a visible joint. `{"tint": "segment"}` instead gives every resting segment its own
+colour; a warning or error still takes its yellow or red semantic role. [The measured details](docs/styles-and-palettes.md#tint-ownership) cover both choices.
 `.\install.ps1 -DetectTheme`
 reads Windows Terminal's scheme and sets the key, or says why it could not. The stand-in table, the
 contrast rules and what `-DetectTheme` reads: [docs/styles-and-palettes.md](docs/styles-and-palettes.md).
