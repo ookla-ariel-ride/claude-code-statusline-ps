@@ -1454,7 +1454,9 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
 #      rather than by the palette's 216 values. One of the three bars had to give, and this is the one
 #      whose cost is carried by a saturated hue rather than by a marker BOTH tables share: the block
 #      that sets 1.25 is model #00FFFF, whose edge against white is chroma where its luminance is
-#      nearly white's, and the palest NEUTRAL in the table is still dim #D0D0D0 at 1.54.
+#      nearly white's, and the palest NEUTRAL in the table is still dim #D0D0D0 at 1.54. Rule 3 ALSO
+#      HOLDS EVERY BACKGROUND 80 sRGB from its terminal ground: light dim is the minimum at 81.4, so
+#      a pale neutral cannot leave an almost-white edge behind.
 #   4. THE THREE THINGS AN INLINE MARKER HAS TO DO. A marker - `92% cached`, `1M`, `+156`, an arrow, a
 #      branch count - is drawn INSIDE a block by Format-Inline, beside that block's own text. So it has
 #      to clear three bars at once, and #82 is the issue that found out what happens when only one of
@@ -1536,7 +1538,7 @@ function Read-StatusConfig([string] $Path, $ProjectDir) {
 # `dim`. Three blocks of one background are one band with an invisible arrow inside it; in plain style
 # they are one foreground code with only the chevron between them. Neither the palette nor the layout
 # can see that on its own - the palette does not know the order and the layout does not know the
-# colours - so the roles a VALUE moves between carry a second shade, one step along, and Format-Line
+# colours - so the roles a VALUE moves between use the second shade their table supplies, and Format-Line
 # hands it to a block whose immediate predecessor on the line carries the same role.
 # THE SHADE MOVES THE BACKGROUND AND NEVER THE BLOCK'S TEXT, which is not a preference: a segment's
 # text is built before there is a line, so the markers inside it were already chosen by the role's ink

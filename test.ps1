@@ -2688,9 +2688,10 @@ Confirm-Equal ((@(foreach ($r in $roleNames) { $light.Roles[$r].Bg }) | Sort-Obj
 # segments of the SAME role side by side: the shipped second row is context, cache and limits, all `ok`,
 # then cost, clock and lines, all `dim`. Three blocks of one background are one band with an invisible
 # arrow inside it, and in plain style one foreground code with only the chevron to break it. So the four
-# roles a VALUE moves between carry a second shade - a background one step along for powerline, a second
-# plain code for plain and ascii - and Format-Line gives it to a block whose immediate predecessor on
-# the line carries the same role, so a run of three reads base, alt, base.
+# roles a VALUE moves between use the second shade their table supplies: dark ok, warn and bad have a
+# powerline background; dark dim and light warn, bad and dim have a plain code. Format-Line gives an
+# available shade to a block whose immediate predecessor on the line carries the same role, so a run of
+# three reads base, alt, base.
 # WHAT IS NOT HERE IS AS DELIBERATE AS WHAT IS, and each absence is measured below rather than asserted:
 #   model, folder and branch have no second shade at all: each is the role of exactly ONE segment, so no
 #     line can put two of them side by side. If a later layout ever does, Format-Line's divider covers
@@ -2704,8 +2705,8 @@ Confirm-Equal ((@(foreach ($r in $roleNames) { $light.Roles[$r].Bg }) | Sort-Obj
 #     cell and is the one absence that was bought rather than found. Rule 2b holds every pair of
 #     backgrounds a line can paint to 1.10:1, an alternate against every base included, and the seven
 #     light bases spend 1.7716:1 of the 1.8750:1 that rule 4(a)'s floor and rule 3's 1.25 bar leave
-#     them. All four light blocks alternate by divider now, and the search under rule 5 walks the cube
-#     for each of the seven roles rather than leaving that as a claim.
+#     them. All four light blocks alternate by divider now, and the single search under rule 5 walks the
+#     cube once for all seven roles rather than leaving that as a claim.
 # The values are written out here rather than read back off the table, so moving one is a decision this
 # file has to be told about; the rules below are what say whether the new value is allowed.
 $expectedShades = @{
@@ -2918,19 +2919,35 @@ foreach ($p in @(@{ N = 'dark'; T = $dark; S = $darkShades }, @{ N = 'light'; T 
 #    alternate answers to this bar as well, and the seven bases already spend 1.7716 of the 1.8750 the
 #    1.25 bar buys. 1.20269 is the bar at which an eighth light background would first fit and 1.20 is
 #    the bar at which the cube would still have none - the search under rule 5 is what says so.
+#    A RATIO ALONE CANNOT KEEP A PALE NEUTRAL EDGE VISIBLE ON WHITE: 254 (#E4E4E4) is 1.27:1 but only
+#    46.8 sRGB from it. Like rule 2b, this rule therefore also requires distance. The current minimum
+#    is light dim at 81.4, so 80 is a floor the shipped shades clear while pale neutrals do not.
+$lightGroundBar = 1.25
+$darkGroundBar = 1.7
+$groundDistanceBar = 80
 $worstBg = 99.0
+$worstLightGroundDistance = 9999.0
 foreach ($s in $lightShades) {
-    $ratio = Get-ContrastRatio (Get-XtermRgb $s.Bg) $groundWhite
+    $rgb = Get-XtermRgb $s.Bg
+    $ratio = Get-ContrastRatio $rgb $groundWhite
+    $distance = Get-RgbDistance $rgb $groundWhite
     if ($ratio -lt $worstBg) { $worstBg = $ratio }
-    Confirm-True ($ratio -ge 1.25) ("light powerline $($s.N): background $($s.Bg) against white is {0:N2}:1, bar 1.25" -f $ratio)
+    if ($distance -lt $worstLightGroundDistance) { $worstLightGroundDistance = $distance }
+    Confirm-True ($ratio -ge $lightGroundBar) ("light powerline $($s.N): background $($s.Bg) against white is {0:N2}:1, bar $lightGroundBar" -f $ratio)
+    Confirm-True ($distance -ge $groundDistanceBar) ("light powerline $($s.N): background $($s.Bg) is {0:N1} sRGB from white, bar $groundDistanceBar" -f $distance)
 }
 $worstDarkBg = 99.0
+$worstDarkGroundDistance = 9999.0
 foreach ($s in $darkShades) {
-    $ratio = Get-ContrastRatio (Get-XtermRgb $s.Bg) $groundBlack
+    $rgb = Get-XtermRgb $s.Bg
+    $ratio = Get-ContrastRatio $rgb $groundBlack
+    $distance = Get-RgbDistance $rgb $groundBlack
     if ($ratio -lt $worstDarkBg) { $worstDarkBg = $ratio }
-    Confirm-True ($ratio -ge 1.7) ("dark powerline $($s.N): background $($s.Bg) against #0C0C0C is {0:N2}:1, bar 1.7" -f $ratio)
+    if ($distance -lt $worstDarkGroundDistance) { $worstDarkGroundDistance = $distance }
+    Confirm-True ($ratio -ge $darkGroundBar) ("dark powerline $($s.N): background $($s.Bg) against #0C0C0C is {0:N2}:1, bar $darkGroundBar" -f $ratio)
+    Confirm-True ($distance -ge $groundDistanceBar) ("dark powerline $($s.N): background $($s.Bg) is {0:N1} sRGB from #0C0C0C, bar $groundDistanceBar" -f $distance)
 }
-Write-Host ("   block edge against the terminal's ground: light {0:N2}:1, dark {1:N2}:1" -f $worstBg, $worstDarkBg)
+Write-Host ("   block edge against the terminal's ground: light {0:N2}:1, {1:N1} sRGB; dark {2:N2}:1, {3:N1} sRGB" -f $worstBg, $worstLightGroundDistance, $worstDarkBg, $worstDarkGroundDistance)
 # 4. The inline roles. In plain style they are drawn on the terminal's ground like everything else; in
 #    powerline they are drawn INSIDE a block, so they have to hold up against every block background
 #    the light table has - Format-Inline is called from the model, context, lines, limits and branch
@@ -3049,23 +3066,27 @@ foreach ($r in $roleNames) {
 #        256-colour cube, so each is made by walking it here with exactly the floors the rules above
 #        apply. If a floor is ever loosened, the search finds the colour that has become available and
 #        the gap has to be closed or re-argued; the comment on its own could not do that.
-$dimCandidates = @()
-foreach ($idx in 16..255) {
-    $rgb = Get-XtermRgb $idx
-    if ((Get-ContrastRatio (Get-XtermRgb $dark.Roles.dim.Fg) $rgb) -lt 4.5) { continue }
-    if ((Get-ContrastRatio $rgb $groundBlack) -lt 1.7) { continue }
-    $clears = $true
-    foreach ($y in $roleNames) {
-        $other = Get-XtermRgb $dark.Roles[$y].Bg
-        if ((Get-RgbDistance $rgb $other) -lt 40 -or (Get-ContrastRatio $rgb $other) -lt 1.10) { $clears = $false; break }
-    }
-    if ($clears) {
-        foreach ($i in $inlineNames) {
-            if ((Get-ContrastRatio (Get-XtermRgb $dark.Inline[$i][$dark.Roles.dim.Ink]) $rgb) -lt 3.0) { $clears = $false; break }
+function Get-SecondBackgroundCandidateSet($Palette, $Ground, [double] $GroundBar) {
+    $candidates = @()
+    foreach ($idx in 16..255) {
+        $rgb = Get-XtermRgb $idx
+        if ((Get-ContrastRatio (Get-XtermRgb $Palette.Roles.dim.Fg) $rgb) -lt 4.5) { continue }
+        if ((Get-ContrastRatio $rgb $Ground) -lt $GroundBar) { continue }
+        $clears = $true
+        foreach ($y in $roleNames) {
+            $other = Get-XtermRgb $Palette.Roles[$y].Bg
+            if ((Get-RgbDistance $rgb $other) -lt 40 -or (Get-ContrastRatio $rgb $other) -lt 1.10) { $clears = $false; break }
         }
+        if ($clears) {
+            foreach ($i in $inlineNames) {
+                if ((Get-ContrastRatio (Get-XtermRgb $Palette.Inline[$i][$Palette.Roles.dim.Ink]) $rgb) -lt 3.0) { $clears = $false; break }
+            }
+        }
+        if ($clears) { $candidates += $idx }
     }
-    if ($clears) { $dimCandidates += $idx }
+    return $candidates
 }
+$dimCandidates = @(Get-SecondBackgroundCandidateSet $dark $groundBlack $darkGroundBar)
 $dimNeutral = @($dimCandidates | Where-Object { $null -eq (Get-ColourHue (Get-XtermRgb $_)) })
 Confirm-Equal ($dimNeutral -join ',') '' "dark dim: no neutral colour in the cube clears every floor as a second background, so the role keeps one shade (what does clear them: $(if ($dimCandidates.Count) { $dimCandidates -join ', ' } else { 'nothing at all' }))"
 $okPlainCandidates = @()
@@ -3094,23 +3115,7 @@ Confirm-Equal ($okPlainGreen -join ',') '' 'light plain ok: no green in the cube
 #        honest only because every light role writes the same text in the same ink, so that is pinned
 #        rather than assumed.
 Confirm-Equal ((@($roleNames | ForEach-Object { "$($light.Roles[$_].Fg)/$($light.Roles[$_].Ink)" } | Sort-Object -Unique) -join ',')) '16/Dark' 'light palette: every role writes 16 in dark ink, so one second-background search answers for all seven'
-$lightAltCandidates = @()
-foreach ($idx in 16..255) {
-    $rgb = Get-XtermRgb $idx
-    if ((Get-ContrastRatio (Get-XtermRgb $light.Roles.dim.Fg) $rgb) -lt 4.5) { continue }
-    if ((Get-ContrastRatio $rgb $groundWhite) -lt 1.25) { continue }
-    $clears = $true
-    foreach ($y in $roleNames) {
-        $other = Get-XtermRgb $light.Roles[$y].Bg
-        if ((Get-RgbDistance $rgb $other) -lt 40 -or (Get-ContrastRatio $rgb $other) -lt 1.10) { $clears = $false; break }
-    }
-    if ($clears) {
-        foreach ($i in $inlineNames) {
-            if ((Get-ContrastRatio (Get-XtermRgb $light.Inline[$i][$light.Roles.dim.Ink]) $rgb) -lt 3.0) { $clears = $false; break }
-        }
-    }
-    if ($clears) { $lightAltCandidates += $idx }
-}
+$lightAltCandidates = @(Get-SecondBackgroundCandidateSet $light $groundWhite $lightGroundBar)
 Confirm-Equal ($lightAltCandidates -join ',') '' "light palette: no colour in the cube clears every floor as a second background for any role, so every repeated light block takes the divider (what does clear them: $(if ($lightAltCandidates.Count) { $lightAltCandidates -join ', ' } else { 'nothing at all' }))"
 
 # READING A RENDERED LINE BACK. The rules above measure a table; these three read the joints out of a

@@ -168,7 +168,7 @@ Fable 5.1 > ctx 32% ###....... 64k/200k 92% cached > $1.07 > 1h12m | api 38%
 `{"palette": "light"}` swaps the colour table for one chosen against white, in any style. Every value
 in both tables is held to a measured contrast floor by the test suite. Where the layout puts two
 segments of the same role side by side — context, cache and limits, or cost, clock and lines — the
-second uses that role's alternate shade where the palette supplies one; [the two measured gaps](docs/styles-and-palettes.md#two-gaps-both-measured-rather-than-chosen) keep their existing divider or chevron.
+second uses that role's alternate shade where the palette supplies one; [the measured absences](docs/styles-and-palettes.md#the-second-shade) keep their existing divider or chevron.
 `.\install.ps1 -DetectTheme`
 reads Windows Terminal's scheme and sets the key, or says why it could not. The stand-in table, the
 contrast rules and what `-DetectTheme` reads: [docs/styles-and-palettes.md](docs/styles-and-palettes.md).
@@ -274,8 +274,7 @@ screenshots, is described in [docs/testing.md](docs/testing.md). Commits are sca
 
 The feature backlog is done. [The open issues](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues)
 record limits found under review: the dark palette's `dim` role still on the terminal's own bright
-black, 2.79:1 on Solarized Dark (#111), six light-palette block pairs whose joining arrow disappears
-(#89), a diagnostics log that can outgrow its cap while another render holds the lock (#93), and test
+black, 2.79:1 on Solarized Dark (#111), a diagnostics log that can outgrow its cap while another render holds the lock (#93), and test
 families that fail under parallel load (#94, #99, #102). The
 design record is [docs/projectbrief.md](docs/projectbrief.md).
 

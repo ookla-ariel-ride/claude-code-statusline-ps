@@ -97,8 +97,7 @@ darker numbers. Every value in it is an xterm 256-colour index picked to clear a
 the ratios are checked by arithmetic in `test.ps1` rather than by eye — an index is turned into its hex, and the hex
 into a [WCAG 2.1](https://www.w3.org/TR/WCAG21/#dfn-relative-luminance) contrast ratio, by code that
 shares nothing with the script. **Both tables are measured**, and where a bar is asserted for only one
-of them, or differs between them, the table below says so and why. Two of the rules are not contrast ratios at all but
-straight-line distances in sRGB, because a ratio cannot answer the question they ask — see the note
+of them, or differs between them, the table below says so and why. Three of the rules include straight-line distances in sRGB, because a ratio cannot answer the question they ask — see the note
 under the table.
 
 Every rule below runs over **every shade a line can paint**, which since the second shade (below) means
@@ -111,7 +110,7 @@ its backgrounds cannot carry a second shade at all and its repeated roles take t
 |---|---|---|---|
 | A plain-style colour against the terminal's background | 4.5:1 on `#FFFFFF` **and** on an off-white `#F5F5F5` | worst 5.25 (`warn`); the three **alternate** codes are held to it too, worst 6.17 (`warn` alt on `#F5F5F5`) | the seven base codes are the basic sixteen and are not asserted — what those look like is the terminal's to say. The four **alternate** codes are 256-colour indices and are held to it: worst 6.48 (`bad` alt on `#002B36`) |
 | A powerline block's own text against its own background | 4.5:1 | worst 9.14 (`folder`) | worst 4.70 (`ok`); `model` is 4.13 and exempt by name, older than the rule |
-| A block's background against the terminal's background — the trailing arrow paints it as a *foreground*, and every block edge is that boundary | 1.25:1 light, 1.7:1 dark — the one bar that differs, and the note under the table says what bought it | worst 1.25 (`model`) | worst 2.01 (`dim`) against Campbell |
+| A block's background against the terminal's background — the trailing arrow paints it as a *foreground*, and every block edge is that boundary | 1.25:1 light, 1.7:1 dark, and 80 apart in sRGB on both — the one ratio bar that differs, and the note under the table says what bought it | worst 1.25 (`model`), 81.4 sRGB (`dim`) | worst 2.01 (`dim`) against Campbell, 84.7 sRGB (`ok` alt) |
 | The arrow *between* two blocks — one block's background painted on the next one's | 1.10:1 in luminance and 40 apart in sRGB, over every pair that can meet | worst 1.101 (`bad`/`dim`) and 56.6 | worst 1.104 and 40.0 |
 | An inline marker (`+156`, `92% cached`, `1M`, `↑2`) against the background of the block it sits in | 3:1 | worst 3.06 (`muted` in `folder`) | worst 3.01 |
 | The same marker against that block's **own text**, which it sits beside | 85 apart in sRGB | worst 95.0 | worst 89.6 |
@@ -131,11 +130,13 @@ assignment exists in the 256-colour cube or in 24-bit colour either, since the b
 rules and not by how many colours there are to pick from. One of the three bars had to give, and this
 is the one whose cost lands on a saturated hue rather than on a marker both tables share: the light
 block that sets 1.25 is `model` `#00FFFF`, whose edge against white is carried by chroma where its
-luminance is nearly white's, and the palest *neutral* in the table is still `dim` `#D0D0D0` at 1.54.
+luminance is nearly white's, and the palest *neutral* in the table is still `dim` `#D0D0D0` at 1.54. The
+same rule also keeps every background at least 80 sRGB from its terminal ground: the current minimum is
+light `dim` at 81.4, so pale neutral blocks cannot turn the arrow into an almost-white edge.
 The dark table is untouched and keeps 1.7. The same arithmetic is what leaves the light table with no
 second block shade at all — see [the second shade](#the-second-shade).
 
-**Why two of those bars are distances and not ratios.** An inline marker sits inside a block, so it has
+**Why three of those bars are distances and not ratios.** An inline marker sits inside a block, so it has
 two neighbours: the block's background behind it, and the block's own text beside it. On a dark block
 those two pull against each other. Clearing 3:1 against the `model` block means the marker's relative
 luminance has to be above 0.71 — and the block's text is white, luminance 1.0. So every colour that is
@@ -194,9 +195,11 @@ the chevron between them.
 
 Neither half of the problem can see the other. The contrast rules above measure every pair of *roles*
 and cannot know that two adjacent *segments* carry the same one; the layout does not know the colours.
-So the four roles a value moves between carry a **second shade** — a background one step along for
-`powerline`, a second code for `plain` and `ascii` — and a block whose immediate neighbour on the line
-carries the same role is drawn in it. A run of three reads base, alternate, base.
+So the four roles a value moves between use a **second shade** wherever the table can supply one: dark
+`ok`, `warn` and `bad` carry a second background for `powerline`; dark `dim` and light
+`warn`, `bad` and `dim` carry a second code for `plain` and `ascii`. The light table has no
+second background, and light `ok` is the measured plain-code exception below. A run of three with an
+available shade reads base, alternate, base.
 
 | Role | `dark` block | `dark` plain | `light` block | `light` plain |
 |---|---|---|---|---|
@@ -226,8 +229,9 @@ a role with no alternate, a role no layout was expected to repeat, and any futur
 the same for a reason nobody has thought of. In `plain` there is nothing to fall back to: the chevron
 was already between the two segments and it stays.
 
-**Two gaps, both measured rather than chosen.** Every alternate above had to clear every rule in the
-table, and two of the twelve cells could not be filled by any colour in the 256-colour cube:
+**Six absent cells, each measured rather than chosen.** Every alternate above had to clear every rule in
+the table. Dark `dim` lacks one background, light `ok` lacks one plain code, and all four light
+background cells are absent:
 
 - **`dark` `dim` has no second background.** Its block is a grey wedged between its own light text at
   250 above and the terminal's ground below, which leaves a band of roughly 0.041 to 0.073 in relative
@@ -237,8 +241,8 @@ table, and two of the twelve cells could not be filled by any colour in the 256-
 - **`light` `ok` has no second plain code.** The mirror image: every green in the cube 40 sRGB away
   from `#005F00` is too light to hold 4.5:1 on a white ground. That pair keeps the chevron.
 
-Both searches are run in `test.ps1` over the whole cube rather than asserted as comments, so loosening
-a floor makes the colour that has become available show up as a failure.
+All three cube searches run in `test.ps1` rather than asserted as comments, so loosening a floor makes
+the colour that has become available show up as a failure.
 
 **The `light` block column is empty — all four cells, and this one was bought rather than found.**
 [#89](https://github.com/ookla-ariel-ride/claude-code-statusline-ps/issues/89) made the arrow rule hold

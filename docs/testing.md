@@ -23,9 +23,10 @@ redirected, so a light scheme writes `"palette": "light"`, Campbell writes `dark
 broken, unknown or OS-following scheme leaves `statusline.json` byte for byte as it was. The light
 palette's own group recomputes every contrast ratio in both tables from the xterm colour cube, and
 holds each of them to a 3:1 floor for every inline marker inside every block it can be drawn in. It
-runs over every shade a line can paint, the alternate shades included, and it searches the whole cube
-for the two alternates that do not exist, so a loosened floor shows up as the colour that has become
-available rather than as silence. A later group puts the palette and the layout together: it builds
+runs over every shade a line can paint, the alternate shades included, and it runs three whole-cube
+searches: dark `dim`'s neutral second background, light `ok`'s plain code, and one shared light
+second-background search for all seven roles. A loosened floor therefore shows up as the colour that has
+become available rather than as silence. A later group puts the palette and the layout together: it builds
 every sample through the real segment builders, lays them out with both layouts and all three presets,
 renders each row in both palettes and all three styles, and reads the joints back out of the rendered
 line to hold each one to the same floor — which is the check neither the palette nor the layout could
