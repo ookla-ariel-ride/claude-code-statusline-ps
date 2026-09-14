@@ -21,6 +21,12 @@ param(
     [switch] $Force,
     [switch] $DryRun,
     [scriptblock] $SuiteProbe,
+    [ValidateScript({
+        if ([string]::IsNullOrWhiteSpace($_)) { throw 'LockPath must not be empty.' }
+        if (-not [IO.Path]::IsPathFullyQualified($_)) { throw 'LockPath must be an absolute path.' }
+        if ([IO.Path]::GetFileName($_) -ine 'suite.lock') { throw 'LockPath must name suite.lock.' }
+        return $true
+    })]
     [string] $LockPath
 )
 
@@ -91,7 +97,7 @@ function Wait-SuiteLog([string] $LogPath, [int] $PollIntervalSeconds, [int] $Max
                     if ($passedLine.Count -gt 0) { Write-Output $passedLine[0] }
                     Write-Output "exit=$exitText"
                     $aloneText = Get-LogValue $lines 'alone'
-                    if ($null -eq $aloneText) { $aloneText = if (@($lines | Where-Object { $_ -match '^concurrent-seen=' }).Count -gt 0) { 'false' } else { 'true' } }
+                    if ($null -eq $aloneText) { $aloneText = 'false' }
                     Write-Output "alone=$aloneText"
                     $script:waitExitCode = [int] $exitText
                     return
@@ -178,10 +184,13 @@ $logPath = Join-Path $resolvedLogDir "suite-$timestamp-$randomHex.log"
 $pwshExe = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
 $childScript = Join-Path $PSScriptRoot 'suite-child.ps1'
 try {
-    $childArguments = @('-NoProfile', '-File', $childScript, '-TestScript', $resolvedTestScript, '-LogPath', $logPath, '-LockPath', $lockPath, '-Utc', $stamp.utc, '-Sha', $stamp.sha, '-Dirty', $stamp.dirty, '-Concurrent', $stamp.concurrent, '-FreeMb', $stamp.freeMb) | ForEach-Object {
-        if ($_ -match '[\s"]') { '"{0}"' -f ($_ -replace '"', '\\"') } else { $_ }
-    }
-    $process = Start-Process -FilePath $pwshExe -ArgumentList ($childArguments -join ' ') -WindowStyle Hidden -PassThru
+    $childArguments = @('-NoProfile', '-File', $childScript, '-TestScript', $resolvedTestScript, '-LogPath', $logPath, '-LockPath', $lockPath, '-Utc', $stamp.utc, '-Sha', $stamp.sha, '-Dirty', $stamp.dirty, '-Concurrent', $stamp.concurrent, '-FreeMb', $stamp.freeMb)
+    if (-not $PSBoundParameters.ContainsKey('LockPath')) { $childArguments += '-UseDefaultLockPath' }
+    $startInfo = [Diagnostics.ProcessStartInfo]::new($pwshExe)
+    foreach ($argument in $childArguments) { [void] $startInfo.ArgumentList.Add($argument) }
+    $startInfo.UseShellExecute = $true
+    $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    $process = [Diagnostics.Process]::Start($startInfo)
     $treeState = Initialize-SuiteProcessTreeState $process.Id
 } catch {
     Write-Output "could not launch suite child: $($_.Exception.Message)"
