@@ -11913,16 +11913,21 @@ param(
     [switch] $Force,
     [switch] $Wait
 )
-$runnerArguments = @('-TestScript', $TestScript, '-LogDir', $LogDir, '-LockPath', $LockPath, '-SuiteProbe', { @() })
-if ($Force) { $runnerArguments += '-Force' }
-if ($Wait) { $runnerArguments += @('-Wait', '-PollSeconds', '1') }
-& $Runner @runnerArguments
+$runnerParameters = @{
+    TestScript = $TestScript
+    LogDir = $LogDir
+    LockPath = $LockPath
+    SuiteProbe = { @() }
+}
+if ($Force) { $runnerParameters.Force = $true }
+if ($Wait) { $runnerParameters.Wait = $true; $runnerParameters.PollSeconds = 1 }
+& $Runner @runnerParameters
 exit $LASTEXITCODE
 '@ -Encoding utf8NoBOM
 Set-Content -LiteralPath $suiteRunnerFake -Value @'
 Write-Output first-line
 [Console]::Out.Close()
-Start-Sleep -Seconds 7
+Start-Sleep -Seconds 12
 Write-Output second-line
 exit 7
 '@ -Encoding utf8NoBOM
@@ -11946,6 +11951,8 @@ try {
     $streamedLog = Get-Content -LiteralPath $launchLog -Raw -ErrorAction Stop
     Confirm-True ($streamedLog -match 'first-line' -and $streamedLog -notmatch 'second-line') 'suite runner streaming: first fake line reaches the log before the delayed second line'
     Confirm-True ($streamedLog -match ('(?m)^lock=' + [regex]::Escape($suiteRunnerLock) + '\r?$')) 'suite runner lock seam: the child uses the injected test lock path'
+    # The initial process probe scans the host once; measure the closed-pipe idle period only after it settles.
+    Start-Sleep -Seconds 3
     $wrapperCpuBefore = (Get-Process -Id $launchPid -ErrorAction Stop).TotalProcessorTime
     Start-Sleep -Seconds 5
     $wrapperCpuAfter = (Get-Process -Id $launchPid -ErrorAction Stop).TotalProcessorTime
