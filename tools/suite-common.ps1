@@ -213,6 +213,7 @@ function Stop-SuiteProcessTree {
         }
         $deadline = [DateTime]::UtcNow.AddSeconds(5)
         foreach ($process in $live) {
+            if ([DateTime]::UtcNow -ge $deadline) { break }
             do {
                 Start-Sleep -Milliseconds 100
                 try {

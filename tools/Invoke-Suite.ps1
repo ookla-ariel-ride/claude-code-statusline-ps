@@ -55,7 +55,7 @@ function Get-SuiteStamp([string] $ResolvedTestScript, [string] $RepoRoot, [int[]
     $dirty = 0
     if ($RepoRoot) {
         try {
-            $head = @(& git -C $RepoRoot rev-parse --short HEAD)
+            $head = @(& git -C $RepoRoot rev-parse --short HEAD 2>$null)
             if ($LASTEXITCODE -eq 0 -and $head.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($head[0])) { $sha = $head[0].Trim() }
             $status = @(& git -C $RepoRoot status --porcelain)
             if ($LASTEXITCODE -eq 0) { $dirty = $status.Count }

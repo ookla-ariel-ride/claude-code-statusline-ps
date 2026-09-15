@@ -35,7 +35,7 @@ function Get-LockHolderMessage([string] $Path) {
 }
 
 function Test-LockSharingViolation([IO.IOException] $Exception) {
-    $code = ([uint32] $Exception.HResult) -band [uint32] 0xFFFF
+    $code = ([int] $Exception.HResult) -band 0xFFFF
     return $code -eq 0x20 -or $code -eq 0x21
 }
 
