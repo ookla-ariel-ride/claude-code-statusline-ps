@@ -219,17 +219,17 @@ Get-Content .\samples\subagent\01-two-agents.json -Raw | pwsh -NoProfile -File .
 ### Running the suite
 
 Use `pwsh -NoProfile -File .\tools\Invoke-Suite.ps1` to launch the full suite. The child holds the
-machine-wide operating-system lock for the life of its run; a second normal launch exits 3. The runner
+machine-wide operating-system lock at `%ProgramData%\statusline-suite\suite.lock` for the life of its run; every user on the machine shares it, and a second normal launch exits 3. If the common directory or lock file cannot be opened, the child uses and records a per-user temporary fallback lock. The runner
 prints a final log path and child PID only after the child has acknowledged its wrapper log. Under a tool
 with a ten-minute ceiling, launch first, then attach in a loop with `pwsh -NoProfile -File
 .\tools\Invoke-Suite.ps1 -Attach <log-path>`; alternatively use `-Wait -TimeoutMinutes 9`, then attach
 if it prints `still-running log=<path>`. `-Force` only skips the advisory process probe: it never bypasses
 the held lock, so a forced launch beside a holder is refused by its child with exit 3 and names the
-holder's log.
+holder's log. `-LockPath` is a validated absolute `suite.lock` test seam; an explicit seam isolates test runs and does not provide the machine-wide production lock.
 
-Exit 0 means the suite passed; 2 is invalid use or launch input; 3 is a concurrent-suite refusal; 5 is a
+Exit 0 means the suite passed; 1 also covers an unrecoverable log write or bounded drain that discarded output; 2 is invalid use or launch input; 3 is a concurrent-suite refusal; 5 is a
 child that never acknowledged; and 6 means waiting or attaching timed out while the suite continues.
-After acknowledgement, the runner returns the suite's own exit code.
+After acknowledgement, the runner returns the suite's own exit code unless it cannot preserve the log.
 
 The suite never touches your own repositories or your real `~/.claude`. What it covers, and how to
 add a segment or a sample: [docs/testing.md](docs/testing.md).
