@@ -65,7 +65,7 @@ pwsh -NoProfile -File .\tools\Invoke-Suite.ps1 # full run; attach to its acknowl
 
 The detached child holds `%ProgramData%\statusline-suite\suite.lock` through its whole run, so every user
 on the machine shares the operating-system lock rather than relying on a stale file. If its common directory or lock file cannot
-be opened, the log records its per-user temporary fallback lock path. `-LockPath` is a validated absolute `suite.lock` test seam; it deliberately isolates a test from the machine-wide lock. Launch first and use `-Attach <log-path>` to
+be opened, the launch fails closed rather than selecting a per-user lock that could overlap another user's suite. `-LockPath` is a validated absolute `suite.lock` test seam; it deliberately isolates a test from the machine-wide lock. Launch first and use `-Attach <log-path>` to
 observe the streaming log; `-Wait` and `-Attach` both stop observing at `-TimeoutMinutes` and return 6
 without stopping the suite. `-Force` skips only the runner's advisory probe for externally-started suites;
 it cannot bypass a held lock, and a forced child reports exit 3 with the holder's log. Exit 0 is a passing

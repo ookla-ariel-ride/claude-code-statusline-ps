@@ -87,35 +87,19 @@ function Get-OtherSuitePid([int[]] $ExcludedPids = @(), [scriptblock] $ProcessSo
     } | ForEach-Object { [int] $_.ProcessId } | Sort-Object -Unique)
 }
 
-function Get-SuiteFallbackLockPath() {
-    $fallback = Join-Path ([IO.Path]::GetTempPath()) 'statusline-suite'
-    New-Item -ItemType Directory -Path $fallback -Force -ErrorAction Stop | Out-Null
-    return (Join-Path $fallback 'suite.lock')
-}
-
 function Get-SuiteLockPath() {
     $commonData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
-    if (-not [string]::IsNullOrWhiteSpace($commonData)) {
-        $directory = Join-Path $commonData 'statusline-suite'
-        try {
-            New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop | Out-Null
-            return (Join-Path $directory 'suite.lock')
-        } catch { Write-Verbose "Could not create the common suite lock directory: $($_.Exception.Message)" }
-    }
-    return Get-SuiteFallbackLockPath
+    if ([string]::IsNullOrWhiteSpace($commonData)) { throw 'The machine-wide suite lock directory is unavailable.' }
+    $directory = Join-Path $commonData 'statusline-suite'
+    New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop | Out-Null
+    return (Join-Path $directory 'suite.lock')
 }
 
-function Open-SuiteLock([string] $LockPath, [switch] $AllowFallback, [scriptblock] $OpenFile) {
+function Open-SuiteLock([string] $LockPath, [scriptblock] $OpenFile) {
     if ($null -eq $OpenFile) {
         $OpenFile = { param([string] $Path) [IO.File]::Open($Path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read) }
     }
-    try {
-        return @{ Stream = (& $OpenFile $LockPath); Path = $LockPath }
-    } catch [UnauthorizedAccessException] {
-        if (-not $AllowFallback) { throw }
-        $fallback = Get-SuiteFallbackLockPath
-        return @{ Stream = (& $OpenFile $fallback); Path = $fallback }
-    }
+    return @{ Stream = (& $OpenFile $LockPath); Path = $LockPath }
 }
 
 function Get-LockRecord([string] $LockPath) {
@@ -134,14 +118,17 @@ function Get-LockRecord([string] $LockPath) {
     } catch [IO.IOException] { return $null }
 }
 
-function Test-SuiteLockHeld([string] $LockPath) {
+function Test-SuiteLockHeld([string] $LockPath, [scriptblock] $OpenFile) {
     if ([string]::IsNullOrWhiteSpace($LockPath) -or -not (Test-Path -LiteralPath $LockPath -PathType Leaf)) { return $false }
+    if ($null -eq $OpenFile) {
+        $OpenFile = { param([string] $Path) [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read) }
+    }
     try {
-        $stream = [IO.File]::Open($LockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
+        $stream = & $OpenFile $LockPath
         $stream.Dispose()
         return $false
     } catch [IO.IOException] { return $true }
-    catch [UnauthorizedAccessException] { return $false }
+    catch [UnauthorizedAccessException] { return $true }
 }
 
 function Get-SuiteCreationKey([object] $Process) {
@@ -164,8 +151,11 @@ function Get-SuiteProcessTreeSnapshot([hashtable] $State, [scriptblock] $Process
         $current = $byId[$processId]
         if ($null -ne $current -and $entry.CreationKey -eq (Get-SuiteCreationKey $current)) {
             $validSeen[$processId] = $entry
-        } elseif ($null -eq $current -and @($processes | Where-Object { [int] $_.ParentProcessId -eq $processId }).Count -gt 0) {
-            # A dead parent remains only while a current child still names it; it cannot authorize a recycled PID.
+        } elseif ($null -eq $current -and @($processes | Where-Object {
+                $childEntry = $State.Seen[[int] $_.ProcessId]
+                [int] $_.ParentProcessId -eq $processId -and $null -ne $childEntry -and $childEntry.CreationKey -eq (Get-SuiteCreationKey $_)
+            }).Count -gt 0) {
+            # A dead parent remains only while an already tracked child with the same creation identity still names it.
             $validSeen[$processId] = $entry
         }
     }
@@ -221,8 +211,8 @@ function Stop-SuiteProcessTree {
             $processId = [int] $process.ProcessId
             if ($PSCmdlet.ShouldProcess("process $processId", 'stop suite process tree')) { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue }
         }
+        $deadline = [DateTime]::UtcNow.AddSeconds(5)
         foreach ($process in $live) {
-            $deadline = [DateTime]::UtcNow.AddSeconds(5)
             do {
                 Start-Sleep -Milliseconds 100
                 try {

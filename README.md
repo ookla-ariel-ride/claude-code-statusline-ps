@@ -219,7 +219,7 @@ Get-Content .\samples\subagent\01-two-agents.json -Raw | pwsh -NoProfile -File .
 ### Running the suite
 
 Use `pwsh -NoProfile -File .\tools\Invoke-Suite.ps1` to launch the full suite. The child holds the
-machine-wide operating-system lock at `%ProgramData%\statusline-suite\suite.lock` for the life of its run; every user on the machine shares it, and a second normal launch exits 3. If the common directory or lock file cannot be opened, the child uses and records a per-user temporary fallback lock. The runner
+machine-wide operating-system lock at `%ProgramData%\statusline-suite\suite.lock` for the life of its run; every user on the machine shares it, and a second normal launch exits 3. If the common directory or lock file cannot be opened, the launch fails closed rather than selecting a per-user lock that could overlap another user's suite. The runner
 prints a final log path and child PID only after the child has acknowledged its wrapper log. Under a tool
 with a ten-minute ceiling, launch first, then attach in a loop with `pwsh -NoProfile -File
 .\tools\Invoke-Suite.ps1 -Attach <log-path>`; alternatively use `-Wait -TimeoutMinutes 9`, then attach
