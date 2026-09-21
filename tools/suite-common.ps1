@@ -116,19 +116,24 @@ function Get-LockRecord([string] $LockPath) {
         }
         return @{ Pid = if ($values['pid'] -match '^\d+$') { [int] $values['pid'] } else { 0 }; Suite = if ($values['suite'] -match '^\d+$') { [int] $values['suite'] } else { 0 }; Log = $values['log'] }
     } catch [IO.IOException] { return $null }
+    catch [UnauthorizedAccessException] { return $null }
 }
 
-function Test-SuiteLockHeld([string] $LockPath, [scriptblock] $OpenFile) {
-    if ([string]::IsNullOrWhiteSpace($LockPath) -or -not (Test-Path -LiteralPath $LockPath -PathType Leaf)) { return $false }
+function Get-SuiteLockStatus([string] $LockPath, [scriptblock] $OpenFile) {
+    if ([string]::IsNullOrWhiteSpace($LockPath) -or -not (Test-Path -LiteralPath $LockPath -PathType Leaf)) { return @{ Held = $false; AccessDenied = $false } }
     if ($null -eq $OpenFile) {
         $OpenFile = { param([string] $Path) [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read) }
     }
     try {
         $stream = & $OpenFile $LockPath
         $stream.Dispose()
-        return $false
-    } catch [IO.IOException] { return $true }
-    catch [UnauthorizedAccessException] { return $true }
+        return @{ Held = $false; AccessDenied = $false }
+    } catch [IO.IOException] { return @{ Held = $true; AccessDenied = $false } }
+    catch [UnauthorizedAccessException] { return @{ Held = $false; AccessDenied = $true } }
+}
+
+function Test-SuiteLockHeld([string] $LockPath, [scriptblock] $OpenFile) {
+    return (Get-SuiteLockStatus $LockPath $OpenFile).Held
 }
 
 function Get-SuiteCreationKey([object] $Process) {
@@ -151,11 +156,9 @@ function Get-SuiteProcessTreeSnapshot([hashtable] $State, [scriptblock] $Process
         $current = $byId[$processId]
         if ($null -ne $current -and $entry.CreationKey -eq (Get-SuiteCreationKey $current)) {
             $validSeen[$processId] = $entry
-        } elseif ($null -eq $current -and @($processes | Where-Object {
-                $childEntry = $State.Seen[[int] $_.ProcessId]
-                [int] $_.ParentProcessId -eq $processId -and $null -ne $childEntry -and $childEntry.CreationKey -eq (Get-SuiteCreationKey $_)
-            }).Count -gt 0) {
-            # A dead parent remains only while an already tracked child with the same creation identity still names it.
+        } elseif ($null -eq $current -and $entry.ParentProcessId -gt 0 -and $null -ne $State.Seen[$entry.ParentProcessId] -and $null -ne $byId[$entry.ParentProcessId] -and $State.Seen[$entry.ParentProcessId].CreationKey -eq (Get-SuiteCreationKey $byId[$entry.ParentProcessId]) -and @($processes | Where-Object { [int] $_.ParentProcessId -eq $processId }).Count -gt 0) {
+            # Retain a dead intermediate only while its own tracked parent remains live; this permits
+            # descendants it spawned after the prior snapshot without treating a dead root PID as an anchor.
             $validSeen[$processId] = $entry
         }
     }
@@ -164,7 +167,7 @@ function Get-SuiteProcessTreeSnapshot([hashtable] $State, [scriptblock] $Process
         $root = $byId[$State.RootPid]
         $State.RootCreationKey = Get-SuiteCreationKey $root
         if ($null -ne $State.RootCreationKey) {
-            $State.Seen[([int] $root.ProcessId)] = @{ ProcessId = [int] $root.ProcessId; CreationKey = $State.RootCreationKey; Depth = 0 }
+            $State.Seen[([int] $root.ProcessId)] = @{ ProcessId = [int] $root.ProcessId; ParentProcessId = 0; CreationKey = $State.RootCreationKey; Depth = 0 }
         }
     }
     $knownIds = [System.Collections.Generic.HashSet[int]]::new()
@@ -177,7 +180,7 @@ function Get-SuiteProcessTreeSnapshot([hashtable] $State, [scriptblock] $Process
             if ($null -ne $parent -and $knownIds.Contains([int] $process.ParentProcessId) -and -not $State.Seen.ContainsKey($processId)) {
                 $creationKey = Get-SuiteCreationKey $process
                 if ($null -ne $creationKey) {
-                    $State.Seen[$processId] = @{ ProcessId = $processId; CreationKey = $creationKey; Depth = [int] $parent.Depth + 1 }
+                    $State.Seen[$processId] = @{ ProcessId = $processId; ParentProcessId = [int] $process.ParentProcessId; CreationKey = $creationKey; Depth = [int] $parent.Depth + 1 }
                     [void] $knownIds.Add($processId)
                     $added = $true
                 }

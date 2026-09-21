@@ -30,7 +30,7 @@ function Write-LockRecord([IO.FileStream] $Stream, [int] $ProcessId, [int] $Suit
 
 function Get-LockHolderMessage([string] $Path) {
     $record = Get-LockRecord $Path
-    if ($null -eq $record) { return $null }
+    if ($null -eq $record -or $record.Pid -le 0) { return $null }
     return "lock held by pid=$($record.Pid) log=$($record.Log)"
 }
 
@@ -87,6 +87,9 @@ try {
         $holder = Get-LockHolderMessage $LockPath
         $message = if ($null -ne $holder) { $holder } else { 'lock held but holder record is unavailable' }
         Write-RefusalLog $LogPath $message
+        exit 3
+    } catch [UnauthorizedAccessException] {
+        Write-RefusalLog $LogPath 'lock unavailable: access denied'
         exit 3
     }
     Write-LockRecord $lockStream $PID 0 $LogPath
