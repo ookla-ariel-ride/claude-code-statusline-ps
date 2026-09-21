@@ -11941,7 +11941,7 @@ $out = @(& $suiteRunner -Attach ' ')
 $code = $LASTEXITCODE
 Confirm-True ($code -eq 2 -and ($out -join "`n") -match 'must not be empty') 'suite runner attach: an empty path is a usage error'
 $verboseAttachLog = Join-Path $suiteRunnerTemp 'verbose-dead-wrapper.log'
-@(1..120 | ForEach-Object { "verbose attach line $_" }) + '##suite:wrapper=999999' | Set-Content -LiteralPath $verboseAttachLog -Encoding utf8NoBOM
+@('##suite:wrapper=999999') + @(1..120 | ForEach-Object { "verbose attach line $_" }) | Set-Content -LiteralPath $verboseAttachLog -Encoding utf8NoBOM
 $out = @(& $suiteRunner -Attach $verboseAttachLog -PollSeconds 1 -StallMinutes 1)
 $code = $LASTEXITCODE
 Confirm-True ($code -eq 5 -and ($out -join "`n") -match 'suite wrapper died before writing exit=') 'suite runner attach: a wrapper header above a verbose tail still detects wrapper death'
