@@ -11780,8 +11780,9 @@ $suiteCommon = Join-Path $PSScriptRoot 'tools\suite-common.ps1'
 . $suiteCommon
 # suite-common enables strict mode for production scripts. Keep this legacy assertion tail non-strict.
 Set-StrictMode -Off
-$strictTailUnsetValue = $unsetTailVariable
-Confirm-True ($null -eq $strictTailUnsetValue) 'suite runner strict mode: the tail scope permits an unset variable after suite-common is dot-sourced'
+$suiteTailStrictOff = $false
+try { $null = $suiteTailStrictProbeUnset; $suiteTailStrictOff = $true } catch { $suiteTailStrictOff = $false }
+Confirm-True $suiteTailStrictOff 'suite runner strict mode: the tail runs with strict mode off after dot-sourcing suite-common.ps1'
 foreach ($case in @(
         @{ Expected = $true; Command = 'pwsh -NoProfile -File C:\repo\test.ps1'; Label = 'an unquoted absolute test script' }
         @{ Expected = $true; Command = 'pwsh -File "C:\space repo\test.ps1"'; Label = 'a quoted test script' }
