@@ -11986,16 +11986,18 @@ exit 7
 '@ -Encoding utf8NoBOM
 $startedSuiteWrappers = [System.Collections.Generic.List[int]]::new()
 try {
-    $launch = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock, '-Force', '-AcknowledgementDelayMilliseconds', '500') ''
+    # 3500 ms clears a cold fake-pwsh start on a loaded host; its 12-second sleep leaves the
+    # unmutated whole-file acknowledgement safely inside the runner's 10-second deadline.
+    $launch = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock, '-Force', '-AcknowledgementDelayMilliseconds', '3500') ''
     $launchText = $launch.Lines -join [Environment]::NewLine
     $launchLogLine = @($launch.Lines | Where-Object { $_ -match '^log=' } | Select-Object -Last 1)
     $launchPidLine = @($launch.Lines | Where-Object { $_ -match '^pid=' } | Select-Object -Last 1)
     $launchLog = if ($launchLogLine.Count -gt 0) { $launchLogLine[0].Substring(4) } else { '' }
     $launchPid = if ($launchPidLine.Count -gt 0) { $launchPidLine[0].Substring(4) } else { '' }
     if ($launchPid -match '^\d+$') { $startedSuiteWrappers.Add([int] $launchPid) }
-    if ($launch.ExitCode -ne 0 -or -not $launchLog -or -not $launchPid -or -not (Test-Path -LiteralPath $launchLog -PathType Leaf)) {
-        throw "suite runner launch did not acknowledge safely: exit=$($launch.ExitCode); output=$launchText"
-    }
+    $launchAcknowledged = $launch.ExitCode -eq 0 -and $launchLog -and $launchPid -and (Test-Path -LiteralPath $launchLog -PathType Leaf)
+    Confirm-True $launchAcknowledged "suite runner launch acknowledges safely: exit=$($launch.ExitCode); output=$launchText"
+    if ($launchAcknowledged) {
     Confirm-True ($launch.Ms -lt 10000) "suite runner detachment: launch acknowledges under ten seconds, got $($launch.Ms) ms"
     Confirm-True ($launchLog -match 'suite-\d{8}-\d{6}-[0-9a-f]{8}\.log$') 'suite runner detachment: runner chose the final unique log path before launch'
 
@@ -12042,6 +12044,7 @@ exit 0
     $drainLog = if ($drainLogLine.Count -eq 1) { $drainLogLine[0].Substring(4) } else { '' }
     $drainLogLines = if ($drainLog -and (Test-Path -LiteralPath $drainLog -PathType Leaf)) { @(Get-Content -LiteralPath $drainLog) } else { @() }
     Confirm-True ($drain.ExitCode -eq 1 -and $drainLogLines -contains 'log-error=drain-timeout' -and $drainLogLines -contains '##suite:exit=1' -and $drainLogLines -notcontains '##suite:exit=0') "suite runner drain: inherited output after root exit is marked and fails rather than returning success, got exit $($drain.ExitCode)"
+    }
 } finally {
     foreach ($wrapperPid in $startedSuiteWrappers) {
         try {
