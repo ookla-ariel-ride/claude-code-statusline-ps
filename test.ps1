@@ -11950,7 +11950,9 @@ Confirm-True ($code -eq 5 -and ($out -join "`n") -match 'suite wrapper died befo
 $suiteRunnerFake = Join-Path $suiteRunnerTemp 'suite-fake.ps1'
 $suiteRunnerDriver = Join-Path $suiteRunnerTemp 'suite-runner-driver.ps1'
 $suiteRunnerLogDir = Join-Path $suiteRunnerTemp 'logs'
-New-Item -ItemType Directory -Path $suiteRunnerTemp -Force | Out-Null
+$suiteRunnerForceLock = Join-Path (Join-Path $suiteRunnerTemp 'force') 'suite.lock'
+$suiteRunnerDrainLock = Join-Path (Join-Path $suiteRunnerTemp 'drain') 'suite.lock'
+New-Item -ItemType Directory -Path $suiteRunnerTemp, (Split-Path -Parent $suiteRunnerForceLock), (Split-Path -Parent $suiteRunnerDrainLock) -Force | Out-Null
 Set-Content -LiteralPath $suiteRunnerDriver -Value @'
 param(
     [Parameter(Mandatory)] [string] $Runner,
@@ -12019,14 +12021,29 @@ try {
     Confirm-True ($contender.ExitCode -eq 3) "suite runner lock: a second launch while the fake suite runs exits 3, got $($contender.ExitCode)"
     Confirm-True (($contender.Lines -join [Environment]::NewLine) -match ("PID {0} log=" -f [regex]::Escape($launchPid))) 'suite runner lock: the advisory refusal names the winning fake child and log'
 
-    $forced = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock, '-Force') ''
-    $forcedText = $forced.Lines -join [Environment]::NewLine
-    Confirm-True ($forced.ExitCode -eq 3 -and $forcedText -match 'lock held by pid=\d+ log=') 'suite runner force: a forced child cannot bypass the OS-held lock and reports its holder'
-    Confirm-True ($forcedText -notmatch '(?m)^(log|pid)=') 'suite runner acknowledgement: a failed child acknowledgement publishes no log or PID'
-
     $out = @(& $suiteRunner -Attach $launchLog -PollSeconds 1)
     $code = $LASTEXITCODE
     Confirm-True ($code -eq 7) "suite runner detachment: attach returns the fake suite's exit 7, got $code"
+
+    # The acknowledgement fixture deliberately delays its parent, so force uses an independent holder.
+    $forceHolder = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerForceLock) ''
+    $forceHolderLogLine = @($forceHolder.Lines | Where-Object { $_ -match '^log=' } | Select-Object -Last 1)
+    $forceHolderPidLine = @($forceHolder.Lines | Where-Object { $_ -match '^pid=' } | Select-Object -Last 1)
+    $forceHolderLog = if ($forceHolderLogLine.Count -gt 0) { $forceHolderLogLine[0].Substring(4) } else { '' }
+    $forceHolderPid = if ($forceHolderPidLine.Count -gt 0) { $forceHolderPidLine[0].Substring(4) } else { '' }
+    if ($forceHolderPid -match '^\d+$') { $startedSuiteWrappers.Add([int] $forceHolderPid) }
+    $forceHolderAcknowledged = $forceHolder.ExitCode -eq 0 -and $forceHolderLog -and $forceHolderPid -and (Test-Path -LiteralPath $forceHolderLog -PathType Leaf)
+    Confirm-True $forceHolderAcknowledged "suite runner force: independent holder acknowledges safely: exit=$($forceHolder.ExitCode)"
+    if ($forceHolderAcknowledged) {
+        $forced = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerForceLock, '-Force') ''
+        $forcedText = $forced.Lines -join [Environment]::NewLine
+        Confirm-True ($forced.ExitCode -eq 3 -and $forcedText -match 'lock held by pid=\d+ log=') 'suite runner force: a forced child cannot bypass the OS-held lock and reports its holder'
+        Confirm-True ($forcedText -notmatch '(?m)^(log|pid)=') 'suite runner acknowledgement: a failed child acknowledgement publishes no log or PID'
+
+        $out = @(& $suiteRunner -Attach $forceHolderLog -PollSeconds 1)
+        $code = $LASTEXITCODE
+        Confirm-True ($code -eq 7) "suite runner force: independent holder attach returns fake exit 7, got $code"
+    }
 
     # The root exits successfully while its descendant still inherits the redirected output pipe. The
     # wrapper must make the bounded drain observable and terminal rather than publishing exit 0.
@@ -12040,7 +12057,7 @@ $info.CreateNoWindow = $true
 [void] [Diagnostics.Process]::Start($info)
 exit 0
 '@ -Encoding utf8NoBOM
-    $drain = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteDrainFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock, '-Wait') ''
+    $drain = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteDrainFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerDrainLock, '-Wait') ''
     $drainLogLine = @($drain.Lines | Where-Object { $_ -match '^log=' } | Select-Object -Last 1)
     $drainLog = if ($drainLogLine.Count -eq 1) { $drainLogLine[0].Substring(4) } else { '' }
     $drainLogLines = if ($drainLog -and (Test-Path -LiteralPath $drainLog -PathType Leaf)) { @(Get-Content -LiteralPath $drainLog) } else { @() }
