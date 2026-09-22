@@ -21,6 +21,7 @@ param(
     [switch] $Force,
     [switch] $DryRun,
     [scriptblock] $SuiteProbe,
+    [ValidateRange(0, 10000)] [int] $AcknowledgementDelayMilliseconds = 0,
     [ValidateScript({
         if ([string]::IsNullOrWhiteSpace($_)) { throw 'LockPath must not be empty.' }
         if (-not [IO.Path]::IsPathFullyQualified($_)) { throw 'LockPath must be an absolute path.' }
@@ -225,6 +226,7 @@ while ([DateTime]::UtcNow -lt $deadline) {
         try { $null = Get-SuiteProcessTreeSnapshot $treeState } catch { Write-Verbose $_.Exception.Message }
         $nextTreeSnapshot = [DateTime]::UtcNow.AddSeconds(1)
     }
+    if ($AcknowledgementDelayMilliseconds -gt 0) { Start-Sleep -Milliseconds $AcknowledgementDelayMilliseconds }
     if (Test-Path -LiteralPath $logPath -PathType Leaf) {
         try {
             # Do not tail before the one-time wrapper header has been observed.

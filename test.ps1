@@ -11957,7 +11957,8 @@ param(
     [Parameter(Mandatory)] [string] $LogDir,
     [Parameter(Mandatory)] [string] $LockPath,
     [switch] $Force,
-    [switch] $Wait
+    [switch] $Wait,
+    [int] $AcknowledgementDelayMilliseconds = 0
 )
 $runnerParameters = @{
     TestScript = $TestScript
@@ -11965,6 +11966,7 @@ $runnerParameters = @{
     LockPath = $LockPath
     SuiteProbe = { @() }
 }
+if ($AcknowledgementDelayMilliseconds -gt 0) { $runnerParameters.AcknowledgementDelayMilliseconds = $AcknowledgementDelayMilliseconds }
 if ($Force) { $runnerParameters.Force = $true }
 if ($Wait) { $runnerParameters.Wait = $true; $runnerParameters.PollSeconds = 1 }
 & $Runner @runnerParameters
@@ -11984,7 +11986,7 @@ exit 7
 '@ -Encoding utf8NoBOM
 $startedSuiteWrappers = [System.Collections.Generic.List[int]]::new()
 try {
-    $launch = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock, '-Force') ''
+    $launch = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock, '-Force', '-AcknowledgementDelayMilliseconds', '500') ''
     $launchText = $launch.Lines -join [Environment]::NewLine
     $launchLogLine = @($launch.Lines | Where-Object { $_ -match '^log=' } | Select-Object -Last 1)
     $launchPidLine = @($launch.Lines | Where-Object { $_ -match '^pid=' } | Select-Object -Last 1)
