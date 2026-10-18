@@ -69,8 +69,8 @@ be opened for read/write, the launch fails closed with a distinct lock-access re
 observe the streaming log; `-Attach` latches the wrapper header before tailing later output, so verbose logs still detect a dead wrapper. `-Wait` and `-Attach` both stop observing at `-TimeoutMinutes` and return 6
 without stopping the suite. `-Force` skips only the runner's advisory probe for externally-started suites;
 it cannot bypass a held lock, and a forced child reports exit 3 with the holder's log. Exit 0 is a passing
-suite; an unrecoverable log write or bounded drain that discards output exits 1; 2 is invalid input, 3 is a concurrent-suite refusal, 5 is missing child acknowledgement, 6 is an
-observation timeout, and other completed exits are the suite's own code.
+suite; an unrecoverable log write, a bounded drain that discards output, or a faulted output drain exits 1; 2 is invalid input, 3 is a concurrent-suite refusal, 5 is missing child acknowledgement, 6 is an
+observation timeout, and other completed exits are the suite's own code. The test-only `-SimulateStdoutDrainFault` seam is omitted in production and verifies that terminal drain behavior.
 
 Every render must exit 0 with nothing on stderr, print the number of lines its layout allows, and fit
 the terminal width. At a set width a segment with a short form (limits, context, branch, folder,

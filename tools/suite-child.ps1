@@ -10,7 +10,9 @@ param(
     [Parameter(Mandatory)] [string] $Concurrent,
     [Parameter(Mandatory)] [string] $FreeMb,
     # Test seam; omitted by Invoke-Suite in production.
-    [switch] $SimulateLockAccessDenied
+    [switch] $SimulateLockAccessDenied,
+    # Test seam; omitted by Invoke-Suite in production.
+    [switch] $SimulateStdoutDrainFault
 )
 
 $ErrorActionPreference = 'Stop'
@@ -129,6 +131,11 @@ try {
     $nextTreeSnapshot = [DateTime]::UtcNow.AddSeconds(15)
     $stdoutTask = $suite.StandardOutput.ReadLineAsync()
     $stderrTask = $suite.StandardError.ReadLineAsync()
+    if ($SimulateStdoutDrainFault) {
+        $stdoutFault = [Threading.Tasks.TaskCompletionSource[string]]::new()
+        $stdoutFault.SetException([InvalidOperationException]::new('simulated stdout drain fault'))
+        $stdoutTask = $stdoutFault.Task
+    }
     $stdoutDone = $false
     $stderrDone = $false
     $drainDeadline = $null
@@ -150,7 +157,8 @@ try {
         if (-not $stdoutDone -and $stdoutTask.IsCompleted) {
             if ($stdoutTask.IsFaulted) {
                 $null = Write-SuiteLogLine $writer 'log-error=stdout-drain-fault' $LogPath
-                $stdoutDone = $true
+                Close-SuiteStream $suite
+                throw 'suite stdout log drain faulted'
             } else {
                 $line = $stdoutTask.GetAwaiter().GetResult()
                 if ($null -eq $line) { $stdoutDone = $true }
@@ -161,7 +169,8 @@ try {
         if (-not $stderrDone -and $stderrTask.IsCompleted) {
             if ($stderrTask.IsFaulted) {
                 $null = Write-SuiteLogLine $writer 'log-error=stderr-drain-fault' $LogPath
-                $stderrDone = $true
+                Close-SuiteStream $suite
+                throw 'suite stderr log drain faulted'
             } else {
                 $line = $stderrTask.GetAwaiter().GetResult()
                 if ($null -eq $line) { $stderrDone = $true }

@@ -23,6 +23,8 @@ param(
     [scriptblock] $SuiteProbe,
     # Test seam for simulating the lock open outcome without changing machine ACLs.
     [scriptblock] $LockStatusOpenFile,
+    # Test seam for verifying a faulted stdout drain is terminal.
+    [switch] $SimulateStdoutDrainFault,
     [ValidateRange(0, 10000)] [int] $AcknowledgementDelayMilliseconds = 0,
     [ValidateScript({
         if ([string]::IsNullOrWhiteSpace($_)) { throw 'LockPath must not be empty.' }
@@ -55,7 +57,7 @@ function Test-ProcessAlive([int] $ProcessId) {
 
 function Get-SuiteStamp([string] $ResolvedTestScript, [string] $RepoRoot, [int[]] $ConcurrentPids, [string] $RunLockPath) {
     $sha = 'unknown'
-    $dirty = 0
+    $dirty = 'unknown'
     if ($RepoRoot) {
         try {
             $head = @(& git -C $RepoRoot rev-parse --short HEAD 2>$null)
@@ -210,6 +212,7 @@ $pwshExe = (Get-Command pwsh -CommandType Application | Select-Object -First 1).
 $childScript = Join-Path $PSScriptRoot 'suite-child.ps1'
 try {
     $childArguments = @('-NoProfile', '-File', $childScript, '-TestScript', $resolvedTestScript, '-LogPath', $logPath, '-LockPath', $lockPath, '-Utc', $stamp.utc, '-Sha', $stamp.sha, '-Dirty', $stamp.dirty, '-Concurrent', $stamp.concurrent, '-FreeMb', $stamp.freeMb)
+    if ($SimulateStdoutDrainFault) { $childArguments += '-SimulateStdoutDrainFault' }
     $startInfo = [Diagnostics.ProcessStartInfo]::new($pwshExe)
     foreach ($argument in $childArguments) { [void] $startInfo.ArgumentList.Add($argument) }
     $startInfo.UseShellExecute = $true
