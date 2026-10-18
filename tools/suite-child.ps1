@@ -8,7 +8,9 @@ param(
     [Parameter(Mandatory)] [string] $Sha,
     [Parameter(Mandatory)] [string] $Dirty,
     [Parameter(Mandatory)] [string] $Concurrent,
-    [Parameter(Mandatory)] [string] $FreeMb
+    [Parameter(Mandatory)] [string] $FreeMb,
+    # Test seam; omitted by Invoke-Suite in production.
+    [switch] $SimulateLockAccessDenied
 )
 
 $ErrorActionPreference = 'Stop'
@@ -79,6 +81,7 @@ $suite = $null
 $treeState = $null
 try {
     try {
+        if ($SimulateLockAccessDenied) { throw [UnauthorizedAccessException]::new('simulated lock access denied') }
         $openedLock = Open-SuiteLock $LockPath
         $lockStream = $openedLock.Stream
         $activeLockPath = $openedLock.Path

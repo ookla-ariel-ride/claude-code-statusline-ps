@@ -142,6 +142,16 @@ function Get-SuiteCreationKey([object] $Process) {
     catch { return $null }
 }
 
+function Test-SuiteChildCreationAfterParent([object] $Child, [hashtable] $ParentEntry) {
+    $childCreationKey = Get-SuiteCreationKey $Child
+    if ($null -eq $childCreationKey -or $null -eq $ParentEntry -or [string]::IsNullOrWhiteSpace($ParentEntry.CreationKey)) { return $false }
+    try {
+        $parentCreated = [datetime] $ParentEntry.CreationKey.Substring($ParentEntry.CreationKey.IndexOf('|') + 1)
+        $childCreated = [datetime] $childCreationKey.Substring($childCreationKey.IndexOf('|') + 1)
+        return $childCreated.ToUniversalTime() -gt $parentCreated.ToUniversalTime()
+    } catch { return $false }
+}
+
 function Initialize-SuiteProcessTreeState([int] $SuiteId) {
     return @{ RootPid = $SuiteId; RootCreationKey = $null; Seen = @{}; Snapshot = @() }
 }
@@ -156,9 +166,9 @@ function Get-SuiteProcessTreeSnapshot([hashtable] $State, [scriptblock] $Process
         $current = $byId[$processId]
         if ($null -ne $current -and $entry.CreationKey -eq (Get-SuiteCreationKey $current)) {
             $validSeen[$processId] = $entry
-        } elseif ($null -eq $current -and $entry.ParentProcessId -gt 0 -and $null -ne $State.Seen[$entry.ParentProcessId] -and $null -ne $byId[$entry.ParentProcessId] -and $State.Seen[$entry.ParentProcessId].CreationKey -eq (Get-SuiteCreationKey $byId[$entry.ParentProcessId]) -and @($processes | Where-Object { [int] $_.ParentProcessId -eq $processId }).Count -gt 0) {
-            # Retain a dead intermediate only while its own tracked parent remains live; this permits
-            # descendants it spawned after the prior snapshot without treating a dead root PID as an anchor.
+        } elseif ($null -eq $current -and $entry.ParentProcessId -gt 0 -and $null -ne $State.Seen[$entry.ParentProcessId] -and $null -ne $byId[$entry.ParentProcessId] -and $State.Seen[$entry.ParentProcessId].CreationKey -eq (Get-SuiteCreationKey $byId[$entry.ParentProcessId]) -and @($processes | Where-Object { [int] $_.ParentProcessId -eq $processId -and (Test-SuiteChildCreationAfterParent $_ $entry) }).Count -gt 0) {
+            # Retain a dead intermediate only beneath its live, tracked parent and only for a child
+            # created after this parent incarnation; a prior process reusing the PID cannot be adopted.
             $validSeen[$processId] = $entry
         }
     }

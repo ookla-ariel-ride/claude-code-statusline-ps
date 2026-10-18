@@ -21,6 +21,8 @@ param(
     [switch] $Force,
     [switch] $DryRun,
     [scriptblock] $SuiteProbe,
+    # Test seam for simulating the lock open outcome without changing machine ACLs.
+    [scriptblock] $LockStatusOpenFile,
     [ValidateRange(0, 10000)] [int] $AcknowledgementDelayMilliseconds = 0,
     [ValidateScript({
         if ([string]::IsNullOrWhiteSpace($_)) { throw 'LockPath must not be empty.' }
@@ -180,7 +182,7 @@ catch {
     Write-Output "could not prepare machine-wide suite lock: $($_.Exception.Message)"
     exit 2
 }
-$lockStatus = Get-SuiteLockStatus $lockPath
+$lockStatus = Get-SuiteLockStatus $lockPath $LockStatusOpenFile
 $lockHeld = $lockStatus.Held
 $lockRecord = if ($lockHeld -or $lockStatus.AccessDenied) { Get-LockRecord $lockPath } else { $null }
 if (($concurrentPids.Count -gt 0 -or $lockHeld -or $lockStatus.AccessDenied) -and -not $Force) {
@@ -199,7 +201,7 @@ $stamp = Get-SuiteStamp $resolvedTestScript $repoRoot $concurrentPids $lockPath
 $stampLines = ConvertTo-StampLine $stamp
 if ($DryRun) { $stampLines | Write-Output; exit 0 }
 
-$resolvedLogDir = [IO.Path]::GetFullPath($LogDir, $PWD.ProviderPath)
+$resolvedLogDir = if ([IO.Path]::IsPathFullyQualified($LogDir)) { $LogDir } else { [IO.Path]::GetFullPath($LogDir, $PWD.ProviderPath) }
 New-Item -ItemType Directory -Path $resolvedLogDir -Force | Out-Null
 $timestamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss', [Globalization.CultureInfo]::InvariantCulture)
 $randomHex = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(4)).ToLowerInvariant()
