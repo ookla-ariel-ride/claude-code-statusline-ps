@@ -11939,7 +11939,9 @@ Confirm-True ($code -eq 3 -and ($out -join "`n") -match 'recorded PID 999999 is 
 $childAccessDeniedLog = Join-Path $suiteRunnerTemp 'child-access-denied.log'
 $childAccessDenied = Invoke-ChildPwsh $suiteChild @('-TestScript', $suiteRunner, '-LogPath', $childAccessDeniedLog, '-LockPath', $freshLockPath, '-Utc', '2026-01-01T00:00:00.0000000Z', '-Sha', 'test', '-Dirty', '0', '-Concurrent', '0 pids=', '-FreeMb', '0', '-SimulateLockAccessDenied') ''
 $childAccessDeniedText = if (Test-Path -LiteralPath $childAccessDeniedLog -PathType Leaf) { Get-Content -LiteralPath $childAccessDeniedLog -Raw } else { '' }
-Confirm-True ($childAccessDenied.ExitCode -eq 3 -and $childAccessDeniedText -match '(?m)^##suite:child-error=lock unavailable: access denied$' -and $childAccessDeniedText -match '(?m)^##suite:exit=3$') 'suite child access denied: the child writes its refusal control record and exits 3'
+Confirm-Equal $childAccessDenied.ExitCode 3 'suite child access denied: exits with the refusal code'
+Confirm-True ($childAccessDeniedText -match '(?m)^##suite:child-error=lock unavailable: access denied\r?$') 'suite child access denied: writes the access-denied refusal control record'
+Confirm-True ($childAccessDeniedText -match '(?m)^##suite:exit=3\r?$') 'suite child access denied: writes the refusal exit control record'
 $out = @(& $suiteRunner -DryRun -LogDir $suiteRunnerTemp -LockPath $suiteRunnerLock -SuiteProbe { @() })
 $code = $LASTEXITCODE
 $suiteRunnerStamp = $out -join "`n"
