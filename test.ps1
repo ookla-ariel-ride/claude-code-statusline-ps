@@ -11919,7 +11919,9 @@ New-Item -ItemType Directory -Path $suiteRunnerTemp -Force | Out-Null
 $missingLockPath = Join-Path $suiteRunnerTemp 'missing-lock-directory\suite.lock'
 Confirm-Equal (Test-SuiteLockHeld $missingLockPath) $false 'suite lock: a missing parent directory is not reported as held'
 Confirm-True (-not (Test-Path -LiteralPath $missingLockPath -PathType Leaf)) 'suite lock: checking a missing lock does not create it'
-$freshLockPath = Join-Path $suiteRunnerTemp 'fresh-suite.lock'
+$freshLockDirectory = Join-Path $suiteRunnerTemp 'fresh-lock'
+New-Item -ItemType Directory -Path $freshLockDirectory -Force | Out-Null
+$freshLockPath = Join-Path $freshLockDirectory 'suite.lock'
 Confirm-Equal (Test-SuiteLockHeld $freshLockPath) $false 'suite lock: an unlocked path in an existing directory is not held'
 Confirm-True (-not (Test-Path -LiteralPath $freshLockPath -PathType Leaf)) 'suite lock: checking an unlocked path does not create a stale lock file'
 Set-Content -LiteralPath $freshLockPath -Value '' -Encoding utf8NoBOM
