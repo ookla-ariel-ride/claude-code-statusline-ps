@@ -21,6 +21,9 @@ param(
     [switch] $Force,
     [switch] $DryRun,
     [scriptblock] $SuiteProbe,
+    # Test seam for simulating the lock open outcome without changing machine ACLs.
+    [scriptblock] $LockStatusOpenFile,
+    [ValidateRange(0, 10000)] [int] $AcknowledgementDelayMilliseconds = 0,
     [ValidateScript({
         if ([string]::IsNullOrWhiteSpace($_)) { throw 'LockPath must not be empty.' }
         if (-not [IO.Path]::IsPathFullyQualified($_)) { throw 'LockPath must be an absolute path.' }
@@ -40,9 +43,10 @@ function Get-RunnerOtherSuitePid {
 }
 
 function Get-LogValue([string[]] $Lines, [string] $Name) {
-    $line = @($Lines | Where-Object { $_ -match ('^{0}=(.*)$' -f [regex]::Escape($Name)) } | Select-Object -Last 1)
+    $prefix = '##suite:' + $Name + '='
+    $line = @($Lines | Where-Object { $_.StartsWith($prefix, [StringComparison]::Ordinal) } | Select-Object -Last 1)
     if ($line.Count -eq 0) { return $null }
-    return $line[0].Substring($Name.Length + 1)
+    return $line[0].Substring($prefix.Length)
 }
 
 function Test-ProcessAlive([int] $ProcessId) {
@@ -53,8 +57,12 @@ function Get-SuiteStamp([string] $ResolvedTestScript, [string] $RepoRoot, [int[]
     $sha = 'unknown'
     $dirty = 0
     if ($RepoRoot) {
-        $sha = (& git -C $RepoRoot rev-parse --short HEAD).Trim()
-        $dirty = @(& git -C $RepoRoot status --porcelain).Count
+        try {
+            $head = @(& git -C $RepoRoot rev-parse --short HEAD 2>$null)
+            if ($LASTEXITCODE -eq 0 -and $head.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($head[0])) { $sha = $head[0].Trim() }
+            $status = @(& git -C $RepoRoot status --porcelain)
+            if ($LASTEXITCODE -eq 0) { $dirty = $status.Count }
+        } catch { Write-Verbose "Could not stamp the git repository: $($_.Exception.Message)" }
     }
     $freeMb = [math]::Floor((Get-CimInstance -ClassName Win32_OperatingSystem).FreePhysicalMemory / 1024)
     return [ordered]@{
@@ -88,7 +96,10 @@ function Wait-SuiteLog([string] $LogPath, [int] $PollIntervalSeconds, [int] $Max
             $item = Get-Item -LiteralPath $LogPath -ErrorAction SilentlyContinue
             if ($null -ne $item) {
                 if (-not $seenLog -or $item.LastWriteTimeUtc -gt $lastWrite) { $lastWrite = $item.LastWriteTimeUtc; $seenLog = $true }
-                $lines = @(Get-Content -LiteralPath $LogPath -ErrorAction Stop)
+                # The wrapper header is written once near the start of the log. Read the full log until
+                # it is latched; tailing before that can permanently hide it behind verbose output.
+                if ($wrapperPid -gt 0) { $lines = @(Get-Content -LiteralPath $LogPath -Tail 100 -ErrorAction Stop) }
+                else { $lines = @(Get-Content -LiteralPath $LogPath -ErrorAction Stop) }
                 $wrapperText = Get-LogValue $lines 'wrapper'
                 if ($wrapperText -match '^\d+$') { $wrapperPid = [int] $wrapperText }
                 $exitText = Get-LogValue $lines 'exit'
@@ -158,14 +169,28 @@ if (-not (Test-Path -LiteralPath $TestScript -PathType Leaf)) {
 }
 $resolvedTestScript = (Resolve-Path -LiteralPath $TestScript).Path
 $testDirectory = Split-Path -Parent $resolvedTestScript
-$repoRootResult = @(& git -C $testDirectory rev-parse --show-toplevel 2>$null)
-$repoRoot = if ($LASTEXITCODE -eq 0 -and $repoRootResult.Count -gt 0) { $repoRootResult[0].Trim() } else { '' }
+$repoRootResult = @()
+$repoRootExitCode = $null
+try {
+    $repoRootResult = @(& git -C $testDirectory rev-parse --show-toplevel 2>$null)
+    $repoRootExitCode = $LASTEXITCODE
+} catch { Write-Verbose "Could not find the git repository root: $($_.Exception.Message)" }
+$repoRoot = if ($repoRootExitCode -eq 0 -and $repoRootResult.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($repoRootResult[0])) { $repoRootResult[0].Trim() } else { '' }
 $concurrentPids = @(Get-RunnerOtherSuitePid)
-$lockPath = if ($PSBoundParameters.ContainsKey('LockPath')) { $LockPath } else { Get-SuiteLockPath }
-$lockHeld = Test-SuiteLockHeld $lockPath
-$lockRecord = if ($lockHeld) { Get-LockRecord $lockPath } else { $null }
-if (($concurrentPids.Count -gt 0 -or $lockHeld) -and -not $Force) {
-    if ($lockHeld) {
+try { $lockPath = if ($PSBoundParameters.ContainsKey('LockPath')) { $LockPath } else { Get-SuiteLockPath } }
+catch {
+    Write-Output "could not prepare machine-wide suite lock: $($_.Exception.Message)"
+    exit 2
+}
+$lockStatus = Get-SuiteLockStatus $lockPath $LockStatusOpenFile
+$lockHeld = $lockStatus.Held
+$lockRecord = if ($lockHeld -or $lockStatus.AccessDenied) { Get-LockRecord $lockPath } else { $null }
+if (($concurrentPids.Count -gt 0 -or $lockHeld -or $lockStatus.AccessDenied) -and -not $Force) {
+    if ($lockStatus.AccessDenied) {
+        $recordedPid = if ($null -ne $lockRecord) { $lockRecord.Pid } else { 0 }
+        if ($recordedPid -gt 0 -and (Test-ProcessAlive $recordedPid)) { Write-Output "suite lock is not writable by this user; active suite PID $recordedPid" }
+        else { Write-Output "suite lock is not writable by this user; recorded PID $recordedPid is not running" }
+    } elseif ($lockHeld) {
         $ownerPid = if ($null -ne $lockRecord) { $lockRecord.Pid } else { 0 }
         $ownerLog = if ($null -ne $lockRecord) { $lockRecord.Log } else { '' }
         Write-Output "refusing to start beside suite PID $ownerPid log=$ownerLog"
@@ -176,7 +201,7 @@ $stamp = Get-SuiteStamp $resolvedTestScript $repoRoot $concurrentPids $lockPath
 $stampLines = ConvertTo-StampLine $stamp
 if ($DryRun) { $stampLines | Write-Output; exit 0 }
 
-$resolvedLogDir = [IO.Path]::GetFullPath($LogDir)
+$resolvedLogDir = if ([IO.Path]::IsPathFullyQualified($LogDir)) { $LogDir } else { [IO.Path]::GetFullPath($LogDir, $PWD.ProviderPath) }
 New-Item -ItemType Directory -Path $resolvedLogDir -Force | Out-Null
 $timestamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss', [Globalization.CultureInfo]::InvariantCulture)
 $randomHex = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(4)).ToLowerInvariant()
@@ -185,7 +210,6 @@ $pwshExe = (Get-Command pwsh -CommandType Application | Select-Object -First 1).
 $childScript = Join-Path $PSScriptRoot 'suite-child.ps1'
 try {
     $childArguments = @('-NoProfile', '-File', $childScript, '-TestScript', $resolvedTestScript, '-LogPath', $logPath, '-LockPath', $lockPath, '-Utc', $stamp.utc, '-Sha', $stamp.sha, '-Dirty', $stamp.dirty, '-Concurrent', $stamp.concurrent, '-FreeMb', $stamp.freeMb)
-    if (-not $PSBoundParameters.ContainsKey('LockPath')) { $childArguments += '-UseDefaultLockPath' }
     $startInfo = [Diagnostics.ProcessStartInfo]::new($pwshExe)
     foreach ($argument in $childArguments) { [void] $startInfo.ArgumentList.Add($argument) }
     $startInfo.UseShellExecute = $true
@@ -197,12 +221,18 @@ try {
     exit 2
 }
 $deadline = [DateTime]::UtcNow.AddSeconds(10)
+$nextTreeSnapshot = [DateTime]::MinValue
 $acknowledged = $false
 while ([DateTime]::UtcNow -lt $deadline) {
-    try { $null = Get-SuiteProcessTreeSnapshot $treeState } catch { Write-Verbose $_.Exception.Message }
+    if ([DateTime]::UtcNow -ge $nextTreeSnapshot) {
+        try { $null = Get-SuiteProcessTreeSnapshot $treeState } catch { Write-Verbose $_.Exception.Message }
+        $nextTreeSnapshot = [DateTime]::UtcNow.AddSeconds(1)
+    }
+    if ($AcknowledgementDelayMilliseconds -gt 0) { Start-Sleep -Milliseconds $AcknowledgementDelayMilliseconds }
     if (Test-Path -LiteralPath $logPath -PathType Leaf) {
         try {
-            if (@(Get-Content -LiteralPath $logPath -ErrorAction Stop | Where-Object { $_ -match '^wrapper=\d+$' }).Count -gt 0) { $acknowledged = $true; break }
+            # Do not tail before the one-time wrapper header has been observed.
+            if (@(Get-Content -LiteralPath $logPath -ErrorAction Stop | Where-Object { $_ -match '^##suite:wrapper=\d+$' }).Count -gt 0) { $acknowledged = $true; break }
         } catch { Write-Verbose $_.Exception.Message }
     }
     $process.Refresh()
@@ -216,7 +246,7 @@ if (-not $acknowledged) {
         $lines = if (Test-Path -LiteralPath $logPath -PathType Leaf) { @(Get-Content -LiteralPath $logPath -ErrorAction SilentlyContinue) } else { @() }
         $childError = Get-LogValue $lines 'child-error'
         $childExit = Get-LogValue $lines 'exit'
-        if ($process.ExitCode -eq 3 -and $childExit -eq '3' -and $childError -match '^lock held by pid=') {
+        if ($process.ExitCode -eq 3 -and $childExit -eq '3' -and $childError -match '^lock (held|unavailable)') {
             Write-Output $childError
             exit 3
         }

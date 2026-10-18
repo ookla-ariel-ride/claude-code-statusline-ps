@@ -11778,6 +11778,11 @@ Confirm-True (-not (Test-Path -LiteralPath "$capBigFile.2")) 'capture oversize: 
 $suiteRunner = Join-Path $PSScriptRoot 'tools\Invoke-Suite.ps1'
 $suiteCommon = Join-Path $PSScriptRoot 'tools\suite-common.ps1'
 . $suiteCommon
+# suite-common enables strict mode for production scripts. Keep this legacy assertion tail non-strict.
+Set-StrictMode -Off
+$suiteTailStrictOff = $false
+try { $null = $suiteTailStrictProbeUnset; $suiteTailStrictOff = $true } catch { $suiteTailStrictOff = $false }
+Confirm-True $suiteTailStrictOff 'suite runner strict mode: the tail runs with strict mode off after dot-sourcing suite-common.ps1'
 foreach ($case in @(
         @{ Expected = $true; Command = 'pwsh -NoProfile -File C:\repo\test.ps1'; Label = 'an unquoted absolute test script' }
         @{ Expected = $true; Command = 'pwsh -File "C:\space repo\test.ps1"'; Label = 'a quoted test script' }
@@ -11810,29 +11815,78 @@ $suiteProcessFixture = @(
 Confirm-Equal (@(Get-OtherSuitePid -ProcessSource { $suiteProcessFixture }) -join ',') '9100,9101,9103' 'suite matcher: Win32_Process-shaped command lines identify suite processes'
 Confirm-Equal (@(Get-OtherSuitePid -ExcludedPids @(9100) -ProcessSource { $suiteProcessFixture }) -join ',') '9103' 'suite matcher: excluded suite descendants are not reported as concurrent'
 
-function New-SuiteProcessFixture([int] $ProcessId, [int] $ParentProcessId, [int] $CreatedAtSecond) {
+function Get-SuiteProcessFixture([int] $ProcessId, [int] $ParentProcessId, [int] $CreatedAtSecond) {
     return [pscustomobject]@{ ProcessId = $ProcessId; ParentProcessId = $ParentProcessId; CreationDate = [DateTime]::UnixEpoch.AddSeconds($CreatedAtSecond) }
 }
 $treeRounds = [Collections.Generic.Queue[object[]]]::new()
 [void] $treeRounds.Enqueue(@(
-        (New-SuiteProcessFixture 1000 0 1)
-        (New-SuiteProcessFixture 1234 1000 2)
+        (Get-SuiteProcessFixture 1000 0 1)
+        (Get-SuiteProcessFixture 1234 1000 2)
     ))
 [void] $treeRounds.Enqueue(@(
-        (New-SuiteProcessFixture 1000 0 1)
-        (New-SuiteProcessFixture 1234 777 600)
-        (New-SuiteProcessFixture 5678 1234 601)
+        (Get-SuiteProcessFixture 1000 0 1)
+        (Get-SuiteProcessFixture 1234 777 600)
+        (Get-SuiteProcessFixture 5678 1234 601)
     ))
 $treeProcessSource = { $treeRounds.Dequeue() }
 $treeState = Initialize-SuiteProcessTreeState 1000
 Confirm-Equal (@(Get-SuiteProcessTreeSnapshot -State $treeState -ProcessSource $treeProcessSource | ForEach-Object { $_.ProcessId } | Sort-Object) -join ',') '1000,1234' 'suite tree: the initial root and child are tracked with their creation keys'
 Confirm-Equal (@(Get-SuiteProcessTreeSnapshot -State $treeState -ProcessSource $treeProcessSource | ForEach-Object { $_.ProcessId } | Sort-Object) -join ',') '1000' 'suite tree: a recycled parent PID cannot adopt its current children'
 Confirm-Equal (@($treeState.Seen.Keys | Sort-Object) -join ',') '1000' 'suite tree: a recycled PID is pruned from future adoption anchors'
+$deadParentRounds = [Collections.Generic.Queue[object[]]]::new()
+[void] $deadParentRounds.Enqueue(@(
+        (Get-SuiteProcessFixture 1000 0 1)
+        (Get-SuiteProcessFixture 1001 1000 2)
+    ))
+[void] $deadParentRounds.Enqueue(@(
+        (Get-SuiteProcessFixture 9999 1000 3)
+    ))
+$deadParentState = Initialize-SuiteProcessTreeState 1000
+$deadParentSource = { $deadParentRounds.Dequeue() }
+$null = Get-SuiteProcessTreeSnapshot -State $deadParentState -ProcessSource $deadParentSource
+Confirm-Equal (@(Get-SuiteProcessTreeSnapshot -State $deadParentState -ProcessSource $deadParentSource | ForEach-Object { $_.ProcessId } | Sort-Object) -join ',') '' 'suite tree: a dead parent cannot adopt an untracked process that merely reuses its PID as parent'
+$lateChildRounds = [Collections.Generic.Queue[object[]]]::new()
+[void] $lateChildRounds.Enqueue(@(
+        (Get-SuiteProcessFixture 2000 0 1)
+        (Get-SuiteProcessFixture 2001 2000 2)
+    ))
+[void] $lateChildRounds.Enqueue(@(
+        (Get-SuiteProcessFixture 2000 0 1)
+        (Get-SuiteProcessFixture 2002 2001 6)
+    ))
+$lateChildState = Initialize-SuiteProcessTreeState 2000
+$lateChildSource = { $lateChildRounds.Dequeue() }
+$null = Get-SuiteProcessTreeSnapshot -State $lateChildState -ProcessSource $lateChildSource
+Confirm-Equal (@(Get-SuiteProcessTreeSnapshot -State $lateChildState -ProcessSource $lateChildSource | ForEach-Object { $_.ProcessId } | Sort-Object) -join ',') '2000,2002' 'suite tree: a dead intermediate under a live root adopts a late child'
+$reusedParentRounds = [Collections.Generic.Queue[object[]]]::new()
+[void] $reusedParentRounds.Enqueue(@(
+        (Get-SuiteProcessFixture 3000 0 1)
+        (Get-SuiteProcessFixture 3001 3000 5)
+    ))
+[void] $reusedParentRounds.Enqueue(@(
+        (Get-SuiteProcessFixture 3000 0 1)
+        # This child predates the tracked 3001 incarnation, so its real parent could only have been an
+        # earlier dead process that reused PID 3001.
+        (Get-SuiteProcessFixture 3002 3001 3)
+    ))
+$reusedParentState = Initialize-SuiteProcessTreeState 3000
+$reusedParentSource = { $reusedParentRounds.Dequeue() }
+$null = Get-SuiteProcessTreeSnapshot -State $reusedParentState -ProcessSource $reusedParentSource
+Confirm-Equal (@(Get-SuiteProcessTreeSnapshot -State $reusedParentState -ProcessSource $reusedParentSource | ForEach-Object { $_.ProcessId } | Sort-Object) -join ',') '3000' 'suite tree: a child predating a dead PID reuse is not adopted into the kill set'
 
 # A broken active writer cannot write its own diagnostic. The independent file handle must leave a
 # marker that explains why the wrapper turns the run into a failure.
 $suiteChild = Join-Path $PSScriptRoot 'tools\suite-child.ps1'
-. (Import-ScriptFunction $suiteChild @('Write-SuiteLogLine'))
+. (Import-ScriptFunction $suiteChild @('Write-SuiteLogLine', 'Test-LockSharingViolation'))
+foreach ($lockErrorCase in @(
+        @{ Code = 0x80070020; Expected = $true; Label = 'sharing violation' }
+        @{ Code = 0x80070021; Expected = $true; Label = 'lock violation' }
+        @{ Code = 0x80070070; Expected = $false; Label = 'disk full' }
+        @{ Code = 0x80070035; Expected = $false; Label = 'bad network path' }
+        @{ Code = 0x80070005; Expected = $false; Label = 'access denied' })) {
+    $lockError = [IO.IOException]::new($lockErrorCase.Label, [int] $lockErrorCase.Code)
+    Confirm-Equal (Test-LockSharingViolation $lockError) $lockErrorCase.Expected "suite lock classifier: $($lockErrorCase.Label) has the expected sharing result"
+}
 $writerFallbackLog = Join-Path $subTmp 'writer-fallback.log'
 $writerFallbackStream = [IO.File]::Open($writerFallbackLog, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
 $writerFallback = [IO.StreamWriter]::new($writerFallbackStream, [Text.UTF8Encoding]::new($false), 1024, $true)
@@ -11844,21 +11898,20 @@ try {
     $writerFallbackText = Get-Content -LiteralPath $writerFallbackLog -Raw
     Confirm-True ((-not $writerFallbackResult) -and $writerFallbackText -match '(?m)^log-error=.+') 'suite log: a broken writer records its diagnostic through an independent handle'
 } finally {
-    try { $writerFallback.Dispose() } catch { }
+    try { $writerFallback.Dispose() } catch { Write-Verbose $_.Exception.Message }
 }
 
-# The default child can recover from an access-denied common lock file, while an explicit test seam cannot
-# silently select a different lock. The injected opener keeps the test independent of local ACLs.
+# A denied machine-wide lock must fail closed: a per-user fallback could run beside another user's suite.
 $lockOpenAttempts = [System.Collections.Generic.List[string]]::new()
-$syntheticLock = Open-SuiteLock (Join-Path $subTmp 'denied\suite.lock') -AllowFallback -OpenFile {
-    param([string] $Candidate)
-    [void] $lockOpenAttempts.Add($Candidate)
-    if ($lockOpenAttempts.Count -eq 1) { throw [UnauthorizedAccessException]::new('denied') }
-    return [IO.MemoryStream]::new()
-}
+$lockOpenDenied = $false
 try {
-    Confirm-True ($lockOpenAttempts.Count -eq 2 -and $syntheticLock.Path -ne $lockOpenAttempts[0] -and $syntheticLock.Stream -is [IO.MemoryStream]) 'suite lock: access denied on the default lock retries a per-user fallback lock'
-} finally { $syntheticLock.Stream.Dispose() }
+    $null = Open-SuiteLock (Join-Path $subTmp 'denied\suite.lock') -OpenFile {
+        param([string] $Candidate)
+        [void] $lockOpenAttempts.Add($Candidate)
+        throw [UnauthorizedAccessException]::new('denied')
+    }
+} catch [UnauthorizedAccessException] { $lockOpenDenied = $true }
+Confirm-True ($lockOpenDenied -and $lockOpenAttempts.Count -eq 1) 'suite lock: access denied on the machine-wide lock fails closed without a per-user fallback'
 
 $suiteRunnerTemp = Join-Path $subTmp 'suite-runner'
 $suiteRunnerLock = Join-Path $suiteRunnerTemp 'suite.lock'
@@ -11866,9 +11919,29 @@ New-Item -ItemType Directory -Path $suiteRunnerTemp -Force | Out-Null
 $missingLockPath = Join-Path $suiteRunnerTemp 'missing-lock-directory\suite.lock'
 Confirm-Equal (Test-SuiteLockHeld $missingLockPath) $false 'suite lock: a missing parent directory is not reported as held'
 Confirm-True (-not (Test-Path -LiteralPath $missingLockPath -PathType Leaf)) 'suite lock: checking a missing lock does not create it'
-$freshLockPath = Join-Path $suiteRunnerTemp 'fresh-suite.lock'
+$freshLockDirectory = Join-Path $suiteRunnerTemp 'fresh-lock'
+New-Item -ItemType Directory -Path $freshLockDirectory -Force | Out-Null
+$freshLockPath = Join-Path $freshLockDirectory 'suite.lock'
 Confirm-Equal (Test-SuiteLockHeld $freshLockPath) $false 'suite lock: an unlocked path in an existing directory is not held'
 Confirm-True (-not (Test-Path -LiteralPath $freshLockPath -PathType Leaf)) 'suite lock: checking an unlocked path does not create a stale lock file'
+Set-Content -LiteralPath $freshLockPath -Value '' -Encoding utf8NoBOM
+$deniedLockStatus = Get-SuiteLockStatus $freshLockPath -OpenFile { param([string] $Candidate) $null = $Candidate; throw [UnauthorizedAccessException]::new('denied') }
+Confirm-True ((-not $deniedLockStatus.Held) -and $deniedLockStatus.AccessDenied) 'suite lock: access denied is distinct from a held lock and remains fail closed'
+Set-Content -LiteralPath $freshLockPath -Value "pid=$PID`r`nlog=active.log" -Encoding utf8NoBOM
+$accessDeniedOpenFile = { param([string] $Candidate) $null = $Candidate; throw [UnauthorizedAccessException]::new('simulated access denied') }
+$out = @(& $suiteRunner -DryRun -LogDir $suiteRunnerTemp -LockPath $freshLockPath -SuiteProbe { @() } -LockStatusOpenFile $accessDeniedOpenFile)
+$code = $LASTEXITCODE
+Confirm-True ($code -eq 3 -and ($out -join "`n") -match ("active suite PID {0}" -f $PID)) 'suite runner access denied: a live recorded PID reports the active-suite refusal'
+Set-Content -LiteralPath $freshLockPath -Value "pid=999999`r`nlog=dead.log" -Encoding utf8NoBOM
+$out = @(& $suiteRunner -DryRun -LogDir $suiteRunnerTemp -LockPath $freshLockPath -SuiteProbe { @() } -LockStatusOpenFile $accessDeniedOpenFile)
+$code = $LASTEXITCODE
+Confirm-True ($code -eq 3 -and ($out -join "`n") -match 'recorded PID 999999 is not running') 'suite runner access denied: a dead recorded PID reports the stale-record refusal'
+$childAccessDeniedLog = Join-Path $suiteRunnerTemp 'child-access-denied.log'
+$childAccessDenied = Invoke-ChildPwsh $suiteChild @('-TestScript', $suiteRunner, '-LogPath', $childAccessDeniedLog, '-LockPath', $freshLockPath, '-Utc', '2026-01-01T00:00:00.0000000Z', '-Sha', 'test', '-Dirty', '0', '-Concurrent', '0 pids=', '-FreeMb', '0', '-SimulateLockAccessDenied') ''
+$childAccessDeniedText = if (Test-Path -LiteralPath $childAccessDeniedLog -PathType Leaf) { Get-Content -LiteralPath $childAccessDeniedLog -Raw } else { '' }
+Confirm-Equal $childAccessDenied.ExitCode 3 'suite child access denied: exits with the refusal code'
+Confirm-True ($childAccessDeniedText -match '(?m)^##suite:child-error=lock unavailable: access denied\r?$') 'suite child access denied: writes the access-denied refusal control record'
+Confirm-True ($childAccessDeniedText -match '(?m)^##suite:exit=3\r?$') 'suite child access denied: writes the refusal exit control record'
 $out = @(& $suiteRunner -DryRun -LogDir $suiteRunnerTemp -LockPath $suiteRunnerLock -SuiteProbe { @() })
 $code = $LASTEXITCODE
 $suiteRunnerStamp = $out -join "`n"
@@ -11884,8 +11957,9 @@ foreach ($field in @(
 }
 
 $invalidLockRejected = $false
-try { $null = & $suiteRunner -DryRun -LogDir $suiteRunnerTemp -LockPath ' ' -SuiteProbe { @() } -ErrorAction Stop } catch { $invalidLockRejected = $true }
-Confirm-True $invalidLockRejected 'suite runner lock seam: an empty lock path is rejected before it can bypass the default lock'
+$invalidLockError = ''
+try { $null = & $suiteRunner -DryRun -LogDir $suiteRunnerTemp -LockPath ' ' -SuiteProbe { @() } -ErrorAction Stop } catch { $invalidLockRejected = $true; $invalidLockError = $_.Exception.Message }
+Confirm-True ($invalidLockRejected -and $invalidLockError -match 'must not be empty') 'suite runner lock seam: an empty lock path is rejected before it can bypass the default lock'
 
 $out = @(& $suiteRunner -DryRun -LogDir $suiteRunnerTemp -LockPath $suiteRunnerLock -SuiteProbe { 8123 })
 $code = $LASTEXITCODE
@@ -11899,11 +11973,19 @@ Confirm-True (($out -join "`n") -match '(?m)^concurrent=1 pids=8123$') 'suite ru
 $out = @(& $suiteRunner -Attach ' ')
 $code = $LASTEXITCODE
 Confirm-True ($code -eq 2 -and ($out -join "`n") -match 'must not be empty') 'suite runner attach: an empty path is a usage error'
+$verboseAttachLog = Join-Path $suiteRunnerTemp 'verbose-dead-wrapper.log'
+@('##suite:wrapper=999999') + @(1..120 | ForEach-Object { "verbose attach line $_" }) | Set-Content -LiteralPath $verboseAttachLog -Encoding utf8NoBOM
+$out = @(& $suiteRunner -Attach $verboseAttachLog -PollSeconds 1 -StallMinutes 1)
+$code = $LASTEXITCODE
+Confirm-True ($code -eq 5 -and ($out -join "`n") -match 'suite wrapper died before writing exit=') 'suite runner attach: a wrapper header above a verbose tail still detects wrapper death'
 
 $suiteRunnerFake = Join-Path $suiteRunnerTemp 'suite-fake.ps1'
+$suiteRunnerRelease = Join-Path $suiteRunnerTemp 'suite-release.signal'
 $suiteRunnerDriver = Join-Path $suiteRunnerTemp 'suite-runner-driver.ps1'
 $suiteRunnerLogDir = Join-Path $suiteRunnerTemp 'logs'
-New-Item -ItemType Directory -Path $suiteRunnerTemp -Force | Out-Null
+$suiteRunnerForceLock = Join-Path (Join-Path $suiteRunnerTemp 'force') 'suite.lock'
+$suiteRunnerDrainLock = Join-Path (Join-Path $suiteRunnerTemp 'drain') 'suite.lock'
+New-Item -ItemType Directory -Path $suiteRunnerTemp, (Split-Path -Parent $suiteRunnerForceLock), (Split-Path -Parent $suiteRunnerDrainLock) -Force | Out-Null
 Set-Content -LiteralPath $suiteRunnerDriver -Value @'
 param(
     [Parameter(Mandatory)] [string] $Runner,
@@ -11911,7 +11993,8 @@ param(
     [Parameter(Mandatory)] [string] $LogDir,
     [Parameter(Mandatory)] [string] $LockPath,
     [switch] $Force,
-    [switch] $Wait
+    [switch] $Wait,
+    [int] $AcknowledgementDelayMilliseconds = 0
 )
 $runnerParameters = @{
     TestScript = $TestScript
@@ -11919,30 +12002,61 @@ $runnerParameters = @{
     LockPath = $LockPath
     SuiteProbe = { @() }
 }
+if ($AcknowledgementDelayMilliseconds -gt 0) { $runnerParameters.AcknowledgementDelayMilliseconds = $AcknowledgementDelayMilliseconds }
 if ($Force) { $runnerParameters.Force = $true }
 if ($Wait) { $runnerParameters.Wait = $true; $runnerParameters.PollSeconds = 1 }
 & $Runner @runnerParameters
 exit $LASTEXITCODE
 '@ -Encoding utf8NoBOM
 Set-Content -LiteralPath $suiteRunnerFake -Value @'
+for ($fakeLine = 1; $fakeLine -le 30; $fakeLine++) { Write-Output "verbose-line-$fakeLine" }
 Write-Output first-line
+# These mimic legacy control lines; attach must wait for the wrapper's prefixed control records.
+Write-Output 'wrapper=99999'
+Write-Output 'alone=true'
+Write-Output 'exit=0'
 [Console]::Out.Close()
-Start-Sleep -Seconds 12
+$releaseSignal = Join-Path $PSScriptRoot 'suite-release.signal'
+$releaseDeadline = [DateTime]::UtcNow.AddSeconds(60)
+while (-not (Test-Path -LiteralPath $releaseSignal -PathType Leaf) -and [DateTime]::UtcNow -lt $releaseDeadline) { Start-Sleep -Milliseconds 100 }
+if (-not (Test-Path -LiteralPath $releaseSignal -PathType Leaf)) { Write-Error 'release signal was not written before the hard cap'; exit 8 }
 Write-Output second-line
 exit 7
 '@ -Encoding utf8NoBOM
 $startedSuiteWrappers = [System.Collections.Generic.List[int]]::new()
+$suiteRunnerRegistryFake = Join-Path $suiteRunnerTemp 'registry-fake.ps1'
+Set-Content -LiteralPath $suiteRunnerRegistryFake -Value 'exit 0' -Encoding utf8NoBOM
+$registryRunnerOutput = @()
+$registryRunnerCode = -1
+Push-Location -Path 'HKLM:\SOFTWARE'
 try {
-    $launch = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock, '-Force') ''
+    $registryRunnerOutput = @(& $suiteRunner -TestScript $suiteRunnerRegistryFake -LockPath $freshLockPath -SuiteProbe { @() })
+    $registryRunnerCode = $LASTEXITCODE
+} finally { Pop-Location }
+$registryRunnerLogLine = @($registryRunnerOutput | Where-Object { $_ -match '^log=' } | Select-Object -Last 1)
+$registryRunnerLog = if ($registryRunnerLogLine.Count -eq 1) { $registryRunnerLogLine[0].Substring(4) } else { '' }
+$registryRunnerPidLine = @($registryRunnerOutput | Where-Object { $_ -match '^pid=' } | Select-Object -Last 1)
+$registryRunnerPid = if ($registryRunnerPidLine.Count -eq 1) { $registryRunnerPidLine[0].Substring(4) } else { '' }
+if ($registryRunnerPid -match '^\d+$') { $startedSuiteWrappers.Add([int] $registryRunnerPid) }
+Confirm-True ($registryRunnerCode -eq 0 -and $registryRunnerLog -and (Test-Path -LiteralPath $registryRunnerLog -PathType Leaf)) 'suite runner path resolution: an in-process launch from HKLM uses the fully-qualified default log directory'
+if ($registryRunnerLog) {
+    $out = @(& $suiteRunner -Attach $registryRunnerLog -PollSeconds 1)
+    $code = $LASTEXITCODE
+    Confirm-True ($code -eq 0) "suite runner path resolution: registry-location child attach returns exit 0, got $code"
+}
+try {
+    Remove-Item -LiteralPath $suiteRunnerRelease -Force -ErrorAction SilentlyContinue
+    # The fake waits for an explicit release after the contender check, leaving a 60-second hard-cap
+    $launch = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock, '-Force', '-AcknowledgementDelayMilliseconds', '3500') ''
     $launchText = $launch.Lines -join [Environment]::NewLine
     $launchLogLine = @($launch.Lines | Where-Object { $_ -match '^log=' } | Select-Object -Last 1)
     $launchPidLine = @($launch.Lines | Where-Object { $_ -match '^pid=' } | Select-Object -Last 1)
     $launchLog = if ($launchLogLine.Count -gt 0) { $launchLogLine[0].Substring(4) } else { '' }
     $launchPid = if ($launchPidLine.Count -gt 0) { $launchPidLine[0].Substring(4) } else { '' }
     if ($launchPid -match '^\d+$') { $startedSuiteWrappers.Add([int] $launchPid) }
-    if ($launch.ExitCode -ne 0 -or -not $launchLog -or -not $launchPid -or -not (Test-Path -LiteralPath $launchLog -PathType Leaf)) {
-        throw "suite runner launch did not acknowledge safely: exit=$($launch.ExitCode); output=$launchText"
-    }
+    $launchAcknowledged = $launch.ExitCode -eq 0 -and $launchLog -and $launchPid -and (Test-Path -LiteralPath $launchLog -PathType Leaf)
+    Confirm-True $launchAcknowledged "suite runner launch acknowledges safely: exit=$($launch.ExitCode); output=$launchText"
+    if ($launchAcknowledged) {
     Confirm-True ($launch.Ms -lt 10000) "suite runner detachment: launch acknowledges under ten seconds, got $($launch.Ms) ms"
     Confirm-True ($launchLog -match 'suite-\d{8}-\d{6}-[0-9a-f]{8}\.log$') 'suite runner detachment: runner chose the final unique log path before launch'
 
@@ -11953,23 +12067,42 @@ try {
     Confirm-True ($streamedLog -match ('(?m)^lock=' + [regex]::Escape($suiteRunnerLock) + '\r?$')) 'suite runner lock seam: the child uses the injected test lock path'
     # The initial process probe scans the host once; measure the closed-pipe idle period only after it settles.
     Start-Sleep -Seconds 3
-    $wrapperCpuBefore = (Get-Process -Id $launchPid -ErrorAction Stop).TotalProcessorTime
+    $wrapperCpuBefore = (Get-Process -Id $launchPid -ErrorAction SilentlyContinue).TotalProcessorTime
     Start-Sleep -Seconds 5
-    $wrapperCpuAfter = (Get-Process -Id $launchPid -ErrorAction Stop).TotalProcessorTime
-    Confirm-True (($wrapperCpuAfter - $wrapperCpuBefore).TotalSeconds -lt 1) "suite runner streaming: a closed stdout pipe does not busy-loop across five seconds, got $(($wrapperCpuAfter - $wrapperCpuBefore).TotalSeconds) seconds CPU"
+    $wrapperCpuAfter = (Get-Process -Id $launchPid -ErrorAction SilentlyContinue).TotalProcessorTime
+    $wrapperCpuSeconds = if ($null -ne $wrapperCpuBefore -and $null -ne $wrapperCpuAfter) { ($wrapperCpuAfter - $wrapperCpuBefore).TotalSeconds } else { $null }
+    Confirm-True ($null -ne $wrapperCpuSeconds -and $wrapperCpuSeconds -lt 1) "suite runner streaming: a closed stdout pipe does not busy-loop across five seconds, got $wrapperCpuSeconds seconds CPU"
 
     $contender = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock) ''
     Confirm-True ($contender.ExitCode -eq 3) "suite runner lock: a second launch while the fake suite runs exits 3, got $($contender.ExitCode)"
     Confirm-True (($contender.Lines -join [Environment]::NewLine) -match ("PID {0} log=" -f [regex]::Escape($launchPid))) 'suite runner lock: the advisory refusal names the winning fake child and log'
-
-    $forced = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock, '-Force') ''
-    $forcedText = $forced.Lines -join [Environment]::NewLine
-    Confirm-True ($forced.ExitCode -eq 3 -and $forcedText -match 'lock held by pid=\d+ log=') 'suite runner force: a forced child cannot bypass the OS-held lock and reports its holder'
-    Confirm-True ($forcedText -notmatch '(?m)^(log|pid)=') 'suite runner acknowledgement: a failed child acknowledgement publishes no log or PID'
+    Set-Content -LiteralPath $suiteRunnerRelease -Value 'release initial lock holder' -Encoding utf8NoBOM
 
     $out = @(& $suiteRunner -Attach $launchLog -PollSeconds 1)
     $code = $LASTEXITCODE
     Confirm-True ($code -eq 7) "suite runner detachment: attach returns the fake suite's exit 7, got $code"
+
+    # The acknowledgement fixture deliberately delays its parent, so force uses an independent holder.
+    Remove-Item -LiteralPath $suiteRunnerRelease -Force -ErrorAction Stop
+    $forceHolder = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerForceLock) ''
+    $forceHolderLogLine = @($forceHolder.Lines | Where-Object { $_ -match '^log=' } | Select-Object -Last 1)
+    $forceHolderPidLine = @($forceHolder.Lines | Where-Object { $_ -match '^pid=' } | Select-Object -Last 1)
+    $forceHolderLog = if ($forceHolderLogLine.Count -gt 0) { $forceHolderLogLine[0].Substring(4) } else { '' }
+    $forceHolderPid = if ($forceHolderPidLine.Count -gt 0) { $forceHolderPidLine[0].Substring(4) } else { '' }
+    if ($forceHolderPid -match '^\d+$') { $startedSuiteWrappers.Add([int] $forceHolderPid) }
+    $forceHolderAcknowledged = $forceHolder.ExitCode -eq 0 -and $forceHolderLog -and $forceHolderPid -and (Test-Path -LiteralPath $forceHolderLog -PathType Leaf)
+    Confirm-True $forceHolderAcknowledged "suite runner force: independent holder acknowledges safely: exit=$($forceHolder.ExitCode)"
+    if ($forceHolderAcknowledged) {
+        $forced = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteRunnerFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerForceLock, '-Force') ''
+        $forcedText = $forced.Lines -join [Environment]::NewLine
+        Confirm-True ($forced.ExitCode -eq 3 -and $forcedText -match 'lock held by pid=\d+ log=') 'suite runner force: a forced child cannot bypass the OS-held lock and reports its holder'
+        Confirm-True ($forcedText -notmatch '(?m)^(log|pid)=') 'suite runner acknowledgement: a failed child acknowledgement publishes no log or PID'
+        Set-Content -LiteralPath $suiteRunnerRelease -Value 'release force lock holder' -Encoding utf8NoBOM
+
+        $out = @(& $suiteRunner -Attach $forceHolderLog -PollSeconds 1)
+        $code = $LASTEXITCODE
+        Confirm-True ($code -eq 7) "suite runner force: independent holder attach returns fake exit 7, got $code"
+    }
 
     # The root exits successfully while its descendant still inherits the redirected output pipe. The
     # wrapper must make the bounded drain observable and terminal rather than publishing exit 0.
@@ -11983,11 +12116,12 @@ $info.CreateNoWindow = $true
 [void] [Diagnostics.Process]::Start($info)
 exit 0
 '@ -Encoding utf8NoBOM
-    $drain = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteDrainFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerLock, '-Wait') ''
+    $drain = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteDrainFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerDrainLock, '-Wait') ''
     $drainLogLine = @($drain.Lines | Where-Object { $_ -match '^log=' } | Select-Object -Last 1)
     $drainLog = if ($drainLogLine.Count -eq 1) { $drainLogLine[0].Substring(4) } else { '' }
     $drainLogLines = if ($drainLog -and (Test-Path -LiteralPath $drainLog -PathType Leaf)) { @(Get-Content -LiteralPath $drainLog) } else { @() }
-    Confirm-True ($drain.ExitCode -eq 1 -and $drainLogLines -contains 'log-error=drain-timeout' -and $drainLogLines -contains 'exit=1' -and $drainLogLines -notcontains 'exit=0') "suite runner drain: inherited output after root exit is marked and fails rather than returning success, got exit $($drain.ExitCode)"
+    Confirm-True ($drain.ExitCode -eq 1 -and $drainLogLines -contains 'log-error=drain-timeout' -and $drainLogLines -contains '##suite:exit=1' -and $drainLogLines -notcontains '##suite:exit=0') "suite runner drain: inherited output after root exit is marked and fails rather than returning success, got exit $($drain.ExitCode)"
+    }
 } finally {
     foreach ($wrapperPid in $startedSuiteWrappers) {
         try {

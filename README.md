@@ -219,11 +219,11 @@ Get-Content .\samples\subagent\01-two-agents.json -Raw | pwsh -NoProfile -File .
 ### Running the suite
 
 Use `pwsh -NoProfile -File .\tools\Invoke-Suite.ps1` to launch the full suite. The child holds the
-machine-wide operating-system lock at `%ProgramData%\statusline-suite\suite.lock` for the life of its run; every user on the machine shares it, and a second normal launch exits 3. If the common directory or lock file cannot be opened, the child uses and records a per-user temporary fallback lock. The runner
+machine-wide operating-system lock at `%ProgramData%\statusline-suite\suite.lock` for the life of its run; every user on the machine shares it, and a second normal launch exits 3. If the common directory or lock file cannot be opened for read/write, the launch fails closed with a distinct lock-access refusal rather than selecting a per-user lock or misreporting a stale PID. The runner
 prints a final log path and child PID only after the child has acknowledged its wrapper log. Under a tool
 with a ten-minute ceiling, launch first, then attach in a loop with `pwsh -NoProfile -File
 .\tools\Invoke-Suite.ps1 -Attach <log-path>`; alternatively use `-Wait -TimeoutMinutes 9`, then attach
-if it prints `still-running log=<path>`. `-Force` only skips the advisory process probe: it never bypasses
+if it prints `still-running log=<path>`. `-Attach` latches the wrapper header before it tails later output, so verbose logs still report wrapper death promptly. `-Force` only skips the advisory process probe: it never bypasses
 the held lock, so a forced launch beside a holder is refused by its child with exit 3 and names the
 holder's log. `-LockPath` is a validated absolute `suite.lock` test seam; an explicit seam isolates test runs and does not provide the machine-wide production lock.
 

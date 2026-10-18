@@ -9,7 +9,8 @@ param(
     [Parameter(Mandatory)] [string] $Dirty,
     [Parameter(Mandatory)] [string] $Concurrent,
     [Parameter(Mandatory)] [string] $FreeMb,
-    [switch] $UseDefaultLockPath
+    # Test seam; omitted by Invoke-Suite in production.
+    [switch] $SimulateLockAccessDenied
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,18 +32,22 @@ function Write-LockRecord([IO.FileStream] $Stream, [int] $ProcessId, [int] $Suit
 
 function Get-LockHolderMessage([string] $Path) {
     $record = Get-LockRecord $Path
-    $holderPid = if ($null -ne $record) { $record.Pid } else { 0 }
-    $log = if ($null -ne $record -and $record.Log) { $record.Log } else { '' }
-    return "lock held by pid=$holderPid log=$log"
+    if ($null -eq $record -or $record.Pid -le 0) { return $null }
+    return "lock held by pid=$($record.Pid) log=$($record.Log)"
+}
+
+function Test-LockSharingViolation([IO.IOException] $Exception) {
+    $code = ([int] $Exception.HResult) -band 0xFFFF
+    return $code -eq 0x20 -or $code -eq 0x21
 }
 
 function Write-RefusalLog([string] $Path, [string] $Message, [int] $ExitCode = 3) {
     try {
         $refusalWriter = [IO.StreamWriter]::new($Path, $false, [Text.UTF8Encoding]::new($false))
         try {
-            $refusalWriter.WriteLine("child-error=$Message")
-            $refusalWriter.WriteLine('alone=false')
-            $refusalWriter.WriteLine("exit=$ExitCode")
+            $refusalWriter.WriteLine("##suite:child-error=$Message")
+            $refusalWriter.WriteLine('##suite:alone=false')
+            $refusalWriter.WriteLine("##suite:exit=$ExitCode")
             $refusalWriter.Flush()
         } finally { $refusalWriter.Dispose() }
     } catch { Write-Verbose $_.Exception.Message }
@@ -76,11 +81,18 @@ $suite = $null
 $treeState = $null
 try {
     try {
-        $openedLock = Open-SuiteLock $LockPath -AllowFallback:$UseDefaultLockPath
+        if ($SimulateLockAccessDenied) { throw [UnauthorizedAccessException]::new('simulated lock access denied') }
+        $openedLock = Open-SuiteLock $LockPath
         $lockStream = $openedLock.Stream
         $activeLockPath = $openedLock.Path
     } catch [IO.IOException] {
-        Write-RefusalLog $LogPath (Get-LockHolderMessage $LockPath)
+        if (-not (Test-LockSharingViolation $_.Exception)) { throw }
+        $holder = Get-LockHolderMessage $LockPath
+        $message = if ($null -ne $holder) { $holder } else { 'lock held but holder record is unavailable' }
+        Write-RefusalLog $LogPath $message
+        exit 3
+    } catch [UnauthorizedAccessException] {
+        Write-RefusalLog $LogPath 'lock unavailable: access denied'
         exit 3
     }
     Write-LockRecord $lockStream $PID 0 $LogPath
@@ -94,7 +106,7 @@ try {
             "freeMb=$FreeMb",
             "lock=$activeLockPath",
             ('launch=pwsh -NoProfile -File "{0}"' -f $TestScript),
-            "wrapper=$PID")) {
+            "##suite:wrapper=$PID")) {
         if (-not (Write-SuiteLogLine $writer $line $LogPath)) { throw 'suite log writer failed before launch' }
     }
 
@@ -136,16 +148,26 @@ try {
             [void] $suite.WaitForExit(1000)
         }
         if (-not $stdoutDone -and $stdoutTask.IsCompleted) {
-            $line = $stdoutTask.GetAwaiter().GetResult()
-            if ($null -eq $line) { $stdoutDone = $true }
-            elseif (-not (Write-SuiteLogLine $writer $line $LogPath)) { throw 'suite log writer failed while streaming stdout' }
-            else { $stdoutTask = $suite.StandardOutput.ReadLineAsync() }
+            if ($stdoutTask.IsFaulted) {
+                $null = Write-SuiteLogLine $writer 'log-error=stdout-drain-fault' $LogPath
+                $stdoutDone = $true
+            } else {
+                $line = $stdoutTask.GetAwaiter().GetResult()
+                if ($null -eq $line) { $stdoutDone = $true }
+                elseif (-not (Write-SuiteLogLine $writer $line $LogPath)) { throw 'suite log writer failed while streaming stdout' }
+                else { $stdoutTask = $suite.StandardOutput.ReadLineAsync() }
+            }
         }
         if (-not $stderrDone -and $stderrTask.IsCompleted) {
-            $line = $stderrTask.GetAwaiter().GetResult()
-            if ($null -eq $line) { $stderrDone = $true }
-            elseif (-not (Write-SuiteLogLine $writer $line $LogPath)) { throw 'suite log writer failed while streaming stderr' }
-            else { $stderrTask = $suite.StandardError.ReadLineAsync() }
+            if ($stderrTask.IsFaulted) {
+                $null = Write-SuiteLogLine $writer 'log-error=stderr-drain-fault' $LogPath
+                $stderrDone = $true
+            } else {
+                $line = $stderrTask.GetAwaiter().GetResult()
+                if ($null -eq $line) { $stderrDone = $true }
+                elseif (-not (Write-SuiteLogLine $writer $line $LogPath)) { throw 'suite log writer failed while streaming stderr' }
+                else { $stderrTask = $suite.StandardError.ReadLineAsync() }
+            }
         }
         if ($null -ne $drainDeadline -and [DateTime]::UtcNow -ge $drainDeadline -and (-not $stdoutDone -or -not $stderrDone)) {
             $null = Write-SuiteLogLine $writer 'log-error=drain-timeout' $LogPath
@@ -170,17 +192,17 @@ try {
         }
     }
     $suite.WaitForExit()
-    if (-not (Write-SuiteLogLine $writer ('alone=' + (-not $sawConcurrent).ToString().ToLowerInvariant()) $LogPath)) { throw 'suite log writer failed at completion' }
-    if (-not (Write-SuiteLogLine $writer "exit=$($suite.ExitCode)" $LogPath)) { throw 'suite log writer failed at completion' }
+    if (-not (Write-SuiteLogLine $writer ('##suite:alone=' + (-not $sawConcurrent).ToString().ToLowerInvariant()) $LogPath)) { throw 'suite log writer failed at completion' }
+    if (-not (Write-SuiteLogLine $writer "##suite:exit=$($suite.ExitCode)" $LogPath)) { throw 'suite log writer failed at completion' }
     exit $suite.ExitCode
 } catch {
     $cleanupFailed = @()
     if ($null -ne $suite) { $cleanupFailed = @(Stop-SuiteProcessTree $suite.Id $treeState) }
     if ($null -ne $writer) {
         if ($cleanupFailed.Count -gt 0) { $null = Write-SuiteLogLine $writer ('cleanup-failed=' + ($cleanupFailed -join ',')) $LogPath }
-        $null = Write-SuiteLogLine $writer "child-error=$($_.Exception.Message)" $LogPath
-        $null = Write-SuiteLogLine $writer 'alone=false' $LogPath
-        $null = Write-SuiteLogLine $writer 'exit=1' $LogPath
+        $null = Write-SuiteLogLine $writer "##suite:child-error=$($_.Exception.Message)" $LogPath
+        $null = Write-SuiteLogLine $writer '##suite:alone=false' $LogPath
+        $null = Write-SuiteLogLine $writer '##suite:exit=1' $LogPath
     } else {
         Write-RefusalLog $LogPath $_.Exception.Message 1
     }
