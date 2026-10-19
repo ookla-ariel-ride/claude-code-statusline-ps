@@ -11937,7 +11937,9 @@ $out = @(& $suiteRunner -DryRun -LogDir $suiteRunnerTemp -LockPath $freshLockPat
 $code = $LASTEXITCODE
 Confirm-True ($code -eq 3 -and ($out -join "`n") -match 'recorded PID 999999 is not running') 'suite runner access denied: a dead recorded PID reports the stale-record refusal'
 $childAccessDeniedLog = Join-Path $suiteRunnerTemp 'child-access-denied.log'
-$childAccessDenied = Invoke-ChildPwsh $suiteChild @('-TestScript', $suiteRunner, '-LogPath', $childAccessDeniedLog, '-LockPath', $freshLockPath, '-Utc', '2026-01-01T00:00:00.0000000Z', '-Sha', 'test', '-Dirty', '0', '-Concurrent', '0 pids=', '-FreeMb', '0', '-SimulateLockAccessDenied') ''
+$childAccessDeniedFake = Join-Path $suiteRunnerTemp 'child-access-denied-fake.ps1'
+Set-Content -LiteralPath $childAccessDeniedFake -Value 'exit 0' -Encoding utf8NoBOM
+$childAccessDenied = Invoke-ChildPwsh $suiteChild @('-TestScript', $childAccessDeniedFake, '-LogPath', $childAccessDeniedLog, '-LockPath', $freshLockPath, '-Utc', '2026-01-01T00:00:00.0000000Z', '-Sha', 'test', '-Dirty', '0', '-Concurrent', '0 pids=', '-FreeMb', '0', '-SimulateLockAccessDenied') ''
 $childAccessDeniedText = if (Test-Path -LiteralPath $childAccessDeniedLog -PathType Leaf) { Get-Content -LiteralPath $childAccessDeniedLog -Raw } else { '' }
 Confirm-Equal $childAccessDenied.ExitCode 3 'suite child access denied: exits with the refusal code'
 Confirm-True ($childAccessDeniedText -match '(?m)^##suite:child-error=lock unavailable: access denied\r?$') 'suite child access denied: writes the access-denied refusal control record'
@@ -11949,12 +11951,21 @@ Confirm-True ($code -eq 0) "suite runner dry run: returns exit code 0, got $code
 foreach ($field in @(
         @{ Pattern = '(?m)^utc=.+Z$'; Label = 'UTC start time' }
         @{ Pattern = '(?m)^sha=[0-9a-f]+$'; Label = 'short commit SHA' }
-        @{ Pattern = '(?m)^dirty=\d+$'; Label = 'dirty count' }
+        @{ Pattern = '(?m)^dirty=(?:\d+|unknown)$'; Label = 'dirty count or unknown' }
         @{ Pattern = '(?m)^concurrent=0 pids=$'; Label = 'empty concurrent PID stamp' }
         @{ Pattern = '(?m)^freeMb=\d+$'; Label = 'free physical memory' }
         @{ Pattern = '(?m)^launch=pwsh -NoProfile -File .+test\.ps1"$'; Label = 'suite launch command' })) {
     Confirm-True ($suiteRunnerStamp -match $field.Pattern) "suite runner dry run: stamp records $($field.Label)"
 }
+
+$suiteRunnerNonRepoFake = Join-Path $suiteRunnerTemp 'non-repository-fake.ps1'
+$suiteRunnerNonRepoLock = Join-Path (Join-Path $suiteRunnerTemp 'non-repository') 'suite.lock'
+New-Item -ItemType Directory -Path (Split-Path -Parent $suiteRunnerNonRepoLock) -Force | Out-Null
+Set-Content -LiteralPath $suiteRunnerNonRepoFake -Value 'exit 0' -Encoding utf8NoBOM
+$out = @(& $suiteRunner -DryRun -LogDir $suiteRunnerTemp -TestScript $suiteRunnerNonRepoFake -LockPath $suiteRunnerNonRepoLock -SuiteProbe { @() })
+$code = $LASTEXITCODE
+$suiteRunnerNonRepoStamp = $out -join [Environment]::NewLine
+Confirm-True ($code -eq 0 -and $suiteRunnerNonRepoStamp -match '(?m)^dirty=unknown\r?$') 'suite runner dry run: a non-repository git failure stamps dirty as unknown rather than clean'
 
 $invalidLockRejected = $false
 $invalidLockError = ''
@@ -11985,7 +11996,8 @@ $suiteRunnerDriver = Join-Path $suiteRunnerTemp 'suite-runner-driver.ps1'
 $suiteRunnerLogDir = Join-Path $suiteRunnerTemp 'logs'
 $suiteRunnerForceLock = Join-Path (Join-Path $suiteRunnerTemp 'force') 'suite.lock'
 $suiteRunnerDrainLock = Join-Path (Join-Path $suiteRunnerTemp 'drain') 'suite.lock'
-New-Item -ItemType Directory -Path $suiteRunnerTemp, (Split-Path -Parent $suiteRunnerForceLock), (Split-Path -Parent $suiteRunnerDrainLock) -Force | Out-Null
+$suiteRunnerFaultLock = Join-Path (Join-Path $suiteRunnerTemp 'fault') 'suite.lock'
+New-Item -ItemType Directory -Path $suiteRunnerTemp, (Split-Path -Parent $suiteRunnerForceLock), (Split-Path -Parent $suiteRunnerDrainLock), (Split-Path -Parent $suiteRunnerFaultLock) -Force | Out-Null
 Set-Content -LiteralPath $suiteRunnerDriver -Value @'
 param(
     [Parameter(Mandatory)] [string] $Runner,
@@ -11994,6 +12006,7 @@ param(
     [Parameter(Mandatory)] [string] $LockPath,
     [switch] $Force,
     [switch] $Wait,
+    [switch] $SimulateStdoutDrainFault,
     [int] $AcknowledgementDelayMilliseconds = 0
 )
 $runnerParameters = @{
@@ -12003,6 +12016,7 @@ $runnerParameters = @{
     SuiteProbe = { @() }
 }
 if ($AcknowledgementDelayMilliseconds -gt 0) { $runnerParameters.AcknowledgementDelayMilliseconds = $AcknowledgementDelayMilliseconds }
+if ($SimulateStdoutDrainFault) { $runnerParameters.SimulateStdoutDrainFault = $true }
 if ($Force) { $runnerParameters.Force = $true }
 if ($Wait) { $runnerParameters.Wait = $true; $runnerParameters.PollSeconds = 1 }
 & $Runner @runnerParameters
@@ -12029,16 +12043,19 @@ Set-Content -LiteralPath $suiteRunnerRegistryFake -Value 'exit 0' -Encoding utf8
 $registryRunnerOutput = @()
 $registryRunnerCode = -1
 Push-Location -Path 'HKLM:\SOFTWARE'
+$registryRunnerError = ''
 try {
-    $registryRunnerOutput = @(& $suiteRunner -TestScript $suiteRunnerRegistryFake -LockPath $freshLockPath -SuiteProbe { @() })
+    $registryRunnerOutput = @(& $suiteRunner -TestScript $suiteRunnerRegistryFake -LogDir $suiteRunnerLogDir -LockPath $freshLockPath -SuiteProbe { @() })
     $registryRunnerCode = $LASTEXITCODE
+} catch {
+    $registryRunnerError = $_.Exception.Message
 } finally { Pop-Location }
 $registryRunnerLogLine = @($registryRunnerOutput | Where-Object { $_ -match '^log=' } | Select-Object -Last 1)
 $registryRunnerLog = if ($registryRunnerLogLine.Count -eq 1) { $registryRunnerLogLine[0].Substring(4) } else { '' }
 $registryRunnerPidLine = @($registryRunnerOutput | Where-Object { $_ -match '^pid=' } | Select-Object -Last 1)
 $registryRunnerPid = if ($registryRunnerPidLine.Count -eq 1) { $registryRunnerPidLine[0].Substring(4) } else { '' }
 if ($registryRunnerPid -match '^\d+$') { $startedSuiteWrappers.Add([int] $registryRunnerPid) }
-Confirm-True ($registryRunnerCode -eq 0 -and $registryRunnerLog -and (Test-Path -LiteralPath $registryRunnerLog -PathType Leaf)) 'suite runner path resolution: an in-process launch from HKLM uses the fully-qualified default log directory'
+Confirm-True ($registryRunnerCode -eq 0 -and [string]::IsNullOrEmpty($registryRunnerError) -and $registryRunnerLog -and $registryRunnerLog.StartsWith($suiteRunnerLogDir + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $registryRunnerLog -PathType Leaf)) "suite runner path resolution: an in-process launch from HKLM writes under the isolated log directory (error: $registryRunnerError)"
 if ($registryRunnerLog) {
     $out = @(& $suiteRunner -Attach $registryRunnerLog -PollSeconds 1)
     $code = $LASTEXITCODE
@@ -12121,6 +12138,14 @@ exit 0
     $drainLog = if ($drainLogLine.Count -eq 1) { $drainLogLine[0].Substring(4) } else { '' }
     $drainLogLines = if ($drainLog -and (Test-Path -LiteralPath $drainLog -PathType Leaf)) { @(Get-Content -LiteralPath $drainLog) } else { @() }
     Confirm-True ($drain.ExitCode -eq 1 -and $drainLogLines -contains 'log-error=drain-timeout' -and $drainLogLines -contains '##suite:exit=1' -and $drainLogLines -notcontains '##suite:exit=0') "suite runner drain: inherited output after root exit is marked and fails rather than returning success, got exit $($drain.ExitCode)"
+
+    $suiteFaultFake = Join-Path $suiteRunnerTemp 'suite-fault-fake.ps1'
+    Set-Content -LiteralPath $suiteFaultFake -Value 'Write-Output fault-fixture; exit 0' -Encoding utf8NoBOM
+    $fault = Invoke-ChildPwsh $suiteRunnerDriver @('-Runner', $suiteRunner, '-TestScript', $suiteFaultFake, '-LogDir', $suiteRunnerLogDir, '-LockPath', $suiteRunnerFaultLock, '-Wait', '-SimulateStdoutDrainFault') ''
+    $faultLogLine = @($fault.Lines | Where-Object { $_ -match '^log=' } | Select-Object -Last 1)
+    $faultLog = if ($faultLogLine.Count -eq 1) { $faultLogLine[0].Substring(4) } else { '' }
+    $faultLogLines = if ($faultLog -and (Test-Path -LiteralPath $faultLog -PathType Leaf)) { @(Get-Content -LiteralPath $faultLog) } else { @() }
+    Confirm-True ($fault.ExitCode -eq 1 -and $faultLogLines -contains 'log-error=stdout-drain-fault' -and $faultLogLines -contains '##suite:exit=1' -and $faultLogLines -notcontains '##suite:exit=0') "suite runner drain: a faulted stdout drain is terminal rather than returning success, got exit $($fault.ExitCode)"
     }
 } finally {
     foreach ($wrapperPid in $startedSuiteWrappers) {
