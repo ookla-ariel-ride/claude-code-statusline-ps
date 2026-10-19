@@ -8,11 +8,17 @@ open on GitHub. Read this first when resuming work on this repo.
 
 - Branch `main`, in sync with `origin/main`, head `5985eaa`. `main` is the only branch that matters on the
   remote; the wave branches below were merged and deleted locally (their remote refs remain).
-- **Suite: `pwsh -NoProfile -File ./test.ps1` → passed 17287, failed 0** at `819d06b` (the tree `main`
+- **Suite result: `passed 17287, failed 0`** at `819d06b` (the tree `main`
   merged last), run alone. The suite has grown from 11,724 to 17,287 assertions in this run and takes
   **ten to thirteen minutes alone** on this machine (15,000-assertion trees took nine minutes forty; the
   loaded runs of the night took eighteen to twenty-four). Under any second suite the git-cache stamp cases,
   the `time` minute-boundary case and random render-matrix cells still fail; run alone before believing one.
+  New full runs launch with `pwsh -NoProfile -File .\tools\Invoke-Suite.ps1`, which hands the child an
+  OS-held machine-wide lock at `%ProgramData%\statusline-suite\suite.lock` (failing closed if the common directory or file is inaccessible, rather than selecting a per-user lock) and waits for its final log acknowledgement before printing `log=` and `pid=`. `-LockPath` is only a validated isolated-test seam, not the production lock.
+  Attach to that log; `-Wait -TimeoutMinutes 9` is the bounded alternative. `-Force` bypasses only the
+  advisory probe, not the OS lock, so a forced launch beside a holder is refused as exit 3 with its log.
+  Exit 0 is a pass; 2 invalid input; 3 a lock/probe refusal; 5 a missing acknowledgement; 6 an observation
+  timeout; a log write failure or drain timeout exits 1; and otherwise the wrapper returns the suite's own exit code.
 - Lint clean on every `.ps1` with `PSScriptAnalyzerSettings.psd1`. Samples 01..15; subagent samples 01..05.
   `statusline.json` gained one key, `tint` (`role` by default, `segment` opt-in).
 - **The installed status line on this machine matches `main`** (both scripts hash-match, reinstalled at
@@ -69,9 +75,10 @@ and every implementer is a routed executor. Rules that came out of this run, all
   every review ran inline in the review fork. It also means an implementer can never be a plain agent.
 - **Verification on this machine is fragile.** The harness kills background tasks (and their children)
   when free memory drops under about a gigabyte, which it does whenever a suite runs beside Chrome, WSL
-  and Docker; run long verifications as detached processes (`Start-Process pwsh`) writing to a log, and
-  arm a `Monitor` on the log's finish line. One suite at a time; executors were told to poll for a clear
-  window and mostly did not, so expect a collision or two per wave.
+  and Docker. Launch the full suite with `pwsh -NoProfile -File .\tools\Invoke-Suite.ps1`, keep its
+  stamped log path, then attach with `-Attach <log-path>` until it ends. A caller with a ten-minute
+  ceiling can instead use `-Wait -TimeoutMinutes 9` and attach after `still-running`; do not hand-roll
+  `Start-Process` or a `Monitor`.
 - **Transient API drops** (stream idle timeouts, connection resets, one unparsable tool call) hit seven
   executors and two review forks. Every one was resumed by `SendMessage` with its last note and lost
   nothing; never relaunch.
